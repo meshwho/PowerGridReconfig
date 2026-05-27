@@ -1,0 +1,38 @@
+network:
+  source: "pglib"
+  name: "case118_ieee"
+
+load:
+  generator: "agg_load_profile"
+  agg_profile: "default"
+  scenarios: 5
+  sigma: 0.15
+  change_reactive_power: true
+  global_range: 0.35
+  max_scaling_factor: 2.0
+  step_size: 0.05
+  start_scaling_factor: 0.8
+
+topology_perturbation:
+  type: "random"
+  k: 1
+  n_topology_variants: 5
+  elements: [branch]
+
+generation_perturbation:
+  type: "none"
+
+admittance_perturbation:
+  type: "none"
+
+settings:
+  num_processes: 1
+  data_dir: "./data/gridfm_smoke"
+  large_chunk_size: 100
+  overwrite: true
+  mode: "pf"
+  include_dc_res: true
+  pf_fast: true
+  dcpf_fast: true
+  enable_solver_logs: false
+  max_iter: 30

@@ -70,12 +70,27 @@ class GridConfig:
     # If True, check_network.py will show both raw and calibrated metrics.
     calibrate_line_limits: bool = True
 
+    # -----------------------------
+    # Emergency scenario generation
+    # -----------------------------
+
+    # Random load scaling range.
+    # A value of 1.20 means all loads are multiplied by 1.20.
+    min_load_scale: float = 1.05
+    max_load_scale: float = 1.60
+
+    # Maximum number of attempts to find useful emergency scenarios.
+    # Not every random outage creates overloads, so we need multiple attempts.
+    max_scenario_attempts: int = 1000
+
+    # A scenario is useful if at least one line exceeds this loading.
+    useful_scenario_min_loading_percent: float = 100.0
 
     # -----------------------------
     # Reproducibility
     # -----------------------------
 
-    seed: int = 42
+    seed: int = 43
 
     # -----------------------------
     # Paths
