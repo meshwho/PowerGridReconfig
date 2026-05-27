@@ -263,7 +263,7 @@ class GridFMAdapter:
         if require_outage:
             mask = mask & (summary["num_outaged_branches"] > 0)
 
-        return list(summary.loc[mask, "scenario"].astype(int).values)
+        return [int(x) for x in summary.loc[mask, "scenario"].values]
 
     def build_state(self, scenario_id: int) -> GridFMState:
         """
@@ -322,5 +322,5 @@ class GridFMAdapter:
             branch_ids=branch_ids,
             branch_status=branch_status,
             metrics=metrics,
-            outaged_branch_ids=list(outaged["idx"].astype(int).values),
+            outaged_branch_ids=[int(x) for x in outaged["idx"].values],
         )
