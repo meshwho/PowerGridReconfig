@@ -1,0 +1,38 @@
+# Python virtual environment
+.venv/
+venv/
+env/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# PyCharm / IDE
+.idea/
+.vscode/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Generated datasets
+data/*
+!data/.gitkeep
+
+# Large model/data artifacts
+*.npz
+*.npy
+*.pkl
+*.pt
+*.pth
+*.ckpt
+*.parquet
+*.csv
+
+# Temporary files
+tmp/
+temp/
