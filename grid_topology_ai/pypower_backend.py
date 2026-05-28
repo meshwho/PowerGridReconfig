@@ -56,11 +56,12 @@ from pypower.idx_gen import (
     VG,
 )
 
-from grid_topology_ai.gridfm_adapter import (
+from grid_topology_ai.data_adapter import (
     BRANCH_FEATURE_COLUMNS,
     BUS_FEATURE_COLUMNS,
     GridFMAdapter,
     GridFMState,
+    compute_voltage_violation_metrics,
 )
 
 
@@ -426,8 +427,7 @@ class GridFMPowerFlowBackend:
         overloaded = in_service[in_service["loading_percent"] > 100.0]
         hard_overloaded = in_service[in_service["loading_percent"] > 120.0]
 
-        low_voltage = bus_df[bus_df["Vm"] < bus_df["min_vm_pu"]]
-        high_voltage = bus_df[bus_df["Vm"] > bus_df["max_vm_pu"]]
+        voltage_metrics = compute_voltage_violation_metrics(bus_df)
 
         if len(in_service) > 0:
             max_loading = float(in_service["loading_percent"].max())
@@ -445,8 +445,7 @@ class GridFMPowerFlowBackend:
             "num_hard_overloaded_branches": int(len(hard_overloaded)),
             "min_vm_pu": float(bus_df["Vm"].min()),
             "max_vm_pu": float(bus_df["Vm"].max()),
-            "num_low_voltage_buses": int(len(low_voltage)),
-            "num_high_voltage_buses": int(len(high_voltage)),
+            **voltage_metrics,
             "num_outaged_branches": int(len(outaged)),
         }
 

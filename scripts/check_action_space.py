@@ -5,8 +5,8 @@ from pathlib import Path
 
 import numpy as np
 
-from grid_topology_ai.gridfm_action_space import GridFMActionSpace
-from grid_topology_ai.gridfm_adapter import (
+from grid_topology_ai.action_space import GridFMActionSpace
+from grid_topology_ai.data_adapter import (
     BRANCH_FEATURE_COLUMNS,
     GridFMAdapter,
 )

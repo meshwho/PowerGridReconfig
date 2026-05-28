@@ -6,7 +6,7 @@ from typing import Literal
 import networkx as nx
 import numpy as np
 
-from grid_topology_ai.gridfm_adapter import (
+from grid_topology_ai.data_adapter import (
     BRANCH_FEATURE_COLUMNS,
     GridFMState,
 )

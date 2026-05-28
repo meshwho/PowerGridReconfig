@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from grid_topology_ai.gridfm_adapter import GridFMAdapter
+from grid_topology_ai.data_adapter import GridFMAdapter
 
 
 def main() -> None:

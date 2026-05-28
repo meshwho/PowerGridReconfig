@@ -5,11 +5,12 @@ from pathlib import Path
 
 import pandas as pd
 from tqdm import tqdm
+import numpy as np
 
-from grid_topology_ai.gridfm_action_space import GridFMAction, GridFMActionSpace
-from grid_topology_ai.gridfm_adapter import BRANCH_FEATURE_COLUMNS, GridFMAdapter, GridFMState
-from grid_topology_ai.gridfm_pypower_backend import GridFMPowerFlowBackend
-from grid_topology_ai.gridfm_reward import GridFMReward, GridFMRewardBreakdown
+from grid_topology_ai.action_space import GridFMAction, GridFMActionSpace
+from grid_topology_ai.data_adapter import BRANCH_FEATURE_COLUMNS, GridFMAdapter, GridFMState
+from grid_topology_ai.pypower_backend import GridFMPowerFlowBackend
+from grid_topology_ai.reward import GridFMReward, GridFMRewardBreakdown
 
 
 @dataclass(frozen=True)
@@ -86,9 +87,11 @@ class GridFMTransitionGenerator:
         self.reward_fn = reward_fn
 
     def generate_for_useful_scenarios(
-        self,
-        max_switch_actions_per_scenario: int | None = None,
-        include_do_nothing: bool = True,
+            self,
+            max_switch_actions_per_scenario: int | None = None,
+            include_do_nothing: bool = True,
+            min_start_max_loading_percent: float = 100.0,
+            min_start_total_overload: float = 0.0,
     ) -> pd.DataFrame:
         """
         Generate transitions for all useful emergency scenarios.
@@ -112,7 +115,21 @@ class GridFMTransitionGenerator:
         records: list[GridFMTransitionRecord] = []
         transition_id = 0
 
-        for scenario_id in tqdm(scenario_ids, desc="Generating transitions"):
+        selected_scenario_ids: list[int] = []
+
+        for scenario_id in scenario_ids:
+            state = self.adapter.build_state(scenario_id)
+
+            if not self._passes_start_state_filter(
+                    state=state,
+                    min_start_max_loading_percent=min_start_max_loading_percent,
+                    min_start_total_overload=min_start_total_overload,
+            ):
+                continue
+
+            selected_scenario_ids.append(int(scenario_id))
+
+        for scenario_id in tqdm(selected_scenario_ids, desc="Generating transitions"):
             state = self.adapter.build_state(scenario_id)
 
             actions = self._select_actions(
@@ -132,6 +149,53 @@ class GridFMTransitionGenerator:
                 transition_id += 1
 
         return pd.DataFrame([asdict(record) for record in records])
+
+    def _passes_start_state_filter(
+            self,
+            state: GridFMState,
+            min_start_max_loading_percent: float,
+            min_start_total_overload: float,
+    ) -> bool:
+        """
+        Decide whether the initial emergency state is severe enough.
+
+        We do not want to train the agent to switch topology for tiny overloads
+        like 100.03%. Such actions may be mathematically valid but operationally
+        questionable.
+
+        A scenario passes if:
+        - max loading is high enough;
+        - total overload is high enough.
+        """
+
+        max_loading = float(state.metrics["max_loading_percent"])
+        total_overload = self._total_start_overload(state)
+
+        if max_loading < min_start_max_loading_percent:
+            return False
+
+        if total_overload < min_start_total_overload:
+            return False
+
+        return True
+
+    @staticmethod
+    def _total_start_overload(state: GridFMState, limit_percent: float = 100.0) -> float:
+        """
+        Compute total overload above the selected limit for the initial state.
+        """
+
+        loading_idx = BRANCH_FEATURE_COLUMNS.index("loading_percent")
+        status_idx = BRANCH_FEATURE_COLUMNS.index("br_status")
+
+        loading = state.branch_features[:, loading_idx]
+        status = state.branch_features[:, status_idx]
+
+        active_loading = loading[status > 0]
+
+        overload = np.maximum(active_loading - limit_percent, 0.0)
+
+        return float(np.sum(overload))
 
     def _select_actions(
         self,

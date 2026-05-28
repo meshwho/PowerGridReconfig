@@ -3,11 +3,11 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from grid_topology_ai.gridfm_action_space import GridFMActionSpace
-from grid_topology_ai.gridfm_adapter import GridFMAdapter
-from grid_topology_ai.gridfm_pypower_backend import GridFMPowerFlowBackend
-from grid_topology_ai.gridfm_reward import GridFMReward
-from grid_topology_ai.gridfm_transition_generator import (
+from grid_topology_ai.action_space import GridFMActionSpace
+from grid_topology_ai.data_adapter import GridFMAdapter
+from grid_topology_ai.pypower_backend import GridFMPowerFlowBackend
+from grid_topology_ai.reward import GridFMReward
+from grid_topology_ai.transition_generator import (
     GridFMTransitionGenerator,
     save_transitions,
 )
@@ -29,6 +29,20 @@ def main() -> None:
         type=str,
         default="data/gridfm_transitions/transitions.csv",
         help="Output CSV file.",
+    )
+
+    parser.add_argument(
+        "--min-start-loading",
+        type=float,
+        default=100.0,
+        help="Minimum initial max branch loading percent for scenario selection.",
+    )
+
+    parser.add_argument(
+        "--min-start-total-overload",
+        type=float,
+        default=0.0,
+        help="Minimum initial total overload above 100 percent for scenario selection.",
     )
 
     parser.add_argument(
@@ -82,6 +96,8 @@ def main() -> None:
     transitions = generator.generate_for_useful_scenarios(
         max_switch_actions_per_scenario=top_k,
         include_do_nothing=not args.no_do_nothing,
+        min_start_max_loading_percent=args.min_start_loading,
+        min_start_total_overload=args.min_start_total_overload,
     )
 
     save_transitions(transitions, args.output)
@@ -98,6 +114,9 @@ def main() -> None:
 
         print("\nDone count:")
         print(transitions["done"].value_counts(dropna=False))
+
+        print(f"Min start loading: {args.min_start_loading}")
+        print(f"Min start overload:{args.min_start_total_overload}")
 
         print("\nTop 10 actions by reward:")
         cols = [

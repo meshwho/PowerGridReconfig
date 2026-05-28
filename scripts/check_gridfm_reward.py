@@ -3,10 +3,10 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from grid_topology_ai.gridfm_action_space import GridFMActionSpace
-from grid_topology_ai.gridfm_adapter import BRANCH_FEATURE_COLUMNS, GridFMAdapter
-from grid_topology_ai.gridfm_pypower_backend import GridFMPowerFlowBackend
-from grid_topology_ai.gridfm_reward import GridFMReward
+from grid_topology_ai.action_space import GridFMActionSpace
+from grid_topology_ai.data_adapter import BRANCH_FEATURE_COLUMNS, GridFMAdapter
+from grid_topology_ai.pypower_backend import GridFMPowerFlowBackend
+from grid_topology_ai.reward import GridFMReward
 
 
 def main() -> None:

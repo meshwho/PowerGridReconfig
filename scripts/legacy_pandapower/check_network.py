@@ -1,5 +1,5 @@
 from grid_topology_ai.config import GridConfig
-from grid_topology_ai.limit_calibrator import calibrate_line_limits_from_base_case
+from grid_topology_ai.legacy_pandapower.limit_calibrator import calibrate_line_limits_from_base_case
 from grid_topology_ai.metrics import compute_grid_metrics
 from grid_topology_ai.network_factory import create_network, run_power_flow
 

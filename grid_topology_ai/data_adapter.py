@@ -42,6 +42,44 @@ BRANCH_FEATURE_COLUMNS = [
 ]
 
 
+def compute_voltage_violation_metrics(bus_df: pd.DataFrame) -> dict[str, float | int]:
+    """
+    Compute voltage violation metrics.
+
+    We use violation magnitude, not only the number of violated buses.
+
+    Example:
+        Vm = 1.0601, max = 1.0600 -> tiny violation
+        Vm = 1.1000, max = 1.0600 -> large violation
+
+    This is important for reward stability.
+    """
+
+    vm = bus_df["Vm"].to_numpy(dtype=float)
+    vmin = bus_df["min_vm_pu"].to_numpy(dtype=float)
+    vmax = bus_df["max_vm_pu"].to_numpy(dtype=float)
+
+    low_voltage_violation = np.maximum(vmin - vm, 0.0)
+    high_voltage_violation = np.maximum(vm - vmax, 0.0)
+
+    total_low_voltage_violation = float(np.sum(low_voltage_violation))
+    total_high_voltage_violation = float(np.sum(high_voltage_violation))
+    total_voltage_violation = (
+        total_low_voltage_violation + total_high_voltage_violation
+    )
+
+    num_low_voltage_buses = int(np.sum(low_voltage_violation > 0.0))
+    num_high_voltage_buses = int(np.sum(high_voltage_violation > 0.0))
+
+    return {
+        "num_low_voltage_buses": num_low_voltage_buses,
+        "num_high_voltage_buses": num_high_voltage_buses,
+        "total_low_voltage_violation": total_low_voltage_violation,
+        "total_high_voltage_violation": total_high_voltage_violation,
+        "total_voltage_violation": total_voltage_violation,
+    }
+
+
 @dataclass(frozen=True)
 class GridFMState:
     """
@@ -209,8 +247,23 @@ class GridFMAdapter:
             overloaded = in_service[in_service["loading_percent"] > 100.0]
             hard_overloaded = in_service[in_service["loading_percent"] > 120.0]
 
-            low_voltage = bus[bus["Vm"] < bus["min_vm_pu"]]
-            high_voltage = bus[bus["Vm"] > bus["max_vm_pu"]]
+            voltage_metrics = compute_voltage_violation_metrics(bus)
+
+            low_voltage_violation = np.maximum(
+                bus["min_vm_pu"].to_numpy(dtype=float) - bus["Vm"].to_numpy(dtype=float),
+                0.0,
+            )
+
+            high_voltage_violation = np.maximum(
+                bus["Vm"].to_numpy(dtype=float) - bus["max_vm_pu"].to_numpy(dtype=float),
+                0.0,
+            )
+
+            total_low_voltage_violation = float(np.sum(low_voltage_violation))
+            total_high_voltage_violation = float(np.sum(high_voltage_violation))
+            total_voltage_violation = (
+                    total_low_voltage_violation + total_high_voltage_violation
+            )
 
             rows.append(
                 {
@@ -228,8 +281,7 @@ class GridFMAdapter:
                     "num_hard_overloaded_branches": int(len(hard_overloaded)),
                     "min_vm_pu": float(bus["Vm"].min()),
                     "max_vm_pu": float(bus["Vm"].max()),
-                    "num_low_voltage_buses": int(len(low_voltage)),
-                    "num_high_voltage_buses": int(len(high_voltage)),
+                    **voltage_metrics,
                     "num_outaged_branches": int(len(outaged)),
                     "outaged_branch_ids": list(outaged["idx"].astype(int).values),
                 }
@@ -296,8 +348,23 @@ class GridFMAdapter:
         overloaded = in_service[in_service["loading_percent"] > 100.0]
         hard_overloaded = in_service[in_service["loading_percent"] > 120.0]
 
-        low_voltage = bus[bus["Vm"] < bus["min_vm_pu"]]
-        high_voltage = bus[bus["Vm"] > bus["max_vm_pu"]]
+        voltage_metrics = compute_voltage_violation_metrics(bus)
+
+        low_voltage_violation = np.maximum(
+            bus["min_vm_pu"].to_numpy(dtype=float) - bus["Vm"].to_numpy(dtype=float),
+            0.0,
+        )
+
+        high_voltage_violation = np.maximum(
+            bus["Vm"].to_numpy(dtype=float) - bus["max_vm_pu"].to_numpy(dtype=float),
+            0.0,
+        )
+
+        total_low_voltage_violation = float(np.sum(low_voltage_violation))
+        total_high_voltage_violation = float(np.sum(high_voltage_violation))
+        total_voltage_violation = (
+                total_low_voltage_violation + total_high_voltage_violation
+        )
 
         metrics = {
             "num_buses": int(len(bus)),
@@ -308,9 +375,11 @@ class GridFMAdapter:
             "num_hard_overloaded_branches": int(len(hard_overloaded)),
             "min_vm_pu": float(bus["Vm"].min()),
             "max_vm_pu": float(bus["Vm"].max()),
-            "num_low_voltage_buses": int(len(low_voltage)),
-            "num_high_voltage_buses": int(len(high_voltage)),
+            **voltage_metrics,
             "num_outaged_branches": int(len(outaged)),
+            "total_low_voltage_violation": total_low_voltage_violation,
+            "total_high_voltage_violation": total_high_voltage_violation,
+            "total_voltage_violation": total_voltage_violation,
         }
 
         return GridFMState(

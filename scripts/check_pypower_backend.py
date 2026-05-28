@@ -5,9 +5,9 @@ from pathlib import Path
 
 import numpy as np
 
-from grid_topology_ai.gridfm_action_space import GridFMActionSpace
-from grid_topology_ai.gridfm_adapter import BRANCH_FEATURE_COLUMNS, GridFMAdapter
-from grid_topology_ai.gridfm_pypower_backend import GridFMPowerFlowBackend
+from grid_topology_ai.action_space import GridFMActionSpace
+from grid_topology_ai.data_adapter import BRANCH_FEATURE_COLUMNS, GridFMAdapter
+from grid_topology_ai.pypower_backend import GridFMPowerFlowBackend
 
 
 def print_metrics(title: str, metrics: dict) -> None:

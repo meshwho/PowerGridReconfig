@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from grid_topology_ai.gridfm_adapter import (
+from grid_topology_ai.data_adapter import (
     BRANCH_FEATURE_COLUMNS,
     BUS_FEATURE_COLUMNS,
     GridFMState,
@@ -203,7 +203,7 @@ class GridFMReward:
             + 5.0 * hard_overload
             + 10.0 * num_overloaded
             + 30.0 * num_hard_overloaded
-            + 100.0 * voltage_penalty
+            + 500.0 * voltage_penalty
         )
 
         return float(penalty)
@@ -246,12 +246,19 @@ class GridFMReward:
 
     def _voltage_penalty(self, state: GridFMState) -> float:
         """
-        Voltage penalty using dataset limits.
+        Voltage penalty based on violation magnitude, not only count.
 
-        For now, we use only state.metrics counts indirectly.
-        Later we can make this more exact using min/max voltage limits per bus.
+        Example:
+            Vm = 1.0601 with max limit 1.06 should produce a tiny penalty.
+            Vm = 1.10 with max limit 1.06 should produce a much larger penalty.
+
+        This is much better than counting violation buses.
         """
 
+        if "total_voltage_violation" in state.metrics:
+            return float(state.metrics["total_voltage_violation"])
+
+        # Fallback for older states.
         num_low = state.metrics["num_low_voltage_buses"]
         num_high = state.metrics["num_high_voltage_buses"]
 
