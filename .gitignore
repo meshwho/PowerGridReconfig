@@ -37,3 +37,4 @@ data/*
 # Temporary files
 tmp/
 temp/
+/notebooks/.ipynb_checkpoints/
