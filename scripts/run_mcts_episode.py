@@ -94,6 +94,14 @@ def main() -> None:
         help="Exponent for smoothing heuristic action priors.",
     )
 
+    parser.add_argument(
+        "--stop-policy",
+        type=str,
+        default="no_hard_overloads",
+        choices=["never", "solved_only", "no_hard_overloads", "always"],
+        help="When MCTS is allowed to use the stop/handoff action.",
+    )
+
     args = parser.parse_args()
 
     raw_dir = Path(args.raw_dir)
@@ -111,6 +119,7 @@ def main() -> None:
     print(f"Gamma:          {args.gamma}")
     print(f"C_PUCT:         {args.c_puct}")
     print(f"Prior exponent: {args.prior_exponent}")
+    print(f"Stop policy:    {args.stop_policy}")
 
     adapter = GridFMAdapter(raw_dir)
     backend = GridFMPowerFlowBackend(adapter)
@@ -134,6 +143,7 @@ def main() -> None:
         leaf_penalty_weight=0.10,
         include_stop_action=True,
         prior_exponent=args.prior_exponent,
+        stop_policy=args.stop_policy,
     )
 
     planner = MCTSPlanner(config)

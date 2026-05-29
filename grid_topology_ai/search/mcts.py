@@ -50,7 +50,6 @@ class MCTSConfig:
     include_stop_action: bool = True
     stop_prior: float = 1.0
     terminal_unsolved_penalty: float = 500.0
-    allow_stop_only_when_no_overloads: bool = True
     # Internal MCTS value normalization.
     # Environment rewards are kept unchanged, but MCTS selection/backups
     # use scaled values to make Q comparable with the PUCT exploration term.
@@ -66,6 +65,19 @@ class MCTSConfig:
     # 0.5 = sqrt prior, better exploration before neural policy exists.
     prior_exponent: float = 0.5
     min_switch_prior_score: float = 1.0
+    # Stop policy:
+    #   "never"             - never include stop action;
+    #   "solved_only"       - include stop only when no overloads remain;
+    #   "no_hard_overloads" - include stop when hard overloads are removed;
+    #   "always"            - always include stop.
+    #
+    # For topology switching + redispatch architecture, the best default is:
+    #   no_hard_overloads
+    #
+    # Meaning:
+    #   while hard overload exists -> continue topology switching;
+    #   after hard overload is removed -> MCTS may hand off to redispatch.
+    stop_policy: str = "no_hard_overloads"
 
 @dataclass
 class MCTSNode:
@@ -257,26 +269,39 @@ class MCTSPlanner:
 
     def _should_include_stop_action(self, state: GridFMState) -> bool:
         """
-        Decide whether stop/do_nothing should be available.
+        Decide whether stop/do_nothing should be available at this state.
 
-        In topology switching, stop should not be attractive while the grid
-        still has overloads. Otherwise MCTS may prefer doing nothing because
-        switching actions carry risk.
+        In our architecture, stop means:
+            - solved, if the grid is already secure;
+            - handoff_to_redispatch, if topology switching should stop.
 
-        For the MVP:
-            stop is allowed only if all overloads are removed.
+        Default logic:
+            stop is available after hard overloads are removed.
         """
 
         if not self.config.include_stop_action:
             return False
 
-        if not self.config.allow_stop_only_when_no_overloads:
+        stop_policy = self.config.stop_policy
+
+        num_overloaded = int(state.metrics["num_overloaded_branches"])
+        num_hard_overloaded = int(
+            state.metrics["num_hard_overloaded_branches"]
+        )
+
+        if stop_policy == "never":
+            return False
+
+        if stop_policy == "always":
             return True
 
-        return (
-            int(state.metrics["num_overloaded_branches"]) == 0
-            and int(state.metrics["num_hard_overloaded_branches"]) == 0
-        )
+        if stop_policy == "solved_only":
+            return num_overloaded == 0 and num_hard_overloaded == 0
+
+        if stop_policy == "no_hard_overloads":
+            return num_hard_overloaded == 0
+
+        raise ValueError(f"Unknown stop_policy: {stop_policy}")
 
     def _run_one_simulation(self, root: MCTSNode) -> None:
         """

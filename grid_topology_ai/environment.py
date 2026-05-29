@@ -211,7 +211,16 @@ class TopologySwitchingEnv:
         """
         Stop the topology switching episode.
 
-        In a multi-step environment, do_nothing is interpreted as stop.
+        In a multi-step environment, do_nothing is interpreted as:
+
+        1. solved
+           if all overloads are removed;
+
+        2. handoff_to_redispatch
+           if topology switching should stop but the grid is not fully solved.
+
+        This is important for the future architecture:
+            topology switching -> if not enough -> redispatch.
         """
 
         assert self.current_state is not None
@@ -223,9 +232,23 @@ class TopologySwitchingEnv:
             power_flow_success=True,
         )
 
+        num_overloaded = int(
+            self.current_state.metrics["num_overloaded_branches"]
+        )
+        num_hard_overloaded = int(
+            self.current_state.metrics["num_hard_overloaded_branches"]
+        )
+
         self.done = True
         self.solved = bool(reward_breakdown.done)
-        self.termination_reason = "stop_action"
+
+        if self.solved:
+            self.termination_reason = "solved"
+        elif num_hard_overloaded == 0:
+            self.termination_reason = "handoff_to_redispatch"
+        else:
+            # This should normally not happen if MCTS stop-policy is configured correctly.
+            self.termination_reason = "unsafe_stop_with_hard_overload"
 
         return TopologyStepResult(
             next_state=self.current_state,
