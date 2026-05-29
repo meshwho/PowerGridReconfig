@@ -240,6 +240,202 @@ class GridFMPowerFlowBackend:
 
         return ppc, frames
 
+    def _build_ppc_from_state(
+        self,
+        state: GridFMState,
+        switched_off_branch_id: int | None,
+    ) -> tuple[dict[str, Any], dict[str, pd.DataFrame]]:
+        """
+        Convert an already modified GridFMState into PYPOWER ppc format.
+
+        This is the key method for multi-step control.
+
+        It reconstructs bus_df and branch_df from state tensors and takes
+        generator data from the original scenario stored in the adapter.
+        """
+
+        bus_df = self._state_to_bus_df(state)
+        branch_df = self._state_to_branch_df(state)
+
+        gen_df = self.adapter.gen_df[
+            self.adapter.gen_df["scenario"] == int(state.scenario_id)
+        ].copy()
+
+        if gen_df.empty:
+            raise ValueError(
+                f"Scenario {state.scenario_id} not found in gen_data."
+            )
+
+        gen_df = gen_df.sort_values("idx").reset_index(drop=True)
+
+        if switched_off_branch_id is not None:
+            mask = branch_df["idx"].astype(int) == int(switched_off_branch_id)
+
+            if not mask.any():
+                raise ValueError(
+                    f"Branch id {switched_off_branch_id} not found "
+                    f"in current state for scenario {state.scenario_id}."
+                )
+
+            current_status = float(branch_df.loc[mask, "br_status"].iloc[0])
+
+            if current_status <= 0:
+                raise ValueError(
+                    f"Branch id {switched_off_branch_id} is already out of service."
+                )
+
+            branch_df.loc[mask, "br_status"] = 0.0
+
+        ppc = {
+            "version": "2",
+            "baseMVA": self.base_mva,
+            "bus": self._build_bus_matrix(bus_df),
+            "branch": self._build_branch_matrix(branch_df),
+            "gen": self._build_gen_matrix(gen_df, bus_df),
+        }
+
+        frames = {
+            "bus": bus_df,
+            "branch": branch_df,
+            "gen": gen_df,
+        }
+
+        return ppc, frames
+
+    def _state_to_bus_df(self, state: GridFMState) -> pd.DataFrame:
+        """
+        Reconstruct bus dataframe from GridFMState.
+
+        We take static columns such as min/max voltage limits from the original
+        adapter data and update dynamic feature columns from state.bus_features.
+        """
+
+        bus_df = self.adapter.bus_df[
+            self.adapter.bus_df["scenario"] == int(state.scenario_id)
+        ].copy()
+
+        if bus_df.empty:
+            raise ValueError(
+                f"Scenario {state.scenario_id} not found in bus_data."
+            )
+
+        bus_df = bus_df.sort_values("bus").reset_index(drop=True)
+
+        if len(bus_df) != state.bus_features.shape[0]:
+            raise ValueError(
+                "Bus count mismatch between adapter bus_df and GridFMState."
+            )
+
+        for feature_idx, column_name in enumerate(BUS_FEATURE_COLUMNS):
+            bus_df[column_name] = state.bus_features[:, feature_idx]
+
+        return bus_df
+
+    def _state_to_branch_df(self, state: GridFMState) -> pd.DataFrame:
+        """
+        Reconstruct branch dataframe from GridFMState.
+
+        We take static branch columns from the original adapter data and update
+        dynamic branch feature columns from state.branch_features.
+        """
+
+        branch_df = self.adapter.branch_df[
+            self.adapter.branch_df["scenario"] == int(state.scenario_id)
+        ].copy()
+
+        if branch_df.empty:
+            raise ValueError(
+                f"Scenario {state.scenario_id} not found in branch_data."
+            )
+
+        branch_df = branch_df.sort_values("idx").reset_index(drop=True)
+
+        if len(branch_df) != state.branch_features.shape[0]:
+            raise ValueError(
+                "Branch count mismatch between adapter branch_df and GridFMState."
+            )
+
+        for feature_idx, column_name in enumerate(BRANCH_FEATURE_COLUMNS):
+            branch_df[column_name] = state.branch_features[:, feature_idx]
+
+        return branch_df
+
+    def run_power_flow_from_state(
+        self,
+        state: GridFMState,
+        switched_off_branch_id: int | None = None,
+    ) -> GridFMPowerFlowResult:
+        """
+        Run AC power flow from an already modified GridFMState.
+
+        This method is required for multi-step topology switching.
+
+        Difference from run_power_flow():
+            run_power_flow() starts from the original GridFM scenario.
+            run_power_flow_from_state() starts from the current state.
+
+        Example:
+            step 1:
+                scenario 7 + switch off branch 122 -> state_1
+
+            step 2:
+                state_1 + switch off branch 154 -> state_2
+
+        Without this method, every new action would incorrectly start again
+        from the original scenario.
+        """
+
+        try:
+            ppc, frames = self._build_ppc_from_state(
+                state=state,
+                switched_off_branch_id=switched_off_branch_id,
+            )
+
+            ppopt = ppoption(
+                VERBOSE=0,
+                OUT_ALL=0,
+                PF_ALG=1,
+                PF_MAX_IT=self.max_iter,
+            )
+
+            result_ppc, success = runpf(ppc, ppopt)
+            success = bool(success)
+
+            if not success:
+                return GridFMPowerFlowResult(
+                    success=False,
+                    scenario_id=int(state.scenario_id),
+                    switched_off_branch_id=switched_off_branch_id,
+                    next_state=None,
+                    raw_result=result_ppc,
+                    message="PYPOWER power flow did not converge.",
+                )
+
+            next_state = self._build_state_from_pypower_result(
+                scenario_id=int(state.scenario_id),
+                result_ppc=result_ppc,
+                original_frames=frames,
+            )
+
+            return GridFMPowerFlowResult(
+                success=True,
+                scenario_id=int(state.scenario_id),
+                switched_off_branch_id=switched_off_branch_id,
+                next_state=next_state,
+                raw_result=result_ppc,
+                message="Power flow converged.",
+            )
+
+        except Exception as exc:
+            return GridFMPowerFlowResult(
+                success=False,
+                scenario_id=int(state.scenario_id),
+                switched_off_branch_id=switched_off_branch_id,
+                next_state=None,
+                raw_result=None,
+                message=f"Power flow backend failed: {exc}",
+            )
+
     def _build_bus_matrix(self, bus_df: pd.DataFrame) -> np.ndarray:
         """
         Build PYPOWER bus matrix.
@@ -458,5 +654,5 @@ class GridFMPowerFlowBackend:
             branch_ids=branch_ids,
             branch_status=branch_status,
             metrics=metrics,
-            outaged_branch_ids=list(outaged["idx"].astype(int).values),
+            outaged_branch_ids=[int(x) for x in outaged["idx"].values],
         )
