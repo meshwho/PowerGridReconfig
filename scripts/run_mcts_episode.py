@@ -1,0 +1,267 @@
+from __future__ import annotations
+
+import argparse
+from pathlib import Path
+
+from grid_topology_ai.action_space import GridFMActionSpace
+from grid_topology_ai.data_adapter import GridFMAdapter
+from grid_topology_ai.environment import TopologySwitchingEnv
+from grid_topology_ai.pypower_backend import GridFMPowerFlowBackend
+from grid_topology_ai.reward import GridFMReward
+from grid_topology_ai.search.mcts import MCTSConfig, MCTSPlanner
+
+
+def print_state_metrics(prefix: str, env: TopologySwitchingEnv) -> None:
+    state = env.current_state
+
+    if state is None:
+        print(f"{prefix}: no state")
+        return
+
+    print(
+        f"{prefix}: "
+        f"max_loading={state.metrics['max_loading_percent']:.4f}% | "
+        f"overloaded={state.metrics['num_overloaded_branches']} | "
+        f"hard={state.metrics['num_hard_overloaded_branches']} | "
+        f"outaged={state.outaged_branch_ids}"
+    )
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Run one MCTS-controlled topology switching episode."
+    )
+
+    parser.add_argument(
+        "raw_dir",
+        type=str,
+        help="Path to GridFM raw output directory.",
+    )
+
+    parser.add_argument(
+        "--scenario",
+        type=int,
+        default=7,
+        help="Scenario ID.",
+    )
+
+    parser.add_argument(
+        "--simulations",
+        type=int,
+        default=300,
+        help="Number of MCTS simulations per decision.",
+    )
+
+    parser.add_argument(
+        "--depth",
+        type=int,
+        default=4,
+        help="MCTS search depth per decision.",
+    )
+
+    parser.add_argument(
+        "--max-steps",
+        type=int,
+        default=5,
+        help="Maximum real episode steps.",
+    )
+
+    parser.add_argument(
+        "--top-k",
+        type=int,
+        default=40,
+        help="Top-K switch actions considered per MCTS node.",
+    )
+
+    parser.add_argument(
+        "--gamma",
+        type=float,
+        default=0.95,
+        help="Discount factor.",
+    )
+
+    parser.add_argument(
+        "--c-puct",
+        type=float,
+        default=2.0,
+        help="PUCT exploration constant.",
+    )
+
+    parser.add_argument(
+        "--prior-exponent",
+        type=float,
+        default=0.5,
+        help="Exponent for smoothing heuristic action priors.",
+    )
+
+    args = parser.parse_args()
+
+    raw_dir = Path(args.raw_dir)
+
+    print("=" * 100)
+    print("Running MCTS-controlled episode")
+    print("=" * 100)
+
+    print(f"Raw directory:  {raw_dir.resolve()}")
+    print(f"Scenario:       {args.scenario}")
+    print(f"Simulations:    {args.simulations}")
+    print(f"Search depth:   {args.depth}")
+    print(f"Max steps:      {args.max_steps}")
+    print(f"Top-K actions:  {args.top_k}")
+    print(f"Gamma:          {args.gamma}")
+    print(f"C_PUCT:         {args.c_puct}")
+    print(f"Prior exponent: {args.prior_exponent}")
+
+    adapter = GridFMAdapter(raw_dir)
+    backend = GridFMPowerFlowBackend(adapter)
+    action_space = GridFMActionSpace(require_connected_after_switch=True)
+    reward_fn = GridFMReward()
+
+    env = TopologySwitchingEnv(
+        adapter=adapter,
+        backend=backend,
+        action_space=action_space,
+        reward_fn=reward_fn,
+        max_steps=args.max_steps,
+    )
+
+    config = MCTSConfig(
+        num_simulations=args.simulations,
+        max_depth=args.depth,
+        top_k_actions=args.top_k,
+        gamma=args.gamma,
+        c_puct=args.c_puct,
+        leaf_penalty_weight=0.10,
+        include_stop_action=True,
+        prior_exponent=args.prior_exponent,
+    )
+
+    planner = MCTSPlanner(config)
+
+    env.reset(args.scenario)
+
+    print()
+    print_state_metrics("Initial state", env)
+
+    episode_reward = 0.0
+    discounted_episode_return = 0.0
+    discount = 1.0
+
+    step_records = []
+
+    for step in range(args.max_steps):
+        if env.done:
+            break
+
+        print("\n" + "-" * 100)
+        print(f"Decision step {step + 1}")
+        print("-" * 100)
+
+        search_result = planner.search_from_env(env)
+
+        if search_result.best_action_id is None:
+            print("MCTS did not return an action.")
+            break
+
+        best_action_id = int(search_result.best_action_id)
+        best_branch_id = search_result.best_branch_id
+
+        print(f"MCTS best action ID: {best_action_id}")
+        print(f"MCTS best branch ID: {best_branch_id}")
+
+        print("Root policy top actions:")
+
+        root = search_result.root
+        rows = []
+
+        for action_id, probability in search_result.policy.items():
+            child = root.children.get(action_id)
+            action = root.actions_by_id[action_id]
+
+            rows.append(
+                {
+                    "action_id": action_id,
+                    "branch_id": action.branch_id,
+                    "probability": probability,
+                    "visits": 0 if child is None else child.visit_count,
+                    "q_value": 0.0 if child is None else child.mean_value,
+                    "first_reward": 0.0 if child is None else child.reward_from_parent,
+                }
+            )
+
+        rows = sorted(rows, key=lambda row: row["probability"], reverse=True)
+
+        for row in rows[:8]:
+            branch = "-" if row["branch_id"] is None else row["branch_id"]
+
+            print(
+                f"  action={row['action_id']:>3} | "
+                f"branch={branch!s:>4} | "
+                f"pi={row['probability']:.4f} | "
+                f"visits={row['visits']:>4} | "
+                f"q={row['q_value']:.4f} | "
+                f"r1={row['first_reward']:.4f}"
+            )
+
+        step_result = env.step(best_action_id)
+
+        episode_reward += float(step_result.reward)
+        discounted_episode_return += discount * float(step_result.reward)
+        discount *= args.gamma
+
+        step_records.append(
+            {
+                "step": step + 1,
+                "action_id": best_action_id,
+                "branch_id": best_branch_id,
+                "reward": float(step_result.reward),
+                "done": bool(step_result.done),
+                "solved": bool(step_result.solved),
+                "power_flow_success": bool(step_result.power_flow_success),
+                "termination_reason": step_result.info["termination_reason"],
+            }
+        )
+
+        print("\nExecuted action:")
+        print(f"  action_id:          {best_action_id}")
+        print(f"  branch_id:          {best_branch_id}")
+        print(f"  reward:             {step_result.reward:.4f}")
+        print(f"  done:               {step_result.done}")
+        print(f"  solved:             {step_result.solved}")
+        print(f"  power_flow_success: {step_result.power_flow_success}")
+        print(f"  termination_reason: {step_result.info['termination_reason']}")
+
+        print_state_metrics("State after action", env)
+
+        if step_result.done:
+            break
+
+    print("\n" + "=" * 100)
+    print("Episode summary")
+    print("=" * 100)
+
+    for record in step_records:
+        print(
+            f"Step {record['step']:>2}: "
+            f"action={record['action_id']:>3} | "
+            f"branch={str(record['branch_id']):>4} | "
+            f"reward={record['reward']:>10.4f} | "
+            f"done={record['done']} | "
+            f"solved={record['solved']} | "
+            f"reason={record['termination_reason']}"
+        )
+
+    print()
+    print(f"Total reward:              {episode_reward:.4f}")
+    print(f"Discounted episode return: {discounted_episode_return:.4f}")
+    print(f"Final done:                {env.done}")
+    print(f"Final solved:              {env.solved}")
+    print(f"Termination reason:        {env.termination_reason}")
+
+    print_state_metrics("Final state", env)
+
+    print("\nDone.")
+
+
+if __name__ == "__main__":
+    main()
