@@ -4,3 +4,4 @@ numpy
 networkx
 tqdm
 numba
+torch
