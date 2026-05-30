@@ -10,7 +10,7 @@ from grid_topology_ai.data_adapter import (
     BRANCH_FEATURE_COLUMNS,
     GridFMState,
 )
-
+from collections import Counter
 
 ActionType = Literal["do_nothing", "switch_off_branch"]
 
@@ -84,7 +84,7 @@ class GridFMActionSpace:
 
         self._valid_action_mask_cache: dict[tuple, np.ndarray] = {}
         self._valid_actions_cache: dict[tuple, list[GridFMAction]] = {}
-
+        self._connectivity_mask_cache: dict[tuple, np.ndarray] = {}
         self.cache_hits = 0
         self.cache_misses = 0
 
@@ -93,6 +93,7 @@ class GridFMActionSpace:
         self._valid_actions_cache.clear()
         self.cache_hits = 0
         self.cache_misses = 0
+        self._connectivity_mask_cache.clear()
 
     def cache_info(self) -> dict:
         total = self.cache_hits + self.cache_misses
@@ -102,10 +103,112 @@ class GridFMActionSpace:
             "enabled": self.enable_cache,
             "mask_cache_size": len(self._valid_action_mask_cache),
             "valid_actions_cache_size": len(self._valid_actions_cache),
+            "connectivity_cache_size": len(self._connectivity_mask_cache),
             "hits": self.cache_hits,
             "misses": self.cache_misses,
             "hit_rate": hit_rate,
         }
+
+    def _switch_connectivity_mask(self, state: GridFMState) -> np.ndarray:
+        """
+        Compute which branch switch-off actions keep the grid connected.
+
+        This replaces the expensive old approach:
+
+            for each branch:
+                copy MultiGraph
+                remove edge
+                run nx.is_connected()
+
+        New approach:
+
+            build active simple graph once
+            compute graph bridges once
+            account for parallel branches using edge multiplicity
+
+        Returns
+        -------
+        np.ndarray
+            Boolean array of shape [num_branches].
+            result[branch_pos] = True means removing this branch does not create islands.
+        """
+
+        cache_key = ("connectivity", self._make_cache_key(state))
+
+        if self.enable_cache and cache_key in self._connectivity_mask_cache:
+            return self._connectivity_mask_cache[cache_key].copy()
+
+        num_branches = len(state.branch_ids)
+
+        # Default is False. We only mark structurally safe switch-offs as True.
+        connectivity_ok = np.zeros(num_branches, dtype=bool)
+
+        num_buses = state.bus_features.shape[0]
+
+        graph = nx.Graph()
+        graph.add_nodes_from(range(num_buses))
+
+        pair_counter: Counter[tuple[int, int]] = Counter()
+        pair_by_branch_pos: dict[int, tuple[int, int]] = {}
+
+        active_branch_positions: list[int] = []
+
+        for branch_pos, branch_id in enumerate(state.branch_ids):
+            if state.branch_status[branch_pos] <= 0:
+                continue
+
+            from_bus = int(state.edge_index[0, branch_pos])
+            to_bus = int(state.edge_index[1, branch_pos])
+
+            active_branch_positions.append(int(branch_pos))
+
+            # Self-loop does not affect graph connectivity.
+            if from_bus == to_bus:
+                connectivity_ok[branch_pos] = True
+                continue
+
+            pair = (
+                min(from_bus, to_bus),
+                max(from_bus, to_bus),
+            )
+
+            pair_counter[pair] += 1
+            pair_by_branch_pos[int(branch_pos)] = pair
+
+            graph.add_edge(from_bus, to_bus)
+
+        # If the current grid is already disconnected, do not allow more switching.
+        if not nx.is_connected(graph):
+            if self.enable_cache:
+                self._connectivity_mask_cache[cache_key] = connectivity_ok.copy()
+            return connectivity_ok
+
+        bridge_pairs = {
+            (min(int(u), int(v)), max(int(u), int(v)))
+            for u, v in nx.bridges(graph)
+        }
+
+        for branch_pos in active_branch_positions:
+            pair = pair_by_branch_pos.get(int(branch_pos))
+
+            if pair is None:
+                # self-loop case
+                connectivity_ok[branch_pos] = True
+                continue
+
+            # If there are parallel active branches between the same buses,
+            # removing one physical branch cannot disconnect the grid.
+            if pair_counter[pair] > 1:
+                connectivity_ok[branch_pos] = True
+                continue
+
+            # If the simple edge is not a bridge, removing it is safe.
+            connectivity_ok[branch_pos] = pair not in bridge_pairs
+
+        if self.enable_cache:
+            self._connectivity_mask_cache[cache_key] = connectivity_ok.copy()
+
+        return connectivity_ok
 
     def _make_cache_key(self, state) -> tuple:
         """
@@ -155,22 +258,6 @@ class GridFMActionSpace:
         return actions
 
     def valid_action_mask(self, state: GridFMState) -> np.ndarray:
-        """
-        Compute boolean mask of valid actions.
-
-        Returns
-        -------
-        np.ndarray
-            Boolean array of shape [1 + num_branches].
-
-        mask[i] = True means action i is allowed.
-        mask[i] = False means action i is forbidden.
-
-        Why action mask is important:
-        We do not want the neural network or MCTS to waste time on obviously
-        illegal or dangerous actions.
-        """
-
         cache_key = self._make_cache_key(state)
 
         if self.enable_cache and cache_key in self._valid_action_mask_cache:
@@ -184,14 +271,13 @@ class GridFMActionSpace:
 
         mask = np.zeros(1 + num_branches, dtype=bool)
 
-        # do_nothing is always legal.
+        # do_nothing is structurally legal.
         mask[0] = True
 
-        graph = self._build_active_multigraph(state)
-
-        # If the initial graph is already disconnected, we do not allow additional
-        # switch-off actions in the first MVP.
-        initial_graph_connected = nx.is_connected(graph)
+        if self.require_connected_after_switch:
+            connectivity_ok = self._switch_connectivity_mask(state)
+        else:
+            connectivity_ok = np.ones(num_branches, dtype=bool)
 
         for branch_pos in range(num_branches):
             action_id = 1 + branch_pos
@@ -205,15 +291,7 @@ class GridFMActionSpace:
                 continue
 
             if self.require_connected_after_switch:
-                if not initial_graph_connected:
-                    mask[action_id] = False
-                    continue
-
-                if not self._keeps_grid_connected_after_removal(
-                    graph=graph,
-                    state=state,
-                    branch_pos=branch_pos,
-                ):
+                if not bool(connectivity_ok[branch_pos]):
                     mask[action_id] = False
                     continue
 

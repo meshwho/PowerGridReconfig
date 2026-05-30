@@ -17,7 +17,7 @@ from grid_topology_ai.data_adapter import (
     GridFMAdapter,
     GridFMState,
 )
-
+import time
 from grid_topology_ai.models.neural_evaluator import NeuralPolicyValueEvaluator
 
 
@@ -321,8 +321,11 @@ def main() -> None:
     parser.add_argument(
         "--selection-temperature",
         type=float,
-        default=1.0,
-        help="Temperature for sampling actions from MCTS policy during self-play.",
+        default=0.0,
+        help=(
+            "Temperature for selecting actions from MCTS policy. "
+            "0.0 = deterministic argmax, >0 = sampling for exploration."
+        ),
     )
 
     parser.add_argument(
@@ -382,6 +385,10 @@ def main() -> None:
     print(f"Seed:           {args.seed}")
     print(f"PF algorithm:   {args.pf_alg}")
     print(f"Cache enabled:  {not args.disable_cache}")
+    if args.selection_temperature <= 1e-8:
+        print("Action selection: deterministic argmax")
+    else:
+        print("Action selection: sampling from MCTS policy")
 
     transitions = pd.read_csv(transitions_path)
     scenario_ids = sorted(int(x) for x in transitions["scenario_id"].unique())
@@ -436,7 +443,7 @@ def main() -> None:
     replay_buffer = SelfPlayReplayBuffer(args.output_dir)
 
     total_examples = 0
-
+    start_time = time.perf_counter()
     for scenario_id in scenario_ids:
         print("\n" + "=" * 100)
         print(f"Scenario {scenario_id}")
@@ -595,6 +602,11 @@ def main() -> None:
     print(f"Total examples: {total_examples}")
     print(f"Saved examples: {examples_path}")
     print(f"States dir:     {replay_buffer.states_dir}")
+
+    elapsed = time.perf_counter() - start_time
+
+    print("\nTiming:")
+    print(f"Self-play generation elapsed time: {elapsed:.4f} sec")
 
     print("\nDone.")
 
