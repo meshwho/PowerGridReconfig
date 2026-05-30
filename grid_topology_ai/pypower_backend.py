@@ -65,6 +65,16 @@ from grid_topology_ai.data_adapter import (
 )
 
 
+def pf_algorithm_name(pf_alg: int) -> str:
+    names = {
+        1: "newton_raphson",
+        2: "fast_decoupled_xb",
+        3: "fast_decoupled_bx",
+        4: "gauss_seidel",
+    }
+
+    return names.get(int(pf_alg), f"unknown_{pf_alg}")
+
 @dataclass(frozen=True)
 class GridFMPowerFlowResult:
     """
@@ -96,14 +106,16 @@ class GridFMPowerFlowBackend:
     """
 
     def __init__(
-        self,
-        adapter: GridFMAdapter,
-        base_mva: float = 100.0,
-        max_iter: int = 30,
+            self,
+            adapter: GridFMAdapter,
+            base_mva: float = 100.0,
+            max_iter: int = 30,
+            pf_alg: int = 1,
     ):
         self.adapter = adapter
         self.base_mva = float(base_mva)
         self.max_iter = int(max_iter)
+        self.pf_alg = int(pf_alg)
 
     def run_power_flow(
         self,
@@ -136,7 +148,7 @@ class GridFMPowerFlowBackend:
             ppopt = ppoption(
                 VERBOSE=0,
                 OUT_ALL=0,
-                PF_ALG=1,
+                PF_ALG=self.pf_alg,
                 PF_MAX_IT=self.max_iter,
             )
 
@@ -394,7 +406,7 @@ class GridFMPowerFlowBackend:
             ppopt = ppoption(
                 VERBOSE=0,
                 OUT_ALL=0,
-                PF_ALG=1,
+                PF_ALG=self.pf_alg,
                 PF_MAX_IT=self.max_iter,
             )
 
