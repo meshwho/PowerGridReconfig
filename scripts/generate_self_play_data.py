@@ -332,6 +332,20 @@ def main() -> None:
         help="Random seed for self-play action sampling and root noise.",
     )
 
+    parser.add_argument(
+        "--pf-alg",
+        type=int,
+        default=3,
+        choices=[1, 2, 3, 4],
+        help="PYPOWER power flow algorithm: 1=NR, 2=FDXB, 3=FDBX, 4=GS.",
+    )
+
+    parser.add_argument(
+        "--disable-cache",
+        action="store_true",
+        help="Disable power flow/action/evaluator caches.",
+    )
+
     args = parser.parse_args()
 
     raw_dir = Path(args.raw_dir)
@@ -366,6 +380,8 @@ def main() -> None:
     print(f"Root epsilon:   {args.root_exploration_fraction}")
     print(f"Temperature:    {args.selection_temperature}")
     print(f"Seed:           {args.seed}")
+    print(f"PF algorithm:   {args.pf_alg}")
+    print(f"Cache enabled:  {not args.disable_cache}")
 
     transitions = pd.read_csv(transitions_path)
     scenario_ids = sorted(int(x) for x in transitions["scenario_id"].unique())
@@ -373,8 +389,15 @@ def main() -> None:
     print(f"\nScenario IDs: {scenario_ids}")
 
     adapter = GridFMAdapter(raw_dir)
-    backend = GridFMPowerFlowBackend(adapter)
-    action_space = GridFMActionSpace(require_connected_after_switch=True)
+    backend = GridFMPowerFlowBackend(
+        adapter=adapter,
+        pf_alg=args.pf_alg,
+        enable_cache=not args.disable_cache,
+    )
+    action_space = GridFMActionSpace(
+        require_connected_after_switch=True,
+        enable_cache=not args.disable_cache,
+    )
     reward_fn = GridFMReward()
 
     config = MCTSConfig(
@@ -399,6 +422,7 @@ def main() -> None:
         evaluator = NeuralPolicyValueEvaluator(
             checkpoint_path=args.checkpoint,
             device=args.device,
+            enable_cache=not args.disable_cache,
         )
         print("\nNeural evaluator loaded.")
 
@@ -553,6 +577,16 @@ def main() -> None:
         )
 
     examples_path = replay_buffer.save()
+
+    print("\nPower flow cache:")
+    print(backend.cache_info())
+
+    print("\nAction space cache:")
+    print(action_space.cache_info())
+
+    if evaluator is not None:
+        print("\nNeural evaluator cache:")
+        print(evaluator.cache_info())
 
     print("\n" + "=" * 100)
     print("Self-play generation summary")

@@ -196,6 +196,20 @@ def main() -> None:
         default="cpu",
     )
 
+    parser.add_argument(
+        "--pf-alg",
+        type=int,
+        default=1,
+        choices=[1, 2, 3, 4],
+        help="PYPOWER power flow algorithm: 1=NR, 2=FDXB, 3=FDBX, 4=GS.",
+    )
+
+    parser.add_argument(
+        "--disable-cache",
+        action="store_true",
+        help="Disable power flow/action/evaluator caches.",
+    )
+
     args = parser.parse_args()
 
     raw_dir = Path(args.raw_dir)
@@ -214,13 +228,21 @@ def main() -> None:
     scenario_ids = sorted(int(x) for x in transitions["scenario_id"].unique())
 
     adapter = GridFMAdapter(raw_dir)
-    backend = GridFMPowerFlowBackend(adapter)
-    action_space = GridFMActionSpace(require_connected_after_switch=True)
+    backend = GridFMPowerFlowBackend(
+        adapter=adapter,
+        pf_alg=args.pf_alg,
+        enable_cache=not args.disable_cache,
+    )
+    action_space = GridFMActionSpace(
+        require_connected_after_switch=True,
+        enable_cache=not args.disable_cache,
+    )
     reward_fn = GridFMReward()
 
     evaluator = NeuralPolicyValueEvaluator(
         checkpoint_path=checkpoint_path,
         device=args.device,
+        enable_cache=not args.disable_cache,
     )
 
     config = MCTSConfig(
@@ -290,6 +312,15 @@ def main() -> None:
     print(f"  Avg hard overloaded:   {df['final_num_hard_overloaded_branches'].mean():.4f}")
     print(f"  Avg safety score:     {df['safety_score'].mean():.4f}")
     print(f"  Total safety score:   {df['safety_score'].sum():.4f}")
+
+    print("\nPower flow cache:")
+    print(backend.cache_info())
+
+    print("\nAction space cache:")
+    print(action_space.cache_info())
+
+    print("\nNeural evaluator cache:")
+    print(evaluator.cache_info())
 
     print("\nDone.")
 
