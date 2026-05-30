@@ -9,8 +9,6 @@ from grid_topology_ai.action_space import GridFMActionSpace
 from grid_topology_ai.environment import TopologySwitchingEnv
 from grid_topology_ai.pypower_backend import GridFMPowerFlowBackend
 from grid_topology_ai.reward import GridFMReward
-from grid_topology_ai.search.mcts import MCTSConfig, MCTSPlanner
-from grid_topology_ai.self_play.replay_buffer import SelfPlayReplayBuffer
 
 from grid_topology_ai.data_adapter import (
     BRANCH_FEATURE_COLUMNS,
@@ -406,6 +404,15 @@ def main() -> None:
         help="Minimum root policy fraction required for a branch to be trusted.",
     )
 
+    parser.add_argument(
+        "--clear-cache-between-scenarios",
+        action="store_true",
+        help=(
+            "Clear power flow/action/evaluator caches before each scenario. "
+            "Useful for large self-play generation to avoid unbounded memory growth."
+        ),
+    )
+
     args = parser.parse_args()
 
     raw_dir = Path(args.raw_dir)
@@ -442,6 +449,7 @@ def main() -> None:
     print(f"Seed:           {args.seed}")
     print(f"PF algorithm:   {args.pf_alg}")
     print(f"Cache enabled:  {not args.disable_cache}")
+    print(f"Clear cache between scenarios: {args.clear_cache_between_scenarios}")
     if args.selection_temperature <= 1e-8:
         print("Action selection: deterministic argmax")
     else:
@@ -512,6 +520,12 @@ def main() -> None:
         print("\n" + "=" * 100)
         print(f"Scenario {scenario_id}")
         print("=" * 100)
+        if args.clear_cache_between_scenarios:
+            backend.clear_cache()
+            action_space.clear_cache()
+
+            if evaluator is not None:
+                evaluator.clear_cache()
 
         env = TopologySwitchingEnv(
             adapter=adapter,
