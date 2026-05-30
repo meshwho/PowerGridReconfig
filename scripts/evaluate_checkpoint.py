@@ -12,7 +12,10 @@ from grid_topology_ai.models.neural_evaluator import NeuralPolicyValueEvaluator
 from grid_topology_ai.pypower_backend import GridFMPowerFlowBackend
 from grid_topology_ai.reward import GridFMReward
 from grid_topology_ai.search.mcts import MCTSConfig, MCTSPlanner
-
+from grid_topology_ai.search.continuation_gate import (
+    analyze_root_branches,
+    make_do_nothing_action,
+)
 
 def compute_safety_score(row: dict) -> float:
     """
@@ -69,6 +72,11 @@ def run_episode(
     planner: MCTSPlanner,
     max_steps: int,
     gamma: float,
+    use_continuation_gate: bool,
+    min_hard_improvement: float,
+    min_soft_improvement: float,
+    min_gate_visits: int,
+    min_gate_visit_fraction: float,
 ) -> dict:
     env = TopologySwitchingEnv(
         adapter=adapter,
@@ -97,10 +105,33 @@ def run_episode(
         if result.best_action_id is None:
             break
 
-        action_id = int(result.best_action_id)
-        branch_id = result.best_branch_id
+        raw_action_id = int(result.best_action_id)
+        raw_branch_id = result.best_branch_id
 
-        step_result = env.step(action_id)
+        if use_continuation_gate:
+            gate_decision = analyze_root_branches(
+                result=result,
+                min_hard_improvement=min_hard_improvement,
+                min_soft_improvement=min_soft_improvement,
+                min_visits=min_gate_visits,
+                min_visit_fraction=min_gate_visit_fraction,
+            )
+
+            action_id = int(gate_decision.selected_action_id)
+            branch_id = gate_decision.selected_branch_id
+        else:
+            action_id = raw_action_id
+            branch_id = raw_branch_id
+
+        if action_id == 0:
+            action_to_execute = make_do_nothing_action()
+        else:
+            action_to_execute = result.root.actions_by_id.get(action_id)
+
+            if action_to_execute is None:
+                action_to_execute = env.action_by_id(action_id)
+
+        step_result = env.step(action_to_execute)
 
         reward = float(step_result.reward)
 
@@ -131,6 +162,7 @@ def run_episode(
     row = {
         "scenario_id": int(scenario_id),
         "steps": len(actions),
+        "use_continuation_gate": bool(use_continuation_gate),
         "actions": str(actions),
         "branches": str(branches),
         "rewards": str([round(x, 4) for x in rewards]),
@@ -173,6 +205,40 @@ def main() -> None:
         type=str,
         required=True,
         help="Policy-value checkpoint to evaluate.",
+    )
+
+    parser.add_argument(
+        "--use-continuation-gate",
+        action="store_true",
+        help="Use lookahead continuation gate for evaluation action selection.",
+    )
+
+    parser.add_argument(
+        "--min-hard-improvement",
+        type=float,
+        default=50.0,
+        help="Minimum penalty improvement required while hard overloads exist.",
+    )
+
+    parser.add_argument(
+        "--min-soft-improvement",
+        type=float,
+        default=15.0,
+        help="Minimum penalty improvement required after hard overloads are cleared.",
+    )
+
+    parser.add_argument(
+        "--min-gate-visits",
+        type=int,
+        default=5,
+        help="Minimum visits required for a branch to be trusted by continuation gate.",
+    )
+
+    parser.add_argument(
+        "--min-gate-visit-fraction",
+        type=float,
+        default=0.01,
+        help="Minimum root policy fraction required for a branch to be trusted.",
     )
 
     parser.add_argument("--simulations", type=int, default=150)
@@ -223,6 +289,13 @@ def main() -> None:
     print(f"Raw directory: {raw_dir.resolve()}")
     print(f"Transitions:   {transitions_path.resolve()}")
     print(f"Checkpoint:    {checkpoint_path.resolve()}")
+    print(f"Use continuation gate: {args.use_continuation_gate}")
+
+    if args.use_continuation_gate:
+        print(f"  min hard improvement: {args.min_hard_improvement}")
+        print(f"  min soft improvement: {args.min_soft_improvement}")
+        print(f"  min gate visits:      {args.min_gate_visits}")
+        print(f"  min gate visit frac:  {args.min_gate_visit_fraction}")
 
     transitions = pd.read_csv(transitions_path)
     scenario_ids = sorted(int(x) for x in transitions["scenario_id"].unique())
@@ -277,6 +350,11 @@ def main() -> None:
             planner=planner,
             max_steps=args.max_steps,
             gamma=args.gamma,
+            use_continuation_gate=args.use_continuation_gate,
+            min_hard_improvement=args.min_hard_improvement,
+            min_soft_improvement=args.min_soft_improvement,
+            min_gate_visits=args.min_gate_visits,
+            min_gate_visit_fraction=args.min_gate_visit_fraction,
         )
 
         rows.append(row)
