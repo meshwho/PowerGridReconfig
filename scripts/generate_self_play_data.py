@@ -20,6 +20,13 @@ from grid_topology_ai.data_adapter import (
 import time
 from grid_topology_ai.models.neural_evaluator import NeuralPolicyValueEvaluator
 
+from grid_topology_ai.search.mcts import MCTSConfig, MCTSPlanner
+from grid_topology_ai.self_play.replay_buffer import SelfPlayReplayBuffer
+
+from grid_topology_ai.search.continuation_gate import (
+    analyze_root_branches,
+    make_do_nothing_action,
+)
 
 
 def discounted_returns(rewards: list[float], gamma: float) -> list[float]:
@@ -89,6 +96,22 @@ def select_action_from_policy(
         adjusted = adjusted / adjusted_sum
 
     return int(rng.choice(action_ids, p=adjusted))
+
+
+def make_one_hot_policy(action_id: int) -> dict[int, float]:
+    """
+    Create a deterministic policy target for the action selected by the
+    continuation gate.
+
+    In standard AlphaZero, the policy target is the MCTS visit distribution.
+    Here we use the gate-selected action as the supervised policy target,
+    because the gate is part of the actual control decision.
+    """
+
+    return {
+        int(action_id): 1.0,
+    }
+
 
 def state_security_penalty(state: GridFMState) -> float:
     """
@@ -349,6 +372,40 @@ def main() -> None:
         help="Disable power flow/action/evaluator caches.",
     )
 
+    parser.add_argument(
+        "--use-continuation-gate",
+        action="store_true",
+        help="Use lookahead continuation gate to select executed self-play actions.",
+    )
+
+    parser.add_argument(
+        "--min-hard-improvement",
+        type=float,
+        default=50.0,
+        help="Minimum penalty improvement required while hard overloads exist.",
+    )
+
+    parser.add_argument(
+        "--min-soft-improvement",
+        type=float,
+        default=15.0,
+        help="Minimum penalty improvement required after hard overloads are cleared.",
+    )
+
+    parser.add_argument(
+        "--min-gate-visits",
+        type=int,
+        default=5,
+        help="Minimum visits required for a branch to be trusted by continuation gate.",
+    )
+
+    parser.add_argument(
+        "--min-gate-visit-fraction",
+        type=float,
+        default=0.01,
+        help="Minimum root policy fraction required for a branch to be trusted.",
+    )
+
     args = parser.parse_args()
 
     raw_dir = Path(args.raw_dir)
@@ -389,6 +446,13 @@ def main() -> None:
         print("Action selection: deterministic argmax")
     else:
         print("Action selection: sampling from MCTS policy")
+    print(f"Continuation gate: {args.use_continuation_gate}")
+
+    if args.use_continuation_gate:
+        print(f"  min hard improvement: {args.min_hard_improvement}")
+        print(f"  min soft improvement: {args.min_soft_improvement}")
+        print(f"  min gate visits:      {args.min_gate_visits}")
+        print(f"  min gate visit frac:  {args.min_gate_visit_fraction}")
 
     transitions = pd.read_csv(transitions_path)
     scenario_ids = sorted(int(x) for x in transitions["scenario_id"].unique())
@@ -479,16 +543,47 @@ def main() -> None:
                 print("MCTS returned no action. Stop episode.")
                 break
 
-            selected_action_id = select_action_from_policy(
+            raw_selected_action_id = select_action_from_policy(
                 policy=search_result.policy,
                 temperature=args.selection_temperature,
                 rng=rng,
             )
 
-            selected_action = search_result.root.actions_by_id[selected_action_id]
-            selected_branch_id = selected_action.branch_id
+            raw_selected_action = search_result.root.actions_by_id[raw_selected_action_id]
+            raw_selected_branch_id = raw_selected_action.branch_id
 
-            step_result = env.step(selected_action_id)
+            gate_decision = None
+
+            if args.use_continuation_gate:
+                gate_decision = analyze_root_branches(
+                    result=search_result,
+                    min_hard_improvement=args.min_hard_improvement,
+                    min_soft_improvement=args.min_soft_improvement,
+                    min_visits=args.min_gate_visits,
+                    min_visit_fraction=args.min_gate_visit_fraction,
+                )
+
+                selected_action_id = int(gate_decision.selected_action_id)
+                selected_branch_id = gate_decision.selected_branch_id
+
+                # Training target should reflect the actual executed control decision.
+                policy_target = make_one_hot_policy(selected_action_id)
+            else:
+                selected_action_id = int(raw_selected_action_id)
+                selected_branch_id = raw_selected_branch_id
+
+                # Without gate, keep standard AlphaZero-like visit-count policy target.
+                policy_target = search_result.policy
+
+            if selected_action_id == 0:
+                selected_action = make_do_nothing_action()
+            else:
+                selected_action = search_result.root.actions_by_id.get(selected_action_id)
+
+                if selected_action is None:
+                    selected_action = env.action_by_id(selected_action_id)
+
+            step_result = env.step(selected_action)
 
             rewards.append(float(step_result.reward))
 
@@ -505,21 +600,38 @@ def main() -> None:
                     "selected_branch_id": selected_branch_id,
                     "step_reward": float(step_result.reward),
                     "visit_counts": search_result.visit_counts,
-                    "mcts_policy": search_result.policy,
+                    "mcts_policy": policy_target,
                     "done": bool(step_result.done),
                     "solved": bool(step_result.solved),
                     "termination_reason": step_result.info["termination_reason"],
+                    "raw_selected_action_id": raw_selected_action_id,
+                    "raw_selected_branch_id": raw_selected_branch_id,
+                    "gate_used": bool(args.use_continuation_gate),
+                    "gate_reason": None if gate_decision is None else gate_decision.selected_reason,
                 }
             )
 
-            print(
-                f"Step {step:02d}: "
-                f"action={selected_action_id}, "
-                f"branch={selected_branch_id}, "
-                f"reward={step_result.reward:.4f}, "
-                f"done={step_result.done}, "
-                f"solved={step_result.solved}"
-            )
+            if gate_decision is None:
+                print(
+                    f"Step {step:02d}: "
+                    f"action={selected_action_id}, "
+                    f"branch={selected_branch_id}, "
+                    f"reward={step_result.reward:.4f}, "
+                    f"done={step_result.done}, "
+                    f"solved={step_result.solved}"
+                )
+            else:
+                print(
+                    f"Step {step:02d}: "
+                    f"raw_action={raw_selected_action_id}, "
+                    f"raw_branch={raw_selected_branch_id}, "
+                    f"gate_action={selected_action_id}, "
+                    f"gate_branch={selected_branch_id}, "
+                    f"gate_reason={gate_decision.selected_reason}, "
+                    f"reward={step_result.reward:.4f}, "
+                    f"done={step_result.done}, "
+                    f"solved={step_result.solved}"
+                )
 
             if step_result.done:
                 break
@@ -569,6 +681,14 @@ def main() -> None:
                     "mcts_simulations": int(args.simulations),
                     "mcts_depth": int(args.depth),
                     "mcts_top_k": int(args.top_k),
+                    "use_continuation_gate": bool(args.use_continuation_gate),
+                    "raw_selected_action_id": int(item["raw_selected_action_id"]),
+                    "raw_selected_branch_id": (
+                        None
+                        if item["raw_selected_branch_id"] is None
+                        else int(item["raw_selected_branch_id"])
+                    ),
+                    "gate_reason": item["gate_reason"],
                 },
             )
 
