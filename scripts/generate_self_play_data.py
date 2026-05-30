@@ -43,6 +43,52 @@ def discounted_returns(rewards: list[float], gamma: float) -> list[float]:
 
     return returns
 
+def select_action_from_policy(
+    policy: dict[int, float],
+    temperature: float,
+    rng: np.random.Generator,
+) -> int:
+    """
+    Select self-play action from MCTS visit-count policy.
+
+    temperature = 0:
+        deterministic argmax.
+
+    temperature = 1:
+        sample according to policy.
+
+    0 < temperature < 1:
+        sharper distribution.
+    """
+
+    if not policy:
+        raise ValueError("Cannot select action from empty policy.")
+
+    action_ids = np.array(list(policy.keys()), dtype=np.int64)
+    probabilities = np.array(
+        [float(policy[int(action_id)]) for action_id in action_ids],
+        dtype=np.float64,
+    )
+
+    total = float(probabilities.sum())
+
+    if total <= 0:
+        probabilities = np.ones_like(probabilities) / len(probabilities)
+    else:
+        probabilities = probabilities / total
+
+    if temperature <= 1e-8:
+        return int(action_ids[int(np.argmax(probabilities))])
+
+    adjusted = probabilities ** (1.0 / float(temperature))
+    adjusted_sum = float(adjusted.sum())
+
+    if adjusted_sum <= 0:
+        adjusted = np.ones_like(adjusted) / len(adjusted)
+    else:
+        adjusted = adjusted / adjusted_sum
+
+    return int(rng.choice(action_ids, p=adjusted))
 
 def state_security_penalty(state: GridFMState) -> float:
     """
@@ -252,6 +298,40 @@ def main() -> None:
         help="Device for neural evaluator: cpu or cuda.",
     )
 
+    parser.add_argument(
+        "--use-root-noise",
+        action="store_true",
+        help="Use AlphaZero-style Dirichlet noise at MCTS root during self-play.",
+    )
+
+    parser.add_argument(
+        "--root-dirichlet-alpha",
+        type=float,
+        default=0.30,
+        help="Dirichlet alpha for root exploration noise.",
+    )
+
+    parser.add_argument(
+        "--root-exploration-fraction",
+        type=float,
+        default=0.25,
+        help="Fraction of root prior replaced by Dirichlet noise.",
+    )
+
+    parser.add_argument(
+        "--selection-temperature",
+        type=float,
+        default=1.0,
+        help="Temperature for sampling actions from MCTS policy during self-play.",
+    )
+
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=42,
+        help="Random seed for self-play action sampling and root noise.",
+    )
+
     args = parser.parse_args()
 
     raw_dir = Path(args.raw_dir)
@@ -281,6 +361,11 @@ def main() -> None:
     print(f"Stop policy:               {args.stop_policy}")
     print(f"Checkpoint:     {args.checkpoint}")
     print(f"Device:         {args.device}")
+    print(f"Use root noise: {args.use_root_noise}")
+    print(f"Root alpha:     {args.root_dirichlet_alpha}")
+    print(f"Root epsilon:   {args.root_exploration_fraction}")
+    print(f"Temperature:    {args.selection_temperature}")
+    print(f"Seed:           {args.seed}")
 
     transitions = pd.read_csv(transitions_path)
     scenario_ids = sorted(int(x) for x in transitions["scenario_id"].unique())
@@ -302,6 +387,10 @@ def main() -> None:
         include_stop_action=True,
         prior_exponent=args.prior_exponent,
         stop_policy=args.stop_policy,
+        use_root_dirichlet_noise=args.use_root_noise,
+        root_dirichlet_alpha=args.root_dirichlet_alpha,
+        root_exploration_fraction=args.root_exploration_fraction,
+        random_seed=args.seed,
     )
 
     evaluator = None
@@ -312,6 +401,8 @@ def main() -> None:
             device=args.device,
         )
         print("\nNeural evaluator loaded.")
+
+    rng = np.random.default_rng(args.seed)
 
     planner = MCTSPlanner(
         config=config,
@@ -357,8 +448,14 @@ def main() -> None:
                 print("MCTS returned no action. Stop episode.")
                 break
 
-            selected_action_id = int(search_result.best_action_id)
-            selected_branch_id = search_result.best_branch_id
+            selected_action_id = select_action_from_policy(
+                policy=search_result.policy,
+                temperature=args.selection_temperature,
+                rng=rng,
+            )
+
+            selected_action = search_result.root.actions_by_id[selected_action_id]
+            selected_branch_id = selected_action.branch_id
 
             step_result = env.step(selected_action_id)
 

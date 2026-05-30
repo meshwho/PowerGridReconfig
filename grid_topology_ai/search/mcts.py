@@ -79,6 +79,12 @@ class MCTSConfig:
     #   while hard overload exists -> continue topology switching;
     #   after hard overload is removed -> MCTS may hand off to redispatch.
     stop_policy: str = "no_hard_overloads"
+    # AlphaZero-style root exploration noise.
+    # Used during self-play to avoid premature policy collapse.
+    use_root_dirichlet_noise: bool = False
+    root_dirichlet_alpha: float = 0.30
+    root_exploration_fraction: float = 0.25
+    random_seed: int | None = None
 
 @dataclass
 class MCTSNode:
@@ -165,6 +171,8 @@ class MCTSPlanner:
         self.loading_idx = BRANCH_FEATURE_COLUMNS.index("loading_percent")
         self.status_idx = BRANCH_FEATURE_COLUMNS.index("br_status")
 
+        self.rng = np.random.default_rng(config.random_seed)
+
     def search(
             self,
             env: TopologySwitchingEnv,
@@ -220,6 +228,7 @@ class MCTSPlanner:
         )
 
         self._expand_node(root)
+        self._add_root_dirichlet_noise(root)
 
         for _ in range(self.config.num_simulations):
             self._run_one_simulation(root)
@@ -273,6 +282,48 @@ class MCTSPlanner:
             principal_final_metrics=final_metrics,
             config=self.config,
         )
+
+    def _add_root_dirichlet_noise(self, root: MCTSNode) -> None:
+        """
+        Add AlphaZero-style Dirichlet noise to root action priors.
+
+        This is used only during self-play.
+
+        It prevents the current neural policy from becoming too deterministic
+        too early, which is especially important while the replay buffer is small.
+        """
+
+        if not self.config.use_root_dirichlet_noise:
+            return
+
+        if not root.action_priors:
+            return
+
+        action_ids = list(root.action_priors.keys())
+
+        alpha = float(self.config.root_dirichlet_alpha)
+        epsilon = float(self.config.root_exploration_fraction)
+
+        if alpha <= 0.0 or epsilon <= 0.0:
+            return
+
+        noise = self.rng.dirichlet(
+            alpha=[alpha for _ in action_ids]
+        )
+
+        for action_id, noise_value in zip(action_ids, noise):
+            old_prior = float(root.action_priors[action_id])
+            new_prior = (1.0 - epsilon) * old_prior + epsilon * float(noise_value)
+            root.action_priors[action_id] = new_prior
+
+        # Renormalize for numerical safety.
+        total = sum(root.action_priors.values())
+
+        if total > 0:
+            root.action_priors = {
+                action_id: prior / total
+                for action_id, prior in root.action_priors.items()
+            }
 
     def _should_include_stop_action(self, state: GridFMState) -> bool:
         """
