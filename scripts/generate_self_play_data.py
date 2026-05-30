@@ -80,30 +80,50 @@ def state_security_penalty(state: GridFMState) -> float:
 def terminal_outcome_reward(
     state: GridFMState | None,
     solved: bool,
+    termination_reason: str | None,
     terminal_unsolved_penalty: float,
+    terminal_handoff_penalty: float,
+    terminal_failure_penalty: float,
     terminal_penalty_weight: float,
 ) -> float:
     """
     Final episode outcome used for AlphaZero-like value targets.
 
-    If solved:
-        no extra terminal penalty is needed, because solved_bonus is already
-        included in the last step reward.
+    solved:
+        successful topology switching.
 
-    If not solved:
-        add a strong negative outcome so the value network learns that an
-        unresolved emergency is bad even if intermediate rewards were positive.
+    handoff_to_redispatch:
+        topology switching helped, but did not fully solve the problem.
+        This should be penalized, but not as hard as max_steps failure.
+
+    max_steps_reached:
+        topology switching failed to find a proper stopping point.
+
+    power_flow_failed:
+        severe failure.
     """
 
     if solved:
         return 0.0
 
     if state is None:
-        return -float(terminal_unsolved_penalty)
+        return -float(terminal_failure_penalty)
 
     penalty = state_security_penalty(state)
 
-    return -float(terminal_unsolved_penalty) - float(terminal_penalty_weight) * penalty
+    if termination_reason == "handoff_to_redispatch":
+        return -float(terminal_handoff_penalty) - (
+            float(terminal_penalty_weight) * penalty
+        )
+
+    if termination_reason == "power_flow_failed":
+        return -float(terminal_failure_penalty) - (
+            float(terminal_penalty_weight) * penalty
+        )
+
+    return -float(terminal_unsolved_penalty) - (
+        float(terminal_penalty_weight) * penalty
+    )
 
 
 def main() -> None:
@@ -202,6 +222,20 @@ def main() -> None:
         help="When MCTS is allowed to use the stop/handoff action.",
     )
 
+    parser.add_argument(
+        "--terminal-handoff-penalty",
+        type=float,
+        default=150.0,
+        help="Terminal penalty for handoff_to_redispatch episodes.",
+    )
+
+    parser.add_argument(
+        "--terminal-failure-penalty",
+        type=float,
+        default=1000.0,
+        help="Terminal penalty for power flow failure.",
+    )
+
     args = parser.parse_args()
 
     raw_dir = Path(args.raw_dir)
@@ -226,6 +260,9 @@ def main() -> None:
     print(f"Prior exponent: {args.prior_exponent}")
     print(f"Terminal unsolved penalty: {args.terminal_unsolved_penalty}")
     print(f"Terminal penalty weight:   {args.terminal_penalty_weight}")
+    print(f"Terminal handoff penalty:  {args.terminal_handoff_penalty}")
+    print(f"Terminal failure penalty:  {args.terminal_failure_penalty}")
+    print(f"Stop policy:               {args.stop_policy}")
 
     transitions = pd.read_csv(transitions_path)
     scenario_ids = sorted(int(x) for x in transitions["scenario_id"].unique())
@@ -337,12 +374,13 @@ def main() -> None:
         terminal_reward = terminal_outcome_reward(
             state=final_state,
             solved=final_solved,
+            termination_reason=final_reason,
             terminal_unsolved_penalty=args.terminal_unsolved_penalty,
+            terminal_handoff_penalty=args.terminal_handoff_penalty,
+            terminal_failure_penalty=args.terminal_failure_penalty,
             terminal_penalty_weight=args.terminal_penalty_weight,
         )
 
-        # Add terminal outcome after the last real action.
-        # Then remove the terminal-only return, because we need one return per saved state.
         rewards_with_terminal = [*rewards, terminal_reward]
         returns_with_terminal = discounted_returns(rewards_with_terminal, args.gamma)
         returns = returns_with_terminal[:-1]
