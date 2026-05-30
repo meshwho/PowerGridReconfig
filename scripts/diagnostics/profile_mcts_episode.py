@@ -71,13 +71,13 @@ def main() -> None:
     old_argv = sys.argv[:]
 
     try:
-        sys.argv = ["scripts.run_mcts_episode", *target_args]
+        sys.argv = ["scripts.planning.run_mcts_episode", *target_args]
 
         profiler = cProfile.Profile()
         profiler.enable()
 
         runpy.run_module(
-            "scripts.run_mcts_episode",
+            "scripts.planning.run_mcts_episode",
             run_name="__main__",
         )
 
