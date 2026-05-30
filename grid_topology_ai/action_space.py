@@ -57,29 +57,69 @@ class GridFMActionSpace:
     """
 
     def __init__(
-        self,
-        require_connected_after_switch: bool = True,
-        min_loading_for_switch_percent: float = 0.0,
+            self,
+            require_connected_after_switch: bool = True,
+            min_loading_for_switch_percent: float = 0.0,
+            enable_cache: bool = True,
     ):
         """
-        Parameters
-        ----------
+        Action space for topology switching.
+
         require_connected_after_switch:
-            If True, an action is valid only if disconnecting the selected
-            branch does not split the grid into islands.
+            If True, an action is valid only if the grid remains connected
+            after switching off the selected branch.
 
         min_loading_for_switch_percent:
-            Optional filter. If > 0, branches with loading below this threshold
-            are not considered switch-off candidates.
+            Optional filter for candidate switching actions.
+            If > 0, only branches with loading above this threshold are considered
+            switchable.
 
-            For now we keep it at 0.0 because sometimes a low-loaded branch
-            may still be useful in a multi-step topology reconfiguration.
+        enable_cache:
+            Cache valid actions and valid masks for repeated MCTS states.
         """
 
-        self.require_connected_after_switch = require_connected_after_switch
-        self.min_loading_for_switch_percent = min_loading_for_switch_percent
+        self.require_connected_after_switch = bool(require_connected_after_switch)
+        self.min_loading_for_switch_percent = float(min_loading_for_switch_percent)
+        self.enable_cache = bool(enable_cache)
 
-        self.loading_column_idx = BRANCH_FEATURE_COLUMNS.index("loading_percent")
+        self._valid_action_mask_cache: dict[tuple, np.ndarray] = {}
+        self._valid_actions_cache: dict[tuple, list[GridFMAction]] = {}
+
+        self.cache_hits = 0
+        self.cache_misses = 0
+
+    def clear_cache(self) -> None:
+        self._valid_action_mask_cache.clear()
+        self._valid_actions_cache.clear()
+        self.cache_hits = 0
+        self.cache_misses = 0
+
+    def cache_info(self) -> dict:
+        total = self.cache_hits + self.cache_misses
+        hit_rate = self.cache_hits / total if total > 0 else 0.0
+
+        return {
+            "enabled": self.enable_cache,
+            "mask_cache_size": len(self._valid_action_mask_cache),
+            "valid_actions_cache_size": len(self._valid_actions_cache),
+            "hits": self.cache_hits,
+            "misses": self.cache_misses,
+            "hit_rate": hit_rate,
+        }
+
+    def _make_cache_key(self, state) -> tuple:
+        """
+        Valid actions depend only on topology for the current topology-switching stage.
+
+        Later, if we add redispatch constraints or dynamic limits, this key may need
+        to include more information.
+        """
+
+        return (
+            int(state.scenario_id),
+            tuple(int(x) for x in sorted(state.outaged_branch_ids)),
+            bool(self.require_connected_after_switch),
+        )
 
     def build_all_actions(self, state: GridFMState) -> list[GridFMAction]:
         """
@@ -131,6 +171,15 @@ class GridFMActionSpace:
         illegal or dangerous actions.
         """
 
+        cache_key = self._make_cache_key(state)
+
+        if self.enable_cache and cache_key in self._valid_action_mask_cache:
+            self.cache_hits += 1
+            return self._valid_action_mask_cache[cache_key].copy()
+
+        if self.enable_cache:
+            self.cache_misses += 1
+
         num_branches = len(state.branch_ids)
 
         mask = np.zeros(1 + num_branches, dtype=bool)
@@ -170,21 +219,34 @@ class GridFMActionSpace:
 
             mask[action_id] = True
 
+        if self.enable_cache:
+            self._valid_action_mask_cache[cache_key] = mask.copy()
+
         return mask
 
-    def valid_actions(self, state: GridFMState) -> list[GridFMAction]:
-        """
-        Return only valid actions.
-        """
+    def valid_actions(self, state):
+        cache_key = self._make_cache_key(state)
+
+        if self.enable_cache and cache_key in self._valid_actions_cache:
+            self.cache_hits += 1
+            return list(self._valid_actions_cache[cache_key])
+
+        if self.enable_cache:
+            self.cache_misses += 1
 
         all_actions = self.build_all_actions(state)
         mask = self.valid_action_mask(state)
 
-        return [
+        valid = [
             action
             for action in all_actions
-            if mask[action.action_id]
+            if bool(mask[action.action_id])
         ]
+
+        if self.enable_cache:
+            self._valid_actions_cache[cache_key] = list(valid)
+
+        return valid
 
     def invalid_actions(self, state: GridFMState) -> list[GridFMAction]:
         """
