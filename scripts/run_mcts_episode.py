@@ -10,6 +10,8 @@ from grid_topology_ai.pypower_backend import GridFMPowerFlowBackend
 from grid_topology_ai.reward import GridFMReward
 from grid_topology_ai.search.mcts import MCTSConfig, MCTSPlanner
 
+from grid_topology_ai.models.neural_evaluator import NeuralPolicyValueEvaluator
+
 
 def print_state_metrics(prefix: str, env: TopologySwitchingEnv) -> None:
     state = env.current_state
@@ -102,6 +104,20 @@ def main() -> None:
         help="When MCTS is allowed to use the stop/handoff action.",
     )
 
+    parser.add_argument(
+        "--checkpoint",
+        type=str,
+        default=None,
+        help="Optional neural policy-value checkpoint for neural-guided MCTS.",
+    )
+
+    parser.add_argument(
+        "--device",
+        type=str,
+        default="cpu",
+        help="Device for neural evaluator: cpu or cuda.",
+    )
+
     args = parser.parse_args()
 
     raw_dir = Path(args.raw_dir)
@@ -120,6 +136,8 @@ def main() -> None:
     print(f"C_PUCT:         {args.c_puct}")
     print(f"Prior exponent: {args.prior_exponent}")
     print(f"Stop policy:    {args.stop_policy}")
+    print(f"Checkpoint:     {args.checkpoint}")
+    print(f"Device:         {args.device}")
 
     adapter = GridFMAdapter(raw_dir)
     backend = GridFMPowerFlowBackend(adapter)
@@ -146,7 +164,20 @@ def main() -> None:
         stop_policy=args.stop_policy,
     )
 
-    planner = MCTSPlanner(config)
+    evaluator = None
+
+    if args.checkpoint is not None:
+        evaluator = NeuralPolicyValueEvaluator(
+            checkpoint_path=args.checkpoint,
+            device=args.device,
+        )
+
+        print("\nNeural evaluator loaded.")
+
+    planner = MCTSPlanner(
+        config=config,
+        evaluator=evaluator,
+    )
 
     env.reset(args.scenario)
 

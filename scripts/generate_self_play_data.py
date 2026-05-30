@@ -18,6 +18,8 @@ from grid_topology_ai.data_adapter import (
     GridFMState,
 )
 
+from grid_topology_ai.models.neural_evaluator import NeuralPolicyValueEvaluator
+
 
 
 def discounted_returns(rewards: list[float], gamma: float) -> list[float]:
@@ -236,6 +238,20 @@ def main() -> None:
         help="Terminal penalty for power flow failure.",
     )
 
+    parser.add_argument(
+        "--checkpoint",
+        type=str,
+        default=None,
+        help="Optional neural policy-value checkpoint for neural-guided MCTS.",
+    )
+
+    parser.add_argument(
+        "--device",
+        type=str,
+        default="cpu",
+        help="Device for neural evaluator: cpu or cuda.",
+    )
+
     args = parser.parse_args()
 
     raw_dir = Path(args.raw_dir)
@@ -263,6 +279,8 @@ def main() -> None:
     print(f"Terminal handoff penalty:  {args.terminal_handoff_penalty}")
     print(f"Terminal failure penalty:  {args.terminal_failure_penalty}")
     print(f"Stop policy:               {args.stop_policy}")
+    print(f"Checkpoint:     {args.checkpoint}")
+    print(f"Device:         {args.device}")
 
     transitions = pd.read_csv(transitions_path)
     scenario_ids = sorted(int(x) for x in transitions["scenario_id"].unique())
@@ -286,7 +304,19 @@ def main() -> None:
         stop_policy=args.stop_policy,
     )
 
-    planner = MCTSPlanner(config)
+    evaluator = None
+
+    if args.checkpoint is not None:
+        evaluator = NeuralPolicyValueEvaluator(
+            checkpoint_path=args.checkpoint,
+            device=args.device,
+        )
+        print("\nNeural evaluator loaded.")
+
+    planner = MCTSPlanner(
+        config=config,
+        evaluator=evaluator,
+    )
 
     replay_buffer = SelfPlayReplayBuffer(args.output_dir)
 

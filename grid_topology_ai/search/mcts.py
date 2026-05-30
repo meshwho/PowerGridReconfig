@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from math import sqrt
-from typing import Any
-
+from typing import Any, TYPE_CHECKING
+if TYPE_CHECKING:
+    from grid_topology_ai.models.neural_evaluator import NeuralPolicyValueEvaluator
 import numpy as np
 
 from grid_topology_ai.action_space import GridFMAction
@@ -153,8 +154,14 @@ class MCTSPlanner:
         heuristic value  -> value network
     """
 
-    def __init__(self, config: MCTSConfig):
+    def __init__(
+            self,
+            config: MCTSConfig,
+            evaluator: "NeuralPolicyValueEvaluator | None" = None,
+    ):
         self.config = config
+        self.evaluator = evaluator
+
         self.loading_idx = BRANCH_FEATURE_COLUMNS.index("loading_percent")
         self.status_idx = BRANCH_FEATURE_COLUMNS.index("br_status")
 
@@ -369,10 +376,13 @@ class MCTSPlanner:
 
     def _expand_node(self, node: MCTSNode) -> None:
         """
-        Compute candidate actions and heuristic priors for a node.
+        Compute candidate actions and priors for a node.
 
-        This does NOT run power flow.
-        It only prepares action probabilities for selection.
+        If neural evaluator is available:
+            use neural policy as action prior.
+
+        If neural evaluator is not available:
+            use heuristic loading-based prior.
         """
 
         if node.done or node.depth >= self.config.max_depth:
@@ -386,6 +396,15 @@ class MCTSPlanner:
             return
 
         valid_actions = node.env.valid_actions()
+        action_mask = node.env.valid_action_mask()
+
+        neural_policy = None
+
+        if self.evaluator is not None:
+            neural_policy, _ = self.evaluator.evaluate(
+                state=state,
+                action_mask=action_mask,
+            )
 
         stop_actions = [
             action for action in valid_actions if action.action_type == "do_nothing"
@@ -395,23 +414,61 @@ class MCTSPlanner:
             action for action in valid_actions if action.action_type == "switch_off_branch"
         ]
 
-        switch_actions = sorted(
-            switch_actions,
-            key=lambda action: float(
-                state.branch_features[action.branch_pos, self.loading_idx]
-            ),
-            reverse=True,
-        )
-
-        if self.config.top_k_actions > 0:
-            switch_actions = switch_actions[: self.config.top_k_actions]
-
         selected: list[GridFMAction] = []
 
         if self._should_include_stop_action(state):
             selected.extend(stop_actions)
 
-        selected.extend(switch_actions)
+        if neural_policy is not None:
+            # Main candidate source: actions preferred by the neural policy.
+            switch_by_policy = sorted(
+                switch_actions,
+                key=lambda action: float(neural_policy[action.action_id]),
+                reverse=True,
+            )
+
+            # Safety backup: also keep some physically high-loaded branches.
+            # This prevents a weak early network from completely ignoring
+            # obviously important overloaded corridors.
+            switch_by_loading = sorted(
+                switch_actions,
+                key=lambda action: float(
+                    state.branch_features[action.branch_pos, self.loading_idx]
+                ),
+                reverse=True,
+            )
+
+            selected_switches: list[GridFMAction] = []
+            seen_action_ids: set[int] = set()
+
+            for action in switch_by_policy[: self.config.top_k_actions]:
+                if action.action_id not in seen_action_ids:
+                    selected_switches.append(action)
+                    seen_action_ids.add(action.action_id)
+
+            loading_backup_k = max(5, self.config.top_k_actions // 4)
+
+            for action in switch_by_loading[:loading_backup_k]:
+                if action.action_id not in seen_action_ids:
+                    selected_switches.append(action)
+                    seen_action_ids.add(action.action_id)
+
+            selected.extend(selected_switches)
+
+        else:
+            # Heuristic fallback: top-K actions by current branch loading.
+            switch_actions = sorted(
+                switch_actions,
+                key=lambda action: float(
+                    state.branch_features[action.branch_pos, self.loading_idx]
+                ),
+                reverse=True,
+            )
+
+            if self.config.top_k_actions > 0:
+                switch_actions = switch_actions[: self.config.top_k_actions]
+
+            selected.extend(switch_actions)
 
         if not selected:
             node.is_expanded = True
@@ -422,24 +479,24 @@ class MCTSPlanner:
         for action in selected:
             node.actions_by_id[action.action_id] = action
 
-            if action.action_type == "do_nothing":
-                raw_scores[action.action_id] = self.config.stop_prior
+            if neural_policy is not None:
+                score = float(neural_policy[action.action_id])
+                raw_scores[action.action_id] = max(score, 1e-8)
             else:
-                loading = float(
-                    state.branch_features[action.branch_pos, self.loading_idx]
-                )
+                if action.action_type == "do_nothing":
+                    raw_scores[action.action_id] = self.config.stop_prior
+                else:
+                    loading = float(
+                        state.branch_features[action.branch_pos, self.loading_idx]
+                    )
 
-                # Heuristic prior:
-                # branches above 100% receive higher score,
-                # but non-overloaded high-loaded branches may still be considered.
-                base_score = max(
-                    loading - 80.0,
-                    self.config.min_switch_prior_score,
-                )
+                    base_score = max(
+                        loading - 80.0,
+                        self.config.min_switch_prior_score,
+                    )
 
-                score = base_score ** self.config.prior_exponent
-
-                raw_scores[action.action_id] = score
+                    score = base_score ** self.config.prior_exponent
+                    raw_scores[action.action_id] = score
 
         score_sum = sum(raw_scores.values())
 
@@ -561,11 +618,13 @@ class MCTSPlanner:
 
     def _leaf_value(self, node: MCTSNode) -> float:
         """
-        Heuristic value of a leaf state.
+        Value of a leaf state.
 
-        Later this will be replaced by the neural value head.
+        If neural evaluator is available:
+            use neural value for non-terminal states.
 
-        The returned value is scaled for MCTS internals.
+        If no evaluator is available:
+            use heuristic penalty-based value.
         """
 
         state = node.env.current_state
@@ -583,6 +642,16 @@ class MCTSPlanner:
                     self.config.leaf_penalty_weight * penalty
             )
             return self._scale_value(raw_value)
+
+        if self.evaluator is not None:
+            action_mask = node.env.valid_action_mask()
+
+            _, neural_value = self.evaluator.evaluate(
+                state=state,
+                action_mask=action_mask,
+            )
+
+            return float(neural_value)
 
         raw_value = -self.config.leaf_penalty_weight * penalty
 
