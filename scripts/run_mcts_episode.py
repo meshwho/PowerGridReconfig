@@ -12,6 +12,10 @@ from grid_topology_ai.search.mcts import MCTSConfig, MCTSPlanner
 
 from grid_topology_ai.models.neural_evaluator import NeuralPolicyValueEvaluator
 import time
+from grid_topology_ai.search.continuation_gate import (
+    analyze_root_branches,
+    make_do_nothing_action,
+)
 
 def print_state_metrics(prefix: str, env: TopologySwitchingEnv) -> None:
     state = env.current_state
@@ -132,6 +136,17 @@ def main() -> None:
         help="Disable power flow cache.",
     )
 
+    parser.add_argument(
+        "--use-continuation-gate",
+        action="store_true",
+        help="Use lookahead continuation gate instead of raw max-visit MCTS action.",
+    )
+
+    parser.add_argument("--min-hard-improvement", type=float, default=50.0)
+    parser.add_argument("--min-soft-improvement", type=float, default=15.0)
+    parser.add_argument("--min-gate-visits", type=int, default=5)
+    parser.add_argument("--min-gate-visit-fraction", type=float, default=0.01)
+
     args = parser.parse_args()
 
     raw_dir = Path(args.raw_dir)
@@ -154,6 +169,14 @@ def main() -> None:
     print(f"Device:         {args.device}")
     print(f"PF algorithm:   {args.pf_alg}")
     print(f"Cache enabled:  {not args.disable_cache}")
+
+    print(f"Continuation gate: {args.use_continuation_gate}")
+
+    if args.use_continuation_gate:
+        print(f"  min hard improvement: {args.min_hard_improvement}")
+        print(f"  min soft improvement: {args.min_soft_improvement}")
+        print(f"  min gate visits:      {args.min_gate_visits}")
+        print(f"  min gate visit frac:  {args.min_gate_visit_fraction}")
 
     adapter = GridFMAdapter(raw_dir)
     backend = GridFMPowerFlowBackend(
@@ -221,15 +244,84 @@ def main() -> None:
 
         search_result = planner.search_from_env(env)
 
+        gate_decision = None
+
+        if args.use_continuation_gate:
+            gate_decision = analyze_root_branches(
+                result=search_result,
+                min_hard_improvement=args.min_hard_improvement,
+                min_soft_improvement=args.min_soft_improvement,
+                min_visits=args.min_gate_visits,
+                min_visit_fraction=args.min_gate_visit_fraction,
+            )
+
+            selected_action_id = int(gate_decision.selected_action_id)
+            selected_branch_id = gate_decision.selected_branch_id
+
+            print("\nContinuation gate:")
+            print(f"  root_penalty:        {gate_decision.root_penalty:.4f}")
+            print(f"  root_hard:           {gate_decision.root_num_hard}")
+            print(
+                f"  best_by_visits:      action={gate_decision.best_visit_action_id}, branch={gate_decision.best_visit_branch_id}")
+            print(
+                f"  best_by_improvement: action={gate_decision.best_improvement_action_id}, branch={gate_decision.best_improvement_branch_id}, improvement={gate_decision.best_improvement:.4f}")
+            print(f"  selected:            action={selected_action_id}, branch={selected_branch_id}")
+            print(f"  reason:              {gate_decision.selected_reason}")
+        else:
+            selected_action_id = int(search_result.best_action_id)
+            selected_branch_id = search_result.best_branch_id
+
         if search_result.best_action_id is None:
             print("MCTS did not return an action.")
             break
 
-        best_action_id = int(search_result.best_action_id)
-        best_branch_id = search_result.best_branch_id
+        raw_best_action_id = int(search_result.best_action_id)
+        raw_best_branch_id = search_result.best_branch_id
 
-        print(f"MCTS best action ID: {best_action_id}")
-        print(f"MCTS best branch ID: {best_branch_id}")
+        gate_decision = None
+
+        if args.use_continuation_gate:
+            gate_decision = analyze_root_branches(
+                result=search_result,
+                min_hard_improvement=args.min_hard_improvement,
+                min_soft_improvement=args.min_soft_improvement,
+                min_visits=args.min_gate_visits,
+                min_visit_fraction=args.min_gate_visit_fraction,
+            )
+
+            best_action_id = int(gate_decision.selected_action_id)
+            best_branch_id = gate_decision.selected_branch_id
+        else:
+            best_action_id = raw_best_action_id
+            best_branch_id = raw_best_branch_id
+
+        print(f"MCTS raw best action ID: {raw_best_action_id}")
+        print(f"MCTS raw best branch ID: {raw_best_branch_id}")
+
+        if gate_decision is not None:
+            print("\nContinuation gate:")
+            print(f"  root_penalty:        {gate_decision.root_penalty:.4f}")
+            print(f"  root_hard:           {gate_decision.root_num_hard}")
+            print(
+                f"  best_by_visits:      "
+                f"action={gate_decision.best_visit_action_id}, "
+                f"branch={gate_decision.best_visit_branch_id}"
+            )
+            print(
+                f"  best_by_improvement: "
+                f"action={gate_decision.best_improvement_action_id}, "
+                f"branch={gate_decision.best_improvement_branch_id}, "
+                f"improvement={gate_decision.best_improvement:.4f}"
+            )
+            print(
+                f"  selected:            "
+                f"action={gate_decision.selected_action_id}, "
+                f"branch={gate_decision.selected_branch_id}"
+            )
+            print(f"  reason:              {gate_decision.selected_reason}")
+
+        print(f"MCTS/gate selected action ID: {best_action_id}")
+        print(f"MCTS/gate selected branch ID: {best_branch_id}")
 
         print("Root policy top actions:")
 
@@ -265,7 +357,15 @@ def main() -> None:
                 f"r1={row['first_reward']:.4f}"
             )
 
-        step_result = env.step(best_action_id)
+        if best_action_id == 0:
+            action_to_execute = make_do_nothing_action()
+        else:
+            action_to_execute = search_result.root.actions_by_id.get(best_action_id)
+
+            if action_to_execute is None:
+                action_to_execute = env.action_by_id(best_action_id)
+
+        step_result = env.step(action_to_execute)
 
         episode_reward += float(step_result.reward)
         discounted_episode_return += discount * float(step_result.reward)
