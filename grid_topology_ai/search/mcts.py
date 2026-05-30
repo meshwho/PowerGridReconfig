@@ -628,7 +628,7 @@ class MCTSPlanner:
         child_env = parent.env.clone()
 
         try:
-            step_result = child_env.step(action_id)
+            step_result = child_env.step(action)
         except Exception:
             return None
 

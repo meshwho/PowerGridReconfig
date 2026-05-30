@@ -197,7 +197,7 @@ class TopologySwitchingEnv:
             max_steps=self.max_steps,
         )
 
-        cloned.current_state = copy.deepcopy(self.current_state)
+        cloned.current_state = self.current_state
         cloned.initial_scenario_id = self.initial_scenario_id
         cloned.step_count = self.step_count
         cloned.done = self.done

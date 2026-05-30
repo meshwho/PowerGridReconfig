@@ -11,7 +11,7 @@ from grid_topology_ai.reward import GridFMReward
 from grid_topology_ai.search.mcts import MCTSConfig, MCTSPlanner
 
 from grid_topology_ai.models.neural_evaluator import NeuralPolicyValueEvaluator
-
+import time
 
 def print_state_metrics(prefix: str, env: TopologySwitchingEnv) -> None:
     state = env.current_state
@@ -118,6 +118,20 @@ def main() -> None:
         help="Device for neural evaluator: cpu or cuda.",
     )
 
+    parser.add_argument(
+        "--pf-alg",
+        type=int,
+        default=3,
+        choices=[1, 2, 3, 4],
+        help="PYPOWER power flow algorithm: 1=NR, 2=FDXB, 3=FDBX, 4=GS.",
+    )
+
+    parser.add_argument(
+        "--disable-cache",
+        action="store_true",
+        help="Disable power flow cache.",
+    )
+
     args = parser.parse_args()
 
     raw_dir = Path(args.raw_dir)
@@ -138,9 +152,15 @@ def main() -> None:
     print(f"Stop policy:    {args.stop_policy}")
     print(f"Checkpoint:     {args.checkpoint}")
     print(f"Device:         {args.device}")
+    print(f"PF algorithm:   {args.pf_alg}")
+    print(f"Cache enabled:  {not args.disable_cache}")
 
     adapter = GridFMAdapter(raw_dir)
-    backend = GridFMPowerFlowBackend(adapter)
+    backend = GridFMPowerFlowBackend(
+        adapter=adapter,
+        pf_alg=args.pf_alg,
+        enable_cache=not args.disable_cache,
+    )
     action_space = GridFMActionSpace(require_connected_after_switch=True)
     reward_fn = GridFMReward()
 
@@ -180,6 +200,7 @@ def main() -> None:
     )
 
     env.reset(args.scenario)
+    episode_start_time = time.perf_counter()
 
     print()
     print_state_metrics("Initial state", env)
@@ -300,6 +321,14 @@ def main() -> None:
     print(f"Termination reason:        {env.termination_reason}")
 
     print_state_metrics("Final state", env)
+
+    print("\nPower flow cache:")
+    print(backend.cache_info())
+
+    episode_elapsed = time.perf_counter() - episode_start_time
+
+    print("\nTiming:")
+    print(f"Episode elapsed time: {episode_elapsed:.4f} sec")
 
     print("\nDone.")
 

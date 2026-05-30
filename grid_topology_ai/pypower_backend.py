@@ -63,7 +63,7 @@ from grid_topology_ai.data_adapter import (
     GridFMState,
     compute_voltage_violation_metrics,
 )
-
+import copy
 
 def pf_algorithm_name(pf_alg: int) -> str:
     names = {
@@ -111,11 +111,78 @@ class GridFMPowerFlowBackend:
             base_mva: float = 100.0,
             max_iter: int = 30,
             pf_alg: int = 1,
+            enable_cache: bool = True,
+            store_raw_result: bool = False,
     ):
         self.adapter = adapter
         self.base_mva = float(base_mva)
         self.max_iter = int(max_iter)
         self.pf_alg = int(pf_alg)
+
+        self.enable_cache = bool(enable_cache)
+        self.store_raw_result = bool(store_raw_result)
+
+        # Cache stores only next_state, not full PYPOWER raw_result.
+        self._cache: dict[tuple, GridFMState] = {}
+
+        self.cache_hits = 0
+        self.cache_misses = 0
+
+    def clear_cache(self) -> None:
+        """
+        Clear cached power flow results.
+        """
+
+        self._cache.clear()
+        self.cache_hits = 0
+        self.cache_misses = 0
+
+    def cache_info(self) -> dict:
+        """
+        Return cache statistics.
+        """
+
+        total = self.cache_hits + self.cache_misses
+
+        hit_rate = self.cache_hits / total if total > 0 else 0.0
+
+        return {
+            "enabled": self.enable_cache,
+            "size": len(self._cache),
+            "hits": self.cache_hits,
+            "misses": self.cache_misses,
+            "hit_rate": hit_rate,
+        }
+
+    def _make_cache_key_from_state(
+            self,
+            state: GridFMState,
+            switched_off_branch_id: int | None,
+    ) -> tuple:
+        """
+        Build cache key for static topology-switching power flow.
+
+        For the current MVP, loads and generation are fixed inside a scenario.
+        Therefore the solved state is determined by:
+            scenario_id
+            pf algorithm
+            sorted outaged branch IDs after applying the action
+
+        Later, when redispatch or time-varying load is added, this key must also
+        include load/generation fingerprints.
+        """
+
+        outaged = set(int(x) for x in state.outaged_branch_ids)
+
+        if switched_off_branch_id is not None:
+            outaged.add(int(switched_off_branch_id))
+
+        return (
+            int(state.scenario_id),
+            int(self.pf_alg),
+            round(float(self.base_mva), 6),
+            tuple(sorted(outaged)),
+        )
 
     def run_power_flow(
         self,
@@ -397,6 +464,28 @@ class GridFMPowerFlowBackend:
         from the original scenario.
         """
 
+        cache_key = self._make_cache_key_from_state(
+            state=state,
+            switched_off_branch_id=switched_off_branch_id,
+        )
+
+        if self.enable_cache and cache_key in self._cache:
+            self.cache_hits += 1
+
+            cached_next_state = self._cache[cache_key]
+
+            return GridFMPowerFlowResult(
+                success=True,
+                scenario_id=int(state.scenario_id),
+                switched_off_branch_id=switched_off_branch_id,
+                next_state=cached_next_state,
+                raw_result=None,
+                message="Power flow converged. [cache hit]",
+            )
+
+        if self.enable_cache:
+            self.cache_misses += 1
+
         try:
             ppc, frames = self._build_ppc_from_state(
                 state=state,
@@ -429,14 +518,19 @@ class GridFMPowerFlowBackend:
                 original_frames=frames,
             )
 
-            return GridFMPowerFlowResult(
+            result = GridFMPowerFlowResult(
                 success=True,
                 scenario_id=int(state.scenario_id),
                 switched_off_branch_id=switched_off_branch_id,
                 next_state=next_state,
-                raw_result=result_ppc,
+                raw_result=result_ppc if self.store_raw_result else None,
                 message="Power flow converged.",
             )
+
+            if self.enable_cache:
+                self._cache[cache_key] = next_state
+
+            return result
 
         except Exception as exc:
             return GridFMPowerFlowResult(
