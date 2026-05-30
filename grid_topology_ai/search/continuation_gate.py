@@ -342,19 +342,28 @@ def analyze_root_branches(
 
     allowed = [branch for branch in branches if branch.allow]
 
-    allowed_by_confidence = sorted(
-        allowed,
-        key=lambda item: (item.visits, item.improvement),
-        reverse=True,
-    )
+    if root_has_hard:
+        allowed_sorted = sorted(
+            allowed,
+            key=lambda item: (item.visits, item.improvement),
+            reverse=True,
+        )
+        selected_reason = "best_allowed_by_visits"
+    else:
+        allowed_sorted = sorted(
+            allowed,
+            key=lambda item: (item.improvement, item.visits),
+            reverse=True,
+        )
+        selected_reason = "best_allowed_by_improvement"
 
-    if allowed_by_confidence:
-        selected = allowed_by_confidence[0]
+    if allowed_sorted:
+        selected = allowed_sorted[0]
 
         return ContinuationDecision(
             selected_action_id=int(selected.action_id),
             selected_branch_id=selected.branch_id,
-            selected_reason="best_allowed_by_visits",
+            selected_reason=selected_reason,
             root_penalty=float(root_penalty),
             root_has_hard_overload=root_has_hard,
             root_num_hard=root_num_hard,

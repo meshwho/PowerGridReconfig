@@ -184,7 +184,10 @@ def main() -> None:
         pf_alg=args.pf_alg,
         enable_cache=not args.disable_cache,
     )
-    action_space = GridFMActionSpace(require_connected_after_switch=True)
+    action_space = GridFMActionSpace(
+        require_connected_after_switch=True,
+        enable_cache=not args.disable_cache,
+    )
     reward_fn = GridFMReward()
 
     env = TopologySwitchingEnv(
@@ -213,6 +216,7 @@ def main() -> None:
         evaluator = NeuralPolicyValueEvaluator(
             checkpoint_path=args.checkpoint,
             device=args.device,
+            enable_cache=not args.disable_cache,
         )
 
         print("\nNeural evaluator loaded.")
@@ -243,33 +247,6 @@ def main() -> None:
         print("-" * 100)
 
         search_result = planner.search_from_env(env)
-
-        gate_decision = None
-
-        if args.use_continuation_gate:
-            gate_decision = analyze_root_branches(
-                result=search_result,
-                min_hard_improvement=args.min_hard_improvement,
-                min_soft_improvement=args.min_soft_improvement,
-                min_visits=args.min_gate_visits,
-                min_visit_fraction=args.min_gate_visit_fraction,
-            )
-
-            selected_action_id = int(gate_decision.selected_action_id)
-            selected_branch_id = gate_decision.selected_branch_id
-
-            print("\nContinuation gate:")
-            print(f"  root_penalty:        {gate_decision.root_penalty:.4f}")
-            print(f"  root_hard:           {gate_decision.root_num_hard}")
-            print(
-                f"  best_by_visits:      action={gate_decision.best_visit_action_id}, branch={gate_decision.best_visit_branch_id}")
-            print(
-                f"  best_by_improvement: action={gate_decision.best_improvement_action_id}, branch={gate_decision.best_improvement_branch_id}, improvement={gate_decision.best_improvement:.4f}")
-            print(f"  selected:            action={selected_action_id}, branch={selected_branch_id}")
-            print(f"  reason:              {gate_decision.selected_reason}")
-        else:
-            selected_action_id = int(search_result.best_action_id)
-            selected_branch_id = search_result.best_branch_id
 
         if search_result.best_action_id is None:
             print("MCTS did not return an action.")
