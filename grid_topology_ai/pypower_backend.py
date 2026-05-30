@@ -697,20 +697,24 @@ class GridFMPowerFlowBackend:
         pg_by_bus = np.zeros(bus_features.shape[0], dtype=np.float32)
         qg_by_bus = np.zeros(bus_features.shape[0], dtype=np.float32)
 
+        bus_df = original_frames["bus"]
+        gen_df = original_frames["gen"]
+
         bus_id_to_pos = {
             int(bus_id): pos
-            for pos, bus_id in enumerate(bus_res[:, BUS_I].astype(int))
+            for pos, bus_id in enumerate(bus_df["bus"].to_numpy(dtype=int))
         }
 
-        for gen_row in gen_res:
-            bus_id = int(gen_row[GEN_BUS])
-            bus_pos = bus_id_to_pos.get(bus_id)
+        gen_bus_ids = gen_df["bus"].to_numpy(dtype=int)
+
+        for gen_pos, bus_id in enumerate(gen_bus_ids):
+            bus_pos = bus_id_to_pos.get(int(bus_id))
 
             if bus_pos is None:
                 continue
 
-            pg_by_bus[bus_pos] += float(gen_row[PG])
-            qg_by_bus[bus_pos] += float(gen_row[QG])
+            pg_by_bus[bus_pos] += float(gen_res[gen_pos, PG])
+            qg_by_bus[bus_pos] += float(gen_res[gen_pos, QG])
 
         bus_features[:, bus_col["Pg"]] = pg_by_bus
         bus_features[:, bus_col["Qg"]] = qg_by_bus
@@ -773,9 +777,6 @@ class GridFMPowerFlowBackend:
         overloaded = active & (loading > 100.0)
         hard_overloaded = active & (loading > 120.0)
 
-        # Voltage limits are not in BUS_FEATURE_COLUMNS, so we read them from
-        # the original scenario frames. This is cheap compared with DataFrame copying.
-        bus_df = original_frames["bus"]
 
         vmin = bus_df["min_vm_pu"].to_numpy(dtype=np.float32)
         vmax = bus_df["max_vm_pu"].to_numpy(dtype=np.float32)
