@@ -512,9 +512,10 @@ class GridFMPowerFlowBackend:
                     message="PYPOWER power flow did not converge.",
                 )
 
-            next_state = self._build_state_from_pypower_result(
+            next_state = self._build_state_from_pypower_result_fast(
                 scenario_id=int(state.scenario_id),
                 result_ppc=result_ppc,
+                previous_state=state,
                 original_frames=frames,
             )
 
@@ -651,6 +652,178 @@ class GridFMPowerFlowBackend:
         gen[:, PMIN] = gen_df["min_p_mw"].to_numpy(dtype=float)
 
         return gen
+
+    def _build_state_from_pypower_result_fast(
+            self,
+            scenario_id: int,
+            result_ppc: dict[str, Any],
+            previous_state: GridFMState,
+            original_frames: dict[str, pd.DataFrame],
+    ) -> GridFMState:
+        """
+        Fast conversion from PYPOWER result to GridFMState.
+
+        This avoids expensive pandas operations in _build_state_from_pypower_result:
+            - DataFrame.copy()
+            - DataFrame column assignments
+            - groupby()
+            - loc-based Pg/Qg updates
+            - GridFMAdapter._add_branch_loading()
+
+        Instead, it updates numpy feature arrays directly.
+        """
+
+        bus_res = result_ppc["bus"]
+        branch_res = result_ppc["branch"]
+        gen_res = result_ppc["gen"]
+
+        bus_features = previous_state.bus_features.copy()
+        branch_features = previous_state.branch_features.copy()
+
+        bus_col = {name: idx for idx, name in enumerate(BUS_FEATURE_COLUMNS)}
+        branch_col = {name: idx for idx, name in enumerate(BRANCH_FEATURE_COLUMNS)}
+
+        # ------------------------------------------------------------------
+        # Bus dynamic features
+        # ------------------------------------------------------------------
+
+        vm = bus_res[:, VM].astype(np.float32)
+        va = bus_res[:, VA].astype(np.float32)
+
+        bus_features[:, bus_col["Vm"]] = vm
+        bus_features[:, bus_col["Va"]] = va
+
+        # Recompute bus-level Pg/Qg from generator results.
+        pg_by_bus = np.zeros(bus_features.shape[0], dtype=np.float32)
+        qg_by_bus = np.zeros(bus_features.shape[0], dtype=np.float32)
+
+        bus_id_to_pos = {
+            int(bus_id): pos
+            for pos, bus_id in enumerate(bus_res[:, BUS_I].astype(int))
+        }
+
+        for gen_row in gen_res:
+            bus_id = int(gen_row[GEN_BUS])
+            bus_pos = bus_id_to_pos.get(bus_id)
+
+            if bus_pos is None:
+                continue
+
+            pg_by_bus[bus_pos] += float(gen_row[PG])
+            qg_by_bus[bus_pos] += float(gen_row[QG])
+
+        bus_features[:, bus_col["Pg"]] = pg_by_bus
+        bus_features[:, bus_col["Qg"]] = qg_by_bus
+
+        # ------------------------------------------------------------------
+        # Branch dynamic features
+        # ------------------------------------------------------------------
+
+        pf = branch_res[:, PF].astype(np.float32)
+        qf = branch_res[:, QF].astype(np.float32)
+        pt = branch_res[:, PT].astype(np.float32)
+        qt = branch_res[:, QT].astype(np.float32)
+        br_status = branch_res[:, BR_STATUS].astype(np.float32)
+
+        s_from = np.sqrt(pf * pf + qf * qf).astype(np.float32)
+        s_to = np.sqrt(pt * pt + qt * qt).astype(np.float32)
+        s_max = np.maximum(s_from, s_to).astype(np.float32)
+
+        rate_a = branch_features[:, branch_col["rate_a"]].astype(np.float32)
+
+        loading = np.divide(
+            s_max,
+            rate_a,
+            out=np.zeros_like(s_max, dtype=np.float32),
+            where=rate_a > 0.0,
+        ).astype(np.float32) * 100.0
+
+        loading[br_status <= 0.0] = 0.0
+        loading = np.nan_to_num(
+            loading,
+            nan=0.0,
+            posinf=0.0,
+            neginf=0.0,
+        ).astype(np.float32)
+
+        branch_features[:, branch_col["pf"]] = pf
+        branch_features[:, branch_col["qf"]] = qf
+        branch_features[:, branch_col["pt"]] = pt
+        branch_features[:, branch_col["qt"]] = qt
+        branch_features[:, branch_col["br_status"]] = br_status
+        branch_features[:, branch_col["s_from_mva"]] = s_from
+        branch_features[:, branch_col["s_to_mva"]] = s_to
+        branch_features[:, branch_col["s_max_mva"]] = s_max
+        branch_features[:, branch_col["loading_percent"]] = loading
+
+        # ------------------------------------------------------------------
+        # Metrics
+        # ------------------------------------------------------------------
+
+        active = br_status > 0.0
+        active_loading = loading[active]
+
+        if active_loading.size > 0:
+            max_loading = float(np.max(active_loading))
+            mean_loading = float(np.mean(active_loading))
+        else:
+            max_loading = 0.0
+            mean_loading = 0.0
+
+        overloaded = active & (loading > 100.0)
+        hard_overloaded = active & (loading > 120.0)
+
+        # Voltage limits are not in BUS_FEATURE_COLUMNS, so we read them from
+        # the original scenario frames. This is cheap compared with DataFrame copying.
+        bus_df = original_frames["bus"]
+
+        vmin = bus_df["min_vm_pu"].to_numpy(dtype=np.float32)
+        vmax = bus_df["max_vm_pu"].to_numpy(dtype=np.float32)
+
+        low_voltage_violation = np.maximum(vmin - vm, 0.0)
+        high_voltage_violation = np.maximum(vm - vmax, 0.0)
+
+        total_low_voltage_violation = float(np.sum(low_voltage_violation))
+        total_high_voltage_violation = float(np.sum(high_voltage_violation))
+        total_voltage_violation = (
+                total_low_voltage_violation + total_high_voltage_violation
+        )
+
+        outaged_mask = br_status <= 0.0
+
+        metrics = {
+            "num_buses": int(bus_features.shape[0]),
+            "num_branches": int(branch_features.shape[0]),
+            "max_loading_percent": max_loading,
+            "mean_loading_percent": mean_loading,
+            "num_overloaded_branches": int(np.sum(overloaded)),
+            "num_hard_overloaded_branches": int(np.sum(hard_overloaded)),
+            "min_vm_pu": float(np.min(vm)),
+            "max_vm_pu": float(np.max(vm)),
+            "num_low_voltage_buses": int(np.sum(low_voltage_violation > 0.0)),
+            "num_high_voltage_buses": int(np.sum(high_voltage_violation > 0.0)),
+            "total_low_voltage_violation": total_low_voltage_violation,
+            "total_high_voltage_violation": total_high_voltage_violation,
+            "total_voltage_violation": total_voltage_violation,
+            "num_outaged_branches": int(np.sum(outaged_mask)),
+        }
+
+        outaged_branch_ids = [
+            int(branch_id)
+            for branch_id in previous_state.branch_ids[outaged_mask]
+        ]
+
+        return GridFMState(
+            scenario_id=int(scenario_id),
+            load_scenario_idx=float(previous_state.load_scenario_idx),
+            bus_features=bus_features.astype(np.float32),
+            branch_features=branch_features.astype(np.float32),
+            edge_index=previous_state.edge_index,
+            branch_ids=previous_state.branch_ids,
+            branch_status=br_status.astype(np.float32),
+            metrics=metrics,
+            outaged_branch_ids=outaged_branch_ids,
+        )
 
     def _build_state_from_pypower_result(
         self,
