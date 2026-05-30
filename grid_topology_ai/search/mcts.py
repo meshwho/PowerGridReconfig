@@ -105,7 +105,7 @@ class MCTSNode:
 
     visit_count: int = 0
     total_value: float = 0.0
-
+    neural_value: float | None = None
     is_expanded: bool = False
     action_priors: dict[int, float] = field(default_factory=dict)
     actions_by_id: dict[int, GridFMAction] = field(default_factory=dict)
@@ -452,10 +452,12 @@ class MCTSPlanner:
         neural_policy = None
 
         if self.evaluator is not None:
-            neural_policy, _ = self.evaluator.evaluate(
+            neural_policy, neural_value = self.evaluator.evaluate(
                 state=state,
                 action_mask=action_mask,
             )
+
+            node.neural_value = float(neural_value)
 
         stop_actions = [
             action for action in valid_actions if action.action_type == "do_nothing"
@@ -695,12 +697,17 @@ class MCTSPlanner:
             return self._scale_value(raw_value)
 
         if self.evaluator is not None:
+            if node.neural_value is not None:
+                return float(node.neural_value)
+
             action_mask = node.env.valid_action_mask()
 
             _, neural_value = self.evaluator.evaluate(
                 state=state,
                 action_mask=action_mask,
             )
+
+            node.neural_value = float(neural_value)
 
             return float(neural_value)
 

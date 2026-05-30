@@ -23,12 +23,18 @@ class NeuralPolicyValueEvaluator:
     """
 
     def __init__(
-        self,
-        checkpoint_path: str | Path,
-        device: str = "cpu",
+            self,
+            checkpoint_path: str | Path,
+            device: str = "cpu",
+            enable_cache: bool = True,
     ):
         self.checkpoint_path = Path(checkpoint_path)
         self.device = torch.device(device)
+        self.enable_cache = bool(enable_cache)
+
+        self._cache: dict[tuple, tuple[np.ndarray, float]] = {}
+        self.cache_hits = 0
+        self.cache_misses = 0
 
         if not self.checkpoint_path.exists():
             raise FileNotFoundError(f"Checkpoint not found: {self.checkpoint_path}")
@@ -59,6 +65,34 @@ class NeuralPolicyValueEvaluator:
         self.model.to(self.device)
         self.model.eval()
 
+    def clear_cache(self) -> None:
+        self._cache.clear()
+        self.cache_hits = 0
+        self.cache_misses = 0
+
+    def cache_info(self) -> dict:
+        total = self.cache_hits + self.cache_misses
+        hit_rate = self.cache_hits / total if total > 0 else 0.0
+
+        return {
+            "enabled": self.enable_cache,
+            "size": len(self._cache),
+            "hits": self.cache_hits,
+            "misses": self.cache_misses,
+            "hit_rate": hit_rate,
+        }
+
+    def _make_cache_key(
+            self,
+            state: GridFMState,
+            action_mask: np.ndarray,
+    ) -> tuple:
+        return (
+            int(state.scenario_id),
+            tuple(int(x) for x in sorted(state.outaged_branch_ids)),
+            action_mask.astype(bool).tobytes(),
+        )
+
     def evaluate(
         self,
         state: GridFMState,
@@ -75,6 +109,21 @@ class NeuralPolicyValueEvaluator:
         value:
             Normalized scalar value in [-1, 1].
         """
+
+        cache_key = self._make_cache_key(
+            state=state,
+            action_mask=action_mask,
+        )
+
+        if self.enable_cache and cache_key in self._cache:
+            self.cache_hits += 1
+
+            cached_policy, cached_value = self._cache[cache_key]
+
+            return cached_policy.copy(), float(cached_value)
+
+        if self.enable_cache:
+            self.cache_misses += 1
 
         state_vector = SelfPlayDataset._make_flat_state_vector(
             bus_features=state.bus_features.astype(np.float32),
@@ -123,5 +172,8 @@ class NeuralPolicyValueEvaluator:
             valid = action_mask.astype(bool)
             policy = np.zeros_like(policy, dtype=np.float32)
             policy[valid] = 1.0 / max(int(valid.sum()), 1)
+
+        if self.enable_cache:
+            self._cache[cache_key] = (policy.copy(), float(value_float))
 
         return policy, value_float

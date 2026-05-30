@@ -324,6 +324,9 @@ def main() -> None:
 
     print("\nPower flow cache:")
     print(backend.cache_info())
+    if evaluator is not None:
+        print("\nNeural evaluator cache:")
+        print(evaluator.cache_info())
 
     episode_elapsed = time.perf_counter() - episode_start_time
 
