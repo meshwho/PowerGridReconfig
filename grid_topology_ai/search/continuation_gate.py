@@ -388,6 +388,73 @@ def analyze_root_branches(
             ),
         )
 
+    # ------------------------------------------------------------------
+    # Hard-overload fallback
+    # ------------------------------------------------------------------
+    # If hard overloads are still present, do not stop just because the
+    # strict gate did not find a fully convincing continuation.
+    #
+    # Stopping with hard overload teaches the policy to do nothing in an
+    # unsafe state. For self-play this is especially harmful.
+    #
+    # Therefore:
+    #   - if hard overload exists;
+    #   - and no branch passed the strict allow rules;
+    #   - execute the most trusted non-stop branch as a fallback.
+    #
+    # This keeps exploration alive on new/OOD GridFM scenarios.
+    if root_has_hard:
+        non_stop_branches = [
+            branch
+            for branch in branches
+            if int(branch.action_id) != 0 and branch.branch_id is not None
+        ]
+
+        if non_stop_branches:
+            fallback = sorted(
+                non_stop_branches,
+                key=lambda item: (
+                    item.confidence_ok,
+                    item.visits,
+                    item.improvement,
+                ),
+                reverse=True,
+            )[0]
+
+            return ContinuationDecision(
+                selected_action_id=int(fallback.action_id),
+                selected_branch_id=fallback.branch_id,
+                selected_reason="fallback_hard_overload_best_non_stop_by_visits",
+                root_penalty=float(root_penalty),
+                root_has_hard_overload=root_has_hard,
+                root_num_hard=root_num_hard,
+                best_visit_action_id=result.best_action_id,
+                best_visit_branch_id=result.best_branch_id,
+                best_allowed_action_id=None,
+                best_allowed_branch_id=None,
+                best_allowed_improvement=0.0,
+                best_improvement_action_id=(
+                    None
+                    if best_improvement_branch is None
+                    else best_improvement_branch.action_id
+                ),
+                best_improvement_branch_id=(
+                    None
+                    if best_improvement_branch is None
+                    else best_improvement_branch.branch_id
+                ),
+                best_improvement=(
+                    0.0
+                    if best_improvement_branch is None
+                    else float(best_improvement_branch.improvement)
+                ),
+                branches=sorted(
+                    branches,
+                    key=lambda item: (item.allow, item.visits, item.improvement),
+                    reverse=True,
+                ),
+            )
+
     return ContinuationDecision(
         selected_action_id=0,
         selected_branch_id=None,

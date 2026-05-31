@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
-
+from grid_topology_ai.search.continuation_gate import topology_penalty
 from grid_topology_ai.action_space import GridFMAction
 from grid_topology_ai.data_adapter import BRANCH_FEATURE_COLUMNS
 from grid_topology_ai.environment import TopologyStepResult, TopologySwitchingEnv
