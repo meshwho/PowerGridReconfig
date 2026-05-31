@@ -43,7 +43,10 @@ def compute_safety_score(row: dict) -> float:
 
     if solved:
         score += 1000.0
-    elif reason == "handoff_to_redispatch":
+    elif reason in {
+        "handoff_to_redispatch",
+        "handoff_to_redispatch_with_hard_overload",
+    }:
         score += 500.0
     elif reason == "max_steps_reached":
         score -= 300.0
@@ -77,6 +80,7 @@ def run_episode(
     min_soft_improvement: float,
     min_gate_visits: int,
     min_gate_visit_fraction: float,
+    allow_handoff_with_hard_overloads: bool = False,
 ) -> dict:
     env = TopologySwitchingEnv(
         adapter=adapter,
@@ -84,6 +88,7 @@ def run_episode(
         action_space=action_space,
         reward_fn=reward_fn,
         max_steps=max_steps,
+        allow_handoff_with_hard_overloads=allow_handoff_with_hard_overloads,
     )
 
     env.reset(scenario_id)
@@ -276,6 +281,14 @@ def main() -> None:
         help="Disable power flow/action/evaluator caches.",
     )
 
+    parser.add_argument(
+        "--allow-handoff-with-hard-overloads",
+        action="store_true",
+        help=(
+            "Treat action 0 as redispatch handoff even when hard overloads remain."
+        ),
+    )
+
     args = parser.parse_args()
 
     raw_dir = Path(args.raw_dir)
@@ -290,6 +303,7 @@ def main() -> None:
     print(f"Transitions:   {transitions_path.resolve()}")
     print(f"Checkpoint:    {checkpoint_path.resolve()}")
     print(f"Use continuation gate: {args.use_continuation_gate}")
+    print(f"Allow hard handoff: {args.allow_handoff_with_hard_overloads}")
 
     if args.use_continuation_gate:
         print(f"  min hard improvement: {args.min_hard_improvement}")
@@ -355,6 +369,7 @@ def main() -> None:
             min_soft_improvement=args.min_soft_improvement,
             min_gate_visits=args.min_gate_visits,
             min_gate_visit_fraction=args.min_gate_visit_fraction,
+            allow_handoff_with_hard_overloads=args.allow_handoff_with_hard_overloads,
         )
 
         rows.append(row)

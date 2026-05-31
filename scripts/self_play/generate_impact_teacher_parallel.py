@@ -182,6 +182,142 @@ def _make_action_for_env(
 
     return env.action_by_id(action_id)
 
+def _force_stop_action_valid(action_mask: np.ndarray) -> np.ndarray:
+    """
+    Ensure that action 0 can be used as a teacher handoff target.
+
+    This is important because the training dataset masks target_policy by
+    action_mask. If action 0 is False in the mask, the stop/handoff target
+    would be erased during training.
+    """
+
+    fixed_mask = np.array(action_mask, dtype=bool).copy()
+
+    if fixed_mask.shape[0] > 0:
+        fixed_mask[0] = True
+
+    return fixed_mask
+
+
+def _get_state_hard_count(state) -> int:
+    return int(state.metrics["num_hard_overloaded_branches"])
+
+
+def _get_state_overloaded_count(state) -> int:
+    return int(state.metrics["num_overloaded_branches"])
+
+
+def _get_state_max_loading(state) -> float:
+    return float(state.metrics["max_loading_percent"])
+
+
+def should_continue_teacher_action(
+    safety_before: float,
+    safety_after: float,
+    state_before,
+    state_after,
+    task: dict[str, Any],
+) -> tuple[bool, str, float]:
+    """
+    Decide whether the teacher should execute the next topology action
+    or hand off the remaining problem to redispatch.
+
+    Returns:
+        continue_action:
+            True  -> save/execute topology action;
+            False -> save action 0 as handoff_to_redispatch.
+
+        reason:
+            Human-readable decision reason.
+
+        improvement:
+            safety_before - safety_after.
+    """
+
+    if state_after is None:
+        return False, "power_flow_failed", -float("inf")
+
+    safety_before = float(safety_before)
+    safety_after = float(safety_after)
+    improvement = float(safety_before - safety_after)
+
+    hard_before = _get_state_hard_count(state_before)
+    hard_after = _get_state_hard_count(state_after)
+
+    max_before = _get_state_max_loading(state_before)
+    max_after = _get_state_max_loading(state_after)
+
+    allow_hard_increase = bool(task["allow_hard_count_increase"])
+
+    if hard_after > hard_before and not allow_hard_increase:
+        return (
+            False,
+            f"hard_count_increase_{hard_before}_to_{hard_after}",
+            improvement,
+        )
+
+    max_loading_increase_limit = float(task["max_loading_increase_limit"])
+
+    if max_after > max_before + max_loading_increase_limit:
+        return (
+            False,
+            f"max_loading_increase_{max_before:.2f}_to_{max_after:.2f}",
+            improvement,
+        )
+
+    # Different thresholds are useful:
+    # - while hard overload exists, we allow smaller useful steps;
+    # - after hard overload is cleared, we require stronger improvement,
+    #   otherwise redispatch is preferred.
+    if hard_before > 0:
+        required_improvement = float(task["min_continue_improvement_with_hard"])
+    else:
+        required_improvement = float(task["min_continue_improvement_without_hard"])
+
+    # Always accept a step that reduces hard-overload count and improves safety.
+    if hard_after < hard_before and improvement > 0.0:
+        return True, "hard_count_reduced", improvement
+
+    if improvement < required_improvement:
+        return (
+            False,
+            f"improvement_too_small_{improvement:.2f}_lt_{required_improvement:.2f}",
+            improvement,
+        )
+
+    return True, "useful_safety_improvement", improvement
+
+
+def make_handoff_step_item(
+    step_idx: int,
+    state_before,
+    action_mask: np.ndarray,
+    safety_before: float,
+    reason: str,
+) -> dict[str, Any]:
+    """
+    Create a training example for action 0 = handoff to redispatch.
+    """
+
+    fixed_action_mask = _force_stop_action_valid(action_mask)
+
+    return {
+        "step": int(step_idx),
+        "state": state_before,
+        "action_mask": fixed_action_mask,
+        "selected_action_id": 0,
+        "selected_branch_id": None,
+        "policy_target": make_one_hot_policy(0),
+        "visit_counts": {0: 1},
+        "safety_before": float(safety_before),
+        "safety_after": float(safety_before),
+        "step_reward": 0.0,
+        "env_reward": 0.0,
+        "done_after_step": True,
+        "solved_after_step": False,
+        "termination_reason_after_step": "handoff_to_redispatch_teacher",
+        "teacher_decision_reason": reason,
+    }
 
 def process_one_scenario_worker(task: dict[str, Any]) -> dict[str, Any]:
     """
@@ -314,6 +450,9 @@ def process_one_scenario_worker(task: dict[str, Any]) -> dict[str, Any]:
             int(task["max_teacher_steps"]),
         )
 
+        handoff_added = False
+        handoff_reason: str | None = None
+
         for step_idx in range(max_teacher_steps):
             if replay_env.done:
                 break
@@ -329,24 +468,39 @@ def process_one_scenario_worker(task: dict[str, Any]) -> dict[str, Any]:
             selected_branch_id = best.branch_ids[step_idx]
 
             if not _action_is_valid(action_mask, selected_action_id):
-                return {
-                    "ok": False,
-                    "scenario_id": scenario_id,
-                    "reason": (
-                        f"teacher action invalid during replay: "
-                        f"step={step_idx}, action_id={selected_action_id}"
-                    ),
-                    "traceback": None,
-                }
+                if bool(task["add_handoff_example"]):
+                    safety_before = safety_score(state_before)
+
+                    step_items.append(
+                        make_handoff_step_item(
+                            step_idx=step_idx,
+                            state_before=state_before,
+                            action_mask=action_mask,
+                            safety_before=safety_before,
+                            reason=f"teacher_action_invalid_{selected_action_id}",
+                        )
+                    )
+
+                    step_rewards.append(0.0)
+                    handoff_added = True
+                    handoff_reason = f"teacher_action_invalid_{selected_action_id}"
+
+                break
 
             safety_before = safety_score(state_before)
 
+            # --------------------------------------------------------------
+            # Test the candidate teacher action on a cloned environment first.
+            # We do not mutate replay_env until we know that the action is useful.
+            # --------------------------------------------------------------
+            candidate_env = replay_env.clone()
+
             selected_action = _make_action_for_env(
-                env=replay_env,
+                env=candidate_env,
                 action_id=selected_action_id,
             )
 
-            step_result = replay_env.step(selected_action)
+            step_result = candidate_env.step(selected_action)
 
             next_state = step_result.next_state
 
@@ -355,11 +509,40 @@ def process_one_scenario_worker(task: dict[str, Any]) -> dict[str, Any]:
             else:
                 safety_after = safety_score(next_state)
 
-            # Teacher reward is safety improvement at this step.
-            # Lower safety_score is better, so improvement = before - after.
-            step_reward = float(safety_before - safety_after)
+            continue_action, continue_reason, step_improvement = (
+                should_continue_teacher_action(
+                    safety_before=safety_before,
+                    safety_after=safety_after,
+                    state_before=state_before,
+                    state_after=next_state,
+                    task=task,
+                )
+            )
 
-            # Keep the actual env reward for diagnostics.
+            if not continue_action:
+                if bool(task["add_handoff_example"]):
+                    step_items.append(
+                        make_handoff_step_item(
+                            step_idx=step_idx,
+                            state_before=state_before,
+                            action_mask=action_mask,
+                            safety_before=safety_before,
+                            reason=continue_reason,
+                        )
+                    )
+
+                    step_rewards.append(0.0)
+                    handoff_added = True
+                    handoff_reason = continue_reason
+
+                break
+
+            # --------------------------------------------------------------
+            # The action is useful. Accept the cloned environment as the new
+            # replay environment.
+            # --------------------------------------------------------------
+            replay_env = candidate_env
+
             env_reward = float(step_result.reward)
 
             if step_idx == 0 and bool(task["use_soft_root_policy"]):
@@ -382,20 +565,60 @@ def process_one_scenario_worker(task: dict[str, Any]) -> dict[str, Any]:
                     "visit_counts": visit_counts,
                     "safety_before": float(safety_before),
                     "safety_after": float(safety_after),
-                    "step_reward": float(step_reward),
+                    "step_reward": float(step_improvement),
                     "env_reward": float(env_reward),
                     "done_after_step": bool(step_result.done),
                     "solved_after_step": bool(step_result.solved),
                     "termination_reason_after_step": step_result.info.get(
                         "termination_reason"
                     ),
+                    "teacher_decision_reason": continue_reason,
                 }
             )
 
-            step_rewards.append(float(step_reward))
+            step_rewards.append(float(step_improvement))
 
             if step_result.done:
                 break
+
+        # ------------------------------------------------------------------
+        # Add final handoff example after the useful topology sequence.
+        # ------------------------------------------------------------------
+        # If the teacher executed all useful planned topology actions and did
+        # not explicitly stop yet, teach the network that the next decision is
+        # handoff_to_redispatch.
+        #
+        # This prevents the policy from learning:
+        #     "always continue switching until max_steps_reached"
+        #
+        # Instead, it learns:
+        #     "perform useful topology actions, then stop/handoff".
+        if (
+                bool(task["add_handoff_example"])
+                and not handoff_added
+                and not replay_env.done
+        ):
+            final_teacher_state = replay_env.current_state
+
+            if final_teacher_state is not None:
+                final_action_mask = replay_env.valid_action_mask()
+                final_safety_before = safety_score(final_teacher_state)
+
+                final_stop_step = len(step_items)
+
+                step_items.append(
+                    make_handoff_step_item(
+                        step_idx=final_stop_step,
+                        state_before=final_teacher_state,
+                        action_mask=final_action_mask,
+                        safety_before=final_safety_before,
+                        reason="terminal_handoff_after_useful_sequence",
+                    )
+                )
+
+                step_rewards.append(0.0)
+                handoff_added = True
+                handoff_reason = "terminal_handoff_after_useful_sequence"
 
         if not step_items:
             return {
@@ -479,6 +702,9 @@ def process_one_scenario_worker(task: dict[str, Any]) -> dict[str, Any]:
                     ),
                     "use_soft_root_policy": bool(task["use_soft_root_policy"]),
                     "evaluated_actions": int(result.evaluated_actions),
+                    "teacher_decision_reason": item.get("teacher_decision_reason"),
+                    "handoff_added": bool(handoff_added),
+                    "handoff_reason": handoff_reason,
                 },
             )
 
@@ -496,7 +722,9 @@ def process_one_scenario_worker(task: dict[str, Any]) -> dict[str, Any]:
                     "solved": bool(replay_env.solved),
                     "done": bool(replay_env.done),
                     "termination_reason": (
-                        replay_env.termination_reason or "teacher_depth_limit"
+                        "handoff_to_redispatch_teacher"
+                        if handoff_added
+                        else (replay_env.termination_reason or "teacher_depth_limit")
                     ),
                     "visit_counts_json": json.dumps(
                         {str(k): int(v) for k, v in item["visit_counts"].items()}
@@ -570,6 +798,14 @@ def build_tasks(
                 "allow_hard_count_increase": bool(args.allow_hard_count_increase),
                 "disable_cache": bool(args.disable_cache),
                 "power_flow_failure_penalty": float(args.power_flow_failure_penalty),
+                "min_continue_improvement_with_hard": float(
+                    args.min_continue_improvement_with_hard
+                ),
+                "min_continue_improvement_without_hard": float(
+                    args.min_continue_improvement_without_hard
+                ),
+                "max_loading_increase_limit": float(args.max_loading_increase_limit),
+                "add_handoff_example": bool(args.add_handoff_example),
             }
         )
 
@@ -801,6 +1037,44 @@ def main() -> None:
         help="Optional scenario limit for quick testing.",
     )
 
+    parser.add_argument(
+        "--min-continue-improvement-with-hard",
+        type=float,
+        default=250.0,
+        help=(
+            "Minimum safety-score improvement required to continue topology "
+            "switching while hard overloads still exist."
+        ),
+    )
+
+    parser.add_argument(
+        "--min-continue-improvement-without-hard",
+        type=float,
+        default=500.0,
+        help=(
+            "Minimum safety-score improvement required to continue topology "
+            "switching after hard overloads are removed."
+        ),
+    )
+
+    parser.add_argument(
+        "--max-loading-increase-limit",
+        type=float,
+        default=5.0,
+        help=(
+            "Reject teacher action if it increases max loading by more than "
+            "this number of percentage points."
+        ),
+    )
+
+    parser.add_argument(
+        "--add-handoff-example",
+        action="store_true",
+        help=(
+            "Add action 0 teacher example when the next topology action is not useful."
+        ),
+    )
+
     args = parser.parse_args()
 
     raw_dir = Path(args.raw_dir)
@@ -841,6 +1115,10 @@ def main() -> None:
     print(f"Allow hard increase:  {args.allow_hard_count_increase}")
     print(f"Cache enabled:        {not args.disable_cache}")
     print(f"Num workers:          {args.num_workers}")
+    print(f"Continue improvement hard:    {args.min_continue_improvement_with_hard}")
+    print(f"Continue improvement no hard: {args.min_continue_improvement_without_hard}")
+    print(f"Max loading increase limit:   {args.max_loading_increase_limit}")
+    print(f"Add handoff examples:         {args.add_handoff_example}")
 
     tasks = build_tasks(
         scenario_ids=scenario_ids,

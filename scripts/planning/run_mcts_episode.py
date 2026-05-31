@@ -147,6 +147,14 @@ def main() -> None:
     parser.add_argument("--min-gate-visits", type=int, default=5)
     parser.add_argument("--min-gate-visit-fraction", type=float, default=0.01)
 
+    parser.add_argument(
+        "--allow-handoff-with-hard-overloads",
+        action="store_true",
+        help=(
+            "Treat action 0 as redispatch handoff even when hard overloads remain."
+        ),
+    )
+
     args = parser.parse_args()
 
     raw_dir = Path(args.raw_dir)
@@ -171,6 +179,7 @@ def main() -> None:
     print(f"Cache enabled:  {not args.disable_cache}")
 
     print(f"Continuation gate: {args.use_continuation_gate}")
+    print(f"Allow hard handoff: {args.allow_handoff_with_hard_overloads}")
 
     if args.use_continuation_gate:
         print(f"  min hard improvement: {args.min_hard_improvement}")
@@ -196,6 +205,7 @@ def main() -> None:
         action_space=action_space,
         reward_fn=reward_fn,
         max_steps=args.max_steps,
+        allow_handoff_with_hard_overloads=args.allow_handoff_with_hard_overloads,
     )
 
     config = MCTSConfig(

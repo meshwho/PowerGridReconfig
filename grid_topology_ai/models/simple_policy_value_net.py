@@ -58,7 +58,13 @@ class SimplePolicyValueNet(nn.Module):
         policy_logits = self.policy_head(features)
 
         if action_mask is not None:
-            policy_logits = policy_logits.masked_fill(~action_mask, -1e9)
+            # AMP / float16 cannot represent very large negative constants
+            # such as -1e9. Use a dtype-safe value instead.
+            if action_mask.dtype is not torch.bool:
+                action_mask = action_mask.bool()
+
+            mask_value = torch.finfo(policy_logits.dtype).min
+            policy_logits = policy_logits.masked_fill(~action_mask, mask_value)
 
         value = self.value_head(features).squeeze(-1)
 

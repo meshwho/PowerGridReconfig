@@ -67,13 +67,16 @@ class TopologySwitchingEnv:
         action_space: GridFMActionSpace,
         reward_fn: GridFMReward,
         max_steps: int = 5,
+        allow_handoff_with_hard_overloads: bool = False,
     ):
         self.adapter = adapter
         self.backend = backend
         self.action_space = action_space
         self.reward_fn = reward_fn
         self.max_steps = int(max_steps)
-
+        self.allow_handoff_with_hard_overloads = bool(
+            allow_handoff_with_hard_overloads
+        )
         self.current_state: GridFMState | None = None
         self.initial_scenario_id: int | None = None
         self.step_count: int = 0
@@ -195,6 +198,7 @@ class TopologySwitchingEnv:
             action_space=self.action_space,
             reward_fn=self.reward_fn,
             max_steps=self.max_steps,
+            allow_handoff_with_hard_overloads=self.allow_handoff_with_hard_overloads,
         )
 
         cloned.current_state = self.current_state
@@ -246,8 +250,9 @@ class TopologySwitchingEnv:
             self.termination_reason = "solved"
         elif num_hard_overloaded == 0:
             self.termination_reason = "handoff_to_redispatch"
+        elif self.allow_handoff_with_hard_overloads:
+            self.termination_reason = "handoff_to_redispatch_with_hard_overload"
         else:
-            # This should normally not happen if MCTS stop-policy is configured correctly.
             self.termination_reason = "unsafe_stop_with_hard_overload"
 
         return TopologyStepResult(
