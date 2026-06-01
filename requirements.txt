@@ -6,3 +6,4 @@ tqdm
 numba
 torch
 PyYAML
+tensorboard

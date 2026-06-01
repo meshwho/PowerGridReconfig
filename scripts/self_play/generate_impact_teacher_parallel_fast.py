@@ -30,19 +30,115 @@ from grid_topology_ai.search.impact_beam_search import (
 from grid_topology_ai.state_store import GridFMStateStore
 
 
+# ======================================================================================
+# Worker-global context
+# ======================================================================================
+
+_WORKER_CONTEXT: dict[str, Any] | None = None
+
+
+def _require_worker_context() -> dict[str, Any]:
+    global _WORKER_CONTEXT
+
+    if _WORKER_CONTEXT is None:
+        raise RuntimeError(
+            "Worker context is not initialized. "
+            "This should not happen when using ProcessPoolExecutor initializer."
+        )
+
+    return _WORKER_CONTEXT
+
+
+def init_worker_context(
+    raw_dir_str: str,
+    states_dir_str: str,
+    task_config: dict[str, Any],
+) -> None:
+    """
+    Initialize heavy objects once per worker process.
+
+    This is the main speed optimization.
+
+    Old slow behavior:
+        every scenario -> GridFMAdapter(raw_dir) -> read parquet again
+
+    New fast behavior:
+        every worker -> GridFMAdapter(raw_dir) once
+        worker then processes many scenarios using the same adapter/backend/action_space
+    """
+
+    global _WORKER_CONTEXT
+
+    raw_dir = Path(raw_dir_str)
+    states_dir = Path(states_dir_str)
+
+    adapter = GridFMAdapter(raw_dir)
+
+    backend = GridFMPowerFlowBackend(
+        adapter=adapter,
+        pf_alg=int(task_config["pf_alg"]),
+        max_iter=int(task_config["pf_max_iter"]),
+        enable_cache=not bool(task_config["disable_cache"]),
+    )
+
+    action_space = GridFMActionSpace(
+        require_connected_after_switch=True,
+        enable_cache=not bool(task_config["disable_cache"]),
+    )
+
+    reward_fn = GridFMReward()
+    state_store = GridFMStateStore(states_dir)
+
+    _WORKER_CONTEXT = {
+        "adapter": adapter,
+        "backend": backend,
+        "action_space": action_space,
+        "reward_fn": reward_fn,
+        "state_store": state_store,
+        "task_config": task_config,
+        "processed_in_worker": 0,
+    }
+
+
+def clear_worker_caches_if_needed() -> None:
+    """
+    Prevent long-running workers from accumulating too much cache memory.
+    """
+
+    ctx = _require_worker_context()
+    cfg = ctx["task_config"]
+
+    every = int(cfg["clear_caches_every"])
+
+    if every <= 0:
+        return
+
+    ctx["processed_in_worker"] = int(ctx.get("processed_in_worker", 0)) + 1
+
+    if ctx["processed_in_worker"] % every != 0:
+        return
+
+    backend = ctx["backend"]
+    action_space = ctx["action_space"]
+
+    if hasattr(backend, "clear_cache"):
+        backend.clear_cache()
+
+    if hasattr(action_space, "clear_cache"):
+        action_space.clear_cache()
+
+
+# ======================================================================================
+# Small helpers
+# ======================================================================================
+
+
 def discounted_returns(
     rewards: list[float],
     gamma: float,
 ) -> list[float]:
     """
     Compute discounted returns from every step.
-
-    Example:
-        rewards = [r0, r1, r2]
-
-        return[0] = r0 + gamma*r1 + gamma^2*r2
-        return[1] = r1 + gamma*r2
-        return[2] = r2
     """
 
     returns = [0.0 for _ in rewards]
@@ -56,10 +152,6 @@ def discounted_returns(
 
 
 def make_one_hot_policy(action_id: int) -> dict[int, float]:
-    """
-    Create deterministic policy target.
-    """
-
     return {int(action_id): 1.0}
 
 
@@ -68,18 +160,9 @@ def make_policy_from_final_beam(
     temperature: float,
 ) -> tuple[dict[int, float], dict[int, int]]:
     """
-    Convert final beam into a policy target over FIRST actions.
+    Convert final beam into a policy over first actions.
 
-    temperature <= 0:
-        one-hot policy for the best sequence first action.
-
-    temperature > 0:
-        soft policy. Final-beam trajectories close to the best safety score
-        receive higher weights.
-
-    This is used only for step 0. For later states, we use one-hot targets
-    from the selected teacher sequence, because we do not run a new beam search
-    for every intermediate state.
+    For teacher generation we usually use temperature=0, meaning one-hot target.
     """
 
     best_node = result.best_node
@@ -102,7 +185,6 @@ def make_policy_from_final_beam(
             continue
 
         action_id = int(node.action_ids[0])
-
         safety_gap = max(float(node.safety_score) - best_safety, 0.0)
         weight = float(np.exp(-safety_gap / float(temperature)))
 
@@ -122,40 +204,23 @@ def make_policy_from_final_beam(
     return policy, counts_by_action
 
 
-def load_scenario_ids(
-    transitions_path: Path,
-    limit: int | None,
-) -> list[int]:
+def _force_stop_action_valid(action_mask: np.ndarray) -> np.ndarray:
     """
-    Read scenario IDs from transitions CSV.
+    Make sure action 0 can be used as handoff target.
     """
 
-    if not transitions_path.exists():
-        raise FileNotFoundError(f"Transitions file not found: {transitions_path}")
+    fixed_mask = np.array(action_mask, dtype=bool).copy()
 
-    transitions = pd.read_csv(transitions_path)
+    if fixed_mask.shape[0] > 0:
+        fixed_mask[0] = True
 
-    if "scenario_id" not in transitions.columns:
-        raise ValueError(
-            f"Transitions file must contain scenario_id column: {transitions_path}"
-        )
-
-    scenario_ids = sorted(int(x) for x in transitions["scenario_id"].unique())
-
-    if limit is not None:
-        scenario_ids = scenario_ids[: int(limit)]
-
-    return scenario_ids
+    return fixed_mask
 
 
 def _action_is_valid(
     action_mask: np.ndarray,
     action_id: int,
 ) -> bool:
-    """
-    Check whether action_id is valid according to current state's action mask.
-    """
-
     action_id = int(action_id)
 
     if action_id < 0:
@@ -171,10 +236,6 @@ def _make_action_for_env(
     env: TopologySwitchingEnv,
     action_id: int,
 ):
-    """
-    Convert action_id to an executable environment action.
-    """
-
     action_id = int(action_id)
 
     if action_id == 0:
@@ -182,29 +243,9 @@ def _make_action_for_env(
 
     return env.action_by_id(action_id)
 
-def _force_stop_action_valid(action_mask: np.ndarray) -> np.ndarray:
-    """
-    Ensure that action 0 can be used as a teacher handoff target.
-
-    This is important because the training dataset masks target_policy by
-    action_mask. If action 0 is False in the mask, the stop/handoff target
-    would be erased during training.
-    """
-
-    fixed_mask = np.array(action_mask, dtype=bool).copy()
-
-    if fixed_mask.shape[0] > 0:
-        fixed_mask[0] = True
-
-    return fixed_mask
-
 
 def _get_state_hard_count(state) -> int:
     return int(state.metrics["num_hard_overloaded_branches"])
-
-
-def _get_state_overloaded_count(state) -> int:
-    return int(state.metrics["num_overloaded_branches"])
 
 
 def _get_state_max_loading(state) -> float:
@@ -221,17 +262,6 @@ def should_continue_teacher_action(
     """
     Decide whether the teacher should execute the next topology action
     or hand off the remaining problem to redispatch.
-
-    Returns:
-        continue_action:
-            True  -> save/execute topology action;
-            False -> save action 0 as handoff_to_redispatch.
-
-        reason:
-            Human-readable decision reason.
-
-        improvement:
-            safety_before - safety_after.
     """
 
     if state_after is None:
@@ -239,6 +269,7 @@ def should_continue_teacher_action(
 
     safety_before = float(safety_before)
     safety_after = float(safety_after)
+
     improvement = float(safety_before - safety_after)
 
     hard_before = _get_state_hard_count(state_before)
@@ -265,16 +296,11 @@ def should_continue_teacher_action(
             improvement,
         )
 
-    # Different thresholds are useful:
-    # - while hard overload exists, we allow smaller useful steps;
-    # - after hard overload is cleared, we require stronger improvement,
-    #   otherwise redispatch is preferred.
     if hard_before > 0:
         required_improvement = float(task["min_continue_improvement_with_hard"])
     else:
         required_improvement = float(task["min_continue_improvement_without_hard"])
 
-    # Always accept a step that reduces hard-overload count and improves safety.
     if hard_after < hard_before and improvement > 0.0:
         return True, "hard_count_reduced", improvement
 
@@ -319,47 +345,44 @@ def make_handoff_step_item(
         "teacher_decision_reason": reason,
     }
 
-def process_one_scenario_worker(task: dict[str, Any]) -> dict[str, Any]:
+
+def _safe_short_sequence(best_node) -> str:
+    if hasattr(best_node, "short_sequence"):
+        return str(best_node.short_sequence())
+
+    parts = []
+
+    for branch_id in getattr(best_node, "branch_ids", []):
+        parts.append("stop" if branch_id is None else str(branch_id))
+
+    return " -> ".join(parts) if parts else "(root)"
+
+
+# ======================================================================================
+# Scenario processing
+# ======================================================================================
+
+
+def process_one_scenario_fast(scenario_id: int) -> dict[str, Any]:
     """
-    Process one scenario.
+    Process one scenario using worker-global adapter/backend/action_space.
 
-    This function is self-contained so it can run inside a separate process
-    on Windows.
-
-    For each scenario:
-        1. reset environment;
-        2. run impact beam search once;
-        3. take the best sequence;
-        4. replay the sequence from the initial state;
-        5. save one training example for every step of that sequence.
-
-    This is the important difference from the previous teacher generator:
-    it creates multi-step imitation data, not only state_0 -> first_action.
+    This function does NOT create GridFMAdapter.
+    That is the main difference from generate_impact_teacher_parallel.py.
     """
 
-    scenario_id = int(task["scenario_id"])
-    raw_dir = Path(str(task["raw_dir"]))
-    states_dir = Path(str(task["states_dir"]))
+    ctx = _require_worker_context()
+
+    adapter = ctx["adapter"]
+    backend = ctx["backend"]
+    action_space = ctx["action_space"]
+    reward_fn = ctx["reward_fn"]
+    state_store = ctx["state_store"]
+    task = ctx["task_config"]
+
+    scenario_id = int(scenario_id)
 
     try:
-        adapter = GridFMAdapter(raw_dir)
-
-        backend = GridFMPowerFlowBackend(
-            adapter=adapter,
-            pf_alg=int(task["pf_alg"]),
-            enable_cache=not bool(task["disable_cache"]),
-        )
-
-        action_space = GridFMActionSpace(
-            require_connected_after_switch=True,
-            enable_cache=not bool(task["disable_cache"]),
-        )
-
-        reward_fn = GridFMReward()
-
-        # ------------------------------------------------------------------
-        # First environment: used by impact beam search.
-        # ------------------------------------------------------------------
         search_env = TopologySwitchingEnv(
             adapter=adapter,
             backend=backend,
@@ -393,6 +416,8 @@ def process_one_scenario_worker(task: dict[str, Any]) -> dict[str, Any]:
         best = result.best_node
 
         if not best.action_ids:
+            clear_worker_caches_if_needed()
+
             return {
                 "ok": False,
                 "scenario_id": scenario_id,
@@ -404,6 +429,8 @@ def process_one_scenario_worker(task: dict[str, Any]) -> dict[str, Any]:
         total_safety_improvement = float(initial_safety - final_teacher_safety)
 
         if total_safety_improvement < float(task["min_safety_improvement"]):
+            clear_worker_caches_if_needed()
+
             return {
                 "ok": False,
                 "scenario_id": scenario_id,
@@ -414,13 +441,14 @@ def process_one_scenario_worker(task: dict[str, Any]) -> dict[str, Any]:
                 "traceback": None,
             }
 
-        # Root soft policy can be useful for step 0.
         root_policy_target, root_visit_counts = make_policy_from_final_beam(
             result=result,
             temperature=float(task["soft_policy_temperature"]),
         )
 
         if not root_policy_target:
+            clear_worker_caches_if_needed()
+
             return {
                 "ok": False,
                 "scenario_id": scenario_id,
@@ -428,10 +456,6 @@ def process_one_scenario_worker(task: dict[str, Any]) -> dict[str, Any]:
                 "traceback": None,
             }
 
-        # ------------------------------------------------------------------
-        # Second environment: replay best teacher sequence step by step.
-        # We save a training example before every action.
-        # ------------------------------------------------------------------
         replay_env = TopologySwitchingEnv(
             adapter=adapter,
             backend=backend,
@@ -489,10 +513,6 @@ def process_one_scenario_worker(task: dict[str, Any]) -> dict[str, Any]:
 
             safety_before = safety_score(state_before)
 
-            # --------------------------------------------------------------
-            # Test the candidate teacher action on a cloned environment first.
-            # We do not mutate replay_env until we know that the action is useful.
-            # --------------------------------------------------------------
             candidate_env = replay_env.clone()
 
             selected_action = _make_action_for_env(
@@ -501,7 +521,6 @@ def process_one_scenario_worker(task: dict[str, Any]) -> dict[str, Any]:
             )
 
             step_result = candidate_env.step(selected_action)
-
             next_state = step_result.next_state
 
             if next_state is None:
@@ -537,10 +556,6 @@ def process_one_scenario_worker(task: dict[str, Any]) -> dict[str, Any]:
 
                 break
 
-            # --------------------------------------------------------------
-            # The action is useful. Accept the cloned environment as the new
-            # replay environment.
-            # --------------------------------------------------------------
             replay_env = candidate_env
 
             env_reward = float(step_result.reward)
@@ -581,22 +596,11 @@ def process_one_scenario_worker(task: dict[str, Any]) -> dict[str, Any]:
             if step_result.done:
                 break
 
-        # ------------------------------------------------------------------
-        # Add final handoff example after the useful topology sequence.
-        # ------------------------------------------------------------------
-        # If the teacher executed all useful planned topology actions and did
-        # not explicitly stop yet, teach the network that the next decision is
-        # handoff_to_redispatch.
-        #
-        # This prevents the policy from learning:
-        #     "always continue switching until max_steps_reached"
-        #
-        # Instead, it learns:
-        #     "perform useful topology actions, then stop/handoff".
+        # Add final handoff after useful sequence.
         if (
-                bool(task["add_handoff_example"])
-                and not handoff_added
-                and not replay_env.done
+            bool(task["add_handoff_example"])
+            and not handoff_added
+            and not replay_env.done
         ):
             final_teacher_state = replay_env.current_state
 
@@ -621,6 +625,8 @@ def process_one_scenario_worker(task: dict[str, Any]) -> dict[str, Any]:
                 handoff_reason = "terminal_handoff_after_useful_sequence"
 
         if not step_items:
+            clear_worker_caches_if_needed()
+
             return {
                 "ok": False,
                 "scenario_id": scenario_id,
@@ -646,8 +652,6 @@ def process_one_scenario_worker(task: dict[str, Any]) -> dict[str, Any]:
             final_num_hard = int(final_state.metrics["num_hard_overloaded_branches"])
             final_num_overloaded = int(final_state.metrics["num_overloaded_branches"])
 
-        state_store = GridFMStateStore(states_dir)
-
         rows: list[dict[str, Any]] = []
 
         final_return = float(returns[0]) if returns else float(total_safety_improvement)
@@ -664,7 +668,7 @@ def process_one_scenario_worker(task: dict[str, Any]) -> dict[str, Any]:
                 state_id=state_id,
                 action_mask=item["action_mask"],
                 extra_metadata={
-                    "source": "impact_beam_teacher_multistep",
+                    "source": "impact_beam_teacher_multistep_fast",
                     "scenario_id": int(scenario_id),
                     "step": int(step_idx),
                     "initial_safety": float(initial_safety),
@@ -677,6 +681,9 @@ def process_one_scenario_worker(task: dict[str, Any]) -> dict[str, Any]:
                     "env_reward": float(item["env_reward"]),
                     "selected_action_id": int(item["selected_action_id"]),
                     "selected_branch_id": item["selected_branch_id"],
+                    "teacher_decision_reason": item.get("teacher_decision_reason"),
+                    "handoff_added": bool(handoff_added),
+                    "handoff_reason": handoff_reason,
                     "best_sequence_action_ids": [int(x) for x in best.action_ids],
                     "best_sequence_branch_ids": [
                         None if x is None else int(x)
@@ -686,9 +693,7 @@ def process_one_scenario_worker(task: dict[str, Any]) -> dict[str, Any]:
                     "best_num_hard_overloaded": int(best.num_hard_overloaded),
                     "best_num_overloaded": int(best.num_overloaded),
                     "best_total_hard_overload": float(best.total_hard_overload),
-                    "best_squared_hard_overload": float(
-                        best.squared_hard_overload
-                    ),
+                    "best_squared_hard_overload": float(best.squared_hard_overload),
                     "best_total_overload": float(best.total_overload),
                     "replay_final_max_loading_percent": float(final_max_loading),
                     "replay_final_num_hard_overloaded": int(final_num_hard),
@@ -697,14 +702,9 @@ def process_one_scenario_worker(task: dict[str, Any]) -> dict[str, Any]:
                     "beam_width": int(task["beam_width"]),
                     "candidate_pool": int(task["candidate_pool"]),
                     "top_k": int(task["top_k"]),
-                    "soft_policy_temperature": float(
-                        task["soft_policy_temperature"]
-                    ),
+                    "soft_policy_temperature": float(task["soft_policy_temperature"]),
                     "use_soft_root_policy": bool(task["use_soft_root_policy"]),
                     "evaluated_actions": int(result.evaluated_actions),
-                    "teacher_decision_reason": item.get("teacher_decision_reason"),
-                    "handoff_added": bool(handoff_added),
-                    "handoff_reason": handoff_reason,
                 },
             )
 
@@ -738,6 +738,8 @@ def process_one_scenario_worker(task: dict[str, Any]) -> dict[str, Any]:
                 }
             )
 
+        clear_worker_caches_if_needed()
+
         return {
             "ok": True,
             "scenario_id": int(scenario_id),
@@ -755,12 +757,16 @@ def process_one_scenario_worker(task: dict[str, Any]) -> dict[str, Any]:
                 "final_hard": int(final_num_hard),
                 "final_overloaded": int(final_num_overloaded),
                 "final_max_loading": float(final_max_loading),
-                "sequence": best.short_sequence(),
+                "sequence": _safe_short_sequence(best),
                 "evaluated_actions": int(result.evaluated_actions),
+                "handoff_added": bool(handoff_added),
+                "handoff_reason": handoff_reason,
             },
         }
 
     except Exception:
+        clear_worker_caches_if_needed()
+
         return {
             "ok": False,
             "scenario_id": scenario_id,
@@ -769,57 +775,68 @@ def process_one_scenario_worker(task: dict[str, Any]) -> dict[str, Any]:
         }
 
 
-def build_tasks(
-    scenario_ids: list[int],
-    raw_dir: Path,
-    states_dir: Path,
-    args: argparse.Namespace,
-) -> list[dict[str, Any]]:
+def process_scenario_batch(scenario_ids: list[int]) -> list[dict[str, Any]]:
     """
-    Build serializable worker tasks.
+    Process a batch of scenarios inside one worker.
+
+    Batch processing reduces ProcessPool overhead.
     """
 
-    tasks: list[dict[str, Any]] = []
+    results: list[dict[str, Any]] = []
 
     for scenario_id in scenario_ids:
-        tasks.append(
-            {
-                "scenario_id": int(scenario_id),
-                "raw_dir": str(raw_dir),
-                "states_dir": str(states_dir),
-                "depth": int(args.depth),
-                "beam_width": int(args.beam_width),
-                "candidate_pool": int(args.candidate_pool),
-                "top_k": int(args.top_k),
-                "gamma": float(args.gamma),
-                "pf_alg": int(args.pf_alg),
-                "max_steps": int(args.max_steps),
-                "max_teacher_steps": int(args.max_teacher_steps),
-                "soft_policy_temperature": float(args.soft_policy_temperature),
-                "use_soft_root_policy": bool(args.use_soft_root_policy),
-                "min_safety_improvement": float(args.min_safety_improvement),
-                "allow_hard_count_increase": bool(args.allow_hard_count_increase),
-                "disable_cache": bool(args.disable_cache),
-                "power_flow_failure_penalty": float(args.power_flow_failure_penalty),
-                "min_continue_improvement_with_hard": float(
-                    args.min_continue_improvement_with_hard
-                ),
-                "min_continue_improvement_without_hard": float(
-                    args.min_continue_improvement_without_hard
-                ),
-                "max_loading_increase_limit": float(args.max_loading_increase_limit),
-                "add_handoff_example": bool(args.add_handoff_example),
-            }
+        results.append(process_one_scenario_fast(int(scenario_id)))
+
+    return results
+
+
+# ======================================================================================
+# IO / CLI helpers
+# ======================================================================================
+
+
+def load_scenario_ids(
+    transitions_path: Path,
+    limit: int | None,
+) -> list[int]:
+    """
+    Read scenario IDs from transitions CSV, preserving file order.
+    """
+
+    if not transitions_path.exists():
+        raise FileNotFoundError(f"Transitions file not found: {transitions_path}")
+
+    transitions = pd.read_csv(transitions_path)
+
+    if "scenario_id" not in transitions.columns:
+        raise ValueError(
+            f"Transitions file must contain scenario_id column: {transitions_path}"
         )
 
-    return tasks
+    scenario_ids = [
+        int(x)
+        for x in transitions["scenario_id"].drop_duplicates().tolist()
+    ]
+
+    if limit is not None:
+        scenario_ids = scenario_ids[: int(limit)]
+
+    return scenario_ids
+
+
+def chunk_list(
+    values: list[int],
+    batch_size: int,
+) -> list[list[int]]:
+    batch_size = max(int(batch_size), 1)
+
+    return [
+        values[i : i + batch_size]
+        for i in range(0, len(values), batch_size)
+    ]
 
 
 def print_success(result: dict[str, Any]) -> None:
-    """
-    Print one successful scenario result.
-    """
-
     summary = result["summary"]
 
     print(
@@ -834,15 +851,12 @@ def print_success(result: dict[str, Any]) -> None:
         f"final_over={summary['final_overloaded']} | "
         f"final_max={summary['final_max_loading']:.2f}% | "
         f"eval={summary['evaluated_actions']} | "
+        f"handoff={summary['handoff_added']} | "
         f"seq={summary['sequence']}"
     )
 
 
 def print_failure(result: dict[str, Any]) -> None:
-    """
-    Print one failed/skipped scenario result.
-    """
-
     print(
         f"Scenario {result['scenario_id']}: skipped | "
         f"reason={result['reason']}"
@@ -852,62 +866,111 @@ def print_failure(result: dict[str, Any]) -> None:
         print(result["traceback"])
 
 
+def make_task_config(args: argparse.Namespace) -> dict[str, Any]:
+    return {
+        "depth": int(args.depth),
+        "beam_width": int(args.beam_width),
+        "candidate_pool": int(args.candidate_pool),
+        "top_k": int(args.top_k),
+        "gamma": float(args.gamma),
+        "pf_alg": int(args.pf_alg),
+        "pf_max_iter": int(args.pf_max_iter),
+        "max_steps": int(args.max_steps),
+        "max_teacher_steps": int(args.max_teacher_steps),
+        "soft_policy_temperature": float(args.soft_policy_temperature),
+        "use_soft_root_policy": bool(args.use_soft_root_policy),
+        "min_safety_improvement": float(args.min_safety_improvement),
+        "allow_hard_count_increase": bool(args.allow_hard_count_increase),
+        "disable_cache": bool(args.disable_cache),
+        "clear_caches_every": int(args.clear_caches_every),
+        "power_flow_failure_penalty": float(args.power_flow_failure_penalty),
+        "min_continue_improvement_with_hard": float(
+            args.min_continue_improvement_with_hard
+        ),
+        "min_continue_improvement_without_hard": float(
+            args.min_continue_improvement_without_hard
+        ),
+        "max_loading_increase_limit": float(args.max_loading_increase_limit),
+        "add_handoff_example": bool(args.add_handoff_example),
+    }
+
+
 def run_sequential(
-    tasks: list[dict[str, Any]],
+    scenario_batches: list[list[int]],
+    raw_dir: Path,
+    states_dir: Path,
+    task_config: dict[str, Any],
+    verbose_success: bool,
 ) -> tuple[list[dict[str, Any]], int, int]:
     """
-    Sequential generation.
+    Sequential mode with one persistent context in the main process.
+    Useful for lowest RAM usage and debugging.
     """
+
+    init_worker_context(
+        raw_dir_str=str(raw_dir),
+        states_dir_str=str(states_dir),
+        task_config=task_config,
+    )
 
     rows: list[dict[str, Any]] = []
     total_saved = 0
     total_skipped = 0
 
-    iterator = tasks
+    iterator = scenario_batches
 
     if tqdm is not None:
         iterator = tqdm(
-            tasks,
-            desc="Teacher scenarios",
-            unit="scenario",
+            scenario_batches,
+            desc="Teacher batches",
+            unit="batch",
             dynamic_ncols=True,
         )
 
-    for task in iterator:
-        result = process_one_scenario_worker(task)
+    for batch in iterator:
+        results = process_scenario_batch(batch)
 
-        if result["ok"]:
-            rows.extend(result["rows"])
-            total_saved += 1
-            print_success(result)
-        else:
-            total_skipped += 1
-            print_failure(result)
+        for result in results:
+            if result["ok"]:
+                rows.extend(result["rows"])
+                total_saved += 1
+
+                if verbose_success:
+                    print_success(result)
+            else:
+                total_skipped += 1
+                print_failure(result)
 
     return rows, total_saved, total_skipped
 
 
 def run_parallel(
-    tasks: list[dict[str, Any]],
+    scenario_batches: list[list[int]],
+    raw_dir: Path,
+    states_dir: Path,
+    task_config: dict[str, Any],
     num_workers: int,
+    verbose_success: bool,
 ) -> tuple[list[dict[str, Any]], int, int]:
     """
-    Parallel generation over scenarios.
-
-    Each worker handles a full impact beam search for one scenario and saves
-    all step states for that scenario.
+    Parallel mode with persistent per-worker contexts.
     """
 
     rows: list[dict[str, Any]] = []
     total_saved = 0
     total_skipped = 0
 
-    print(f"\nParallel mode: {num_workers} workers")
+    print(f"\nParallel fast mode: {num_workers} workers")
+    print(f"Batches:            {len(scenario_batches)}")
 
-    with ProcessPoolExecutor(max_workers=int(num_workers)) as executor:
+    with ProcessPoolExecutor(
+        max_workers=int(num_workers),
+        initializer=init_worker_context,
+        initargs=(str(raw_dir), str(states_dir), task_config),
+    ) as executor:
         futures = [
-            executor.submit(process_one_scenario_worker, task)
-            for task in tasks
+            executor.submit(process_scenario_batch, batch)
+            for batch in scenario_batches
         ]
 
         iterator = as_completed(futures)
@@ -916,30 +979,37 @@ def run_parallel(
             iterator = tqdm(
                 iterator,
                 total=len(futures),
-                desc="Teacher scenarios",
-                unit="scenario",
+                desc="Teacher batches",
+                unit="batch",
                 dynamic_ncols=True,
             )
 
         for future in iterator:
-            result = future.result()
+            batch_results = future.result()
 
-            if result["ok"]:
-                rows.extend(result["rows"])
-                total_saved += 1
-                print_success(result)
-            else:
-                total_skipped += 1
-                print_failure(result)
+            for result in batch_results:
+                if result["ok"]:
+                    rows.extend(result["rows"])
+                    total_saved += 1
+
+                    if verbose_success:
+                        print_success(result)
+                else:
+                    total_skipped += 1
+                    print_failure(result)
 
     return rows, total_saved, total_skipped
+
+
+# ======================================================================================
+# Main
+# ======================================================================================
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
-            "Generate multi-step teacher examples using safety-aware "
-            "impact beam search."
+            "Fast multi-step teacher generation using persistent worker contexts."
         )
     )
 
@@ -964,118 +1034,109 @@ def main() -> None:
     )
 
     parser.add_argument("--depth", type=int, default=4)
-    parser.add_argument("--beam-width", type=int, default=20)
-    parser.add_argument("--candidate-pool", type=int, default=160)
-    parser.add_argument("--top-k", type=int, default=70)
+    parser.add_argument("--beam-width", type=int, default=10)
+    parser.add_argument("--candidate-pool", type=int, default=80)
+    parser.add_argument("--top-k", type=int, default=30)
     parser.add_argument("--gamma", type=float, default=0.95)
     parser.add_argument("--pf-alg", type=int, default=3, choices=[1, 2, 3, 4])
+    parser.add_argument("--pf-max-iter", type=int, default=30)
     parser.add_argument("--max-steps", type=int, default=5)
 
     parser.add_argument(
         "--max-teacher-steps",
         type=int,
         default=4,
-        help=(
-            "Maximum number of teacher sequence steps to save as examples. "
-            "Usually equal to --depth."
-        ),
     )
 
     parser.add_argument(
         "--soft-policy-temperature",
         type=float,
-        default=500.0,
-        help=(
-            "Temperature for converting final beam into soft root policy. "
-            "Use 0 for deterministic one-hot root target."
-        ),
+        default=0.0,
     )
 
     parser.add_argument(
         "--use-soft-root-policy",
         action="store_true",
-        help=(
-            "Use soft final-beam policy for step 0. "
-            "All later steps use one-hot targets from the best teacher sequence."
-        ),
     )
 
     parser.add_argument(
         "--min-safety-improvement",
         type=float,
         default=0.0,
-        help="Skip scenario if best final safety improvement is below this value.",
     )
 
     parser.add_argument(
         "--allow-hard-count-increase",
         action="store_true",
-        help="Allow beam search to increase hard-overload count.",
     )
 
     parser.add_argument(
         "--disable-cache",
         action="store_true",
-        help="Disable power flow and action-space caches inside workers.",
+    )
+
+    parser.add_argument(
+        "--clear-caches-every",
+        type=int,
+        default=50,
+        help=(
+            "Clear backend/action-space caches after this many scenarios per worker. "
+            "Use 0 to never clear caches."
+        ),
     )
 
     parser.add_argument(
         "--power-flow-failure-penalty",
         type=float,
         default=1_000_000.0,
-        help="Safety penalty used if replay action causes power-flow failure.",
-    )
-
-    parser.add_argument(
-        "--num-workers",
-        type=int,
-        default=1,
-        help="Number of parallel worker processes. Use 1 for sequential mode.",
-    )
-
-    parser.add_argument(
-        "--limit",
-        type=int,
-        default=None,
-        help="Optional scenario limit for quick testing.",
     )
 
     parser.add_argument(
         "--min-continue-improvement-with-hard",
         type=float,
-        default=250.0,
-        help=(
-            "Minimum safety-score improvement required to continue topology "
-            "switching while hard overloads still exist."
-        ),
+        default=100.0,
     )
 
     parser.add_argument(
         "--min-continue-improvement-without-hard",
         type=float,
-        default=500.0,
-        help=(
-            "Minimum safety-score improvement required to continue topology "
-            "switching after hard overloads are removed."
-        ),
+        default=150.0,
     )
 
     parser.add_argument(
         "--max-loading-increase-limit",
         type=float,
         default=5.0,
-        help=(
-            "Reject teacher action if it increases max loading by more than "
-            "this number of percentage points."
-        ),
     )
 
     parser.add_argument(
         "--add-handoff-example",
         action="store_true",
-        help=(
-            "Add action 0 teacher example when the next topology action is not useful."
-        ),
+    )
+
+    parser.add_argument(
+        "--num-workers",
+        type=int,
+        default=2,
+    )
+
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=10,
+        help="Number of scenarios per submitted worker task.",
+    )
+
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+    )
+
+    parser.add_argument(
+        "--quiet-success",
+        action="store_true",
+        help="Do not print one line for every successful scenario.",
     )
 
     args = parser.parse_args()
@@ -1096,8 +1157,15 @@ def main() -> None:
         limit=args.limit,
     )
 
+    scenario_batches = chunk_list(
+        values=scenario_ids,
+        batch_size=int(args.batch_size),
+    )
+
+    task_config = make_task_config(args)
+
     print("=" * 100)
-    print("Generating multi-step impact-beam teacher examples")
+    print("Generating multi-step impact-beam teacher examples, FAST")
     print("=" * 100)
     print(f"Raw directory:        {raw_dir.resolve()}")
     print(f"Transitions:          {transitions_path.resolve()}")
@@ -1105,37 +1173,59 @@ def main() -> None:
     print(f"States dir:           {states_dir}")
     print(f"Examples CSV:         {examples_path}")
     print(f"Scenarios:            {len(scenario_ids)}")
+    print(f"Batches:              {len(scenario_batches)}")
+    print(f"Batch size:           {args.batch_size}")
     print(f"Depth:                {args.depth}")
     print(f"Beam width:           {args.beam_width}")
     print(f"Candidate pool:       {args.candidate_pool}")
     print(f"Top-K actions:        {args.top_k}")
     print(f"Gamma:                {args.gamma}")
     print(f"PF algorithm:         {args.pf_alg}")
+    print(f"PF max iter:          {args.pf_max_iter}")
     print(f"Max teacher steps:    {args.max_teacher_steps}")
     print(f"Soft root policy:     {args.use_soft_root_policy}")
     print(f"Soft policy temp:     {args.soft_policy_temperature}")
     print(f"Min safety improve:   {args.min_safety_improvement}")
+    print(f"Continue hard:        {args.min_continue_improvement_with_hard}")
+    print(f"Continue no hard:     {args.min_continue_improvement_without_hard}")
+    print(f"Max loading increase: {args.max_loading_increase_limit}")
     print(f"Allow hard increase:  {args.allow_hard_count_increase}")
     print(f"Cache enabled:        {not args.disable_cache}")
+    print(f"Clear caches every:   {args.clear_caches_every}")
     print(f"Num workers:          {args.num_workers}")
-    print(f"Continue improvement hard:    {args.min_continue_improvement_with_hard}")
-    print(f"Continue improvement no hard: {args.min_continue_improvement_without_hard}")
-    print(f"Max loading increase limit:   {args.max_loading_increase_limit}")
-    print(f"Add handoff examples:         {args.add_handoff_example}")
+    print(f"Quiet success:        {args.quiet_success}")
 
-    tasks = build_tasks(
-        scenario_ids=scenario_ids,
-        raw_dir=raw_dir,
-        states_dir=states_dir,
-        args=args,
-    )
+    if not raw_dir.exists():
+        raise FileNotFoundError(f"Raw directory not found: {raw_dir}")
+
+    for required_name in [
+        "bus_data.parquet",
+        "branch_data.parquet",
+        "gen_data.parquet",
+    ]:
+        required_path = raw_dir / required_name
+
+        if not required_path.exists():
+            raise FileNotFoundError(f"Required raw file not found: {required_path}")
+
+    verbose_success = not bool(args.quiet_success)
 
     if int(args.num_workers) <= 1:
-        rows, total_saved, total_skipped = run_sequential(tasks)
+        rows, total_saved, total_skipped = run_sequential(
+            scenario_batches=scenario_batches,
+            raw_dir=raw_dir,
+            states_dir=states_dir,
+            task_config=task_config,
+            verbose_success=verbose_success,
+        )
     else:
         rows, total_saved, total_skipped = run_parallel(
-            tasks=tasks,
+            scenario_batches=scenario_batches,
+            raw_dir=raw_dir,
+            states_dir=states_dir,
+            task_config=task_config,
             num_workers=int(args.num_workers),
+            verbose_success=verbose_success,
         )
 
     if not rows:
@@ -1150,13 +1240,23 @@ def main() -> None:
     examples_df.to_csv(examples_path, index=False)
 
     print("\n" + "=" * 100)
-    print("Multi-step impact teacher generation summary")
+    print("Fast multi-step impact teacher generation summary")
     print("=" * 100)
     print(f"Saved scenarios: {total_saved}")
     print(f"Skipped:         {total_skipped}")
     print(f"Saved examples:  {len(examples_df)}")
     print(f"Examples CSV:    {examples_path}")
     print(f"States dir:      {states_dir}")
+
+    print("\nStep distribution:")
+    print(examples_df.groupby("step").size().to_string())
+
+    print("\nAction 0 / handoff examples:")
+    print(int((examples_df["selected_action_id"] == 0).sum()))
+
+    print("\nTermination reasons:")
+    print(examples_df["termination_reason"].value_counts(dropna=False).to_string())
+
     print("\nDone.")
 
 

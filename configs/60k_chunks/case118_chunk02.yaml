@@ -1,0 +1,53 @@
+network:
+  name: "case118_ieee"
+  source: "pglib"
+
+load:
+  generator: "agg_load_profile"
+  agg_profile: "default"
+
+  # Это НЕ обязательно равно финальному числу строк.
+  # С topology_perturbation итоговых состояний обычно будет больше.
+  scenarios: 5000
+
+  sigma: 0.2
+  change_reactive_power: true
+
+  # Более широкий диапазон нагрузки даст больше перегрузок.
+  # Если будет слишком много слабых случаев около 100%, потом отфильтруем min-loading 105/110.
+  global_range: 0.5
+  max_scaling_factor: 2.0
+  step_size: 0.1
+  start_scaling_factor: 1.0
+
+topology_perturbation:
+  type: "random"
+  k: 1
+  n_topology_variants: 10
+  elements: [branch]
+
+generation_perturbation:
+  type: "none"
+
+admittance_perturbation:
+  type: "none"
+
+settings:
+  num_processes: 8
+  data_dir: "./data/gridfm_generated/case118_60000_pf/chunk02"
+  large_chunk_size: 1000
+  overwrite: true
+
+  # Нам нужен PF, потому что мы хотим состояния с нарушениями ограничений.
+  mode: "pf"
+
+  include_dc_res: false
+  enable_solver_logs: true
+
+  # Сначала оставим fast solver.
+  # Если будут ошибки сходимости, переключим на false.
+  pf_fast: true
+  dcpf_fast: true
+  max_iter: 200
+
+  seed: 45
