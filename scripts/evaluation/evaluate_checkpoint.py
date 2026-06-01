@@ -1,9 +1,17 @@
 from __future__ import annotations
 
 import argparse
+import traceback
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
+
+try:
+    from tqdm.auto import tqdm
+except ImportError:  # pragma: no cover
+    tqdm = None
 
 from grid_topology_ai.action_space import GridFMActionSpace
 from grid_topology_ai.data_adapter import GridFMAdapter
@@ -11,11 +19,142 @@ from grid_topology_ai.environment import TopologySwitchingEnv
 from grid_topology_ai.models.neural_evaluator import NeuralPolicyValueEvaluator
 from grid_topology_ai.pypower_backend import GridFMPowerFlowBackend
 from grid_topology_ai.reward import GridFMReward
-from grid_topology_ai.search.mcts import MCTSConfig, MCTSPlanner
 from grid_topology_ai.search.continuation_gate import (
     analyze_root_branches,
     make_do_nothing_action,
 )
+from grid_topology_ai.search.mcts import MCTSConfig, MCTSPlanner
+
+
+# ======================================================================================
+# Worker-global context
+# ======================================================================================
+
+_WORKER_CONTEXT: dict[str, Any] | None = None
+
+
+def _require_worker_context() -> dict[str, Any]:
+    global _WORKER_CONTEXT
+
+    if _WORKER_CONTEXT is None:
+        raise RuntimeError(
+            "Worker context is not initialized. "
+            "This should not happen when ProcessPoolExecutor initializer is used."
+        )
+
+    return _WORKER_CONTEXT
+
+
+def init_worker_context(
+    raw_dir_str: str,
+    checkpoint_path_str: str,
+    task_config: dict[str, Any],
+) -> None:
+    """
+    Initialize heavy objects once per worker process.
+
+    This is the main speed-up:
+    - GridFMAdapter is loaded once per worker;
+    - PYPOWER backend is created once per worker;
+    - action space cache is local to the worker;
+    - neural evaluator is loaded once per worker;
+    - MCTS planner is created once per worker.
+    """
+
+    global _WORKER_CONTEXT
+
+    raw_dir = Path(raw_dir_str)
+    checkpoint_path = Path(checkpoint_path_str)
+
+    adapter = GridFMAdapter(raw_dir)
+
+    backend = GridFMPowerFlowBackend(
+        adapter=adapter,
+        pf_alg=int(task_config["pf_alg"]),
+        enable_cache=not bool(task_config["disable_cache"]),
+    )
+
+    action_space = GridFMActionSpace(
+        require_connected_after_switch=True,
+        enable_cache=not bool(task_config["disable_cache"]),
+    )
+
+    reward_fn = GridFMReward()
+
+    evaluator = NeuralPolicyValueEvaluator(
+        checkpoint_path=checkpoint_path,
+        device=str(task_config["device"]),
+        enable_cache=not bool(task_config["disable_cache"]),
+    )
+
+    mcts_config = MCTSConfig(
+        num_simulations=int(task_config["simulations"]),
+        max_depth=int(task_config["depth"]),
+        top_k_actions=int(task_config["top_k"]),
+        gamma=float(task_config["gamma"]),
+        c_puct=float(task_config["c_puct"]),
+        leaf_penalty_weight=float(task_config["leaf_penalty_weight"]),
+        include_stop_action=True,
+        prior_exponent=float(task_config["prior_exponent"]),
+        stop_policy=str(task_config["stop_policy"]),
+
+        # Evaluation must be deterministic.
+        use_root_dirichlet_noise=False,
+    )
+
+    planner = MCTSPlanner(
+        config=mcts_config,
+        evaluator=evaluator,
+    )
+
+    _WORKER_CONTEXT = {
+        "adapter": adapter,
+        "backend": backend,
+        "action_space": action_space,
+        "reward_fn": reward_fn,
+        "evaluator": evaluator,
+        "planner": planner,
+        "task_config": task_config,
+        "processed_in_worker": 0,
+    }
+
+
+def clear_worker_caches_if_needed() -> None:
+    """
+    Prevent long-running workers from accumulating too much cache memory.
+    """
+
+    ctx = _require_worker_context()
+    task = ctx["task_config"]
+
+    every = int(task["clear_caches_every"])
+
+    if every <= 0:
+        return
+
+    ctx["processed_in_worker"] = int(ctx.get("processed_in_worker", 0)) + 1
+
+    if ctx["processed_in_worker"] % every != 0:
+        return
+
+    backend = ctx["backend"]
+    action_space = ctx["action_space"]
+    evaluator = ctx["evaluator"]
+
+    if hasattr(backend, "clear_cache"):
+        backend.clear_cache()
+
+    if hasattr(action_space, "clear_cache"):
+        action_space.clear_cache()
+
+    if hasattr(evaluator, "clear_cache"):
+        evaluator.clear_cache()
+
+
+# ======================================================================================
+# Scoring and episode execution
+# ======================================================================================
+
 
 def compute_safety_score(row: dict) -> float:
     """
@@ -66,6 +205,7 @@ def compute_safety_score(row: dict) -> float:
 
     return float(score)
 
+
 def run_episode(
     scenario_id: int,
     adapter: GridFMAdapter,
@@ -97,9 +237,9 @@ def run_episode(
     discounted_return = 0.0
     discount = 1.0
 
-    actions = []
-    branches = []
-    rewards = []
+    actions: list[int] = []
+    branches: list[int | None] = []
+    rewards: list[float] = []
 
     for _ in range(max_steps):
         if env.done:
@@ -187,6 +327,292 @@ def run_episode(
     return row
 
 
+def run_episode_from_worker_context(scenario_id: int) -> dict[str, Any]:
+    """
+    Run one scenario using objects initialized in the worker process.
+    """
+
+    ctx = _require_worker_context()
+
+    task = ctx["task_config"]
+
+    try:
+        row = run_episode(
+            scenario_id=int(scenario_id),
+            adapter=ctx["adapter"],
+            backend=ctx["backend"],
+            action_space=ctx["action_space"],
+            reward_fn=ctx["reward_fn"],
+            planner=ctx["planner"],
+            max_steps=int(task["max_steps"]),
+            gamma=float(task["gamma"]),
+            use_continuation_gate=bool(task["use_continuation_gate"]),
+            min_hard_improvement=float(task["min_hard_improvement"]),
+            min_soft_improvement=float(task["min_soft_improvement"]),
+            min_gate_visits=int(task["min_gate_visits"]),
+            min_gate_visit_fraction=float(task["min_gate_visit_fraction"]),
+            allow_handoff_with_hard_overloads=bool(
+                task["allow_handoff_with_hard_overloads"]
+            ),
+        )
+
+        clear_worker_caches_if_needed()
+
+        return {
+            "ok": True,
+            "scenario_id": int(scenario_id),
+            "row": row,
+            "traceback": None,
+        }
+
+    except Exception:
+        clear_worker_caches_if_needed()
+
+        return {
+            "ok": False,
+            "scenario_id": int(scenario_id),
+            "row": None,
+            "traceback": traceback.format_exc(),
+        }
+
+
+def run_scenario_batch(scenario_ids: list[int]) -> list[dict[str, Any]]:
+    """
+    Run a batch of scenarios inside one worker.
+
+    Batching reduces ProcessPool overhead.
+    """
+
+    results: list[dict[str, Any]] = []
+
+    for scenario_id in scenario_ids:
+        results.append(run_episode_from_worker_context(int(scenario_id)))
+
+    return results
+
+
+# ======================================================================================
+# CLI helpers
+# ======================================================================================
+
+
+def load_scenario_ids(
+    transitions_path: Path,
+    limit: int | None,
+) -> list[int]:
+    transitions = pd.read_csv(transitions_path)
+
+    if "scenario_id" not in transitions.columns:
+        raise ValueError(
+            f"Transitions CSV must contain scenario_id column: {transitions_path}"
+        )
+
+    scenario_ids = sorted(int(x) for x in transitions["scenario_id"].unique())
+
+    if limit is not None:
+        scenario_ids = scenario_ids[: int(limit)]
+
+    return scenario_ids
+
+
+def chunk_list(
+    values: list[int],
+    batch_size: int,
+) -> list[list[int]]:
+    batch_size = max(int(batch_size), 1)
+
+    return [
+        values[i : i + batch_size]
+        for i in range(0, len(values), batch_size)
+    ]
+
+
+def make_task_config(args: argparse.Namespace) -> dict[str, Any]:
+    return {
+        "simulations": int(args.simulations),
+        "depth": int(args.depth),
+        "max_steps": int(args.max_steps),
+        "top_k": int(args.top_k),
+        "gamma": float(args.gamma),
+        "c_puct": float(args.c_puct),
+        "prior_exponent": float(args.prior_exponent),
+        "leaf_penalty_weight": float(args.leaf_penalty_weight),
+        "stop_policy": str(args.stop_policy),
+        "device": str(args.device),
+        "pf_alg": int(args.pf_alg),
+        "disable_cache": bool(args.disable_cache),
+        "use_continuation_gate": bool(args.use_continuation_gate),
+        "min_hard_improvement": float(args.min_hard_improvement),
+        "min_soft_improvement": float(args.min_soft_improvement),
+        "min_gate_visits": int(args.min_gate_visits),
+        "min_gate_visit_fraction": float(args.min_gate_visit_fraction),
+        "allow_handoff_with_hard_overloads": bool(
+            args.allow_handoff_with_hard_overloads
+        ),
+        "clear_caches_every": int(args.clear_caches_every),
+    }
+
+
+def print_row(row: dict[str, Any]) -> None:
+    print(
+        f"Scenario {int(row['scenario_id']):>5} | "
+        f"reason={row['termination_reason']} | "
+        f"solved={row['solved']} | "
+        f"steps={row['steps']} | "
+        f"branches={row['branches']} | "
+        f"final_loading={float(row['final_max_loading_percent']):.2f}% | "
+        f"overloaded={row['final_num_overloaded_branches']} | "
+        f"hard={row['final_num_hard_overloaded_branches']} | "
+        f"R={float(row['discounted_return']):.2f} | "
+        f"score={float(row['safety_score']):.2f}"
+    )
+
+
+def print_summary(
+    df: pd.DataFrame,
+    failed_results: list[dict[str, Any]],
+) -> None:
+    print("\n" + "=" * 100)
+    print("Summary")
+    print("=" * 100)
+
+    print(f"\nEvaluated scenarios: {len(df)}")
+    print(f"Failed scenarios:    {len(failed_results)}")
+
+    if failed_results:
+        print("\nFailures:")
+        for item in failed_results[:20]:
+            print(f"  Scenario {item['scenario_id']}: failed")
+        if len(failed_results) > 20:
+            print(f"  ... {len(failed_results) - 20} more failures")
+
+    print("\nTermination reasons:")
+    print(df["termination_reason"].value_counts(dropna=False).to_string())
+
+    print("\nSolved:")
+    print(df["solved"].value_counts(dropna=False).to_string())
+
+    print("\nAverage metrics:")
+    print(f"  Avg discounted return: {df['discounted_return'].mean():.4f}")
+    print(f"  Avg final loading:     {df['final_max_loading_percent'].mean():.4f}%")
+    print(f"  Avg overloaded:        {df['final_num_overloaded_branches'].mean():.4f}")
+    print(f"  Avg hard overloaded:   {df['final_num_hard_overloaded_branches'].mean():.4f}")
+    print(f"  Avg safety score:     {df['safety_score'].mean():.4f}")
+    print(f"  Total safety score:   {df['safety_score'].sum():.4f}")
+
+
+def run_sequential(
+    scenario_batches: list[list[int]],
+    raw_dir: Path,
+    checkpoint_path: Path,
+    task_config: dict[str, Any],
+    quiet: bool,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """
+    Sequential execution with the same worker-context logic.
+
+    This keeps --num-workers 1 behavior close to the old script.
+    """
+
+    init_worker_context(
+        raw_dir_str=str(raw_dir),
+        checkpoint_path_str=str(checkpoint_path),
+        task_config=task_config,
+    )
+
+    rows: list[dict[str, Any]] = []
+    failed: list[dict[str, Any]] = []
+
+    iterator = scenario_batches
+
+    if tqdm is not None:
+        iterator = tqdm(
+            scenario_batches,
+            desc="Evaluating batches",
+            unit="batch",
+            dynamic_ncols=True,
+        )
+
+    for batch in iterator:
+        batch_results = run_scenario_batch(batch)
+
+        for result in batch_results:
+            if result["ok"]:
+                row = result["row"]
+                rows.append(row)
+
+                if not quiet:
+                    print_row(row)
+            else:
+                failed.append(result)
+                print(f"Scenario {result['scenario_id']}: failed")
+                print(result["traceback"])
+
+    return rows, failed
+
+
+def run_parallel(
+    scenario_batches: list[list[int]],
+    raw_dir: Path,
+    checkpoint_path: Path,
+    task_config: dict[str, Any],
+    num_workers: int,
+    quiet: bool,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """
+    Parallel evaluation.
+
+    Each worker process loads its own GridFMAdapter, backend, action space,
+    neural evaluator and MCTS planner once.
+    """
+
+    rows: list[dict[str, Any]] = []
+    failed: list[dict[str, Any]] = []
+
+    with ProcessPoolExecutor(
+        max_workers=int(num_workers),
+        initializer=init_worker_context,
+        initargs=(str(raw_dir), str(checkpoint_path), task_config),
+    ) as executor:
+        futures = [
+            executor.submit(run_scenario_batch, batch)
+            for batch in scenario_batches
+        ]
+
+        iterator = as_completed(futures)
+
+        if tqdm is not None:
+            iterator = tqdm(
+                iterator,
+                total=len(futures),
+                desc="Evaluating batches",
+                unit="batch",
+                dynamic_ncols=True,
+            )
+
+        for future in iterator:
+            batch_results = future.result()
+
+            for result in batch_results:
+                if result["ok"]:
+                    row = result["row"]
+                    rows.append(row)
+
+                    if not quiet:
+                        print_row(row)
+                else:
+                    failed.append(result)
+                    print(f"Scenario {result['scenario_id']}: failed")
+                    print(result["traceback"])
+
+    return rows, failed
+
+
+# ======================================================================================
+# Main
+# ======================================================================================
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Evaluate a neural policy-value checkpoint with deterministic MCTS."
@@ -255,6 +681,13 @@ def main() -> None:
     parser.add_argument("--prior-exponent", type=float, default=0.5)
 
     parser.add_argument(
+        "--leaf-penalty-weight",
+        type=float,
+        default=0.10,
+        help="Weight of safety/penalty term inside MCTS leaf evaluation.",
+    )
+
+    parser.add_argument(
         "--stop-policy",
         type=str,
         default="no_hard_overloads",
@@ -265,6 +698,7 @@ def main() -> None:
         "--device",
         type=str,
         default="cpu",
+        help="Neural evaluator device: cpu, cuda, or auto depending on evaluator support.",
     )
 
     parser.add_argument(
@@ -289,21 +723,87 @@ def main() -> None:
         ),
     )
 
+    parser.add_argument(
+        "--num-workers",
+        type=int,
+        default=1,
+        help=(
+            "Number of parallel worker processes. "
+            "Use 1 for old sequential behavior. "
+            "On CUDA start with 2 workers to avoid GPU memory issues."
+        ),
+    )
+
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=5,
+        help="Number of scenarios per worker task.",
+    )
+
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Evaluate only the first N scenarios from transitions CSV.",
+    )
+
+    parser.add_argument(
+        "--quiet",
+        action="store_true",
+        help="Do not print one line per scenario. Much faster on Windows PowerShell.",
+    )
+
+    parser.add_argument(
+        "--output-csv",
+        type=str,
+        default=None,
+        help="Optional path to save per-scenario evaluation results.",
+    )
+
+    parser.add_argument(
+        "--clear-caches-every",
+        type=int,
+        default=100,
+        help=(
+            "Clear backend/action/evaluator caches after this many scenarios per worker. "
+            "Use 0 to never clear caches."
+        ),
+    )
+
     args = parser.parse_args()
 
     raw_dir = Path(args.raw_dir)
     transitions_path = Path(args.transitions)
     checkpoint_path = Path(args.checkpoint)
 
+    scenario_ids = load_scenario_ids(
+        transitions_path=transitions_path,
+        limit=args.limit,
+    )
+
+    scenario_batches = chunk_list(
+        values=scenario_ids,
+        batch_size=int(args.batch_size),
+    )
+
+    task_config = make_task_config(args)
+
     print("=" * 100)
     print("Evaluating checkpoint")
     print("=" * 100)
 
-    print(f"Raw directory: {raw_dir.resolve()}")
-    print(f"Transitions:   {transitions_path.resolve()}")
-    print(f"Checkpoint:    {checkpoint_path.resolve()}")
+    print(f"Raw directory:       {raw_dir.resolve()}")
+    print(f"Transitions:         {transitions_path.resolve()}")
+    print(f"Checkpoint:          {checkpoint_path.resolve()}")
     print(f"Use continuation gate: {args.use_continuation_gate}")
-    print(f"Allow hard handoff: {args.allow_handoff_with_hard_overloads}")
+    print(f"Allow hard handoff:  {args.allow_handoff_with_hard_overloads}")
+    print(f"Scenarios:           {len(scenario_ids)}")
+    print(f"Batches:             {len(scenario_batches)}")
+    print(f"Batch size:          {args.batch_size}")
+    print(f"Num workers:         {args.num_workers}")
+    print(f"Device:              {args.device}")
+    print(f"Quiet:               {args.quiet}")
 
     if args.use_continuation_gate:
         print(f"  min hard improvement: {args.min_hard_improvement}")
@@ -311,109 +811,74 @@ def main() -> None:
         print(f"  min gate visits:      {args.min_gate_visits}")
         print(f"  min gate visit frac:  {args.min_gate_visit_fraction}")
 
-    transitions = pd.read_csv(transitions_path)
-    scenario_ids = sorted(int(x) for x in transitions["scenario_id"].unique())
-
-    adapter = GridFMAdapter(raw_dir)
-    backend = GridFMPowerFlowBackend(
-        adapter=adapter,
-        pf_alg=args.pf_alg,
-        enable_cache=not args.disable_cache,
-    )
-    action_space = GridFMActionSpace(
-        require_connected_after_switch=True,
-        enable_cache=not args.disable_cache,
-    )
-    reward_fn = GridFMReward()
-
-    evaluator = NeuralPolicyValueEvaluator(
-        checkpoint_path=checkpoint_path,
-        device=args.device,
-        enable_cache=not args.disable_cache,
-    )
-
-    config = MCTSConfig(
-        num_simulations=args.simulations,
-        max_depth=args.depth,
-        top_k_actions=args.top_k,
-        gamma=args.gamma,
-        c_puct=args.c_puct,
-        leaf_penalty_weight=0.10,
-        include_stop_action=True,
-        prior_exponent=args.prior_exponent,
-        stop_policy=args.stop_policy,
-
-        # Evaluation must be deterministic.
-        use_root_dirichlet_noise=False,
-    )
-
-    planner = MCTSPlanner(
-        config=config,
-        evaluator=evaluator,
-    )
-
-    rows = []
-
-    for scenario_id in scenario_ids:
-        row = run_episode(
-            scenario_id=scenario_id,
-            adapter=adapter,
-            backend=backend,
-            action_space=action_space,
-            reward_fn=reward_fn,
-            planner=planner,
-            max_steps=args.max_steps,
-            gamma=args.gamma,
-            use_continuation_gate=args.use_continuation_gate,
-            min_hard_improvement=args.min_hard_improvement,
-            min_soft_improvement=args.min_soft_improvement,
-            min_gate_visits=args.min_gate_visits,
-            min_gate_visit_fraction=args.min_gate_visit_fraction,
-            allow_handoff_with_hard_overloads=args.allow_handoff_with_hard_overloads,
-        )
-
-        rows.append(row)
-
+    if str(args.device).lower().startswith("cuda") and int(args.num_workers) > 1:
         print(
-            f"Scenario {scenario_id:>3} | "
-            f"reason={row['termination_reason']} | "
-            f"solved={row['solved']} | "
-            f"steps={row['steps']} | "
-            f"branches={row['branches']} | "
-            f"final_loading={row['final_max_loading_percent']:.2f}% | "
-            f"overloaded={row['final_num_overloaded_branches']} | "
-            f"hard={row['final_num_hard_overloaded_branches']} | "
-            f"R={row['discounted_return']:.2f} | "
-            f"score={row['safety_score']:.2f}"
+            "\nWARNING: CUDA + multiple worker processes means each worker loads "
+            "its own model copy on GPU. Start with --num-workers 2. "
+            "If CUDA memory grows too much, use --num-workers 1 or --device cpu.\n"
         )
+
+    if not raw_dir.exists():
+        raise FileNotFoundError(f"Raw directory not found: {raw_dir}")
+
+    if not transitions_path.exists():
+        raise FileNotFoundError(f"Transitions CSV not found: {transitions_path}")
+
+    if not checkpoint_path.exists():
+        raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
+
+    if int(args.num_workers) <= 1:
+        rows, failed_results = run_sequential(
+            scenario_batches=scenario_batches,
+            raw_dir=raw_dir,
+            checkpoint_path=checkpoint_path,
+            task_config=task_config,
+            quiet=bool(args.quiet),
+        )
+    else:
+        rows, failed_results = run_parallel(
+            scenario_batches=scenario_batches,
+            raw_dir=raw_dir,
+            checkpoint_path=checkpoint_path,
+            task_config=task_config,
+            num_workers=int(args.num_workers),
+            quiet=bool(args.quiet),
+        )
+
+    if not rows:
+        raise RuntimeError("No scenarios were successfully evaluated.")
+
     df = pd.DataFrame(rows)
+    df = df.sort_values("scenario_id", ascending=True).reset_index(drop=True)
 
-    print("\n" + "=" * 100)
-    print("Summary")
-    print("=" * 100)
+    if args.output_csv is not None:
+        output_csv_path = Path(args.output_csv)
+        output_csv_path.parent.mkdir(parents=True, exist_ok=True)
+        df.to_csv(output_csv_path, index=False)
+        print(f"\nSaved evaluation CSV: {output_csv_path}")
 
-    print("\nTermination reasons:")
-    print(df["termination_reason"].value_counts(dropna=False).to_string())
+    print_summary(
+        df=df,
+        failed_results=failed_results,
+    )
 
-    print("\nSolved:")
-    print(df["solved"].value_counts(dropna=False).to_string())
+    if int(args.num_workers) <= 1:
+        ctx = _require_worker_context()
 
-    print("\nAverage metrics:")
-    print(f"  Avg discounted return: {df['discounted_return'].mean():.4f}")
-    print(f"  Avg final loading:     {df['final_max_loading_percent'].mean():.4f}%")
-    print(f"  Avg overloaded:        {df['final_num_overloaded_branches'].mean():.4f}")
-    print(f"  Avg hard overloaded:   {df['final_num_hard_overloaded_branches'].mean():.4f}")
-    print(f"  Avg safety score:     {df['safety_score'].mean():.4f}")
-    print(f"  Total safety score:   {df['safety_score'].sum():.4f}")
+        print("\nPower flow cache:")
+        print(ctx["backend"].cache_info())
 
-    print("\nPower flow cache:")
-    print(backend.cache_info())
+        print("\nAction space cache:")
+        print(ctx["action_space"].cache_info())
 
-    print("\nAction space cache:")
-    print(action_space.cache_info())
-
-    print("\nNeural evaluator cache:")
-    print(evaluator.cache_info())
+        print("\nNeural evaluator cache:")
+        print(ctx["evaluator"].cache_info())
+    else:
+        print("\nCache info:")
+        print(
+            "Parallel mode uses separate per-process caches. "
+            "Global cache statistics are not aggregated."
+        )
 
     print("\nDone.")
 
