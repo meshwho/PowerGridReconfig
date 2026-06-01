@@ -9,6 +9,7 @@ from grid_topology_ai.data_adapter import GridFMState
 from grid_topology_ai.models.graph_policy_value_net import GraphPolicyValueNet
 from grid_topology_ai.models.self_play_dataset import SelfPlayDataset
 from grid_topology_ai.models.simple_policy_value_net import SimplePolicyValueNet
+from grid_topology_ai.models.graph_policy_value_net_v2 import GraphPolicyValueNetV2
 
 
 class NeuralPolicyValueEvaluator:
@@ -55,7 +56,10 @@ class NeuralPolicyValueEvaluator:
             self.checkpoint.get("model_type", "simple_policy_value_net")
         )
 
-        if self.model_type == "graph_policy_value_net":
+        if self.model_type in {
+            "graph_policy_value_net",
+            "graph_policy_value_net_v2",
+        }:
             self._init_graph_model()
         elif self.model_type in {
             "simple_policy_value_net",
@@ -66,7 +70,7 @@ class NeuralPolicyValueEvaluator:
         else:
             raise ValueError(
                 f"Unsupported checkpoint model_type={self.model_type!r}. "
-                "Expected 'simple_policy_value_net' or 'graph_policy_value_net'."
+                "Expected 'simple_policy_value_net', 'graph_policy_value_net' or 'graph_policy_value_net_v2'."
             )
 
         self.model.to(self.device)
@@ -134,7 +138,12 @@ class NeuralPolicyValueEvaluator:
         self.bus_feature_std[self.bus_feature_std < 1e-6] = 1.0
         self.branch_feature_std[self.branch_feature_std < 1e-6] = 1.0
 
-        self.model = GraphPolicyValueNet(
+        if self.model_type == "graph_policy_value_net_v2":
+            model_cls = GraphPolicyValueNetV2
+        else:
+            model_cls = GraphPolicyValueNet
+
+        self.model = model_cls(
             num_bus_features=self.num_bus_features,
             num_branch_features=self.num_branch_features,
             num_actions=self.num_actions,
@@ -221,7 +230,10 @@ class NeuralPolicyValueEvaluator:
                 f"got {action_mask.shape[0]}"
             )
 
-        if self.model_type == "graph_policy_value_net":
+        if self.model_type in {
+            "graph_policy_value_net",
+            "graph_policy_value_net_v2",
+        }:
             policy, value_float = self._evaluate_graph(
                 state=state,
                 action_mask=action_mask,

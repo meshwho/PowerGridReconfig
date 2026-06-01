@@ -17,7 +17,7 @@ except ImportError:
 
 from grid_topology_ai.models.graph_policy_value_net import GraphPolicyValueNet
 from grid_topology_ai.models.graph_self_play_dataset import GraphSelfPlayDataset
-
+from grid_topology_ai.models.graph_policy_value_net_v2 import GraphPolicyValueNetV2
 
 def resolve_device(device_arg: str) -> torch.device:
     """
@@ -108,7 +108,7 @@ def make_checkpoint(
     normalization = dataset.normalization_state_dict()
 
     checkpoint = {
-        "model_type": "graph_policy_value_net",
+        "model_type": str(getattr(model, "model_type", "graph_policy_value_net")),
         "model_state_dict": model_state_dict_cpu,
 
         "num_bus_features": int(dataset.num_bus_features),
@@ -136,6 +136,103 @@ def make_checkpoint(
 
     return checkpoint
 
+def checkpoint_variant_path(
+    output_path: Path,
+    variant_name: str,
+) -> Path:
+    """
+    Build path for additional checkpoint variants.
+
+    Example:
+        graph_policy_value_net_v2.pt
+        graph_policy_value_net_v2_best_switch.pt
+    """
+
+    return output_path.with_name(
+        f"{output_path.stem}_{variant_name}{output_path.suffix}"
+    )
+
+
+def compute_policy_selection_score(
+    val_metrics: dict[str, float],
+) -> float:
+    """
+    Composite score for selecting policy-useful checkpoints.
+
+    Higher is better.
+
+    This score is not a scientific metric.
+    It is a practical checkpoint-selection metric for MCTS.
+
+    We care about:
+    - top1: direct imitation quality;
+    - top5: whether MCTS sees the correct action among candidates;
+    - switch_acc: branch-selection quality;
+    - stop_acc: handoff quality;
+    - value_loss: small penalty, because bad value can hurt search.
+    """
+
+    top1 = float(val_metrics["top1"])
+    top5 = float(val_metrics["top5"])
+    stop = float(val_metrics["stop_acc"])
+    switch = float(val_metrics["switch_acc"])
+    value_loss = float(val_metrics["value_loss"])
+
+    balance = min(stop, switch)
+
+    score = (
+        1.00 * top1
+        + 1.00 * top5
+        + 1.50 * switch
+        + 0.50 * stop
+        + 0.50 * balance
+        - 0.25 * value_loss
+    )
+
+    return float(score)
+
+
+def save_checkpoint_now(
+    *,
+    path: Path,
+    model: GraphPolicyValueNet,
+    dataset: GraphSelfPlayDataset,
+    args: argparse.Namespace,
+    device: torch.device,
+    use_amp: bool,
+    epoch: int,
+    selector_name: str,
+    selector_value: float,
+    val_metrics: dict[str, float] | None,
+) -> None:
+    """
+    Save checkpoint immediately when a selector improves.
+
+    This protects us from losing a useful checkpoint if training later overfits
+    or if the run is interrupted.
+    """
+
+    checkpoint = make_checkpoint(
+        model=model,
+        dataset=dataset,
+        args=args,
+        device=device,
+        use_amp=use_amp,
+    )
+
+    checkpoint["saved_epoch"] = int(epoch)
+    checkpoint["selector_name"] = str(selector_name)
+    checkpoint["selector_value"] = float(selector_value)
+
+    if val_metrics is not None:
+        checkpoint["val_metrics"] = {
+            key: float(value)
+            for key, value in val_metrics.items()
+            if isinstance(value, (int, float))
+        }
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    torch.save(checkpoint, path)
 
 def train_one_epoch(
     model: GraphPolicyValueNet,
@@ -731,6 +828,23 @@ def main() -> None:
         help="Optional CSV file for epoch metrics.",
     )
 
+    parser.add_argument(
+        "--model-type",
+        type=str,
+        default="graph_v1",
+        choices=["graph_v1", "graph_v2"],
+        help="Graph model architecture: graph_v1 or graph_v2.",
+    )
+
+    parser.add_argument(
+        "--save-multiple-best",
+        action="store_true",
+        help=(
+            "Save several best checkpoint variants: "
+            "best_loss, best_top1, best_top5, best_switch, best_policy, and last."
+        ),
+    )
+
     args = parser.parse_args()
 
     device = resolve_device(args.device)
@@ -787,6 +901,7 @@ def main() -> None:
     print(f"Hidden dim:    {args.hidden_dim}")
     print(f"Num layers:    {args.num_layers}")
     print(f"Dropout:       {args.dropout}")
+    print(f"Model type:    {args.model_type}")
 
     if val_dataset is not None:
         print(f"Val examples:   {len(val_dataset)}")
@@ -819,14 +934,24 @@ def main() -> None:
             pin_memory=pin_memory,
         )
 
-    model = GraphPolicyValueNet(
-        num_bus_features=dataset.num_bus_features,
-        num_branch_features=dataset.num_branch_features,
-        num_actions=dataset.num_actions,
-        hidden_dim=args.hidden_dim,
-        num_layers=args.num_layers,
-        dropout=args.dropout,
-    ).to(device)
+    if args.model_type == "graph_v2":
+        model = GraphPolicyValueNetV2(
+            num_bus_features=dataset.num_bus_features,
+            num_branch_features=dataset.num_branch_features,
+            num_actions=dataset.num_actions,
+            hidden_dim=args.hidden_dim,
+            num_layers=args.num_layers,
+            dropout=args.dropout,
+        ).to(device)
+    else:
+        model = GraphPolicyValueNet(
+            num_bus_features=dataset.num_bus_features,
+            num_branch_features=dataset.num_branch_features,
+            num_actions=dataset.num_actions,
+            hidden_dim=args.hidden_dim,
+            num_layers=args.num_layers,
+            dropout=args.dropout,
+        ).to(device)
 
     optimizer = torch.optim.AdamW(
         model.parameters(),
@@ -840,6 +965,18 @@ def main() -> None:
     best_metric = float("inf")
     best_epoch = 0
     best_checkpoint = None
+
+    best_top1 = -float("inf")
+    best_top1_epoch = 0
+
+    best_top5 = -float("inf")
+    best_top5_epoch = 0
+
+    best_switch = -float("inf")
+    best_switch_epoch = 0
+
+    best_policy_score = -float("inf")
+    best_policy_score_epoch = 0
 
     for epoch in range(1, args.epochs + 1):
         total_loss, policy_loss, value_loss = train_one_epoch(
@@ -878,6 +1015,99 @@ def main() -> None:
                     device=device,
                     use_amp=use_amp,
                 )
+
+            if args.save_multiple_best:
+                current_top1 = float(val_metrics["top1"])
+                current_top5 = float(val_metrics["top5"])
+                current_switch = float(val_metrics["switch_acc"])
+                current_policy_score = compute_policy_selection_score(val_metrics)
+
+                # Best by validation loss.
+                if current_metric <= best_metric:
+                    save_checkpoint_now(
+                        path=checkpoint_variant_path(output_path, "best_loss"),
+                        model=model,
+                        dataset=dataset,
+                        args=args,
+                        device=device,
+                        use_amp=use_amp,
+                        epoch=epoch,
+                        selector_name="val_loss",
+                        selector_value=current_metric,
+                        val_metrics=val_metrics,
+                    )
+
+                # Best by top-1 accuracy.
+                if current_top1 > best_top1:
+                    best_top1 = current_top1
+                    best_top1_epoch = epoch
+
+                    save_checkpoint_now(
+                        path=checkpoint_variant_path(output_path, "best_top1"),
+                        model=model,
+                        dataset=dataset,
+                        args=args,
+                        device=device,
+                        use_amp=use_amp,
+                        epoch=epoch,
+                        selector_name="val_top1",
+                        selector_value=current_top1,
+                        val_metrics=val_metrics,
+                    )
+
+                # Best by top-5 accuracy.
+                if current_top5 > best_top5:
+                    best_top5 = current_top5
+                    best_top5_epoch = epoch
+
+                    save_checkpoint_now(
+                        path=checkpoint_variant_path(output_path, "best_top5"),
+                        model=model,
+                        dataset=dataset,
+                        args=args,
+                        device=device,
+                        use_amp=use_amp,
+                        epoch=epoch,
+                        selector_name="val_top5",
+                        selector_value=current_top5,
+                        val_metrics=val_metrics,
+                    )
+
+                # Best by switch accuracy.
+                if current_switch > best_switch:
+                    best_switch = current_switch
+                    best_switch_epoch = epoch
+
+                    save_checkpoint_now(
+                        path=checkpoint_variant_path(output_path, "best_switch"),
+                        model=model,
+                        dataset=dataset,
+                        args=args,
+                        device=device,
+                        use_amp=use_amp,
+                        epoch=epoch,
+                        selector_name="val_switch",
+                        selector_value=current_switch,
+                        val_metrics=val_metrics,
+                    )
+
+                # Best by composite policy score.
+                if current_policy_score > best_policy_score:
+                    best_policy_score = current_policy_score
+                    best_policy_score_epoch = epoch
+
+                    save_checkpoint_now(
+                        path=checkpoint_variant_path(output_path, "best_policy"),
+                        model=model,
+                        dataset=dataset,
+                        args=args,
+                        device=device,
+                        use_amp=use_amp,
+                        epoch=epoch,
+                        selector_name="policy_selection_score",
+                        selector_value=current_policy_score,
+                        val_metrics=val_metrics,
+                    )
 
             print(
                 f"Epoch {epoch:4d} | "
@@ -950,6 +1180,38 @@ def main() -> None:
         checkpoint["best_metric"] = float(best_metric)
 
     torch.save(checkpoint, output_path)
+
+    if args.save_multiple_best:
+        last_checkpoint_path = checkpoint_variant_path(output_path, "last")
+
+        last_checkpoint = make_checkpoint(
+            model=model,
+            dataset=dataset,
+            args=args,
+            device=device,
+            use_amp=use_amp,
+        )
+
+        last_checkpoint["saved_epoch"] = int(args.epochs)
+        last_checkpoint["selector_name"] = "last_epoch"
+        last_checkpoint["selector_value"] = float(args.epochs)
+
+        torch.save(last_checkpoint, last_checkpoint_path)
+
+        print("\nSaved additional checkpoint variants:")
+        print(checkpoint_variant_path(output_path, "best_loss"))
+        print(checkpoint_variant_path(output_path, "best_top1"))
+        print(checkpoint_variant_path(output_path, "best_top5"))
+        print(checkpoint_variant_path(output_path, "best_switch"))
+        print(checkpoint_variant_path(output_path, "best_policy"))
+        print(last_checkpoint_path)
+
+        print("\nBest selector epochs:")
+        print(f"  best_loss epoch:   {best_epoch}")
+        print(f"  best_top1 epoch:   {best_top1_epoch}")
+        print(f"  best_top5 epoch:   {best_top5_epoch}")
+        print(f"  best_switch epoch: {best_switch_epoch}")
+        print(f"  best_policy epoch: {best_policy_score_epoch}")
 
     if writer is not None:
         writer.close()
