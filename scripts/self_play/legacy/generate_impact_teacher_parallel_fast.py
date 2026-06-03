@@ -1,12 +1,10 @@
 from __future__ import annotations
 
 import argparse
-import gc
 import json
-import multiprocessing as mp
-import os
-import time
 import traceback
+import gc
+import os
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
@@ -19,8 +17,8 @@ try:
 except ImportError:  # pragma: no cover
     tqdm = None
 
-from grid_topology_ai.action_space import GridFMAction, GridFMActionSpace
-from grid_topology_ai.data_adapter import BRANCH_FEATURE_COLUMNS, GridFMAdapter
+from grid_topology_ai.action_space import GridFMActionSpace
+from grid_topology_ai.data_adapter import GridFMAdapter
 from grid_topology_ai.environment import TopologySwitchingEnv
 from grid_topology_ai.pypower_backend import GridFMPowerFlowBackend
 from grid_topology_ai.reward import GridFMReward
@@ -52,12 +50,6 @@ def _require_worker_context() -> dict[str, Any]:
 
     return _WORKER_CONTEXT
 
-
-# ======================================================================================
-# Memory helpers
-# ======================================================================================
-
-
 def get_process_memory_mb() -> float | None:
     """
     Return current process RSS memory in MB.
@@ -75,69 +67,6 @@ def get_process_memory_mb() -> float | None:
         return float(process.memory_info().rss) / (1024.0 * 1024.0)
     except Exception:
         return None
-
-
-def get_system_available_memory_mb() -> float | None:
-    """
-    Return available system RAM in MB.
-
-    psutil is optional. If unavailable, return None.
-    """
-
-    try:
-        import psutil
-    except Exception:
-        return None
-
-    try:
-        return float(psutil.virtual_memory().available) / (1024.0 * 1024.0)
-    except Exception:
-        return None
-
-
-def get_cpu_load_percent() -> float | None:
-    """
-    Return current total CPU load percent.
-
-    psutil is optional. If unavailable, return None.
-    """
-
-    try:
-        import psutil
-    except Exception:
-        return None
-
-    try:
-        return float(psutil.cpu_percent(interval=0.2))
-    except Exception:
-        return None
-
-
-def update_worker_memory_registry() -> None:
-    """
-    Update shared memory registry for the current worker.
-    """
-
-    ctx = _require_worker_context()
-    registry = ctx.get("memory_registry")
-
-    if registry is None:
-        return
-
-    memory_mb = get_process_memory_mb()
-
-    if memory_mb is None:
-        return
-
-    pid = int(os.getpid())
-
-    try:
-        registry[pid] = {
-            "rss_mb": float(memory_mb),
-            "timestamp": float(time.time()),
-        }
-    except Exception:
-        return
 
 
 def clear_worker_caches(reason: str = "manual") -> None:
@@ -172,86 +101,10 @@ def clear_worker_caches(reason: str = "manual") -> None:
             flush=True,
         )
 
-
-def maybe_clear_heaviest_worker_for_global_memory() -> None:
-    """
-    Cooperative global memory guard.
-
-    If system free memory is below a configured threshold, the currently running
-    worker checks whether it is the heaviest registered worker. If yes, it clears
-    its own local caches.
-
-    ProcessPoolExecutor does not provide a reliable way to directly command a
-    different running child process to clean its memory. This cooperative guard is
-    therefore checked after every processed scenario.
-    """
-
-    ctx = _require_worker_context()
-    cfg = ctx["task_config"]
-
-    min_free_mb = float(cfg.get("min_free_system_memory_mb", 0.0))
-
-    if min_free_mb <= 0.0:
-        return
-
-    available_mb = get_system_available_memory_mb()
-
-    if available_mb is None:
-        return
-
-    update_worker_memory_registry()
-
-    if available_mb >= min_free_mb:
-        return
-
-    registry = ctx.get("memory_registry")
-
-    if registry is None:
-        return
-
-    now = time.time()
-    max_age_sec = float(cfg.get("memory_registry_max_age_sec", 120.0))
-
-    heaviest_pid: int | None = None
-    heaviest_mb = -1.0
-
-    try:
-        for pid_raw, info in list(registry.items()):
-            pid = int(pid_raw)
-            rss_mb = float(info.get("rss_mb", 0.0))
-            timestamp = float(info.get("timestamp", 0.0))
-
-            if now - timestamp > max_age_sec:
-                continue
-
-            if rss_mb > heaviest_mb:
-                heaviest_mb = rss_mb
-                heaviest_pid = pid
-    except Exception:
-        return
-
-    current_pid = int(os.getpid())
-
-    if heaviest_pid == current_pid:
-        clear_worker_caches(
-            reason=(
-                f"global_memory_low_available_{available_mb:.1f}_mb_"
-                f"lt_{min_free_mb:.1f}_mb_heaviest_{heaviest_mb:.1f}_mb"
-            )
-        )
-        update_worker_memory_registry()
-
-
-# ======================================================================================
-# Worker initialization
-# ======================================================================================
-
-
 def init_worker_context(
     raw_dir_str: str,
     states_dir_str: str,
     task_config: dict[str, Any],
-    memory_registry=None,
 ) -> None:
     """
     Initialize heavy objects once per worker process.
@@ -296,20 +149,16 @@ def init_worker_context(
         "state_store": state_store,
         "task_config": task_config,
         "processed_in_worker": 0,
-        "memory_registry": memory_registry,
     }
-
-    update_worker_memory_registry()
 
 
 def clear_worker_caches_if_needed() -> None:
     """
     Prevent long-running workers from accumulating too much cache memory.
 
-    Mechanisms:
+    Two mechanisms:
     1. periodic cache clearing every N scenarios;
-    2. per-worker RSS threshold guard;
-    3. cooperative global system-memory guard.
+    2. memory threshold guard using current process RSS.
     """
 
     ctx = _require_worker_context()
@@ -317,9 +166,6 @@ def clear_worker_caches_if_needed() -> None:
 
     ctx["processed_in_worker"] = int(ctx.get("processed_in_worker", 0)) + 1
     processed = int(ctx["processed_in_worker"])
-
-    update_worker_memory_registry()
-    maybe_clear_heaviest_worker_for_global_memory()
 
     every = int(cfg["clear_caches_every"])
 
@@ -336,14 +182,12 @@ def clear_worker_caches_if_needed() -> None:
 
     if should_clear_by_memory:
         clear_worker_caches(
-            reason=f"worker_memory_guard_{memory_mb:.1f}_mb_ge_{max_memory_mb:.1f}_mb"
+            reason=f"memory_guard_{memory_mb:.1f}_mb_ge_{max_memory_mb:.1f}_mb"
         )
-        update_worker_memory_registry()
         return
 
     if should_clear_periodically:
         clear_worker_caches(reason=f"periodic_every_{every}")
-        update_worker_memory_registry()
 
 
 # ======================================================================================
@@ -577,257 +421,6 @@ def _safe_short_sequence(best_node) -> str:
 
 
 # ======================================================================================
-# LODF screening
-# ======================================================================================
-
-
-class LODFScreenedImpactBeamSearchPlanner(ImpactBeamSearchPlanner):
-    """
-    ImpactBeamSearchPlanner with optional LODF-based candidate screening.
-
-    Important:
-        LODF is used only before expensive AC PF.
-        Final children are still evaluated through env.step(), so teacher examples
-        remain AC-validated.
-    """
-
-    def __init__(
-        self,
-        config: ImpactBeamSearchConfig,
-        lodf_screen_top_k: int,
-        lodf_min_candidate_count: int = 1,
-    ):
-        super().__init__(config)
-
-        self.lodf_screen_top_k = int(lodf_screen_top_k)
-        self.lodf_min_candidate_count = int(lodf_min_candidate_count)
-
-    def _candidate_actions(
-        self,
-        env: TopologySwitchingEnv,
-    ) -> list[GridFMAction]:
-        base_actions = super()._candidate_actions(env)
-
-        if self.lodf_screen_top_k <= 0:
-            return base_actions
-
-        state = env.current_state
-
-        if state is None:
-            return base_actions
-
-        stop_actions = [
-            action
-            for action in base_actions
-            if action.action_type == "do_nothing"
-        ]
-
-        switch_actions = [
-            action
-            for action in base_actions
-            if action.action_type == "switch_off_branch"
-        ]
-
-        if len(switch_actions) < self.lodf_min_candidate_count:
-            return base_actions
-
-        if len(switch_actions) <= self.lodf_screen_top_k:
-            return base_actions
-
-        try:
-            ranked_switch_actions = rank_actions_by_lodf_screening(
-                state=state,
-                actions=switch_actions,
-            )
-        except Exception:
-            # LODF must never break teacher generation.
-            # Fall back to original loading-based candidate order.
-            ranked_switch_actions = switch_actions
-
-        selected_switch_actions = ranked_switch_actions[: self.lodf_screen_top_k]
-
-        return [*stop_actions, *selected_switch_actions]
-
-
-def rank_actions_by_lodf_screening(
-    state,
-    actions: list[GridFMAction],
-) -> list[GridFMAction]:
-    """
-    Rank switch-off actions by approximate post-contingency DC/LODF safety.
-
-    Lower score is better.
-
-    This is only a screening heuristic. The selected actions are still checked
-    later by full AC PF through env.step().
-    """
-
-    if not actions:
-        return actions
-
-    status_idx = BRANCH_FEATURE_COLUMNS.index("br_status")
-    x_idx = BRANCH_FEATURE_COLUMNS.index("x")
-    pf_idx = BRANCH_FEATURE_COLUMNS.index("pf")
-    rate_idx = BRANCH_FEATURE_COLUMNS.index("rate_a")
-    loading_idx = BRANCH_FEATURE_COLUMNS.index("loading_percent")
-
-    branch_features = state.branch_features
-    edge_index = state.edge_index.astype(int)
-
-    num_branches = int(branch_features.shape[0])
-    num_buses = int(state.bus_features.shape[0])
-
-    if num_branches <= 1 or num_buses <= 1:
-        return actions
-
-    status = branch_features[:, status_idx].astype(float)
-    x = branch_features[:, x_idx].astype(float)
-    pf = branch_features[:, pf_idx].astype(float)
-    rate = branch_features[:, rate_idx].astype(float)
-
-    active_mask = (
-        (status > 0.0)
-        & np.isfinite(x)
-        & (np.abs(x) > 1e-9)
-        & np.isfinite(rate)
-        & (rate > 1e-9)
-    )
-
-    active_positions = np.where(active_mask)[0]
-
-    if len(active_positions) <= 1:
-        return actions
-
-    active_pos_to_row = {
-        int(branch_pos): int(row)
-        for row, branch_pos in enumerate(active_positions.tolist())
-    }
-
-    active_from = edge_index[0, active_positions].astype(int)
-    active_to = edge_index[1, active_positions].astype(int)
-
-    if np.any(active_from < 0) or np.any(active_to < 0):
-        return actions
-
-    if np.any(active_from >= num_buses) or np.any(active_to >= num_buses):
-        return actions
-
-    active_x = x[active_positions]
-    active_b = 1.0 / active_x
-
-    m = len(active_positions)
-    n = num_buses
-
-    incidence = np.zeros((m, n), dtype=np.float64)
-    incidence[np.arange(m), active_from] = 1.0
-    incidence[np.arange(m), active_to] = -1.0
-
-    if n <= 1:
-        return actions
-
-    # Remove slack bus 0. This is enough for screening; final validation is AC PF.
-    incidence_red = incidence[:, 1:]
-
-    # Bbus = A^T diag(b) A.
-    bbus = incidence_red.T @ (active_b[:, None] * incidence_red)
-
-    try:
-        bbus_inv = np.linalg.pinv(bbus, rcond=1e-10)
-    except Exception:
-        return actions
-
-    # PTDF for branch-to-branch transactions.
-    # H[l, k] = flow on line l caused by a transaction from from_bus(k) to to_bus(k).
-    h = (active_b[:, None] * incidence_red) @ bbus_inv @ incidence_red.T
-
-    diag_h = np.diag(h)
-    denom = 1.0 - diag_h
-
-    active_pf = pf[active_positions]
-    active_rate = rate[active_positions]
-
-    scored: list[tuple[float, GridFMAction]] = []
-
-    for action in actions:
-        branch_pos = int(getattr(action, "branch_pos", -1))
-
-        k = active_pos_to_row.get(branch_pos)
-
-        if k is None:
-            # Inactive or invalid branch - make it unattractive.
-            scored.append((float("inf"), action))
-            continue
-
-        if not np.isfinite(denom[k]) or abs(float(denom[k])) < 1e-9:
-            scored.append((float("inf"), action))
-            continue
-
-        lodf_col = h[:, k] / denom[k]
-
-        flow_after = active_pf + lodf_col * active_pf[k]
-        flow_after[k] = 0.0
-
-        loading_after = np.divide(
-            np.abs(flow_after),
-            active_rate,
-            out=np.zeros_like(flow_after, dtype=np.float64),
-            where=active_rate > 1e-9,
-        ) * 100.0
-
-        loading_after = np.nan_to_num(
-            loading_after,
-            nan=0.0,
-            posinf=1e9,
-            neginf=1e9,
-        )
-
-        score = lodf_loading_safety_score(loading_after)
-
-        # Small tie-breaker: prefer currently loaded lines if LODF score is equal.
-        current_loading = float(branch_features[branch_pos, loading_idx])
-        score -= 1e-4 * current_loading
-
-        scored.append((float(score), action))
-
-    scored.sort(key=lambda x: x[0])
-
-    return [action for _, action in scored]
-
-
-def lodf_loading_safety_score(loading_percent: np.ndarray) -> float:
-    """
-    Approximate safety score based only on predicted DC loading.
-
-    This mirrors the overload philosophy of safety_score(), but without voltage
-    and reactive power terms. It is intentionally conservative.
-    """
-
-    loading = np.asarray(loading_percent, dtype=np.float64)
-
-    overload = np.maximum(loading - 100.0, 0.0)
-    hard = np.maximum(loading - 120.0, 0.0)
-
-    num_overloaded = float(np.sum(loading > 100.0))
-    num_hard = float(np.sum(loading > 120.0))
-
-    hard_sq = float(np.sum(hard * hard))
-    hard_sum = float(np.sum(hard))
-    over_sum = float(np.sum(overload))
-    max_hard = float(np.max(hard)) if hard.size else 0.0
-    max_over = float(np.max(overload)) if overload.size else 0.0
-
-    return float(
-        3.0 * hard_sq
-        + 1500.0 * num_hard
-        + 50.0 * hard_sum
-        + 30.0 * max_hard
-        + 5.0 * over_sum
-        + 100.0 * num_overloaded
-        + 2.0 * max_over
-    )
-
-
-# ======================================================================================
 # Scenario processing
 # ======================================================================================
 
@@ -875,14 +468,7 @@ def process_one_scenario_fast(scenario_id: int) -> dict[str, Any]:
             progress_update_every=1,
         )
 
-        if bool(task.get("use_lodf_screening", False)):
-            planner = LODFScreenedImpactBeamSearchPlanner(
-                config=planner_config,
-                lodf_screen_top_k=int(task["lodf_screen_top_k"]),
-                lodf_min_candidate_count=int(task["lodf_min_candidate_count"]),
-            )
-        else:
-            planner = ImpactBeamSearchPlanner(planner_config)
+        planner = ImpactBeamSearchPlanner(planner_config)
 
         result = planner.search(
             env=search_env,
@@ -1180,8 +766,6 @@ def process_one_scenario_fast(scenario_id: int) -> dict[str, Any]:
                     "top_k": int(task["top_k"]),
                     "soft_policy_temperature": float(task["soft_policy_temperature"]),
                     "use_soft_root_policy": bool(task["use_soft_root_policy"]),
-                    "use_lodf_screening": bool(task.get("use_lodf_screening", False)),
-                    "lodf_screen_top_k": int(task.get("lodf_screen_top_k", 0)),
                     "evaluated_actions": int(result.evaluated_actions),
                 },
             )
@@ -1314,21 +898,10 @@ def chunk_list(
     ]
 
 
-def _console_write(message: str) -> None:
-    """
-    Print without breaking tqdm bars when tqdm is active.
-    """
-
-    if tqdm is not None:
-        tqdm.write(str(message))
-    else:
-        print(str(message))
-
-
 def print_success(result: dict[str, Any]) -> None:
     summary = result["summary"]
 
-    _console_write(
+    print(
         f"Scenario {result['scenario_id']}: saved | "
         f"examples={summary['num_examples']} | "
         f"first_action={summary['first_action']} | "
@@ -1346,13 +919,13 @@ def print_success(result: dict[str, Any]) -> None:
 
 
 def print_failure(result: dict[str, Any]) -> None:
-    _console_write(
+    print(
         f"Scenario {result['scenario_id']}: skipped | "
         f"reason={result['reason']}"
     )
 
     if result.get("traceback"):
-        _console_write(result["traceback"])
+        print(result["traceback"])
 
 
 def make_task_config(args: argparse.Namespace) -> dict[str, Any]:
@@ -1384,119 +957,7 @@ def make_task_config(args: argparse.Namespace) -> dict[str, Any]:
         "max_loading_increase_limit": float(args.max_loading_increase_limit),
         "add_handoff_example": bool(args.add_handoff_example),
         "max_tasks_per_child": int(args.max_tasks_per_child),
-        "min_free_system_memory_mb": float(args.min_free_system_memory_mb),
-        "memory_registry_max_age_sec": float(args.memory_registry_max_age_sec),
-        "auto_worker_memory_mb": float(args.auto_worker_memory_mb),
-        "auto_worker_memory_reserve_mb": float(args.auto_worker_memory_reserve_mb),
-        "auto_worker_cpu_util_target": float(args.auto_worker_cpu_util_target),
-        "use_lodf_screening": bool(args.use_lodf_screening),
-        "lodf_screen_top_k": int(args.lodf_screen_top_k),
-        "lodf_min_candidate_count": int(args.lodf_min_candidate_count),
-        "auto_worker_cpu_mode": str(args.auto_worker_cpu_mode),
-        "auto_worker_cpu_fraction": float(args.auto_worker_cpu_fraction),
-        "auto_worker_max": int(args.auto_worker_max),
     }
-
-
-
-def resolve_num_workers(
-    num_workers_arg: str,
-    num_batches: int,
-    task_config: dict[str, Any],
-) -> int:
-    """
-    Resolve --num-workers.
-
-    Supports:
-        --num-workers 4
-        --num-workers auto
-
-    Auto mode is intentionally adaptive:
-    - CPU cap can use physical or logical cores;
-    - memory cap uses currently available RAM minus reserve;
-    - optional auto_worker_max can limit aggressive auto selection.
-    """
-
-    value = str(num_workers_arg).strip().lower()
-
-    if value != "auto":
-        return max(int(value), 1)
-
-    try:
-        import psutil
-    except Exception:
-        fallback = max((os.cpu_count() or 2) - 1, 1)
-        return min(fallback, int(num_batches))
-
-    logical_cpu = psutil.cpu_count(logical=True) or (os.cpu_count() or 2)
-    physical_cpu = psutil.cpu_count(logical=False) or logical_cpu
-
-    cpu_mode = str(task_config.get("auto_worker_cpu_mode", "logical")).lower()
-    cpu_fraction = float(task_config.get("auto_worker_cpu_fraction", 0.85))
-    cpu_fraction = min(max(cpu_fraction, 0.1), 1.0)
-
-    if cpu_mode == "physical":
-        base_cpu_count = int(physical_cpu)
-    else:
-        base_cpu_count = int(logical_cpu)
-
-    cpu_cap = max(int(base_cpu_count * cpu_fraction), 1)
-
-    cpu_load = get_cpu_load_percent()
-    target_cpu = float(task_config.get("auto_worker_cpu_util_target", 85.0))
-
-    # If the machine is already busy before starting, reduce the cap.
-    # Do not reduce it too aggressively, because teacher load is bursty.
-    if cpu_load is not None and cpu_load > target_cpu:
-        cpu_cap = max(int(cpu_cap * 0.75), 1)
-
-    available_mb = get_system_available_memory_mb()
-
-    estimated_worker_mb = float(task_config.get("auto_worker_memory_mb", 1000.0))
-    reserve_mb = float(task_config.get("auto_worker_memory_reserve_mb", 2048.0))
-
-    if available_mb is None:
-        memory_cap = cpu_cap
-    else:
-        usable_mb = max(float(available_mb) - reserve_mb, 0.0)
-        memory_cap = max(int(usable_mb // max(estimated_worker_mb, 1.0)), 1)
-
-    auto_worker_max = int(task_config.get("auto_worker_max", 0))
-
-    workers = max(
-        1,
-        min(
-            int(num_batches),
-            int(cpu_cap),
-            int(memory_cap),
-        ),
-    )
-
-    if auto_worker_max > 0:
-        workers = min(workers, int(auto_worker_max))
-
-    print("")
-    print("Auto worker selection:")
-    print(f"  logical CPU:        {logical_cpu}")
-    print(f"  physical CPU:       {physical_cpu}")
-    print(f"  CPU mode:           {cpu_mode}")
-    print(f"  CPU fraction:       {cpu_fraction}")
-    print(f"  current CPU load:   {cpu_load}")
-    print(f"  available RAM MB:   {available_mb}")
-    print(f"  reserve RAM MB:     {reserve_mb}")
-    print(f"  worker RAM MB est:  {estimated_worker_mb}")
-    print(f"  CPU cap:            {cpu_cap}")
-    print(f"  memory cap:         {memory_cap}")
-    print(f"  auto worker max:    {auto_worker_max}")
-    print(f"  selected workers:   {workers}")
-    print("")
-
-    return workers
-
-
-# ======================================================================================
-# Execution modes
-# ======================================================================================
 
 
 def run_sequential(
@@ -1515,7 +976,6 @@ def run_sequential(
         raw_dir_str=str(raw_dir),
         states_dir_str=str(states_dir),
         task_config=task_config,
-        memory_registry=None,
     )
 
     rows: list[dict[str, Any]] = []
@@ -1568,17 +1028,10 @@ def run_parallel(
     print(f"\nParallel fast mode: {num_workers} workers")
     print(f"Batches:            {len(scenario_batches)}")
 
-    manager = None
-    memory_registry = None
-
-    if float(task_config.get("min_free_system_memory_mb", 0.0)) > 0.0:
-        manager = mp.Manager()
-        memory_registry = manager.dict()
-
     executor_kwargs = {
         "max_workers": int(num_workers),
         "initializer": init_worker_context,
-        "initargs": (str(raw_dir), str(states_dir), task_config, memory_registry),
+        "initargs": (str(raw_dir), str(states_dir), task_config),
     }
 
     max_tasks_per_child = int(task_config.get("max_tasks_per_child", 0))
@@ -1586,43 +1039,36 @@ def run_parallel(
     if max_tasks_per_child > 0:
         executor_kwargs["max_tasks_per_child"] = max_tasks_per_child
 
-    try:
-        with ProcessPoolExecutor(**executor_kwargs) as executor:
-            futures = [
-                executor.submit(process_scenario_batch, batch)
-                for batch in scenario_batches
-            ]
+    with ProcessPoolExecutor(**executor_kwargs) as executor:
+        futures = [
+            executor.submit(process_scenario_batch, batch)
+            for batch in scenario_batches
+        ]
 
-            iterator = as_completed(futures)
+        iterator = as_completed(futures)
 
-            if tqdm is not None:
-                iterator = tqdm(
-                    iterator,
-                    total=len(futures),
-                    desc="Teacher batches",
-                    unit="batch",
-                    dynamic_ncols=True,
-                )
+        if tqdm is not None:
+            iterator = tqdm(
+                iterator,
+                total=len(futures),
+                desc="Teacher batches",
+                unit="batch",
+                dynamic_ncols=True,
+            )
 
-            for future in iterator:
-                batch_results = future.result()
+        for future in iterator:
+            batch_results = future.result()
 
-                for result in batch_results:
-                    if result["ok"]:
-                        rows.extend(result["rows"])
-                        total_saved += 1
+            for result in batch_results:
+                if result["ok"]:
+                    rows.extend(result["rows"])
+                    total_saved += 1
 
-                        if verbose_success:
-                            print_success(result)
-                    else:
-                        total_skipped += 1
-                        print_failure(result)
-    finally:
-        if manager is not None:
-            try:
-                manager.shutdown()
-            except Exception:
-                pass
+                    if verbose_success:
+                        print_success(result)
+                else:
+                    total_skipped += 1
+                    print_failure(result)
 
     return rows, total_saved, total_skipped
 
@@ -1742,9 +1188,8 @@ def main() -> None:
 
     parser.add_argument(
         "--num-workers",
-        type=str,
-        default="2",
-        help="Number of workers or 'auto'.",
+        type=int,
+        default=2,
     )
 
     parser.add_argument(
@@ -1788,98 +1233,8 @@ def main() -> None:
         default=0,
         help=(
             "Restart each worker process after this many submitted batches. "
-            "Use 0 to disable. On Windows this may interact badly with long queues; "
-            "prefer 0 plus memory guards for long production runs."
+            "Use 0 to disable. This is the strongest protection against memory leaks."
         ),
-    )
-
-    parser.add_argument(
-        "--min-free-system-memory-mb",
-        type=float,
-        default=0.0,
-        help=(
-            "If > 0, workers cooperatively clear caches when available system "
-            "RAM drops below this value."
-        ),
-    )
-
-    parser.add_argument(
-        "--memory-registry-max-age-sec",
-        type=float,
-        default=120.0,
-        help="Ignore stale worker memory records older than this many seconds.",
-    )
-
-    parser.add_argument(
-        "--auto-worker-memory-mb",
-        type=float,
-        default=1200.0,
-        help="Estimated RAM usage per worker for --num-workers auto.",
-    )
-
-    parser.add_argument(
-        "--auto-worker-memory-reserve-mb",
-        type=float,
-        default=2048.0,
-        help="RAM reserve kept free when using --num-workers auto.",
-    )
-
-    parser.add_argument(
-        "--auto-worker-cpu-util-target",
-        type=float,
-        default=85.0,
-        help="If current CPU load is above this percent, auto workers are reduced.",
-    )
-
-    parser.add_argument(
-        "--use-lodf-screening",
-        action="store_true",
-        help=(
-            "Use LODF/DC screening to prefilter candidate topology actions before "
-            "expensive AC PF validation."
-        ),
-    )
-
-    parser.add_argument(
-        "--lodf-screen-top-k",
-        type=int,
-        default=0,
-        help=(
-            "Keep only this many LODF-ranked switch actions before AC PF. "
-            "Use 0 to disable effective LODF pruning."
-        ),
-    )
-
-    parser.add_argument(
-        "--lodf-min-candidate-count",
-        type=int,
-        default=8,
-        help="Apply LODF screening only if there are at least this many switch candidates.",
-    )
-
-    parser.add_argument(
-        "--auto-worker-cpu-mode",
-        type=str,
-        default="logical",
-        choices=["physical", "logical"],
-        help="CPU cap mode for --num-workers auto.",
-    )
-
-    parser.add_argument(
-        "--auto-worker-cpu-fraction",
-        type=float,
-        default=0.85,
-        help=(
-            "Fraction of selected CPU count allowed for --num-workers auto. "
-            "Example: 0.85 of 8 logical CPUs -> 6 workers."
-        ),
-    )
-
-    parser.add_argument(
-        "--auto-worker-max",
-        type=int,
-        default=0,
-        help="Optional hard upper limit for --num-workers auto. Use 0 for no explicit limit.",
     )
 
     args = parser.parse_args()
@@ -1906,12 +1261,6 @@ def main() -> None:
     )
 
     task_config = make_task_config(args)
-
-    resolved_num_workers = resolve_num_workers(
-        num_workers_arg=str(args.num_workers),
-        num_batches=len(scenario_batches),
-        task_config=task_config,
-    )
 
     print("=" * 100)
     print("Generating multi-step impact-beam teacher examples, FAST")
@@ -1942,14 +1291,9 @@ def main() -> None:
     print(f"Cache enabled:        {not args.disable_cache}")
     print(f"Clear caches every:   {args.clear_caches_every}")
     print(f"Max worker memory MB: {args.max_worker_memory_mb}")
-    print(f"Min free RAM MB:      {args.min_free_system_memory_mb}")
     print(f"Print memory events:  {args.print_memory_events}")
     print(f"Max tasks per child:  {args.max_tasks_per_child}")
-    print(f"Num workers arg:      {args.num_workers}")
-    print(f"Resolved workers:     {resolved_num_workers}")
-    print(f"Use LODF screening:   {args.use_lodf_screening}")
-    print(f"LODF screen top-k:    {args.lodf_screen_top_k}")
-    print(f"LODF min candidates:  {args.lodf_min_candidate_count}")
+    print(f"Num workers:          {args.num_workers}")
     print(f"Quiet success:        {args.quiet_success}")
 
     if not raw_dir.exists():
@@ -1967,7 +1311,7 @@ def main() -> None:
 
     verbose_success = not bool(args.quiet_success)
 
-    if int(resolved_num_workers) <= 1:
+    if int(args.num_workers) <= 1:
         rows, total_saved, total_skipped = run_sequential(
             scenario_batches=scenario_batches,
             raw_dir=raw_dir,
@@ -1981,7 +1325,7 @@ def main() -> None:
             raw_dir=raw_dir,
             states_dir=states_dir,
             task_config=task_config,
-            num_workers=int(resolved_num_workers),
+            num_workers=int(args.num_workers),
             verbose_success=verbose_success,
         )
 
