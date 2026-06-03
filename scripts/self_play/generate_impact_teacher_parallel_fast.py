@@ -3,6 +3,8 @@ from __future__ import annotations
 import argparse
 import json
 import traceback
+import gc
+import os
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
@@ -48,6 +50,56 @@ def _require_worker_context() -> dict[str, Any]:
 
     return _WORKER_CONTEXT
 
+def get_process_memory_mb() -> float | None:
+    """
+    Return current process RSS memory in MB.
+
+    psutil is optional. If it is not installed, return None.
+    """
+
+    try:
+        import psutil
+    except Exception:
+        return None
+
+    try:
+        process = psutil.Process(os.getpid())
+        return float(process.memory_info().rss) / (1024.0 * 1024.0)
+    except Exception:
+        return None
+
+
+def clear_worker_caches(reason: str = "manual") -> None:
+    """
+    Clear worker-local caches and force Python garbage collection.
+    """
+
+    ctx = _require_worker_context()
+
+    backend = ctx.get("backend")
+    action_space = ctx.get("action_space")
+
+    memory_before = get_process_memory_mb()
+
+    if hasattr(backend, "clear_cache"):
+        backend.clear_cache()
+
+    if hasattr(action_space, "clear_cache"):
+        action_space.clear_cache()
+
+    gc.collect()
+
+    memory_after = get_process_memory_mb()
+
+    if bool(ctx["task_config"].get("print_memory_events", False)):
+        before_text = "unknown" if memory_before is None else f"{memory_before:.1f} MB"
+        after_text = "unknown" if memory_after is None else f"{memory_after:.1f} MB"
+
+        print(
+            f"[worker {os.getpid()}] cache clear ({reason}) | "
+            f"memory {before_text} -> {after_text}",
+            flush=True,
+        )
 
 def init_worker_context(
     raw_dir_str: str,
@@ -103,29 +155,39 @@ def init_worker_context(
 def clear_worker_caches_if_needed() -> None:
     """
     Prevent long-running workers from accumulating too much cache memory.
+
+    Two mechanisms:
+    1. periodic cache clearing every N scenarios;
+    2. memory threshold guard using current process RSS.
     """
 
     ctx = _require_worker_context()
     cfg = ctx["task_config"]
 
+    ctx["processed_in_worker"] = int(ctx.get("processed_in_worker", 0)) + 1
+    processed = int(ctx["processed_in_worker"])
+
     every = int(cfg["clear_caches_every"])
 
-    if every <= 0:
+    should_clear_periodically = every > 0 and processed % every == 0
+
+    memory_mb = get_process_memory_mb()
+    max_memory_mb = float(cfg.get("max_worker_memory_mb", 0.0))
+
+    should_clear_by_memory = (
+        memory_mb is not None
+        and max_memory_mb > 0.0
+        and memory_mb >= max_memory_mb
+    )
+
+    if should_clear_by_memory:
+        clear_worker_caches(
+            reason=f"memory_guard_{memory_mb:.1f}_mb_ge_{max_memory_mb:.1f}_mb"
+        )
         return
 
-    ctx["processed_in_worker"] = int(ctx.get("processed_in_worker", 0)) + 1
-
-    if ctx["processed_in_worker"] % every != 0:
-        return
-
-    backend = ctx["backend"]
-    action_space = ctx["action_space"]
-
-    if hasattr(backend, "clear_cache"):
-        backend.clear_cache()
-
-    if hasattr(action_space, "clear_cache"):
-        action_space.clear_cache()
+    if should_clear_periodically:
+        clear_worker_caches(reason=f"periodic_every_{every}")
 
 
 # ======================================================================================
@@ -883,6 +945,8 @@ def make_task_config(args: argparse.Namespace) -> dict[str, Any]:
         "allow_hard_count_increase": bool(args.allow_hard_count_increase),
         "disable_cache": bool(args.disable_cache),
         "clear_caches_every": int(args.clear_caches_every),
+        "max_worker_memory_mb": float(args.max_worker_memory_mb),
+        "print_memory_events": bool(args.print_memory_events),
         "power_flow_failure_penalty": float(args.power_flow_failure_penalty),
         "min_continue_improvement_with_hard": float(
             args.min_continue_improvement_with_hard
@@ -892,6 +956,7 @@ def make_task_config(args: argparse.Namespace) -> dict[str, Any]:
         ),
         "max_loading_increase_limit": float(args.max_loading_increase_limit),
         "add_handoff_example": bool(args.add_handoff_example),
+        "max_tasks_per_child": int(args.max_tasks_per_child),
     }
 
 
@@ -963,11 +1028,18 @@ def run_parallel(
     print(f"\nParallel fast mode: {num_workers} workers")
     print(f"Batches:            {len(scenario_batches)}")
 
-    with ProcessPoolExecutor(
-        max_workers=int(num_workers),
-        initializer=init_worker_context,
-        initargs=(str(raw_dir), str(states_dir), task_config),
-    ) as executor:
+    executor_kwargs = {
+        "max_workers": int(num_workers),
+        "initializer": init_worker_context,
+        "initargs": (str(raw_dir), str(states_dir), task_config),
+    }
+
+    max_tasks_per_child = int(task_config.get("max_tasks_per_child", 0))
+
+    if max_tasks_per_child > 0:
+        executor_kwargs["max_tasks_per_child"] = max_tasks_per_child
+
+    with ProcessPoolExecutor(**executor_kwargs) as executor:
         futures = [
             executor.submit(process_scenario_batch, batch)
             for batch in scenario_batches
@@ -1139,6 +1211,32 @@ def main() -> None:
         help="Do not print one line for every successful scenario.",
     )
 
+    parser.add_argument(
+        "--max-worker-memory-mb",
+        type=float,
+        default=0.0,
+        help=(
+            "If > 0, worker clears backend/action-space caches when its RSS memory "
+            "reaches this value in MB."
+        ),
+    )
+
+    parser.add_argument(
+        "--print-memory-events",
+        action="store_true",
+        help="Print memory before/after cache clearing events.",
+    )
+
+    parser.add_argument(
+        "--max-tasks-per-child",
+        type=int,
+        default=0,
+        help=(
+            "Restart each worker process after this many submitted batches. "
+            "Use 0 to disable. This is the strongest protection against memory leaks."
+        ),
+    )
+
     args = parser.parse_args()
 
     raw_dir = Path(args.raw_dir)
@@ -1192,6 +1290,9 @@ def main() -> None:
     print(f"Allow hard increase:  {args.allow_hard_count_increase}")
     print(f"Cache enabled:        {not args.disable_cache}")
     print(f"Clear caches every:   {args.clear_caches_every}")
+    print(f"Max worker memory MB: {args.max_worker_memory_mb}")
+    print(f"Print memory events:  {args.print_memory_events}")
+    print(f"Max tasks per child:  {args.max_tasks_per_child}")
     print(f"Num workers:          {args.num_workers}")
     print(f"Quiet success:        {args.quiet_success}")
 

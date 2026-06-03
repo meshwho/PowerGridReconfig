@@ -10,7 +10,7 @@ import numpy as np
 from grid_topology_ai.action_space import GridFMAction
 from grid_topology_ai.data_adapter import BRANCH_FEATURE_COLUMNS, GridFMState
 from grid_topology_ai.environment import TopologyStepResult, TopologySwitchingEnv
-
+from grid_topology_ai.search.dc_action_screener import DCActionScreener
 
 @dataclass(frozen=True)
 class MCTSConfig:
@@ -85,6 +85,17 @@ class MCTSConfig:
     root_dirichlet_alpha: float = 0.30
     root_exploration_fraction: float = 0.25
     random_seed: int | None = None
+
+    # Optional multi-fidelity candidate screening.
+    # Disabled by default, so old MCTS behavior is preserved.
+    use_dc_screening: bool = False
+    dc_top_k_actions: int = 30
+    dc_candidate_pool: int = 120
+    dc_keep_policy_actions: int = 5
+    dc_keep_loading_actions: int = 5
+    dc_policy_weight: float = 0.0
+    dc_failure_penalty: float = 1_000_000_000.0
+    dc_max_depth: int = 0
 
 @dataclass
 class MCTSNode:
@@ -172,6 +183,17 @@ class MCTSPlanner:
         self.status_idx = BRANCH_FEATURE_COLUMNS.index("br_status")
 
         self.rng = np.random.default_rng(config.random_seed)
+
+        self.dc_screener = None
+
+        if self.config.use_dc_screening:
+            self.dc_screener = DCActionScreener(
+                top_k=self.config.dc_top_k_actions,
+                candidate_pool=self.config.dc_candidate_pool,
+                policy_weight=self.config.dc_policy_weight,
+                failure_penalty=self.config.dc_failure_penalty,
+                enable_cache=True,
+            )
 
     def search(
             self,
@@ -480,9 +502,7 @@ class MCTSPlanner:
                 reverse=True,
             )
 
-            # Safety backup: also keep some physically high-loaded branches.
-            # This prevents a weak early network from completely ignoring
-            # obviously important overloaded corridors.
+            # Safety backup: physically high-loaded branches.
             switch_by_loading = sorted(
                 switch_actions,
                 key=lambda action: float(
@@ -494,17 +514,76 @@ class MCTSPlanner:
             selected_switches: list[GridFMAction] = []
             seen_action_ids: set[int] = set()
 
-            for action in switch_by_policy[: self.config.top_k_actions]:
-                if action.action_id not in seen_action_ids:
-                    selected_switches.append(action)
-                    seen_action_ids.add(action.action_id)
+            if self.config.use_dc_screening and self.dc_screener is not None:
+                # DC-screened path:
+                # 1. Build a candidate pool from neural policy and loading backup.
+                # 2. Run DC PF only for that pool.
+                # 3. Keep the best DC-ranked actions.
+                # 4. Add a small neural/loading backup so DC cannot fully suppress
+                #    the old behavior.
+                dc_pool: list[GridFMAction] = []
+                dc_pool_seen: set[int] = set()
 
-            loading_backup_k = max(5, self.config.top_k_actions // 4)
+                if self.config.dc_candidate_pool <= 0:
+                    pool_from_policy = switch_by_policy
+                    pool_from_loading = switch_by_loading
+                else:
+                    pool_from_policy = switch_by_policy[
+                        : self.config.dc_candidate_pool
+                    ]
 
-            for action in switch_by_loading[:loading_backup_k]:
-                if action.action_id not in seen_action_ids:
-                    selected_switches.append(action)
-                    seen_action_ids.add(action.action_id)
+                    loading_pool_k = max(
+                        self.config.dc_keep_loading_actions,
+                        self.config.dc_candidate_pool // 4,
+                    )
+
+                    pool_from_loading = switch_by_loading[:loading_pool_k]
+
+                for action in list(pool_from_policy) + list(pool_from_loading):
+                    if action.action_id in dc_pool_seen:
+                        continue
+
+                    dc_pool.append(action)
+                    dc_pool_seen.add(action.action_id)
+
+                dc_ranked = self.dc_screener.screen_actions(
+                    state=state,
+                    actions=dc_pool,
+                    backend=node.env.backend,
+                    neural_policy=neural_policy,
+                    top_k=self.config.dc_top_k_actions,
+                )
+
+                for action in dc_ranked:
+                    if action.action_id not in seen_action_ids:
+                        selected_switches.append(action)
+                        seen_action_ids.add(action.action_id)
+
+                # Old-behavior backup: keep a few pure neural-policy actions.
+                for action in switch_by_policy[: self.config.dc_keep_policy_actions]:
+                    if action.action_id not in seen_action_ids:
+                        selected_switches.append(action)
+                        seen_action_ids.add(action.action_id)
+
+                # Old-behavior backup: keep a few high-loading actions.
+                for action in switch_by_loading[: self.config.dc_keep_loading_actions]:
+                    if action.action_id not in seen_action_ids:
+                        selected_switches.append(action)
+                        seen_action_ids.add(action.action_id)
+
+            else:
+                # Old behavior.
+                for action in switch_by_policy[: self.config.top_k_actions]:
+                    if action.action_id not in seen_action_ids:
+                        selected_switches.append(action)
+                        seen_action_ids.add(action.action_id)
+
+                loading_backup_k = max(5, self.config.top_k_actions // 4)
+
+                for action in switch_by_loading[:loading_backup_k]:
+                    if action.action_id not in seen_action_ids:
+                        selected_switches.append(action)
+                        seen_action_ids.add(action.action_id)
 
             selected.extend(selected_switches)
 

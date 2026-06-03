@@ -100,6 +100,14 @@ def init_worker_context(
 
         # Evaluation must be deterministic.
         use_root_dirichlet_noise=False,
+        use_dc_screening=bool(task_config["use_dc_screening"]),
+        dc_top_k_actions=int(task_config["dc_top_k"]),
+        dc_candidate_pool=int(task_config["dc_candidate_pool"]),
+        dc_keep_policy_actions=int(task_config["dc_keep_policy_actions"]),
+        dc_keep_loading_actions=int(task_config["dc_keep_loading_actions"]),
+        dc_policy_weight=float(task_config["dc_policy_weight"]),
+        dc_failure_penalty=float(task_config["dc_failure_penalty"]),
+        dc_max_depth=int(task_config["dc_max_depth"]),
     )
 
     planner = MCTSPlanner(
@@ -446,10 +454,16 @@ def make_task_config(args: argparse.Namespace) -> dict[str, Any]:
         "min_soft_improvement": float(args.min_soft_improvement),
         "min_gate_visits": int(args.min_gate_visits),
         "min_gate_visit_fraction": float(args.min_gate_visit_fraction),
-        "allow_handoff_with_hard_overloads": bool(
-            args.allow_handoff_with_hard_overloads
-        ),
+        "allow_handoff_with_hard_overloads": bool(args.allow_handoff_with_hard_overloads),
         "clear_caches_every": int(args.clear_caches_every),
+        "use_dc_screening": bool(args.use_dc_screening),
+        "dc_top_k": int(args.dc_top_k),
+        "dc_candidate_pool": int(args.dc_candidate_pool),
+        "dc_keep_policy_actions": int(args.dc_keep_policy_actions),
+        "dc_keep_loading_actions": int(args.dc_keep_loading_actions),
+        "dc_policy_weight": float(args.dc_policy_weight),
+        "dc_failure_penalty": float(args.dc_failure_penalty),
+        "dc_max_depth": int(args.dc_max_depth),
     }
 
 
@@ -771,6 +785,74 @@ def main() -> None:
         ),
     )
 
+    parser.add_argument(
+        "--use-dc-screening",
+        action="store_true",
+        help=(
+            "Enable optional DC power-flow screening for MCTS switch candidates. "
+            "Disabled by default, so old behavior is preserved."
+        ),
+    )
+
+    parser.add_argument(
+        "--dc-top-k",
+        type=int,
+        default=30,
+        help="Number of DC-ranked switch actions to keep at each MCTS node.",
+    )
+
+    parser.add_argument(
+        "--dc-candidate-pool",
+        type=int,
+        default=120,
+        help=(
+            "Number of neural-policy actions considered by DC screening. "
+            "Use <=0 to screen all valid switch actions."
+        ),
+    )
+
+    parser.add_argument(
+        "--dc-keep-policy-actions",
+        type=int,
+        default=5,
+        help="Always keep this many pure neural-policy actions as backup.",
+    )
+
+    parser.add_argument(
+        "--dc-keep-loading-actions",
+        type=int,
+        default=5,
+        help="Always keep this many high-loading actions as backup.",
+    )
+
+    parser.add_argument(
+        "--dc-policy-weight",
+        type=float,
+        default=0.0,
+        help=(
+            "Optional neural-prior tie-breaker inside DC ranking. "
+            "0 means pure DC physical ranking."
+        ),
+    )
+
+    parser.add_argument(
+        "--dc-failure-penalty",
+        type=float,
+        default=1_000_000_000.0,
+        help="Penalty assigned to DC PF failures.",
+    )
+
+    parser.add_argument(
+        "--dc-max-depth",
+        type=int,
+        default=0,
+        help=(
+            "Maximum MCTS node depth where DC screening is used. "
+            "0 means root only, 1 means root and depth-1 nodes, "
+            "-1 means all depths."
+        ),
+    )
+
     args = parser.parse_args()
 
     raw_dir = Path(args.raw_dir)
@@ -804,6 +886,16 @@ def main() -> None:
     print(f"Num workers:         {args.num_workers}")
     print(f"Device:              {args.device}")
     print(f"Quiet:               {args.quiet}")
+    print(f"Use DC screening:   {args.use_dc_screening}")
+
+
+    if args.use_dc_screening:
+        print(f"  dc max depth:      {args.dc_max_depth}")
+        print(f"  dc top k:          {args.dc_top_k}")
+        print(f"  dc candidate pool: {args.dc_candidate_pool}")
+        print(f"  dc keep policy:    {args.dc_keep_policy_actions}")
+        print(f"  dc keep loading:   {args.dc_keep_loading_actions}")
+        print(f"  dc policy weight:  {args.dc_policy_weight}")
 
     if args.use_continuation_gate:
         print(f"  min hard improvement: {args.min_hard_improvement}")
