@@ -28,7 +28,7 @@ New-Item -ItemType Directory -Force -Path "data\self_play\impact_teacher_balance
   --num-workers auto `
   --auto-worker-cpu-mode logical `
   --auto-worker-cpu-fraction 0.85 `
-  --auto-worker-max 7 `
+  --auto-worker-max 6 `
   --batch-size 2 `
   --clear-caches-every 2 `
   --max-worker-memory-mb 1200 `
