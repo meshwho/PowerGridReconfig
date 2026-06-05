@@ -7,3 +7,5 @@ numba
 torch
 PyYAML
 tensorboard
+pypower
+pyarrow

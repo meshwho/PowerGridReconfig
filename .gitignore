@@ -38,3 +38,4 @@ data/*
 tmp/
 temp/
 /notebooks/.ipynb_checkpoints/
+SSHOutput
