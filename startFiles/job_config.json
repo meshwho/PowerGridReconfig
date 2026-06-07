@@ -1,0 +1,19 @@
+﻿{
+    "env":  {
+                "TEMP":  "D:\\temp_gridfm",
+                "TMP":  "D:\\temp_gridfm",
+                "JULIA_DEPOT_PATH":  "D:\\julia_depot"
+            },
+    "log_path":  "D:\\проекты\\PowerGridReconfig\\data\\self_play\\test_python_sleep_60\\run.log",
+    "arguments":  [
+                      "-u",
+                      "-c",
+                      "import time, os; print(\u0027hello from python\u0027); print(\u0027pid\u0027, os.getpid()); [print(\u0027tick\u0027, i) or time.sleep(1) for i in range(60)]"
+                  ],
+    "job_name":  "test_python_sleep_60",
+    "prepend_path":  [
+                         "C:\\Users\\timof\\AppData\\Local\\Programs\\Julia-1.12.6\\bin"
+                     ],
+    "working_dir":  "D:\\проекты\\PowerGridReconfig",
+    "executable":  "D:\\проекты\\PowerGridReconfig\\.venv311\\Scripts\\python.exe"
+}
