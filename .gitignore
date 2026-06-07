@@ -39,3 +39,4 @@ tmp/
 temp/
 /notebooks/.ipynb_checkpoints/
 SSHOutput
+.venvwsl
