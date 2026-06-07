@@ -2,7 +2,8 @@
     [string]$ConfigPath = "D:\проекты\PowerGridReconfig\StartFiles\job_config.json",
     [string]$TaskName = "PowerGridJobRunner",
     [int]$IntervalSec = 5,
-    [int]$Tail = 25
+    [int]$Tail = 25,
+    [switch]$NoClear
 )
 
 $ErrorActionPreference = "SilentlyContinue"
@@ -34,7 +35,9 @@ function Get-PythonProcesses {
 }
 
 while ($true) {
-    Clear-Host
+    if (-not $NoClear) {
+        Clear-Host
+    }
 
     $config = $null
     $logPath = $null
