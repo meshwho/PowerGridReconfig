@@ -206,6 +206,38 @@ def build_value_target_diagnostics(
     This diagnostic tells us how often value targets saturate.
     """
 
+    if "value_target" in dataset.examples.columns:
+    target = dataset.examples["value_target"].astype(float).to_numpy()
+
+    abs_target = np.abs(target)
+    outside_mask = abs_target > 1.0
+
+    def q(x, p):
+        return float(np.quantile(x, p)) if len(x) > 0 else 0.0
+
+    return {
+        "available": True,
+        "mode": "explicit_value_target",
+        "count": int(len(target)),
+        "target_min": float(target.min()) if len(target) else 0.0,
+        "target_max": float(target.max()) if len(target) else 0.0,
+        "target_mean": float(target.mean()) if len(target) else 0.0,
+        "target_std": float(target.std()) if len(target) else 0.0,
+        "abs_target_p50": q(abs_target, 0.50),
+        "abs_target_p90": q(abs_target, 0.90),
+        "abs_target_p95": q(abs_target, 0.95),
+        "abs_target_p99": q(abs_target, 0.99),
+        "abs_target_max": float(abs_target.max()) if len(abs_target) else 0.0,
+        "outside_minus1_plus1_count": int(outside_mask.sum()),
+        "outside_minus1_plus1_percent": float(outside_mask.mean() * 100.0)
+        if len(outside_mask)
+        else 0.0,
+        "positive_count": int((target > 0).sum()),
+        "zero_count": int((target == 0).sum()),
+        "negative_count": int((target < 0).sum()),
+    }
+
+
     if "discounted_return_from_step" not in dataset.examples.columns:
         return {
             "available": False,
@@ -306,6 +338,28 @@ def print_value_target_diagnostics(
         print("")
         print("WARNING: More than 10% of value targets are clipped.")
         print("The value head may receive saturated targets.")
+    if diagnostics.get("mode") == "explicit_value_target":
+    print(f"mode:               {diagnostics['mode']}")
+    print(f"count:              {diagnostics['count']}")
+    print("")
+    print(f"target min:         {diagnostics['target_min']:.6f}")
+    print(f"target max:         {diagnostics['target_max']:.6f}")
+    print(f"target mean:        {diagnostics['target_mean']:.6f}")
+    print(f"target std:         {diagnostics['target_std']:.6f}")
+    print("")
+    print(f"abs target p50:     {diagnostics['abs_target_p50']:.6f}")
+    print(f"abs target p90:     {diagnostics['abs_target_p90']:.6f}")
+    print(f"abs target p95:     {diagnostics['abs_target_p95']:.6f}")
+    print(f"abs target p99:     {diagnostics['abs_target_p99']:.6f}")
+    print(f"abs target max:     {diagnostics['abs_target_max']:.6f}")
+    print("")
+    print(f"outside [-1,1]:     {diagnostics['outside_minus1_plus1_count']}")
+    print(
+        f"outside percent:    "
+        f"{diagnostics['outside_minus1_plus1_percent']:.2f}%"
+    )
+    return
+
 
 def soft_policy_loss(
     logits: torch.Tensor,

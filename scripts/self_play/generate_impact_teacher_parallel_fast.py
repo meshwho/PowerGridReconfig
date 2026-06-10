@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import argparse
 import gc
 import json
@@ -349,6 +350,106 @@ def clear_worker_caches_if_needed() -> None:
 # ======================================================================================
 # Small helpers
 # ======================================================================================
+
+
+def compute_auto_reward_scale_from_rows(
+    rows: list[dict],
+    quantile: float = 0.95,
+    min_scale: float = 1.0,
+) -> float:
+    """
+    Compute reward scale from generated step rewards.
+
+    This scale is used only for value_target normalization,
+    not for teacher search and not for action selection.
+    """
+
+    rewards = []
+
+    for row in rows:
+        if "step_reward" not in row:
+            continue
+
+        value = float(row["step_reward"])
+
+        if math.isfinite(value):
+            rewards.append(abs(value))
+
+    if not rewards:
+        return float(min_scale)
+
+    rewards_sorted = sorted(rewards)
+
+    q = min(max(float(quantile), 0.0), 1.0)
+    index = int(round(q * (len(rewards_sorted) - 1)))
+
+    scale = float(rewards_sorted[index])
+
+    return max(scale, float(min_scale))
+
+
+def add_normalized_value_targets_to_rows(
+    rows: list[dict],
+    gamma: float,
+    reward_scale: float,
+    group_keys: tuple[str, ...] = ("scenario_id",),
+) -> None:
+    """
+    Add normalized value_target to generated teacher rows.
+
+    Existing raw reward fields stay unchanged:
+    - step_reward
+    - discounted_return_from_step
+    - final_return
+
+    New value target:
+        r_norm_t = tanh(step_reward_t / reward_scale)
+
+        value_target_t =
+            sum_k gamma^k * r_norm_{t+k}
+            /
+            sum_k gamma^k
+
+    The denominator is important: it keeps value_target in [-1, 1],
+    compatible with the Tanh value head.
+    """
+
+    if reward_scale <= 0:
+        raise ValueError(f"reward_scale must be positive, got {reward_scale}")
+
+    groups: dict[tuple, list[dict]] = {}
+
+    for row in rows:
+        key = tuple(row.get(k) for k in group_keys)
+        groups.setdefault(key, []).append(row)
+
+    for _, group_rows in groups.items():
+        group_rows.sort(key=lambda r: int(r.get("step", 0)))
+
+        normalized_rewards = [
+            math.tanh(float(row.get("step_reward", 0.0)) / float(reward_scale))
+            for row in group_rows
+        ]
+
+        n = len(group_rows)
+
+        for i, row in enumerate(group_rows):
+            weighted_sum = 0.0
+            weight_sum = 0.0
+            discount = 1.0
+
+            for j in range(i, n):
+                weighted_sum += discount * normalized_rewards[j]
+                weight_sum += discount
+                discount *= float(gamma)
+
+            value_target = weighted_sum / max(weight_sum, 1e-12)
+
+            row["value_target"] = float(value_target)
+            row["value_target_mode"] = "tanh_step_reward_discounted_average"
+            row["value_reward_scale"] = float(reward_scale)
+            row["value_gamma"] = float(gamma)
+            row["value_horizon_normalized"] = True
 
 
 def discounted_returns(
@@ -1882,6 +1983,39 @@ def main() -> None:
         help="Optional hard upper limit for --num-workers auto. Use 0 for no explicit limit.",
     )
 
+    parser.add_argument(
+        "--value-target-mode",
+        type=str,
+        default="tanh_step_reward_discounted_average",
+        choices=[
+            "legacy_discounted_return",
+            "tanh_step_reward_discounted_average",
+        ],
+        help=(
+            "How to create value targets in examples.csv. "
+            "legacy_discounted_return keeps old behavior. "
+            "tanh_step_reward_discounted_average adds bounded value_target."
+        ),
+    )
+
+    parser.add_argument(
+        "--value-reward-scale",
+        type=str,
+        default="auto",
+        help=(
+            "Reward scale for tanh value target normalization. "
+            "Use 'auto' to compute it from generated step_reward values, "
+            "or pass a positive number for reproducible fixed scaling."
+        ),
+    )
+
+    parser.add_argument(
+        "--value-reward-scale-quantile",
+        type=float,
+        default=0.95,
+        help="Quantile of abs(step_reward) used when --value-reward-scale auto.",
+    )
+
     args = parser.parse_args()
 
     raw_dir = Path(args.raw_dir)
@@ -1987,6 +2121,32 @@ def main() -> None:
 
     if not rows:
         raise RuntimeError("No teacher examples were generated.")
+
+    if args.value_target_mode == "tanh_step_reward_discounted_average":
+        if str(args.value_reward_scale).lower().strip() == "auto":
+            value_reward_scale = compute_auto_reward_scale_from_rows(
+                rows=rows,
+                quantile=float(args.value_reward_scale_quantile),
+                min_scale=1.0,
+            )
+        else:
+            value_reward_scale = float(args.value_reward_scale)
+
+            if value_reward_scale <= 0:
+                raise ValueError(
+                    f"--value-reward-scale must be positive, got {value_reward_scale}"
+                )
+
+        add_normalized_value_targets_to_rows(
+            rows=rows,
+            gamma=float(args.gamma),
+            reward_scale=float(value_reward_scale),
+            group_keys=("scenario_id",),
+        )
+
+        print(f"Value target mode:  {args.value_target_mode}")
+        print(f"Value reward scale: {value_reward_scale}")
+        print(f"Value gamma:        {args.gamma}")
 
     examples_df = pd.DataFrame(rows)
     examples_df = examples_df.sort_values(
