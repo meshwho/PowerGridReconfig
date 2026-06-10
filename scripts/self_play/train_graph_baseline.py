@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
+import json
+import subprocess
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -51,6 +54,142 @@ def resolve_device(device_arg: str) -> torch.device:
         "Use one of: auto, cuda, cpu."
     )
 
+def sha256_file(path: Path, chunk_size: int = 1024 * 1024) -> str:
+    """
+    Compute SHA256 for a file.
+
+    Used to bind checkpoints to the exact examples.csv that was used
+    during training.
+    """
+
+    h = hashlib.sha256()
+
+    with path.open("rb") as f:
+        while True:
+            chunk = f.read(chunk_size)
+
+            if not chunk:
+                break
+
+            h.update(chunk)
+
+    return h.hexdigest()
+
+
+def sha256_text(text: str) -> str:
+    """
+    Compute SHA256 for a UTF-8 string.
+    """
+
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def get_git_commit(repo_root: Path) -> str | None:
+    """
+    Return current git commit hash if the project is inside a git repo.
+
+    If git is not available or the directory is not a git repository,
+    return None instead of failing training.
+    """
+
+    try:
+        commit = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"],
+            cwd=str(repo_root),
+            text=True,
+            stderr=subprocess.DEVNULL,
+        ).strip()
+
+        return commit or None
+
+    except Exception:
+        return None
+
+
+def make_json_safe(value: Any) -> Any:
+    """
+    Convert argparse/config values to JSON-safe primitives.
+    """
+
+    if isinstance(value, Path):
+        return str(value)
+
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+
+    if isinstance(value, dict):
+        return {str(k): make_json_safe(v) for k, v in value.items()}
+
+    if isinstance(value, (list, tuple)):
+        return [make_json_safe(v) for v in value]
+
+    return str(value)
+
+
+def build_training_config(args: argparse.Namespace) -> dict[str, Any]:
+    """
+    Store all command-line training arguments in the checkpoint.
+    """
+
+    return {
+        key: make_json_safe(value)
+        for key, value in vars(args).items()
+    }
+
+
+def build_dataset_metadata(
+    dataset: GraphSelfPlayDataset,
+    repo_root: Path,
+) -> dict[str, Any]:
+    """
+    Build reproducibility metadata for the training dataset.
+
+    We intentionally hash examples.csv and the list of referenced state paths.
+    Hashing every .npz file can be expensive, so we store state count and
+    total byte size instead.
+    """
+
+    examples_csv = Path(dataset.examples_csv)
+    examples_csv_abs = examples_csv.resolve()
+
+    state_paths = [
+        str(p).replace("\\", "/")
+        for p in dataset.examples["state_path"].astype(str).tolist()
+    ]
+
+    unique_state_paths = sorted(set(state_paths))
+
+    existing_state_count = 0
+    missing_state_count = 0
+    state_total_bytes = 0
+
+    for state_path_str in unique_state_paths:
+        state_path = Path(state_path_str)
+
+        if not state_path.is_absolute():
+            state_path = repo_root / state_path
+
+        if state_path.exists():
+            existing_state_count += 1
+            state_total_bytes += int(state_path.stat().st_size)
+        else:
+            missing_state_count += 1
+
+    return {
+        "examples_csv": str(examples_csv),
+        "examples_csv_abs": str(examples_csv_abs),
+        "examples_csv_sha256": sha256_file(examples_csv_abs),
+        "examples_count": int(len(dataset.examples)),
+        "scenario_count": int(dataset.examples["scenario_id"].nunique())
+        if "scenario_id" in dataset.examples.columns
+        else None,
+        "state_reference_count": int(len(state_paths)),
+        "unique_state_count": int(len(unique_state_paths)),
+        "existing_state_count": int(existing_state_count),
+        "missing_state_count": int(missing_state_count),
+        "state_total_bytes": int(state_total_bytes),
+        "state_paths_sha256": sha256_text("\n".join(unique_state_paths)),
+    }
 
 def soft_policy_loss(
     logits: torch.Tensor,
@@ -107,6 +246,12 @@ def make_checkpoint(
 
     normalization = dataset.normalization_state_dict()
 
+    repo_root = Path.cwd().resolve()
+    dataset_metadata = build_dataset_metadata(
+        dataset=dataset,
+        repo_root=repo_root,
+    )
+
     checkpoint = {
         "model_type": str(getattr(model, "model_type", "graph_policy_value_net")),
         "model_state_dict": model_state_dict_cpu,
@@ -127,6 +272,12 @@ def make_checkpoint(
 
         "device_used_for_training": str(device),
         "amp_used": bool(use_amp),
+
+        "created_at": datetime.now().isoformat(timespec="seconds"),
+        "git_commit": get_git_commit(repo_root),
+        "repo_root": str(repo_root),
+        "training_config": build_training_config(args),
+        "dataset_metadata": dataset_metadata,
 
         "bus_feature_mean": normalization["bus_feature_mean"],
         "bus_feature_std": normalization["bus_feature_std"],

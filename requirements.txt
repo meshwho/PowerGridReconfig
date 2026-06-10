@@ -9,3 +9,4 @@ PyYAML
 tensorboard
 pypower
 pyarrow
+pytest

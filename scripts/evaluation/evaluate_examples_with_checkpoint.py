@@ -122,6 +122,24 @@ def main() -> None:
     print(f"Examples CSV: {examples_csv}")
     print(f"Checkpoint:   {checkpoint_path}")
     print(f"Model type:   {checkpoint.get('model_type', 'unknown')}")
+
+    dataset_metadata = checkpoint.get("dataset_metadata")
+
+    if isinstance(dataset_metadata, dict):
+        print("")
+        print("Checkpoint dataset metadata:")
+        print(f"  train examples CSV: {dataset_metadata.get('examples_csv')}")
+        print(f"  train examples:     {dataset_metadata.get('examples_count')}")
+        print(f"  train scenarios:    {dataset_metadata.get('scenario_count')}")
+        print(f"  examples sha256:    {dataset_metadata.get('examples_csv_sha256')}")
+        print(f"  state refs:         {dataset_metadata.get('state_reference_count')}")
+        print(f"  unique states:      {dataset_metadata.get('unique_state_count')}")
+        print(f"  missing states:     {dataset_metadata.get('missing_state_count')}")
+
+    if checkpoint.get("git_commit") is not None:
+        print(f"Checkpoint git commit: {checkpoint.get('git_commit')}")
+
+    print("")
     print(f"Examples:     {int(metrics['examples'])}")
     print("")
     print(f"loss:         {metrics['loss']:.6f}")
