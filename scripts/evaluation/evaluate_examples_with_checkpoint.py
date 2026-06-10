@@ -139,6 +139,19 @@ def main() -> None:
     if checkpoint.get("git_commit") is not None:
         print(f"Checkpoint git commit: {checkpoint.get('git_commit')}")
 
+    value_target_diagnostics = checkpoint.get("value_target_diagnostics")
+
+    if isinstance(value_target_diagnostics, dict):
+        print("")
+        print("Checkpoint value target diagnostics:")
+        print(f"  value_scale:      {value_target_diagnostics.get('value_scale')}")
+        print(f"  raw min:          {value_target_diagnostics.get('raw_min')}")
+        print(f"  raw max:          {value_target_diagnostics.get('raw_max')}")
+        print(f"  abs norm p95:     {value_target_diagnostics.get('abs_normalized_p95')}")
+        print(f"  abs norm p99:     {value_target_diagnostics.get('abs_normalized_p99')}")
+        print(f"  clipped count:    {value_target_diagnostics.get('clipped_count')}")
+        print(f"  clipped percent:  {value_target_diagnostics.get('clipped_percent')}")
+
     print("")
     print(f"Examples:     {int(metrics['examples'])}")
     print("")

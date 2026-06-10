@@ -9,6 +9,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import torch
 from torch import nn
 from torch.utils.data import DataLoader
@@ -191,6 +192,121 @@ def build_dataset_metadata(
         "state_paths_sha256": sha256_text("\n".join(unique_state_paths)),
     }
 
+def build_value_target_diagnostics(
+    dataset: GraphSelfPlayDataset,
+    value_scale: float,
+) -> dict[str, Any]:
+    """
+    Analyze value targets before clipping.
+
+    GraphSelfPlayDataset uses:
+        target_value = discounted_return_from_step / value_scale
+        target_value = clip(target_value, -1, 1)
+
+    This diagnostic tells us how often value targets saturate.
+    """
+
+    if "discounted_return_from_step" not in dataset.examples.columns:
+        return {
+            "available": False,
+            "reason": "discounted_return_from_step column is missing",
+        }
+
+    raw = dataset.examples["discounted_return_from_step"].astype(float).to_numpy()
+
+    scale = float(value_scale)
+
+    if scale <= 0:
+        return {
+            "available": False,
+            "reason": f"value_scale must be positive, got {scale}",
+        }
+
+    normalized = raw / scale
+    abs_normalized = abs(normalized)
+
+    clipped_mask = abs_normalized >= 1.0
+
+    def q(x, p):
+        return float(np.quantile(x, p)) if len(x) > 0 else 0.0
+
+    return {
+        "available": True,
+        "value_scale": scale,
+        "count": int(len(raw)),
+
+        "raw_min": float(raw.min()) if len(raw) else 0.0,
+        "raw_max": float(raw.max()) if len(raw) else 0.0,
+        "raw_mean": float(raw.mean()) if len(raw) else 0.0,
+        "raw_std": float(raw.std()) if len(raw) else 0.0,
+
+        "normalized_min": float(normalized.min()) if len(normalized) else 0.0,
+        "normalized_max": float(normalized.max()) if len(normalized) else 0.0,
+        "normalized_mean": float(normalized.mean()) if len(normalized) else 0.0,
+        "normalized_std": float(normalized.std()) if len(normalized) else 0.0,
+
+        "abs_normalized_p50": q(abs_normalized, 0.50),
+        "abs_normalized_p90": q(abs_normalized, 0.90),
+        "abs_normalized_p95": q(abs_normalized, 0.95),
+        "abs_normalized_p99": q(abs_normalized, 0.99),
+        "abs_normalized_max": float(abs_normalized.max()) if len(abs_normalized) else 0.0,
+
+        "clipped_count": int(clipped_mask.sum()),
+        "clipped_percent": float(clipped_mask.mean() * 100.0) if len(clipped_mask) else 0.0,
+
+        "positive_count": int((raw > 0).sum()),
+        "zero_count": int((raw == 0).sum()),
+        "negative_count": int((raw < 0).sum()),
+    }
+
+
+def print_value_target_diagnostics(
+    diagnostics: dict[str, Any],
+) -> None:
+    """
+    Print value target diagnostics in a compact readable form.
+    """
+
+    print("")
+    print("=" * 100)
+    print("VALUE TARGET DIAGNOSTICS")
+    print("=" * 100)
+
+    if not diagnostics.get("available", False):
+        print(f"Unavailable: {diagnostics.get('reason')}")
+        return
+
+    print(f"value_scale:        {diagnostics['value_scale']}")
+    print(f"count:              {diagnostics['count']}")
+    print("")
+    print(f"raw min:            {diagnostics['raw_min']:.6f}")
+    print(f"raw max:            {diagnostics['raw_max']:.6f}")
+    print(f"raw mean:           {diagnostics['raw_mean']:.6f}")
+    print(f"raw std:            {diagnostics['raw_std']:.6f}")
+    print("")
+    print(f"normalized min:     {diagnostics['normalized_min']:.6f}")
+    print(f"normalized max:     {diagnostics['normalized_max']:.6f}")
+    print(f"normalized mean:    {diagnostics['normalized_mean']:.6f}")
+    print(f"normalized std:     {diagnostics['normalized_std']:.6f}")
+    print("")
+    print(f"abs norm p50:       {diagnostics['abs_normalized_p50']:.6f}")
+    print(f"abs norm p90:       {diagnostics['abs_normalized_p90']:.6f}")
+    print(f"abs norm p95:       {diagnostics['abs_normalized_p95']:.6f}")
+    print(f"abs norm p99:       {diagnostics['abs_normalized_p99']:.6f}")
+    print(f"abs norm max:       {diagnostics['abs_normalized_max']:.6f}")
+    print("")
+    print(f"clipped count:      {diagnostics['clipped_count']}")
+    print(f"clipped percent:    {diagnostics['clipped_percent']:.2f}%")
+    print("")
+    print(f"positive count:     {diagnostics['positive_count']}")
+    print(f"zero count:         {diagnostics['zero_count']}")
+    print(f"negative count:     {diagnostics['negative_count']}")
+
+    if diagnostics["clipped_percent"] > 10.0:
+        print("")
+        print("WARNING: More than 10% of value targets are clipped.")
+        print("The value head may receive saturated targets.")
+
 def soft_policy_loss(
     logits: torch.Tensor,
     target_policy: torch.Tensor,
@@ -252,6 +368,11 @@ def make_checkpoint(
         repo_root=repo_root,
     )
 
+    value_target_diagnostics = build_value_target_diagnostics(
+        dataset=dataset,
+        value_scale=float(args.value_scale),
+    )
+
     checkpoint = {
         "model_type": str(getattr(model, "model_type", "graph_policy_value_net")),
         "model_state_dict": model_state_dict_cpu,
@@ -278,6 +399,7 @@ def make_checkpoint(
         "repo_root": str(repo_root),
         "training_config": build_training_config(args),
         "dataset_metadata": dataset_metadata,
+        "value_target_diagnostics": value_target_diagnostics,
 
         "bus_feature_mean": normalization["bus_feature_mean"],
         "bus_feature_std": normalization["bus_feature_std"],
@@ -1046,6 +1168,14 @@ def main() -> None:
     print(f"Bus features:  {dataset.num_bus_features}")
     print(f"Branch feats:  {dataset.num_branch_features}")
     print(f"Value scale:   {args.value_scale}")
+
+    train_value_diagnostics = build_value_target_diagnostics(
+        dataset=dataset,
+        value_scale=float(args.value_scale),
+    )
+
+    print_value_target_diagnostics(train_value_diagnostics)
+
     print(f"Batch size:    {args.batch_size}")
     print(f"Num workers:   {args.num_workers}")
     print(f"Hidden dim:    {args.hidden_dim}")
