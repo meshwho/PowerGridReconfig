@@ -137,17 +137,44 @@ class ResidualEdgeMessagePassingV2(nn.Module):
 
     @staticmethod
     def _aggregate_messages(
-        messages: torch.Tensor,
-        target_indices: torch.Tensor,
-        num_nodes: int,
+            messages: torch.Tensor,
+            target_indices: torch.Tensor,
+            num_nodes: int,
     ) -> torch.Tensor:
-        batch_size, _, hidden_dim = messages.shape
+        """
+        Batched aggregation of edge messages into node embeddings.
+
+        messages:
+            [batch_size, num_edges, hidden_dim]
+
+        target_indices:
+            [batch_size, num_edges]
+
+        returns:
+            [batch_size, num_nodes, hidden_dim]
+        """
+
+        batch_size, num_edges, hidden_dim = messages.shape
+
+        index = target_indices.long().unsqueeze(-1).expand(
+            batch_size,
+            num_edges,
+            hidden_dim,
+        )
 
         aggregated = messages.new_zeros(
             batch_size,
             num_nodes,
             hidden_dim,
         )
+
+        aggregated.scatter_add_(
+            dim=1,
+            index=index,
+            src=messages,
+        )
+
+        count_index = target_indices.long().unsqueeze(-1)
 
         counts = messages.new_zeros(
             batch_size,
@@ -157,23 +184,15 @@ class ResidualEdgeMessagePassingV2(nn.Module):
 
         ones = messages.new_ones(
             batch_size,
-            target_indices.shape[1],
+            num_edges,
             1,
         )
 
-        # This small loop is acceptable for case118 and avoids torch_scatter.
-        for batch_idx in range(batch_size):
-            aggregated[batch_idx].index_add_(
-                dim=0,
-                index=target_indices[batch_idx],
-                source=messages[batch_idx],
-            )
-
-            counts[batch_idx].index_add_(
-                dim=0,
-                index=target_indices[batch_idx],
-                source=ones[batch_idx],
-            )
+        counts.scatter_add_(
+            dim=1,
+            index=count_index,
+            src=ones,
+        )
 
         return aggregated / counts.clamp_min(1.0)
 

@@ -880,14 +880,13 @@ def main() -> None:
             examples_csv=args.val_examples_csv,
             value_scale=args.value_scale,
             normalize_features=not args.no_normalize_features,
+            normalization_stats={
+                "bus_feature_mean": dataset.bus_feature_mean,
+                "bus_feature_std": dataset.bus_feature_std,
+                "branch_feature_mean": dataset.branch_feature_mean,
+                "branch_feature_std": dataset.branch_feature_std,
+            },
         )
-
-        # Important:
-        # Validation must use the same normalization statistics as train.
-        val_dataset.bus_feature_mean = dataset.bus_feature_mean
-        val_dataset.bus_feature_std = dataset.bus_feature_std
-        val_dataset.branch_feature_mean = dataset.branch_feature_mean
-        val_dataset.branch_feature_std = dataset.branch_feature_std
 
     print(f"Examples:      {len(dataset)}")
     print(f"Num buses:     {dataset.num_buses}")

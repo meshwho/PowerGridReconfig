@@ -32,10 +32,11 @@ class GraphSelfPlayDataset(Dataset):
     """
 
     def __init__(
-        self,
-        examples_csv: str | Path,
-        value_scale: float = 10000.0,
-        normalize_features: bool = True,
+            self,
+            examples_csv: str | Path,
+            value_scale: float = 10000.0,
+            normalize_features: bool = True,
+            normalization_stats: dict[str, np.ndarray] | None = None,
     ):
         self.examples_csv = Path(examples_csv)
         self.value_scale = float(value_scale)
@@ -81,7 +82,24 @@ class GraphSelfPlayDataset(Dataset):
                 f"num_actions={self.num_actions}, num_branches={self.num_branches}"
             )
 
-        if self.normalize_features:
+        if normalization_stats is not None:
+            self.bus_feature_mean = np.asarray(
+                normalization_stats["bus_feature_mean"],
+                dtype=np.float32,
+            )
+            self.bus_feature_std = np.asarray(
+                normalization_stats["bus_feature_std"],
+                dtype=np.float32,
+            )
+            self.branch_feature_mean = np.asarray(
+                normalization_stats["branch_feature_mean"],
+                dtype=np.float32,
+            )
+            self.branch_feature_std = np.asarray(
+                normalization_stats["branch_feature_std"],
+                dtype=np.float32,
+            )
+        elif self.normalize_features:
             (
                 self.bus_feature_mean,
                 self.bus_feature_std,
