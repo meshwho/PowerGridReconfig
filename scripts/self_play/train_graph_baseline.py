@@ -197,6 +197,104 @@ def build_value_target_diagnostics(
     value_scale: float,
 ) -> dict[str, Any]:
     """
+    Analyze value targets.
+
+    Preferred modern mode:
+        examples.csv contains explicit value_target in [-1, 1].
+
+    Legacy fallback:
+        target_value = discounted_return_from_step / value_scale
+        target_value = clip(target_value, -1, 1)
+    """
+
+    def q(x, p):
+        return float(np.quantile(x, p)) if len(x) > 0 else 0.0
+
+    if "value_target" in dataset.examples.columns:
+        target = dataset.examples["value_target"].astype(float).to_numpy()
+
+        abs_target = np.abs(target)
+        outside_mask = abs_target > 1.0
+
+        return {
+            "available": True,
+            "mode": "explicit_value_target",
+            "count": int(len(target)),
+
+            "target_min": float(target.min()) if len(target) else 0.0,
+            "target_max": float(target.max()) if len(target) else 0.0,
+            "target_mean": float(target.mean()) if len(target) else 0.0,
+            "target_std": float(target.std()) if len(target) else 0.0,
+
+            "abs_target_p50": q(abs_target, 0.50),
+            "abs_target_p90": q(abs_target, 0.90),
+            "abs_target_p95": q(abs_target, 0.95),
+            "abs_target_p99": q(abs_target, 0.99),
+            "abs_target_max": float(abs_target.max()) if len(abs_target) else 0.0,
+
+            "outside_minus1_plus1_count": int(outside_mask.sum()),
+            "outside_minus1_plus1_percent": (
+                float(outside_mask.mean() * 100.0) if len(outside_mask) else 0.0
+            ),
+
+            "positive_count": int((target > 0).sum()),
+            "zero_count": int((target == 0).sum()),
+            "negative_count": int((target < 0).sum()),
+        }
+
+    if "discounted_return_from_step" not in dataset.examples.columns:
+        return {
+            "available": False,
+            "reason": "Neither value_target nor discounted_return_from_step column is available.",
+        }
+
+    raw = dataset.examples["discounted_return_from_step"].astype(float).to_numpy()
+
+    scale = float(value_scale)
+
+    if scale <= 0:
+        return {
+            "available": False,
+            "reason": f"value_scale must be positive, got {scale}",
+        }
+
+    normalized = raw / scale
+    abs_normalized = np.abs(normalized)
+
+    clipped_mask = abs_normalized >= 1.0
+
+    return {
+        "available": True,
+        "mode": "legacy_scaled_discounted_return",
+        "value_scale": scale,
+        "count": int(len(raw)),
+
+        "raw_min": float(raw.min()) if len(raw) else 0.0,
+        "raw_max": float(raw.max()) if len(raw) else 0.0,
+        "raw_mean": float(raw.mean()) if len(raw) else 0.0,
+        "raw_std": float(raw.std()) if len(raw) else 0.0,
+
+        "normalized_min": float(normalized.min()) if len(normalized) else 0.0,
+        "normalized_max": float(normalized.max()) if len(normalized) else 0.0,
+        "normalized_mean": float(normalized.mean()) if len(normalized) else 0.0,
+        "normalized_std": float(normalized.std()) if len(normalized) else 0.0,
+
+        "abs_normalized_p50": q(abs_normalized, 0.50),
+        "abs_normalized_p90": q(abs_normalized, 0.90),
+        "abs_normalized_p95": q(abs_normalized, 0.95),
+        "abs_normalized_p99": q(abs_normalized, 0.99),
+        "abs_normalized_max": float(abs_normalized.max()) if len(abs_normalized) else 0.0,
+
+        "clipped_count": int(clipped_mask.sum()),
+        "clipped_percent": (
+            float(clipped_mask.mean() * 100.0) if len(clipped_mask) else 0.0
+        ),
+
+        "positive_count": int((raw > 0).sum()),
+        "zero_count": int((raw == 0).sum()),
+        "negative_count": int((raw < 0).sum()),
+    }
+    """
     Analyze value targets before clipping.
 
     GraphSelfPlayDataset uses:
