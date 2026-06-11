@@ -207,7 +207,7 @@ def build_value_target_diagnostics(
     """
 
     if "value_target" in dataset.examples.columns:
-    target = dataset.examples["value_target"].astype(float).to_numpy()
+        target = dataset.examples["value_target"].astype(float).to_numpy()
 
     abs_target = np.abs(target)
     outside_mask = abs_target > 1.0
