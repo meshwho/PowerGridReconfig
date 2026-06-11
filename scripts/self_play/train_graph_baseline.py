@@ -507,25 +507,25 @@ def print_value_target_diagnostics(
         print("WARNING: More than 10% of value targets are clipped.")
         print("The value head may receive saturated targets.")
     if diagnostics.get("mode") == "explicit_value_target":
-    print(f"mode:               {diagnostics['mode']}")
-    print(f"count:              {diagnostics['count']}")
-    print("")
-    print(f"target min:         {diagnostics['target_min']:.6f}")
-    print(f"target max:         {diagnostics['target_max']:.6f}")
-    print(f"target mean:        {diagnostics['target_mean']:.6f}")
-    print(f"target std:         {diagnostics['target_std']:.6f}")
-    print("")
-    print(f"abs target p50:     {diagnostics['abs_target_p50']:.6f}")
-    print(f"abs target p90:     {diagnostics['abs_target_p90']:.6f}")
-    print(f"abs target p95:     {diagnostics['abs_target_p95']:.6f}")
-    print(f"abs target p99:     {diagnostics['abs_target_p99']:.6f}")
-    print(f"abs target max:     {diagnostics['abs_target_max']:.6f}")
-    print("")
-    print(f"outside [-1,1]:     {diagnostics['outside_minus1_plus1_count']}")
-    print(
-        f"outside percent:    "
-        f"{diagnostics['outside_minus1_plus1_percent']:.2f}%"
-    )
+        print(f"mode:               {diagnostics['mode']}")
+        print(f"count:              {diagnostics['count']}")
+        print("")
+        print(f"target min:         {diagnostics['target_min']:.6f}")
+        print(f"target max:         {diagnostics['target_max']:.6f}")
+        print(f"target mean:        {diagnostics['target_mean']:.6f}")
+        print(f"target std:         {diagnostics['target_std']:.6f}")
+        print("")
+        print(f"abs target p50:     {diagnostics['abs_target_p50']:.6f}")
+        print(f"abs target p90:     {diagnostics['abs_target_p90']:.6f}")
+        print(f"abs target p95:     {diagnostics['abs_target_p95']:.6f}")
+        print(f"abs target p99:     {diagnostics['abs_target_p99']:.6f}")
+        print(f"abs target max:     {diagnostics['abs_target_max']:.6f}")
+        print("")
+        print(f"outside [-1,1]:     {diagnostics['outside_minus1_plus1_count']}")
+        print(
+            f"outside percent:    "
+            f"{diagnostics['outside_minus1_plus1_percent']:.2f}%"
+        )
     return
 
 
