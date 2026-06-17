@@ -1092,6 +1092,13 @@ def main() -> None:
     )
 
     parser.add_argument(
+        "--value-huber-delta",
+        type=float,
+        default=0.5,
+        help="Delta parameter for Huber loss used by the value head.",
+    )
+
+    parser.add_argument(
         "--device",
         type=str,
         default="auto",
@@ -1244,6 +1251,7 @@ def main() -> None:
     print(f"Num layers:    {args.num_layers}")
     print(f"Dropout:       {args.dropout}")
     print(f"Model type:    {args.model_type}")
+    print(f"Value loss:    HuberLoss(delta={args.value_huber_delta})")
 
     if val_dataset is not None:
         print(f"Val examples:   {len(val_dataset)}")
@@ -1301,7 +1309,7 @@ def main() -> None:
         weight_decay=1e-4,
     )
 
-    value_loss_fn = nn.MSELoss()
+    value_loss_fn = nn.HuberLoss(delta=float(args.value_huber_delta))
     scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
 
     best_metric = float("inf")
