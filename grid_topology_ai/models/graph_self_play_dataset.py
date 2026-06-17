@@ -64,7 +64,7 @@ class GraphSelfPlayDataset(Dataset):
                 f"Examples CSV is missing required columns: {sorted(missing)}"
             )
 
-                self._validate_outcome_value_targets()
+        self._validate_outcome_value_targets()
         self._validate_state_files()
 
         first_data = self._load_npz_by_index(0)
