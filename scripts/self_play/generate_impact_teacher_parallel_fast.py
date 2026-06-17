@@ -453,23 +453,8 @@ def add_normalized_value_targets_to_rows(
 
 def _terminal_value_from_outcome(
     solved: bool,
-    done: bool,
     termination_reason: str | None,
-) -> tuple[float | None, str]:
-    """
-    Convert final episode status into AlphaZero-like terminal value.
-
-    Returns:
-        terminal_value:
-            +1.0 for solved episodes
-             0.0 for handoff to redispatch
-            -1.0 for failed / exhausted episodes
-            None for non-terminal truncated episodes
-
-        outcome_class:
-            stable textual label saved into examples.csv
-    """
-
+) -> tuple[float, str]:
     reason = "" if termination_reason is None else str(termination_reason)
 
     if bool(solved) or reason == "solved":
@@ -482,41 +467,19 @@ def _terminal_value_from_outcome(
     }:
         return 0.0, "handoff_to_redispatch_teacher"
 
-    if reason in {
-        "max_steps_reached",
-        "power_flow_failed",
-        "non_convergence",
-        "unsafe_stop_with_hard_overload",
-    }:
-        return -1.0, reason
+    return -1.0, reason or "unsolved_terminal"
 
-    # Важно: если эпизод не terminal, не надо делать вид,
-    # что мы знаем итог. Иначе outcome target станет ложным.
-    if not bool(done):
-        return None, "truncated_non_terminal"
-
-    # Любой неизвестный terminal без solved/handoff считаем плохим исходом.
-    return -1.0, reason or "unknown_terminal_failure"
-
-
+    
 def add_outcome_value_targets_to_rows(
     rows: list[dict],
     gamma: float,
     group_keys: tuple[str, ...] = ("scenario_id",),
 ) -> None:
     """
-    Add AlphaZero-like outcome value targets to generated teacher rows.
+    Add strict AlphaZero-like outcome value targets.
 
-    For each scenario:
-        solved                        -> +1.0
-        handoff_to_redispatch_teacher ->  0.0
-        max_steps_reached / failure   -> -1.0
-
-    For each step:
-        outcome_value_target_t = terminal_value * gamma ** steps_to_terminal
-
-    If the episode is not truly terminal, outcome_value_target is set to NaN.
-    Then GraphSelfPlayDataset will safely fall back to dense value_target.
+    Every row receives a numeric outcome_value_target.
+    No NaN fallback is allowed.
     """
 
     if gamma < 0.0 or gamma > 1.0:
@@ -538,7 +501,6 @@ def add_outcome_value_targets_to_rows(
 
         terminal_value, outcome_class = _terminal_value_from_outcome(
             solved=bool(terminal_row.get("solved", False)),
-            done=bool(terminal_row.get("done", False)),
             termination_reason=terminal_row.get("termination_reason"),
         )
 
@@ -547,17 +509,13 @@ def add_outcome_value_targets_to_rows(
         for position, row in enumerate(group_rows):
             steps_to_terminal = n - position
 
+            row["outcome_value_target"] = float(
+                terminal_value * (float(gamma) ** steps_to_terminal)
+            )
             row["outcome_class"] = outcome_class
             row["outcome_steps_to_terminal"] = int(steps_to_terminal)
             row["outcome_value_target_mode"] = "alphazero_discounted"
             row["outcome_gamma"] = float(gamma)
-
-            if terminal_value is None:
-                row["outcome_value_target"] = float("nan")
-            else:
-                row["outcome_value_target"] = float(
-                    terminal_value * (float(gamma) ** steps_to_terminal)
-                )
 
 def discounted_returns(
     rewards: list[float],
@@ -2238,7 +2196,6 @@ def main() -> None:
 
     print("Outcome value target mode: alphazero_discounted")
     print(f"Outcome gamma:             {args.gamma}")
-
 
     if args.value_target_mode == "tanh_step_reward_discounted_average":
         if str(args.value_reward_scale).lower().strip() == "auto":

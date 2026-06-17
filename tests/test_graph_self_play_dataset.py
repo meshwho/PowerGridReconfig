@@ -26,7 +26,6 @@ MIXED_TRAIN_CSV = (
 def test_graph_self_play_dataset_reads_mixed_val_sample():
     dataset = GraphSelfPlayDataset(
         examples_csv=MIXED_VAL_CSV,
-        value_scale=10000.0,
         normalize_features=True,
     )
 
@@ -88,7 +87,6 @@ def test_graph_self_play_dataset_reads_mixed_val_sample():
 def test_val_dataset_can_use_train_normalization_stats():
     train_dataset = GraphSelfPlayDataset(
         examples_csv=MIXED_TRAIN_CSV,
-        value_scale=10000.0,
         normalize_features=True,
     )
 
@@ -101,7 +99,6 @@ def test_val_dataset_can_use_train_normalization_stats():
 
     val_dataset = GraphSelfPlayDataset(
         examples_csv=MIXED_VAL_CSV,
-        value_scale=10000.0,
         normalize_features=True,
         normalization_stats=stats,
     )

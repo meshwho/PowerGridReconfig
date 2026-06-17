@@ -1,5 +1,5 @@
 import math
-
+import pytest
 from scripts.self_play.generate_impact_teacher_parallel_fast import (
     add_outcome_value_targets_to_rows,
 )
@@ -88,7 +88,7 @@ def test_outcome_value_target_max_steps_episode():
     assert math.isclose(rows[1]["outcome_value_target"], -0.95)
 
 
-def test_outcome_value_target_truncated_non_terminal_is_nan():
+def test_outcome_value_target_teacher_depth_limit_is_negative():
     rows = [
         {
             "scenario_id": 4,
@@ -101,5 +101,7 @@ def test_outcome_value_target_truncated_non_terminal_is_nan():
 
     add_outcome_value_targets_to_rows(rows, gamma=0.99)
 
-    assert rows[0]["outcome_class"] == "truncated_non_terminal"
-    assert math.isnan(rows[0]["outcome_value_target"])
+    assert rows[0]["outcome_class"] == "teacher_depth_limit"
+    assert rows[0]["outcome_steps_to_terminal"] == 1
+    assert rows[0]["outcome_value_target_mode"] == "alphazero_discounted"
+    assert rows[0]["outcome_value_target"] == pytest.approx(-0.99)

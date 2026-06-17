@@ -32,14 +32,12 @@ class GraphSelfPlayDataset(Dataset):
     """
 
     def __init__(
-            self,
-            examples_csv: str | Path,
-            value_scale: float = 10000.0,
-            normalize_features: bool = True,
-            normalization_stats: dict[str, np.ndarray] | None = None,
+        self,
+        examples_csv: str | Path,
+        normalize_features: bool = True,
+        normalization_stats: dict[str, np.ndarray] | None = None,
     ):
         self.examples_csv = Path(examples_csv)
-        self.value_scale = float(value_scale)
         self.normalize_features = bool(normalize_features)
 
         if not self.examples_csv.exists():
@@ -53,10 +51,10 @@ class GraphSelfPlayDataset(Dataset):
         required_columns = {
             "state_path",
             "mcts_policy_json",
-            "discounted_return_from_step",
             "scenario_id",
             "step",
             "state_id",
+            "outcome_value_target",
         }
 
         missing = required_columns - set(self.examples.columns)
@@ -66,6 +64,7 @@ class GraphSelfPlayDataset(Dataset):
                 f"Examples CSV is missing required columns: {sorted(missing)}"
             )
 
+                self._validate_outcome_value_targets()
         self._validate_state_files()
 
         first_data = self._load_npz_by_index(0)
@@ -161,20 +160,10 @@ class GraphSelfPlayDataset(Dataset):
         if target_sum > 0.0:
             target_policy = target_policy / target_sum
 
-        if (
-            "outcome_value_target" in row.index
-            and not pd.isna(row["outcome_value_target"])
-        ):
-            target_value = float(row["outcome_value_target"])
-
-        elif "value_target" in row.index and not pd.isna(row["value_target"]):
-            target_value = float(row["value_target"])
-
-        else:
-            raw_value = float(row["discounted_return_from_step"])
-            target_value = raw_value / self.value_scale
-
-        target_value = float(np.clip(target_value, -1.0, 1.0))
+        # Strict v3 logic:
+        # The value head is trained only on outcome_value_target.
+        # No value_target fallback and no discounted_return_from_step / value_scale fallback.
+        target_value = float(row["outcome_value_target"])
 
         return {
             "bus_features": torch.tensor(bus_features, dtype=torch.float32),
@@ -187,6 +176,42 @@ class GraphSelfPlayDataset(Dataset):
             "step": int(row["step"]),
             "state_id": str(row["state_id"]),
         }
+
+    def _validate_outcome_value_targets(self) -> None:
+        """
+        Validate strict AlphaZero-like value targets.
+
+        New datasets must contain outcome_value_target for every row.
+        Legacy fallback to discounted_return_from_step / value_scale is intentionally removed.
+        """
+
+        values = pd.to_numeric(
+            self.examples["outcome_value_target"],
+            errors="coerce",
+        )
+
+        invalid_mask = values.isna() | ~np.isfinite(values.to_numpy(dtype=np.float64))
+
+        if bool(invalid_mask.any()):
+            bad_count = int(invalid_mask.sum())
+            raise ValueError(
+                f"{bad_count} rows in {self.examples_csv} have invalid "
+                f"'outcome_value_target'. Regenerate the dataset with the new "
+                f"teacher generator."
+            )
+
+        outside_mask = values.abs() > 1.0 + 1e-6
+
+        if bool(outside_mask.any()):
+            bad_count = int(outside_mask.sum())
+            min_value = float(values.min())
+            max_value = float(values.max())
+
+            raise ValueError(
+                f"{bad_count} rows in {self.examples_csv} have "
+                f"'outcome_value_target' outside [-1, 1]. "
+                f"Observed range: [{min_value:.6f}, {max_value:.6f}]."
+            )
 
     def _validate_state_files(self) -> None:
         """
