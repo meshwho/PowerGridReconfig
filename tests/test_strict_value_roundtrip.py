@@ -6,10 +6,7 @@ import pytest
 import torch
 
 from grid_topology_ai.models.graph_self_play_dataset import GraphSelfPlayDataset
-from scripts.self_play.generate_impact_teacher_parallel_fast import (
-    add_outcome_value_targets_to_rows,
-)
-
+from grid_topology_ai.value_targets import add_outcome_value_targets_to_rows
 
 def _write_fake_state(path):
     """
