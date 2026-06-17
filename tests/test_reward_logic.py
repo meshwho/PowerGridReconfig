@@ -227,3 +227,42 @@ def test_voltage_violation_increases_state_penalty():
     assert result.improvement < 0.0
     assert result.reward < 0.0
     assert result.done is False
+
+def test_reward_weights_are_configurable():
+    before = _state(
+        loadings=(100.0,),
+        total_voltage_violation=0.0,
+    )
+
+    after = _state(
+        loadings=(100.0,),
+        total_voltage_violation=0.05,
+    )
+
+    default_reward = GridFMReward(
+        solved_bonus=0.0,
+        voltage_violation_weight=500.0,
+    )
+
+    weaker_voltage_penalty_reward = GridFMReward(
+        solved_bonus=0.0,
+        voltage_violation_weight=100.0,
+    )
+
+    default_result = default_reward.compute(
+        before_state=before,
+        after_state=after,
+        action_is_switching=False,
+        power_flow_success=True,
+    )
+
+    weaker_result = weaker_voltage_penalty_reward.compute(
+        before_state=before,
+        after_state=after,
+        action_is_switching=False,
+        power_flow_success=True,
+    )
+
+    assert default_result.after_penalty == pytest.approx(25.0)
+    assert weaker_result.after_penalty == pytest.approx(5.0)
+    assert weaker_result.reward > default_result.reward

@@ -70,13 +70,22 @@ class GridFMReward:
         switching_penalty: float = 1.0,
         non_convergence_penalty: float = 1000.0,
         solved_bonus: float = 50.0,
+        total_overload_weight: float = 2.0,
+        hard_overload_weight: float = 5.0,
+        num_overloaded_weight: float = 10.0,
+        num_hard_overloaded_weight: float = 30.0,
+        voltage_violation_weight: float = 500.0,
     ):
         self.overload_limit_percent = overload_limit_percent
         self.hard_overload_limit_percent = hard_overload_limit_percent
         self.switching_penalty = switching_penalty
         self.non_convergence_penalty = non_convergence_penalty
         self.solved_bonus = solved_bonus
-
+        self.total_overload_weight = float(total_overload_weight)
+        self.hard_overload_weight = float(hard_overload_weight)
+        self.num_overloaded_weight = float(num_overloaded_weight)
+        self.num_hard_overloaded_weight = float(num_hard_overloaded_weight)
+        self.voltage_violation_weight = float(voltage_violation_weight)
         self.loading_idx = BRANCH_FEATURE_COLUMNS.index("loading_percent")
         self.status_idx = BRANCH_FEATURE_COLUMNS.index("br_status")
 
@@ -199,11 +208,11 @@ class GridFMReward:
         num_hard_overloaded = state.metrics["num_hard_overloaded_branches"]
 
         penalty = (
-            2.0 * total_overload
-            + 5.0 * hard_overload
-            + 10.0 * num_overloaded
-            + 30.0 * num_hard_overloaded
-            + 500.0 * voltage_penalty
+            self.total_overload_weight * total_overload
+            + self.hard_overload_weight * hard_overload
+            + self.num_overloaded_weight * num_overloaded
+            + self.num_hard_overloaded_weight * num_hard_overloaded
+            + self.voltage_violation_weight * voltage_penalty
         )
 
         return float(penalty)
