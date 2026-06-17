@@ -1030,6 +1030,82 @@ def log_epoch_metrics(
         tensorboard_writer.flush()
 
 
+def _normalize_scenario_id(value: Any) -> str:
+    """
+    Normalize scenario_id for robust train/validation overlap checks.
+
+    scenario_id can come from CSV as int, float, or string.
+    We compare it as a clean string to avoid dtype-related false negatives.
+    """
+
+    if value is None:
+        return ""
+
+    if isinstance(value, float) and np.isnan(value):
+        return ""
+
+    text = str(value).strip()
+
+    if text.endswith(".0"):
+        text = text[:-2]
+
+    return text
+
+
+def collect_scenario_ids(dataset: GraphSelfPlayDataset) -> set[str]:
+    """
+    Collect normalized scenario_id values from a GraphSelfPlayDataset.
+    """
+
+    if "scenario_id" not in dataset.examples.columns:
+        raise ValueError("Dataset is missing required column: scenario_id")
+
+    scenario_ids = {
+        _normalize_scenario_id(value)
+        for value in dataset.examples["scenario_id"].tolist()
+    }
+
+    scenario_ids.discard("")
+
+    if not scenario_ids:
+        raise ValueError("Dataset does not contain any valid scenario_id values.")
+
+    return scenario_ids
+
+
+def validate_no_scenario_overlap(
+    train_dataset: GraphSelfPlayDataset,
+    val_dataset: GraphSelfPlayDataset | None,
+) -> None:
+    """
+    Ensure that train and validation datasets do not share scenario_id values.
+
+    This prevents data leakage where different steps of the same scenario
+    appear in both train and validation.
+    """
+
+    if val_dataset is None:
+        return
+
+    train_scenario_ids = collect_scenario_ids(train_dataset)
+    val_scenario_ids = collect_scenario_ids(val_dataset)
+
+    overlap = train_scenario_ids & val_scenario_ids
+
+    print(f"Train scenarios: {len(train_scenario_ids)}")
+    print(f"Val scenarios:   {len(val_scenario_ids)}")
+
+    if overlap:
+        preview = sorted(overlap)[:20]
+
+        raise ValueError(
+            "Train/validation scenario leakage detected. "
+            f"{len(overlap)} scenario_id values appear in both datasets. "
+            f"Examples: {preview}. "
+            "Use a scenario-level split, not a row-level split."
+        )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Train graph/GNN policy-value baseline."
@@ -1232,6 +1308,12 @@ def main() -> None:
                 "branch_feature_std": dataset.branch_feature_std,
             },
         )
+
+    validate_no_scenario_overlap(
+        train_dataset=dataset,
+        val_dataset=val_dataset,
+    )
+    
     print(f"Examples:      {len(dataset)}")
     print(f"Num buses:     {dataset.num_buses}")
     print(f"Num branches:  {dataset.num_branches}")
