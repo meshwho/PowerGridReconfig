@@ -161,13 +161,20 @@ class GraphSelfPlayDataset(Dataset):
         if target_sum > 0.0:
             target_policy = target_policy / target_sum
 
-        if "value_target" in row.index and not pd.isna(row["value_target"]):
+        if (
+            "outcome_value_target" in row.index
+            and not pd.isna(row["outcome_value_target"])
+        ):
+            target_value = float(row["outcome_value_target"])
+
+        elif "value_target" in row.index and not pd.isna(row["value_target"]):
             target_value = float(row["value_target"])
-            target_value = float(np.clip(target_value, -1.0, 1.0))
+
         else:
             raw_value = float(row["discounted_return_from_step"])
             target_value = raw_value / self.value_scale
-            target_value = float(np.clip(target_value, -1.0, 1.0))
+
+        target_value = float(np.clip(target_value, -1.0, 1.0))
 
         return {
             "bus_features": torch.tensor(bus_features, dtype=torch.float32),
