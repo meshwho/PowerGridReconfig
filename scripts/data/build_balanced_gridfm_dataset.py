@@ -145,6 +145,8 @@ def make_gridfm_config_text(
     start_scaling_factor: float,
     topology_variants: int,
     topology_k: int,
+    generation_perturbation_type: str,
+    generation_perturbation_range: float,
 ) -> str:
     """
     Generate GridFM YAML text.
@@ -154,6 +156,23 @@ def make_gridfm_config_text(
     """
 
     data_dir_str = str(data_dir).replace("\\", "/")
+
+    generation_perturbation_type = str(generation_perturbation_type).strip().lower()
+
+    if generation_perturbation_type == "none":
+        generation_perturbation_text = """generation_perturbation:
+  type: "none"
+"""
+    elif generation_perturbation_type == "random":
+        generation_perturbation_text = f"""generation_perturbation:
+  type: "random"
+  global_range: {float(generation_perturbation_range)}
+"""
+    else:
+        raise ValueError(
+            "Unsupported generation_perturbation_type: "
+            f"{generation_perturbation_type}. Expected: none or random."
+        )
 
     return f"""network:
   name: "{str(network_name)}"
@@ -179,9 +198,7 @@ topology_perturbation:
   n_topology_variants: {int(topology_variants)}
   elements: [branch]
 
-generation_perturbation:
-  type: "none"
-
+{generation_perturbation_text}
 admittance_perturbation:
   type: "none"
 
@@ -613,6 +630,8 @@ def process_chunk(
         start_scaling_factor=float(args.start_scaling_factor),
         topology_variants=int(args.topology_variants),
         topology_k=int(args.topology_k),
+        generation_perturbation_type=str(args.generation_perturbation_type),
+        generation_perturbation_range=float(args.generation_perturbation_range),
     )
 
     write_text(config_path, config_text)
@@ -849,7 +868,22 @@ def main() -> None:
     parser.add_argument("--start-scaling-factor", type=float, default=1.0)
     parser.add_argument("--topology-variants", type=int, default=10)
     parser.add_argument("--topology-k", type=int, default=1)
-
+    parser.add_argument(
+        "--generation-perturbation-type",
+        type=str,
+        default="none",
+        choices=["none", "random"],
+        help="Generation perturbation mode passed to GridFM config.",
+    )
+    parser.add_argument(
+        "--generation-perturbation-range",
+        type=float,
+        default=0.0,
+        help=(
+            "Generation perturbation range. For random mode, 0.2 means "
+            "approximately +/-20 percent if supported by the GridFM backend."
+        ),
+    )
     parser.add_argument("--min-loading", type=float, default=105.0)
     parser.add_argument("--max-loading", type=float, default=260.0)
 

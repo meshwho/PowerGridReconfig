@@ -76,6 +76,8 @@ $StepSize = 0.1
 $StartScalingFactor = 1.0
 $TopologyVariants = 10
 $TopologyK = 1
+$GenerationPerturbationType = "none"
+$GenerationPerturbationRange = 0.0
 
 # ======================================================================================
 # Shared selection thresholds
@@ -119,6 +121,9 @@ if ($Profile -eq "smoke") {
     $MaxChunks = 3
     $SeedStart = 10000
 
+    $GenerationPerturbationType = "none"
+    $GenerationPerturbationRange = 0.0
+
     $SimpleFraction = 0.25
     $MediumFraction = 0.50
     $HardFraction = 0.25
@@ -141,6 +146,9 @@ elseif ($Profile -eq "eval") {
     $MaxChunks = 20
     $SeedStart = 90000
 
+    $GenerationPerturbationType = "random"
+    $GenerationPerturbationRange = 0.10
+
     $SimpleFraction = 0.25
     $MediumFraction = 0.50
     $HardFraction = 0.25
@@ -159,6 +167,9 @@ elseif ($Profile -eq "bootstrap") {
     $ChunkSize = 2000
     $MaxChunks = 80
     $SeedStart = 20000
+
+    $GenerationPerturbationType = "random"
+    $GenerationPerturbationRange = 0.20
 
     $SimpleFraction = 0.20
     $MediumFraction = 0.50
@@ -195,6 +206,8 @@ $CliArgs = @(
     "--start-scaling-factor", "$StartScalingFactor",
     "--topology-variants", "$TopologyVariants",
     "--topology-k", "$TopologyK",
+    "--generation-perturbation-type", $GenerationPerturbationType,
+    "--generation-perturbation-range", "$GenerationPerturbationRange",
     "--min-loading", "$MinLoading",
     "--max-loading", "$MaxLoading",
     "--simple-min-loading", "$SimpleMinLoading",
