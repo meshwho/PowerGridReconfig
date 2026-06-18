@@ -1,0 +1,95 @@
+# Self-play loop configuration.
+# This file is the single source of truth for iterative training.
+
+run_name: self_play_v1
+seed: 42
+
+# Main loop
+n_iterations: 15
+n_scenarios_per_iteration: 2000
+epochs_per_iteration: 10
+
+# Fixed evaluation set.
+# Important: this file must not be used for training or self-play generation.
+eval_csv: data/eval/eval_transitions_chunk11.csv
+
+# Raw GridFM data used for evaluation.
+eval_raw_dir: data/raw/case118_chunk11
+
+# Initial supervised checkpoint.
+bootstrap_checkpoint: runs/bootstrap/best_checkpoint.pt
+bootstrap_eval_metrics: runs/bootstrap/eval_metrics.json
+
+# Output directory for all self-play artifacts.
+checkpoint_dir: runs/self_play_v1
+
+# Dataset generation
+generation:
+  value_reward_scale: auto
+  gamma: 0.95
+  max_steps: 5
+  simulations: 150
+  depth: 4
+  top_k: 30
+  c_puct: 2.0
+  prior_exponent: 0.5
+  use_continuation_gate: true
+  allow_handoff_with_hard_overloads: false
+
+# Training
+training:
+  batch_size: 64
+  learning_rate: 0.0003
+  weight_decay: 0.00001
+  value_huber_delta: 1.0
+  num_workers: 0
+  device: auto
+
+# Evaluation
+evaluation:
+  simulations: 150
+  depth: 4
+  max_steps: 5
+  top_k: 30
+  gamma: 0.95
+  c_puct: 2.0
+  prior_exponent: 0.5
+  use_continuation_gate: true
+  allow_handoff_with_hard_overloads: false
+  num_workers: 1
+  batch_size: 5
+  device: cpu
+  output_csv_name: eval_results.csv
+  output_json_name: eval_metrics.json
+
+# Candidate acceptance policy
+acceptance:
+  metric: solve_rate
+  min_improvement: 0.0
+  reject_if_failed_scenarios_above: 0
+
+# Bootstrap dataset size.
+# This prevents accidental small runs with target_total=1000.
+bootstrap_dataset:
+  target_total: 12000
+  train_chunks:
+    - chunk00
+    - chunk01
+    - chunk02
+    - chunk03
+    - chunk04
+    - chunk05
+    - chunk06
+    - chunk07
+    - chunk08
+    - chunk09
+    - chunk10
+  eval_chunk: chunk11
+
+# Metadata and reproducibility
+metadata:
+  save_config_copy_per_iteration: true
+  save_dataset_hash: true
+  save_config_hash: true
+  save_parent_checkpoint: true
+  save_reward_config: true
