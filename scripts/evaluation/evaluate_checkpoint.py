@@ -480,6 +480,7 @@ def chunk_list(
 
 
 def make_task_config(args: argparse.Namespace) -> dict[str, Any]:
+    reward_config = GridFMReward().config_dict()
     return {
         "simulations": int(args.simulations),
         "depth": int(args.depth),
@@ -508,6 +509,7 @@ def make_task_config(args: argparse.Namespace) -> dict[str, Any]:
         "dc_policy_weight": float(args.dc_policy_weight),
         "dc_failure_penalty": float(args.dc_failure_penalty),
         "dc_max_depth": int(args.dc_max_depth),
+        "reward_config": reward_config,
     }
 
 

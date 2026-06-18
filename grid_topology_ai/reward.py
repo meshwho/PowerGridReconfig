@@ -91,6 +91,27 @@ class GridFMReward:
 
         self.vm_idx = BUS_FEATURE_COLUMNS.index("Vm")
 
+    def config_dict(self) -> dict[str, float]:
+        """
+        Return reward configuration for experiment metadata.
+
+        This makes reward settings reproducible across dataset generation,
+        training, evaluation, and checkpoints.
+        """
+
+        return {
+            "overload_limit_percent": float(self.overload_limit_percent),
+            "hard_overload_limit_percent": float(self.hard_overload_limit_percent),
+            "switching_penalty": float(self.switching_penalty),
+            "non_convergence_penalty": float(self.non_convergence_penalty),
+            "solved_bonus": float(self.solved_bonus),
+            "total_overload_weight": float(self.total_overload_weight),
+            "hard_overload_weight": float(self.hard_overload_weight),
+            "num_overloaded_weight": float(self.num_overloaded_weight),
+            "num_hard_overloaded_weight": float(self.num_hard_overloaded_weight),
+            "voltage_violation_weight": float(self.voltage_violation_weight),
+        }
+
     def compute(
         self,
         before_state: GridFMState,

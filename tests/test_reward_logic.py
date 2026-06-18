@@ -266,3 +266,30 @@ def test_reward_weights_are_configurable():
     assert default_result.after_penalty == pytest.approx(25.0)
     assert weaker_result.after_penalty == pytest.approx(5.0)
     assert weaker_result.reward > default_result.reward
+
+def test_reward_config_dict_contains_all_weights():
+    reward_fn = GridFMReward(
+        overload_limit_percent=101.0,
+        hard_overload_limit_percent=125.0,
+        switching_penalty=2.0,
+        non_convergence_penalty=900.0,
+        solved_bonus=40.0,
+        total_overload_weight=3.0,
+        hard_overload_weight=6.0,
+        num_overloaded_weight=11.0,
+        num_hard_overloaded_weight=31.0,
+        voltage_violation_weight=600.0,
+    )
+
+    config = reward_fn.config_dict()
+
+    assert config["overload_limit_percent"] == pytest.approx(101.0)
+    assert config["hard_overload_limit_percent"] == pytest.approx(125.0)
+    assert config["switching_penalty"] == pytest.approx(2.0)
+    assert config["non_convergence_penalty"] == pytest.approx(900.0)
+    assert config["solved_bonus"] == pytest.approx(40.0)
+    assert config["total_overload_weight"] == pytest.approx(3.0)
+    assert config["hard_overload_weight"] == pytest.approx(6.0)
+    assert config["num_overloaded_weight"] == pytest.approx(11.0)
+    assert config["num_hard_overloaded_weight"] == pytest.approx(31.0)
+    assert config["voltage_violation_weight"] == pytest.approx(600.0)
