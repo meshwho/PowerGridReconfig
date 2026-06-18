@@ -5,7 +5,7 @@ import traceback
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
-
+import json
 import pandas as pd
 
 try:
@@ -403,6 +403,50 @@ def run_scenario_batch(scenario_ids: list[int]) -> list[dict[str, Any]]:
 # CLI helpers
 # ======================================================================================
 
+def save_json(
+    path: Path,
+    payload: dict[str, Any],
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(payload, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+def attach_difficulty_metadata(
+    df: pd.DataFrame,
+    transitions_path: Path,
+) -> pd.DataFrame:
+    """
+    Attach difficulty_class from transitions CSV when available.
+
+    This keeps evaluation JSON useful for curriculum and fixed eval splits.
+    If difficulty_class is absent, the evaluation still works normally.
+    """
+
+    transitions = pd.read_csv(transitions_path)
+
+    if "difficulty_class" not in transitions.columns:
+        return df
+
+    if "scenario_id" not in transitions.columns:
+        return df
+
+    difficulty = (
+        transitions[["scenario_id", "difficulty_class"]]
+        .drop_duplicates(subset=["scenario_id"])
+        .copy()
+    )
+
+    difficulty["scenario_id"] = difficulty["scenario_id"].astype(int)
+
+    result = df.merge(
+        difficulty,
+        on="scenario_id",
+        how="left",
+    )
+
+    return result
 
 def load_scenario_ids(
     transitions_path: Path,
@@ -481,6 +525,96 @@ def print_row(row: dict[str, Any]) -> None:
         f"score={float(row['safety_score']):.2f}"
     )
 
+def _safe_mean(series: pd.Series) -> float | None:
+    if len(series) == 0:
+        return None
+
+    value = series.mean()
+
+    if pd.isna(value):
+        return None
+
+    return float(value)
+
+
+def build_evaluation_metrics(
+    df: pd.DataFrame,
+    failed_results: list[dict[str, Any]],
+    requested_scenarios: int,
+    task_config: dict[str, Any],
+) -> dict[str, Any]:
+    """
+    Build machine-readable evaluation metrics for self-play loop.
+
+    The self-play loop should read this JSON instead of parsing stdout.
+    """
+
+    solved = df["solved"].astype(bool)
+
+    termination_counts = {
+        str(key): int(value)
+        for key, value in df["termination_reason"]
+        .value_counts(dropna=False)
+        .to_dict()
+        .items()
+    }
+
+    metrics: dict[str, Any] = {
+        "requested_scenarios": int(requested_scenarios),
+        "evaluated_scenarios": int(len(df)),
+        "failed_scenarios": int(len(failed_results)),
+        "solve_count": int(solved.sum()),
+        "solve_rate": float(solved.mean()) if len(df) > 0 else 0.0,
+        "avg_steps": _safe_mean(df["steps"]),
+        "avg_steps_to_solve": _safe_mean(df.loc[solved, "steps"]),
+        "avg_discounted_return": _safe_mean(df["discounted_return"]),
+        "avg_final_loading_percent": _safe_mean(df["final_max_loading_percent"]),
+        "avg_final_num_overloaded_branches": _safe_mean(
+            df["final_num_overloaded_branches"]
+        ),
+        "avg_final_num_hard_overloaded_branches": _safe_mean(
+            df["final_num_hard_overloaded_branches"]
+        ),
+        "avg_safety_score": _safe_mean(df["safety_score"]),
+        "total_safety_score": float(df["safety_score"].sum()),
+        "termination_reason_counts": termination_counts,
+        "task_config": dict(task_config),
+    }
+
+    if "difficulty_class" in df.columns:
+        difficulty_metrics: dict[str, Any] = {}
+
+        for difficulty in ["simple", "medium", "hard"]:
+            subset = df[df["difficulty_class"] == difficulty]
+            subset_solved = subset["solved"].astype(bool)
+
+            if len(subset) == 0:
+                solve_rate = None
+                avg_steps_to_solve = None
+            else:
+                solve_rate = float(subset_solved.mean())
+                avg_steps_to_solve = _safe_mean(
+                    subset.loc[subset_solved, "steps"]
+                )
+
+            metrics[f"count_{difficulty}"] = int(len(subset))
+            metrics[f"solve_rate_{difficulty}"] = solve_rate
+            metrics[f"avg_steps_to_solve_{difficulty}"] = avg_steps_to_solve
+
+            difficulty_metrics[difficulty] = {
+                "count": int(len(subset)),
+                "solve_count": int(subset_solved.sum()) if len(subset) else 0,
+                "solve_rate": solve_rate,
+                "avg_steps": _safe_mean(subset["steps"]) if len(subset) else None,
+                "avg_steps_to_solve": avg_steps_to_solve,
+                "avg_safety_score": (
+                    _safe_mean(subset["safety_score"]) if len(subset) else None
+                ),
+            }
+
+        metrics["difficulty_metrics"] = difficulty_metrics
+
+    return metrics
 
 def print_summary(
     df: pd.DataFrame,
@@ -775,6 +909,14 @@ def main() -> None:
         help="Optional path to save per-scenario evaluation results.",
     )
 
+    
+    parser.add_argument(
+        "--output-json",
+        type=str,
+        default=None,
+        help="Optional path to save machine-readable evaluation summary metrics.",
+    )
+
     parser.add_argument(
         "--clear-caches-every",
         type=int,
@@ -940,14 +1082,34 @@ def main() -> None:
     if not rows:
         raise RuntimeError("No scenarios were successfully evaluated.")
 
-    df = pd.DataFrame(rows)
+        df = pd.DataFrame(rows)
     df = df.sort_values("scenario_id", ascending=True).reset_index(drop=True)
+
+    df = attach_difficulty_metadata(
+        df=df,
+        transitions_path=transitions_path,
+    )
+
+    metrics = build_evaluation_metrics(
+        df=df,
+        failed_results=failed_results,
+        requested_scenarios=len(scenario_ids),
+        task_config=task_config,
+    )
 
     if args.output_csv is not None:
         output_csv_path = Path(args.output_csv)
         output_csv_path.parent.mkdir(parents=True, exist_ok=True)
         df.to_csv(output_csv_path, index=False)
         print(f"\nSaved evaluation CSV: {output_csv_path}")
+
+    if args.output_json is not None:
+        output_json_path = Path(args.output_json)
+        save_json(
+            path=output_json_path,
+            payload=metrics,
+        )
+        print(f"\nSaved evaluation JSON: {output_json_path}")
 
     print_summary(
         df=df,
