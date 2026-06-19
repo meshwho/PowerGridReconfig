@@ -4,7 +4,7 @@ param(
 
     [switch]$Resume,
 
-    [string]$GridFMCommandTemplate = 'python -m gridfm_datakit.cli generate "{config}"',
+    [string]$GridFMCommandTemplate = 'python -m gridfm_datakit.cli "{config}"',
 
     [string]$JuliaBin = "",
 
