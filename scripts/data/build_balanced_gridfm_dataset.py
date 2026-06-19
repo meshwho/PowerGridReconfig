@@ -504,6 +504,75 @@ def class_counts(df: pd.DataFrame) -> dict[str, int]:
         "hard": int(counts.get("hard", 0)),
     }
 
+def compute_max_balanced_targets(
+    candidates: pd.DataFrame,
+    simple_fraction: float,
+    medium_fraction: float,
+    hard_fraction: float,
+) -> ClassTargets:
+    """
+    Find the largest possible balanced dataset that preserves the requested
+    class proportions and does not exceed the available scenarios.
+
+    Example:
+        available = simple 152, medium 80, hard 59
+        fractions = 0.25, 0.50, 0.25
+
+        maximum balanced selection:
+        simple 40, medium 80, hard 40
+        total 160
+    """
+
+    fractions = {
+        "simple": float(simple_fraction),
+        "medium": float(medium_fraction),
+        "hard": float(hard_fraction),
+    }
+
+    if any(value < 0.0 for value in fractions.values()):
+        raise ValueError("Class fractions must be non-negative.")
+
+    fraction_sum = sum(fractions.values())
+
+    if not np.isclose(fraction_sum, 1.0, atol=1e-9):
+        raise ValueError(
+            "Class fractions must sum to 1.0. "
+            f"Received: {fraction_sum}"
+        )
+
+    available = class_counts(candidates)
+
+    limits = [
+        available[class_name] / fraction
+        for class_name, fraction in fractions.items()
+        if fraction > 0.0
+    ]
+
+    if not limits:
+        return ClassTargets(simple=0, medium=0, hard=0)
+
+    maximum_total = int(np.floor(min(limits)))
+
+    # Rounding in compute_class_targets can occasionally make one class exceed
+    # its availability by one item, so verify and decrease if necessary.
+    while maximum_total > 0:
+        targets = compute_class_targets(
+            target_total=maximum_total,
+            simple_fraction=fractions["simple"],
+            medium_fraction=fractions["medium"],
+            hard_fraction=fractions["hard"],
+        )
+
+        if (
+            targets.simple <= available["simple"]
+            and targets.medium <= available["medium"]
+            and targets.hard <= available["hard"]
+        ):
+            return targets
+
+        maximum_total -= 1
+
+    return ClassTargets(simple=0, medium=0, hard=0)
 
 def quotas_met(selected: pd.DataFrame, targets: ClassTargets) -> bool:
     counts = class_counts(selected)
@@ -913,6 +982,7 @@ def write_outputs(
         {
             "dataset_name": str(args.dataset_name),
             "target_total": int(args.target_total),
+            "selected_total": int(len(selected)),
             "targets": {
                 "simple": int(targets.simple),
                 "medium": int(targets.medium),
@@ -1100,9 +1170,34 @@ def main() -> None:
 
     all_candidates = load_existing_candidates(paths["manifest_dir"]) if args.resume else pd.DataFrame()
 
+    # After the minimum requested quotas are reached, use all available candidates
+    # to build the largest dataset that preserves the requested class proportions.
+    final_targets = compute_max_balanced_targets(
+        candidates=all_candidates,
+        simple_fraction=float(args.simple_fraction),
+        medium_fraction=float(args.medium_fraction),
+        hard_fraction=float(args.hard_fraction),
+    )
+
+    if final_targets.total <= 0:
+        counts_available = class_counts(all_candidates)
+
+        raise RuntimeError(
+            "Could not build a proportional balanced dataset from available "
+            f"candidates: {counts_available}"
+        )
+
+    print("\nMaximum proportional selection:")
+    print(
+        f"  simple={final_targets.simple}, "
+        f"medium={final_targets.medium}, "
+        f"hard={final_targets.hard}, "
+        f"total={final_targets.total}"
+    )
+
     selected = select_balanced_manifest(
         candidates=all_candidates,
-        targets=targets,
+        targets=final_targets,
         seed=int(args.split_seed),
     )
 
@@ -1136,7 +1231,7 @@ def main() -> None:
 
             selected = select_balanced_manifest(
                 candidates=all_candidates,
-                targets=targets,
+                targets=final_targets,
                 seed=int(args.split_seed),
             )
 

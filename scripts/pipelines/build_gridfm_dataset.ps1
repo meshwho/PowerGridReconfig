@@ -355,7 +355,7 @@ try {
         $HardFraction = 0.25
 
         $GenerationPerturbationType = "cost_perturbation"
-        $GenerationPerturbationSigma = 0.10
+        $GenerationPerturbationSigma = 0.15
 
         $AdmittancePerturbationType = "random_perturbation"
         $AdmittancePerturbationSigma = 0.02
@@ -377,10 +377,10 @@ try {
         $HardFraction = 0.30
 
         $GenerationPerturbationType = "cost_perturbation"
-        $GenerationPerturbationSigma = 0.20
+        $GenerationPerturbationSigma = 0.15
 
         $AdmittancePerturbationType = "random_perturbation"
-        $AdmittancePerturbationSigma = 0.05
+        $AdmittancePerturbationSigma = 0.02
     }
     else {
         throw "Unknown profile: $Profile"
