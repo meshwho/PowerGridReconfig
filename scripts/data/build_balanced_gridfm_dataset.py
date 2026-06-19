@@ -1160,49 +1160,34 @@ def main() -> None:
     print(f"Max chunks:   {args.max_chunks}")
     print(f"Resume:       {args.resume}")
 
-    all_candidates = load_existing_candidates(paths["manifest_dir"]) if args.resume else pd.DataFrame()
-
-    # After the minimum requested quotas are reached, use all available candidates
-    # to build the largest dataset that preserves the requested class proportions.
-    final_targets = compute_max_balanced_targets(
-        candidates=all_candidates,
-        simple_fraction=float(args.simple_fraction),
-        medium_fraction=float(args.medium_fraction),
-        hard_fraction=float(args.hard_fraction),
+        all_candidates = (
+        load_existing_candidates(paths["manifest_dir"])
+        if args.resume
+        else pd.DataFrame()
     )
 
-    if final_targets.total <= 0:
-        counts_available = class_counts(all_candidates)
-
-        raise RuntimeError(
-            "Could not build a proportional balanced dataset from available "
-            f"candidates: {counts_available}"
-        )
-
-    print("\nMaximum proportional selection:")
-    print(
-        f"  simple={final_targets.simple}, "
-        f"medium={final_targets.medium}, "
-        f"hard={final_targets.hard}, "
-        f"total={final_targets.total}"
-    )
-
+    # At this stage targets are minimum quotas required to stop generation.
     selected = select_balanced_manifest(
         candidates=all_candidates,
-        targets=final_targets,
+        targets=targets,
         seed=int(args.split_seed),
     )
 
     if quotas_met(selected, targets):
-        print("\nExisting candidates already satisfy quotas.")
+        print("\nExisting candidates already satisfy minimum quotas.")
     else:
         for chunk_index in range(int(args.max_chunks)):
             name = chunk_name(chunk_index)
 
-            candidate_path = paths["manifest_dir"] / f"{name}_candidates.csv"
+            candidate_path = (
+                paths["manifest_dir"] / f"{name}_candidates.csv"
+            )
 
             if args.resume and candidate_path.exists():
-                print(f"\n{name}: candidates already exist, skipping chunk processing")
+                print(
+                    f"\n{name}: candidates already exist, "
+                    "skipping chunk processing"
+                )
             else:
                 chunk_candidates = process_chunk(
                     chunk_index=chunk_index,
@@ -1211,19 +1196,26 @@ def main() -> None:
                 )
 
                 if all_candidates.empty:
-                    all_candidates = chunk_candidates
+                    all_candidates = chunk_candidates.copy()
                 else:
                     all_candidates = pd.concat(
-                        [all_candidates, chunk_candidates],
+                        [
+                            all_candidates,
+                            chunk_candidates,
+                        ],
                         ignore_index=True,
                     )
 
+            # In resume mode reload all manifests, including chunks that
+            # existed before this launch.
             if args.resume:
-                all_candidates = load_existing_candidates(paths["manifest_dir"])
+                all_candidates = load_existing_candidates(
+                    paths["manifest_dir"]
+                )
 
             selected = select_balanced_manifest(
                 candidates=all_candidates,
-                targets=final_targets,
+                targets=targets,
                 seed=int(args.split_seed),
             )
 
@@ -1237,27 +1229,45 @@ def main() -> None:
                 f"hard={counts_available['hard']}"
             )
             print(
-                f"  selected  simple={counts_selected['simple']}/{targets.simple}, "
-                f"medium={counts_selected['medium']}/{targets.medium}, "
-                f"hard={counts_selected['hard']}/{targets.hard}"
+                f"  minimum   simple={counts_selected['simple']}/"
+                f"{targets.simple}, "
+                f"medium={counts_selected['medium']}/"
+                f"{targets.medium}, "
+                f"hard={counts_selected['hard']}/"
+                f"{targets.hard}"
             )
 
             if quotas_met(selected, targets):
-                print("\nAll class quotas are satisfied.")
+                print("\nMinimum class quotas are satisfied.")
                 break
+
+    # This check belongs after the generation loop, not before it.
+    if all_candidates.empty:
+        raise RuntimeError(
+            "GridFM generation produced no classified candidates. "
+            "Check generated raw data, classification thresholds, "
+            "and chunk logs."
+        )
 
     if not quotas_met(selected, targets) and not args.allow_partial:
         counts_selected = class_counts(selected)
+        counts_available = class_counts(all_candidates)
 
         raise RuntimeError(
-            "Could not satisfy balanced dataset quotas.\n"
-            f"Selected simple={counts_selected['simple']}/{targets.simple}, "
-            f"medium={counts_selected['medium']}/{targets.medium}, "
-            f"hard={counts_selected['hard']}/{targets.hard}.\n"
-            "Increase --max-chunks, increase --chunk-size, or relax class thresholds."
+            "Could not satisfy minimum balanced dataset quotas.\n"
+            f"Selected simple={counts_selected['simple']}/"
+            f"{targets.simple}, "
+            f"medium={counts_selected['medium']}/"
+            f"{targets.medium}, "
+            f"hard={counts_selected['hard']}/"
+            f"{targets.hard}.\n"
+            f"Available candidates: {counts_available}.\n"
+            "Increase --max-chunks, increase --chunk-size, "
+            "or relax class thresholds."
         )
 
-    # Trim exactly to target counts if allow_partial was not used.
+    # After generation, use the largest possible proportional subset
+    # of all available candidates.
     final_targets = compute_max_balanced_targets(
         candidates=all_candidates,
         simple_fraction=float(args.simple_fraction),
@@ -1267,8 +1277,8 @@ def main() -> None:
 
     if final_targets.total <= 0:
         raise RuntimeError(
-            "Could not build a proportional dataset from available candidates. "
-            f"Available: {class_counts(all_candidates)}"
+            "Could not build a proportional balanced dataset from "
+            f"available candidates: {class_counts(all_candidates)}"
         )
 
     print("\nMaximum proportional selection:")
