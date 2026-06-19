@@ -93,6 +93,22 @@ function Invoke-NativeProcess {
     $StartInfo.RedirectStandardOutput = $true
     $StartInfo.RedirectStandardError = $true
 
+    $Utf8Encoding = New-Object System.Text.UTF8Encoding($false)
+
+    if (
+        $StartInfo.PSObject.Properties.Name -contains
+        "StandardOutputEncoding"
+    ) {
+        $StartInfo.StandardOutputEncoding = $Utf8Encoding
+    }
+
+    if (
+        $StartInfo.PSObject.Properties.Name -contains
+        "StandardErrorEncoding"
+    ) {
+        $StartInfo.StandardErrorEncoding = $Utf8Encoding
+    }
+
     # PowerShell 7 / modern .NET exposes ArgumentList.
     # Windows PowerShell 5.1 needs one correctly quoted argument string.
     if ($StartInfo.PSObject.Properties.Name -contains "ArgumentList") {
@@ -207,6 +223,10 @@ try {
     $env:TEMP = $TempGridFM
     $env:TMP = $TempGridFM
     $env:JULIA_DEPOT_PATH = $JuliaDepot
+
+    # Force UTF-8 for Python stdout/stderr.
+    $env:PYTHONUTF8 = "1"
+    $env:PYTHONIOENCODING = "utf-8"
 
     if (-not [string]::IsNullOrWhiteSpace($JuliaBin)) {
         if (Test-Path $JuliaBin) {

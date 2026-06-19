@@ -1,5 +1,5 @@
 from __future__ import annotations
-
+import sys
 import argparse
 import json
 import shutil
@@ -19,6 +19,23 @@ from scripts.data.build_serious_transitions import build_fast_summary, make_outp
 # Helpers
 # ======================================================================================
 
+
+def configure_utf8_stdio() -> None:
+    """
+    Force UTF-8 for redirected stdout/stderr on Windows.
+
+    GridFM, Julia and IPOPT may print characters that cannot be encoded
+    with the default Windows cp1251 console encoding.
+    """
+
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+
+        if callable(reconfigure):
+            reconfigure(
+                encoding="utf-8",
+                errors="replace",
+            )
 
 def now() -> float:
     return time.perf_counter()
@@ -72,7 +89,19 @@ def run_command(command: str, log_path: Path) -> None:
         assert process.stdout is not None
 
         for line in process.stdout:
-            print(line, end="")
+            try:
+                print(line, end="", flush=True)
+            except UnicodeEncodeError:
+                # Last-resort protection for older Windows terminals.
+                safe_line = line.encode(
+                    sys.stdout.encoding or "utf-8",
+                    errors="replace",
+                ).decode(
+                    sys.stdout.encoding or "utf-8",
+                    errors="replace",
+                )
+                print(safe_line, end="", flush=True)
+
             log_file.write(line)
             log_file.flush()
 
@@ -904,6 +933,9 @@ def write_outputs(
 
 
 def main() -> None:
+
+    configure_utf8_stdio()
+    
     parser = argparse.ArgumentParser(
         description="Generate and build a balanced GridFM dataset."
     )
