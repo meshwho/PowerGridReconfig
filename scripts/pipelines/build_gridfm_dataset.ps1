@@ -124,11 +124,11 @@ if ($Profile -eq "smoke") {
     $MaxChunks = 3
     $SeedStart = 10000
 
-    $GenerationPerturbationType = "none"
-    $GenerationPerturbationSigma = 0.0
+    $GenerationPerturbationType = "cost_perturbation"
+    $GenerationPerturbationSigma = 0.10
 
-    $AdmittancePerturbationType = "none"
-    $AdmittancePerturbationSigma = 0.0
+    $AdmittancePerturbationType = "random_perturbation"
+    $AdmittancePerturbationSigma = 0.02
 
     $SimpleFraction = 0.25
     $MediumFraction = 0.50
