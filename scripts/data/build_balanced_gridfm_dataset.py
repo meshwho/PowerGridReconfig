@@ -511,16 +511,8 @@ def compute_max_balanced_targets(
     hard_fraction: float,
 ) -> ClassTargets:
     """
-    Find the largest possible balanced dataset that preserves the requested
-    class proportions and does not exceed the available scenarios.
-
-    Example:
-        available = simple 152, medium 80, hard 59
-        fractions = 0.25, 0.50, 0.25
-
-        maximum balanced selection:
-        simple 40, medium 80, hard 40
-        total 160
+    Compute the largest possible class counts that preserve the requested
+    proportions and do not exceed the available candidates.
     """
 
     fractions = {
@@ -537,24 +529,22 @@ def compute_max_balanced_targets(
     if not np.isclose(fraction_sum, 1.0, atol=1e-9):
         raise ValueError(
             "Class fractions must sum to 1.0. "
-            f"Received: {fraction_sum}"
+            f"Received sum={fraction_sum}"
         )
 
     available = class_counts(candidates)
 
-    limits = [
+    total_limits = [
         available[class_name] / fraction
         for class_name, fraction in fractions.items()
         if fraction > 0.0
     ]
 
-    if not limits:
+    if not total_limits:
         return ClassTargets(simple=0, medium=0, hard=0)
 
-    maximum_total = int(np.floor(min(limits)))
+    maximum_total = int(np.floor(min(total_limits)))
 
-    # Rounding in compute_class_targets can occasionally make one class exceed
-    # its availability by one item, so verify and decrease if necessary.
     while maximum_total > 0:
         targets = compute_class_targets(
             target_total=maximum_total,
@@ -563,11 +553,13 @@ def compute_max_balanced_targets(
             hard_fraction=fractions["hard"],
         )
 
-        if (
+        fits_available = (
             targets.simple <= available["simple"]
             and targets.medium <= available["medium"]
             and targets.hard <= available["hard"]
-        ):
+        )
+
+        if fits_available:
             return targets
 
         maximum_total -= 1
@@ -1266,16 +1258,37 @@ def main() -> None:
         )
 
     # Trim exactly to target counts if allow_partial was not used.
+    final_targets = compute_max_balanced_targets(
+        candidates=all_candidates,
+        simple_fraction=float(args.simple_fraction),
+        medium_fraction=float(args.medium_fraction),
+        hard_fraction=float(args.hard_fraction),
+    )
+
+    if final_targets.total <= 0:
+        raise RuntimeError(
+            "Could not build a proportional dataset from available candidates. "
+            f"Available: {class_counts(all_candidates)}"
+        )
+
+    print("\nMaximum proportional selection:")
+    print(
+        f"  simple={final_targets.simple}, "
+        f"medium={final_targets.medium}, "
+        f"hard={final_targets.hard}, "
+        f"total={final_targets.total}"
+    )
+
     selected = select_balanced_manifest(
         candidates=all_candidates,
-        targets=targets,
+        targets=final_targets,
         seed=int(args.split_seed),
     )
 
     write_outputs(
         selected=selected,
         all_candidates=all_candidates,
-        targets=targets,
+        targets=final_targets,
         args=args,
         paths=paths,
     )
