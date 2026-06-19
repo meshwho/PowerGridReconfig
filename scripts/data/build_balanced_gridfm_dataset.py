@@ -129,6 +129,87 @@ def compute_class_targets(
         hard=int(hard),
     )
 
+def make_generation_perturbation_text(
+    perturbation_type: str,
+    sigma: float,
+) -> str:
+    """
+    Build GridFM generation_perturbation YAML block.
+
+    Supported by GridFM:
+    - none
+    - cost_permutation
+    - cost_perturbation
+    """
+
+    perturbation_type = str(perturbation_type).strip().lower()
+
+    if perturbation_type == "none":
+        return """generation_perturbation:
+  type: "none"
+"""
+
+    if perturbation_type == "cost_permutation":
+        return """generation_perturbation:
+  type: "cost_permutation"
+"""
+
+    if perturbation_type == "cost_perturbation":
+        if float(sigma) <= 0.0:
+            raise ValueError(
+                "generation_perturbation_sigma must be > 0 "
+                "when generation_perturbation_type='cost_perturbation'."
+            )
+
+        return f"""generation_perturbation:
+  type: "cost_perturbation"
+  sigma: {float(sigma)}
+"""
+
+    raise ValueError(
+        "Unsupported generation_perturbation_type: "
+        f"{perturbation_type}. "
+        "Expected one of: none, cost_permutation, cost_perturbation."
+    )
+
+
+def make_admittance_perturbation_text(
+    perturbation_type: str,
+    sigma: float,
+) -> str:
+    """
+    Build GridFM admittance_perturbation YAML block.
+
+    Supported by GridFM:
+    - none
+    - random_perturbation
+    """
+
+    perturbation_type = str(perturbation_type).strip().lower()
+
+    if perturbation_type == "none":
+        return """admittance_perturbation:
+  type: "none"
+"""
+
+    if perturbation_type == "random_perturbation":
+        if float(sigma) <= 0.0:
+            raise ValueError(
+                "admittance_perturbation_sigma must be > 0 "
+                "when admittance_perturbation_type='random_perturbation'."
+            )
+
+        return f"""admittance_perturbation:
+  type: "random_perturbation"
+  sigma: {float(sigma)}
+"""
+
+    raise ValueError(
+        "Unsupported admittance_perturbation_type: "
+        f"{perturbation_type}. "
+        "Expected one of: none, random_perturbation."
+    )
+
 
 def make_gridfm_config_text(
     *,
@@ -146,7 +227,9 @@ def make_gridfm_config_text(
     topology_variants: int,
     topology_k: int,
     generation_perturbation_type: str,
-    generation_perturbation_range: float,
+    generation_perturbation_sigma: float,
+    admittance_perturbation_type: str,
+    admittance_perturbation_sigma: float,
 ) -> str:
     """
     Generate GridFM YAML text.
@@ -157,22 +240,15 @@ def make_gridfm_config_text(
 
     data_dir_str = str(data_dir).replace("\\", "/")
 
-    generation_perturbation_type = str(generation_perturbation_type).strip().lower()
+    generation_perturbation_text = make_generation_perturbation_text(
+        perturbation_type=generation_perturbation_type,
+        sigma=generation_perturbation_sigma,
+    )
 
-    if generation_perturbation_type == "none":
-        generation_perturbation_text = """generation_perturbation:
-  type: "none"
-"""
-    elif generation_perturbation_type == "random":
-        generation_perturbation_text = f"""generation_perturbation:
-  type: "random"
-  global_range: {float(generation_perturbation_range)}
-"""
-    else:
-        raise ValueError(
-            "Unsupported generation_perturbation_type: "
-            f"{generation_perturbation_type}. Expected: none or random."
-        )
+    admittance_perturbation_text = make_admittance_perturbation_text(
+        perturbation_type=admittance_perturbation_type,
+        sigma=admittance_perturbation_sigma,
+    )
 
     return f"""network:
   name: "{str(network_name)}"
@@ -199,8 +275,7 @@ topology_perturbation:
   elements: [branch]
 
 {generation_perturbation_text}
-admittance_perturbation:
-  type: "none"
+{admittance_perturbation_text}
 
 settings:
   num_processes: {int(num_processes)}
@@ -630,8 +705,18 @@ def process_chunk(
         start_scaling_factor=float(args.start_scaling_factor),
         topology_variants=int(args.topology_variants),
         topology_k=int(args.topology_k),
-        generation_perturbation_type=str(args.generation_perturbation_type),
-        generation_perturbation_range=float(args.generation_perturbation_range),
+        generation_perturbation_type=str(
+            args.generation_perturbation_type
+        ),
+        generation_perturbation_sigma=float(
+            args.generation_perturbation_sigma
+        ),
+        admittance_perturbation_type=str(
+            args.admittance_perturbation_type
+        ),
+        admittance_perturbation_sigma=float(
+            args.admittance_perturbation_sigma
+        ),
     )
 
     write_text(config_path, config_text)
@@ -872,16 +957,48 @@ def main() -> None:
         "--generation-perturbation-type",
         type=str,
         default="none",
-        choices=["none", "random"],
-        help="Generation perturbation mode passed to GridFM config.",
+        choices=[
+            "none",
+            "cost_permutation",
+            "cost_perturbation",
+        ],
+        help=(
+            "GridFM generation perturbation type. "
+            "Supported values: none, cost_permutation, cost_perturbation."
+        ),
     )
+
     parser.add_argument(
-        "--generation-perturbation-range",
+        "--generation-perturbation-sigma",
         type=float,
         default=0.0,
         help=(
-            "Generation perturbation range. For random mode, 0.2 means "
-            "approximately +/-20 percent if supported by the GridFM backend."
+            "Sigma used when generation perturbation type "
+            "is cost_perturbation."
+        ),
+    )
+
+    parser.add_argument(
+        "--admittance-perturbation-type",
+        type=str,
+        default="none",
+        choices=[
+            "none",
+            "random_perturbation",
+        ],
+        help=(
+            "GridFM admittance perturbation type. "
+            "Supported values: none, random_perturbation."
+        ),
+    )
+
+    parser.add_argument(
+        "--admittance-perturbation-sigma",
+        type=float,
+        default=0.0,
+        help=(
+            "Sigma used when admittance perturbation type "
+            "is random_perturbation."
         ),
     )
     parser.add_argument("--min-loading", type=float, default=105.0)
