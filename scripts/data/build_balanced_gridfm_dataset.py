@@ -8,7 +8,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-
+from collections.abc import Sequence
 import numpy as np
 import pandas as pd
 
@@ -67,17 +67,35 @@ def write_text(path: Path, text: str) -> None:
     path.write_text(text, encoding="utf-8")
 
 
-def run_command(command: str, log_path: Path) -> None:
+def run_command(
+    command: Sequence[str],
+    log_path: Path,
+) -> None:
+    """
+    Run a native command without shell=True.
+
+    Using sys.executable guarantees that GridFM is launched with the same
+    Python environment as this dataset builder.
+    """
+
     ensure_dir(log_path.parent)
 
-    print(f"Running command:")
-    print(command)
+    command_list = [str(argument) for argument in command]
+
+    printable_command = subprocess.list2cmdline(command_list)
+
+    print("Running command:")
+    print(printable_command)
     print(f"Log: {log_path}")
 
-    with log_path.open("w", encoding="utf-8", errors="replace") as log_file:
+    with log_path.open(
+        "w",
+        encoding="utf-8",
+        errors="replace",
+    ) as log_file:
         process = subprocess.Popen(
-            command,
-            shell=True,
+            command_list,
+            shell=False,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
@@ -86,22 +104,13 @@ def run_command(command: str, log_path: Path) -> None:
             bufsize=1,
         )
 
-        assert process.stdout is not None
+        if process.stdout is None:
+            raise RuntimeError(
+                "Could not capture GridFM process output."
+            )
 
         for line in process.stdout:
-            try:
-                print(line, end="", flush=True)
-            except UnicodeEncodeError:
-                # Last-resort protection for older Windows terminals.
-                safe_line = line.encode(
-                    sys.stdout.encoding or "utf-8",
-                    errors="replace",
-                ).decode(
-                    sys.stdout.encoding or "utf-8",
-                    errors="replace",
-                )
-                print(safe_line, end="", flush=True)
-
+            print(line, end="", flush=True)
             log_file.write(line)
             log_file.flush()
 
@@ -109,15 +118,18 @@ def run_command(command: str, log_path: Path) -> None:
 
     if return_code != 0:
         print("\nGridFM command failed. Last log lines:")
+
         try:
             lines = read_text(log_path).splitlines()
+
             for line in lines[-80:]:
                 print(line)
         except Exception:
             pass
 
         raise RuntimeError(
-            f"Command failed with exit code {return_code}: {command}"
+            f"Command failed with exit code {return_code}: "
+            f"{printable_command}"
         )
 
 
@@ -820,10 +832,13 @@ def process_chunk(
         ensure_dir(chunk_dir)
         write_text(config_path, config_text)
 
-        command = str(args.gridfm_command_template).replace(
-            "{config}",
+        command = [
+            sys.executable,
+            "-m",
+            "gridfm_datakit.cli",
+            "generate",
             str(config_path),
-        )
+        ]
 
         print("\n" + "=" * 100)
         print(f"Generating {name}")
