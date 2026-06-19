@@ -1160,7 +1160,7 @@ def main() -> None:
     print(f"Max chunks:   {args.max_chunks}")
     print(f"Resume:       {args.resume}")
 
-        all_candidates = (
+    all_candidates = (
         load_existing_candidates(paths["manifest_dir"])
         if args.resume
         else pd.DataFrame()
