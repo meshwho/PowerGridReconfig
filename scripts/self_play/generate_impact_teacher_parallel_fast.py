@@ -1625,7 +1625,8 @@ def run_sequential(
     states_dir: Path,
     task_config: dict[str, Any],
     verbose_success: bool,
-) -> tuple[list[dict[str, Any]], int, int]:    """
+) -> tuple[list[dict[str, Any]], int, int]:    
+    """
     Sequential mode with one persistent context in the main process.
     Useful for lowest RAM usage and debugging.
     """
