@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 import numpy as np
 import pandas as pd
@@ -140,24 +140,98 @@ class GridFMAdapter:
     This adapter is the bridge between GridFM data and our AlphaZero/RL pipeline.
     """
 
-    def __init__(self, raw_dir: str | Path):
+    def __init__(
+        self,
+        raw_dir: str | Path,
+        scenario_ids: Sequence[int] | None = None,
+    ):
         self.raw_dir = Path(raw_dir)
 
-        self.bus_df = self._read_required_parquet("bus_data.parquet")
-        self.branch_df = self._read_required_parquet("branch_data.parquet")
-        self.gen_df = self._read_required_parquet("gen_data.parquet")
+        if scenario_ids is None:
+            self._scenario_filter: tuple[int, ...] | None = None
+        else:
+            normalized_ids = tuple(
+                sorted({int(value) for value in scenario_ids})
+            )
 
-        self.branch_df = self._add_branch_loading(self.branch_df)
+            if not normalized_ids:
+                raise ValueError(
+                    "scenario_ids was provided, but it is empty."
+                )
+
+            self._scenario_filter = normalized_ids
+
+        self.bus_df = self._read_required_parquet(
+            "bus_data.parquet"
+        )
+        self.branch_df = self._read_required_parquet(
+            "branch_data.parquet"
+        )
+        self.gen_df = self._read_required_parquet(
+            "gen_data.parquet"
+        )
+
+        self.branch_df = self._add_branch_loading(
+            self.branch_df
+        )
 
         self._validate_required_columns()
 
-    def _read_required_parquet(self, file_name: str) -> pd.DataFrame:
+    def _read_required_parquet(
+        self,
+        file_name: str,
+    ) -> pd.DataFrame:
         path = self.raw_dir / file_name
 
         if not path.exists():
-            raise FileNotFoundError(f"Required GridFM file not found: {path}")
+            raise FileNotFoundError(
+                f"Required GridFM file not found: {path}"
+            )
 
-        return pd.read_parquet(path)
+        if self._scenario_filter is None:
+            frame = pd.read_parquet(path)
+        else:
+            scenario_ids = list(self._scenario_filter)
+
+            try:
+                frame = pd.read_parquet(
+                    path,
+                    filters=[
+                        (
+                            "scenario",
+                            "in",
+                            scenario_ids,
+                        )
+                    ],
+                )
+            except (
+                TypeError,
+                ValueError,
+                NotImplementedError,
+            ):
+                # Fallback for parquet engines/files that do not
+                # support the "in" predicate efficiently.
+                frame = pd.read_parquet(path)
+
+                if "scenario" not in frame.columns:
+                    raise ValueError(
+                        f"Parquet file has no scenario column: "
+                        f"{path}"
+                    )
+
+                frame = frame.loc[
+                    frame["scenario"].astype(int).isin(
+                        scenario_ids
+                    )
+                ]
+
+        if frame.empty:
+            raise ValueError(
+                f"No rows were loaded from {path}. "
+                f"Scenario filter: {self._scenario_filter}"
+            )
+
+        return frame.reset_index(drop=True)
 
     def _validate_required_columns(self) -> None:
         required_bus = {"scenario", "load_scenario_idx", "bus", *BUS_FEATURE_COLUMNS}
@@ -197,7 +271,9 @@ class GridFMAdapter:
         If a branch is out of service, its loading is set to 0.
         """
 
-        df = branch_df.copy()
+        # GridFMAdapter owns this DataFrame, so a full deep copy
+        # is unnecessary and creates a large initialization peak.
+        df = branch_df
 
         s_from = np.sqrt(df["pf"] ** 2 + df["qf"] ** 2)
         s_to = np.sqrt(df["pt"] ** 2 + df["qt"] ** 2)

@@ -10,7 +10,7 @@ import time
 import traceback
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 import numpy as np
 import pandas as pd
@@ -253,6 +253,7 @@ def init_worker_context(
     raw_dir_str: str,
     states_dir_str: str,
     task_config: dict[str, Any],
+    scenario_ids: Sequence[int],
     memory_registry=None,
 ) -> None:
     """
@@ -273,8 +274,25 @@ def init_worker_context(
     raw_dir = Path(raw_dir_str)
     states_dir = Path(states_dir_str)
 
-    adapter = GridFMAdapter(raw_dir)
+    normalized_scenario_ids = tuple(
+        sorted({int(value) for value in scenario_ids})
+    )
 
+    if not normalized_scenario_ids:
+        raise ValueError(
+            "Worker received an empty scenario list."
+        )
+
+    print(
+        f"[worker {os.getpid()}] loading "
+        f"{len(normalized_scenario_ids)} selected scenarios",
+        flush=True,
+    )
+
+    adapter = GridFMAdapter(
+        raw_dir=raw_dir,
+        scenario_ids=normalized_scenario_ids,
+    )
     backend = GridFMPowerFlowBackend(
         adapter=adapter,
         pf_alg=int(task_config["pf_alg"]),
@@ -1602,12 +1620,12 @@ def resolve_num_workers(
 
 def run_sequential(
     scenario_batches: list[list[int]],
+    scenario_ids: Sequence[int],
     raw_dir: Path,
     states_dir: Path,
     task_config: dict[str, Any],
     verbose_success: bool,
-) -> tuple[list[dict[str, Any]], int, int]:
-    """
+) -> tuple[list[dict[str, Any]], int, int]:    """
     Sequential mode with one persistent context in the main process.
     Useful for lowest RAM usage and debugging.
     """
@@ -1616,6 +1634,7 @@ def run_sequential(
         raw_dir_str=str(raw_dir),
         states_dir_str=str(states_dir),
         task_config=task_config,
+        scenario_ids=scenario_ids,
         memory_registry=None,
     )
 
@@ -1652,13 +1671,13 @@ def run_sequential(
 
 def run_parallel(
     scenario_batches: list[list[int]],
+    scenario_ids: Sequence[int],
     raw_dir: Path,
     states_dir: Path,
     task_config: dict[str, Any],
     num_workers: int,
     verbose_success: bool,
-) -> tuple[list[dict[str, Any]], int, int]:
-    """
+) -> tuple[list[dict[str, Any]], int, int]:    """
     Parallel mode with persistent per-worker contexts.
     """
 
@@ -1679,7 +1698,13 @@ def run_parallel(
     executor_kwargs = {
         "max_workers": int(num_workers),
         "initializer": init_worker_context,
-        "initargs": (str(raw_dir), str(states_dir), task_config, memory_registry),
+        "initargs": (
+            str(raw_dir),
+            str(states_dir),
+            task_config,
+            tuple(int(value) for value in scenario_ids),
+            memory_registry,
+        ),
     }
 
     max_tasks_per_child = int(task_config.get("max_tasks_per_child", 0))
@@ -2104,6 +2129,7 @@ def main() -> None:
     if int(resolved_num_workers) <= 1:
         rows, total_saved, total_skipped = run_sequential(
             scenario_batches=scenario_batches,
+            scenario_ids=scenario_ids,
             raw_dir=raw_dir,
             states_dir=states_dir,
             task_config=task_config,
@@ -2112,6 +2138,7 @@ def main() -> None:
     else:
         rows, total_saved, total_skipped = run_parallel(
             scenario_batches=scenario_batches,
+            scenario_ids=scenario_ids,
             raw_dir=raw_dir,
             states_dir=states_dir,
             task_config=task_config,
