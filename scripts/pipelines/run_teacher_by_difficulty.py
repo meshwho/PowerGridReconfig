@@ -79,6 +79,8 @@ DEFAULT_TEACHER_PROFILES: dict[str, TeacherProfile] = {
 
 @dataclass(frozen=True)
 class Paths:
+    dataset_name: str
+    run_name: str
     project_root: Path
     raw_dir: Path
     transitions_root: Path
@@ -86,7 +88,6 @@ class Paths:
     output_root: Path
     logs_dir: Path
     state_path: Path
-
 
 class PipelineError(RuntimeError):
     """Raised for an expected pipeline validation failure."""
@@ -121,6 +122,37 @@ def resolve_from_root(project_root: Path, value: str | Path) -> Path:
         path = project_root / path
     return path.resolve()
 
+def validate_path_component(
+    value: str,
+    option_name: str,
+) -> str:
+    """
+    Validate a directory name supplied through a CLI option.
+
+    Dataset and run names must be names, not full paths.
+    Full paths are passed separately through --raw-dir,
+    --transitions-root and --output-root.
+    """
+
+    normalized = str(value).strip()
+
+    if not normalized:
+        raise PipelineError(
+            f"{option_name} must not be empty."
+        )
+
+    if normalized in {".", ".."}:
+        raise PipelineError(
+            f"{option_name} must be a normal directory name."
+        )
+
+    if "/" in normalized or "\\" in normalized:
+        raise PipelineError(
+            f"{option_name} must be a directory name, not a path: "
+            f"{normalized!r}"
+        )
+
+    return normalized
 
 def detect_difficulty_column(frame: pd.DataFrame) -> str:
     for column in DIFFICULTY_COLUMN_CANDIDATES:
@@ -899,15 +931,47 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--project-root",
         default=str(discover_project_root()),
+        help=(
+            "Repository root. By default it is detected automatically."
+        ),
     )
+
+    parser.add_argument(
+        "--dataset-name",
+        required=True,
+        help=(
+            "Dataset directory name. For example: "
+            "case118_bootstrap_v1. "
+            "It is used to build automatic raw and transitions paths."
+        ),
+    )
+
+    parser.add_argument(
+        "--run-name",
+        default=None,
+        help=(
+            "Optional teacher run directory name. "
+            "If omitted, it is generated from dataset name and profile."
+        ),
+    )
+
     parser.add_argument(
         "--raw-dir",
-        default="data/gridfm_generated/case118_bootstrap_v1/raw",
+        default=None,
+        help=(
+            "Explicit GridFM raw directory. "
+            "Default: data/gridfm_generated/<dataset-name>/raw."
+        ),
     )
+
     parser.add_argument(
         "--transitions-root",
-        default="data/gridfm_transitions/case118_bootstrap_v1",
-    )
+        default=None,
+        help=(
+            "Explicit transitions directory. "
+            "Default: data/gridfm_transitions/<dataset-name>."
+        ),
+)
     parser.add_argument(
         "--train-file",
         default="transitions_train.csv",
@@ -920,9 +984,11 @@ def parse_args() -> argparse.Namespace:
         "--output-root",
         default=None,
         help=(
-            "Pipeline output directory. Defaults to "
-            "data/self_play/bootstrap_teacher_v1 for full runs and "
-            "data/_scratch/bootstrap_teacher_smoke_v1 for smoke runs."
+            "Explicit pipeline output directory. "
+            "For smoke runs the default is "
+            "data/_scratch/<run-name>. "
+            "For full runs the default is "
+            "data/self_play/<run-name>."
         ),
     )
 
@@ -999,28 +1065,86 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
 
-    project_root = Path(args.project_root).expanduser().resolve()
-    transitions_root = resolve_from_root(project_root, args.transitions_root)
-    if args.output_root is None:
-        default_output_root = (
-            "data/_scratch/bootstrap_teacher_smoke_v1"
-            if args.profile == "smoke"
-            else "data/self_play/bootstrap_teacher_v1"
-        )
-        output_root = resolve_from_root(project_root, default_output_root)
+    project_root = Path(
+        args.project_root
+    ).expanduser().resolve()
+
+    dataset_name = validate_path_component(
+        value=args.dataset_name,
+        option_name="--dataset-name",
+    )
+
+    default_run_name = (
+        f"{dataset_name}_teacher_smoke_v1"
+        if args.profile == "smoke"
+        else f"{dataset_name}_teacher_v1"
+    )
+
+    run_name = validate_path_component(
+        value=(
+            args.run_name
+            if args.run_name is not None
+            else default_run_name
+        ),
+        option_name="--run-name",
+    )
+
+    raw_dir_value: str | Path
+
+    if args.raw_dir is not None:
+        raw_dir_value = args.raw_dir
     else:
-        output_root = resolve_from_root(project_root, args.output_root)
+        raw_dir_value = (
+            Path("data")
+            / "gridfm_generated"
+            / dataset_name
+            / "raw"
+        )
+
+    transitions_root_value: str | Path
+
+    if args.transitions_root is not None:
+        transitions_root_value = args.transitions_root
+    else:
+        transitions_root_value = (
+            Path("data")
+            / "gridfm_transitions"
+            / dataset_name
+        )
+
+    if args.output_root is not None:
+        output_root_value: str | Path = args.output_root
+    else:
+        output_base = (
+            Path("data") / "_scratch"
+            if args.profile == "smoke"
+            else Path("data") / "self_play"
+        )
+
+        output_root_value = output_base / run_name
+
+    output_root = resolve_from_root(
+        project_root=project_root,
+        value=output_root_value,
+    )
 
     paths = Paths(
+        dataset_name=dataset_name,
+        run_name=run_name,
         project_root=project_root,
-        raw_dir=resolve_from_root(project_root, args.raw_dir),
-        transitions_root=transitions_root,
+        raw_dir=resolve_from_root(
+            project_root=project_root,
+            value=raw_dir_value,
+        ),
+        transitions_root=resolve_from_root(
+            project_root=project_root,
+            value=transitions_root_value,
+        ),
         split_dir=output_root / "split_transitions",
         output_root=output_root,
         logs_dir=output_root / "logs",
         state_path=output_root / "pipeline_state.json",
     )
-
     paths.output_root.mkdir(parents=True, exist_ok=True)
     paths.logs_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1032,6 +1156,8 @@ def main() -> None:
             "status": "running",
             "stage": args.stage,
             "profile": args.profile,
+            "dataset_name": paths.dataset_name,
+            "run_name": paths.run_name,
             "project_root": str(paths.project_root),
             "raw_dir": str(paths.raw_dir),
             "transitions_root": str(paths.transitions_root),
@@ -1055,8 +1181,9 @@ def main() -> None:
     banner("Teacher pipeline by difficulty")
     print(f"Stage:             {args.stage}")
     print(f"Profile:           {args.profile}")
-    print(f"Project root:      {paths.project_root}")
-    print(f"Python:            {args.python_executable}")
+    print(f"Dataset name:      {paths.dataset_name}")
+    print(f"Run name:          {paths.run_name}")
+    print(f"Project root:      {paths.project_root}")print(f"Python:            {args.python_executable}")
     print(f"Raw dir:           {paths.raw_dir}")
     print(f"Transitions root:  {paths.transitions_root}")
     print(f"Split dir:         {paths.split_dir}")
