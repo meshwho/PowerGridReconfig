@@ -1678,7 +1678,8 @@ def run_parallel(
     task_config: dict[str, Any],
     num_workers: int,
     verbose_success: bool,
-) -> tuple[list[dict[str, Any]], int, int]:    """
+) -> tuple[list[dict[str, Any]], int, int]:    
+    """
     Parallel mode with persistent per-worker contexts.
     """
 
