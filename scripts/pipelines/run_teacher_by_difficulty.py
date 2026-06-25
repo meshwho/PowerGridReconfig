@@ -50,7 +50,7 @@ DEFAULT_TEACHER_PROFILES: dict[str, TeacherProfile] = {
         max_steps=5,
         max_teacher_steps=5,
         batch_size=3,
-        auto_worker_max=8,
+        auto_worker_max=10,
     ),
     "medium": TeacherProfile(
         depth=5,
@@ -61,7 +61,7 @@ DEFAULT_TEACHER_PROFILES: dict[str, TeacherProfile] = {
         max_steps=5,
         max_teacher_steps=5,
         batch_size=2,
-        auto_worker_max=7,
+        auto_worker_max=10,
     ),
     "hard": TeacherProfile(
         depth=6,
@@ -72,7 +72,7 @@ DEFAULT_TEACHER_PROFILES: dict[str, TeacherProfile] = {
         max_steps=6,
         max_teacher_steps=6,
         batch_size=2,
-        auto_worker_max=6,
+        auto_worker_max=10,
     ),
 }
 
