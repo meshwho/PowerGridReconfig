@@ -439,6 +439,7 @@ def build_teacher_command(
     use_lodf: bool,
     lodf_min_candidate_count: int,
     max_worker_memory_mb: float,
+    min_free_system_memory_mb: float,
     auto_worker_memory_mb: float,
     auto_worker_memory_reserve_mb: float,
     value_reward_scale: str,
@@ -478,6 +479,8 @@ def build_teacher_command(
         str(profile.batch_size),
         "--max-worker-memory-mb",
         str(max_worker_memory_mb),
+        "--min-free-system-memory-mb",
+        str(min_free_system_memory_mb),
         "--max-tasks-per-child",
         "0",
         "--auto-worker-memory-mb",
@@ -600,6 +603,7 @@ def run_teacher(
         use_lodf=not args.disable_lodf,
         lodf_min_candidate_count=args.lodf_min_candidate_count,
         max_worker_memory_mb=args.max_worker_memory_mb,
+        min_free_system_memory_mb=args.min_free_system_memory_mb,
         auto_worker_memory_mb=args.auto_worker_memory_mb,
         auto_worker_memory_reserve_mb=args.auto_worker_memory_reserve_mb,
         value_reward_scale=args.value_reward_scale,
@@ -1038,6 +1042,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--lodf-min-candidate-count", type=int, default=8)
     parser.add_argument("--disable-lodf", action="store_true")
     parser.add_argument("--max-worker-memory-mb", type=float, default=1000.0)
+    parser.add_argument(
+        "--min-free-system-memory-mb",
+        type=float,
+        default=512.0,
+        help=(
+            "Clear worker caches when available system RAM "
+            "falls below this threshold. Default: 512 MB."
+        ),
+    )
     parser.add_argument("--auto-worker-memory-mb", type=float, default=1200.0)
     parser.add_argument(
         "--auto-worker-memory-reserve-mb",
