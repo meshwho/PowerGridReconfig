@@ -334,6 +334,19 @@ def archive_incomplete_output(output_dir: Path) -> Path:
     output_dir.rename(archived)
     return archived
 
+def has_resumable_teacher_checkpoint(
+    output_dir: Path,
+) -> bool:
+    checkpoint_path = (
+        output_dir
+        / "teacher_checkpoint.jsonl"
+    )
+
+    return (
+        checkpoint_path.exists()
+        and checkpoint_path.is_file()
+        and checkpoint_path.stat().st_size > 0
+    )
 
 def terminate_process_tree(process: subprocess.Popen[str]) -> None:
     try:
@@ -536,15 +549,31 @@ def run_teacher(
     if output_dir.exists():
         if args.force:
             shutil.rmtree(output_dir)
+
+        elif has_resumable_teacher_checkpoint(
+            output_dir
+        ):
+            print(
+                "Resuming incomplete teacher output "
+                f"from checkpoint: {output_dir}"
+            )
+
         elif args.keep_incomplete:
             raise PipelineError(
-                f"Teacher output exists but is not complete ({reason}): {output_dir}. "
-                "Remove it, use --force, or omit --keep-incomplete to archive it automatically."
+                "Teacher output exists but is not "
+                f"complete ({reason}): {output_dir}. "
+                "Remove it, use --force, or omit "
+                "--keep-incomplete to archive it."
             )
-        else:
-            archived = archive_incomplete_output(output_dir)
-            print(f"Archived incomplete output: {archived}")
 
+        else:
+            archived = archive_incomplete_output(
+                output_dir
+            )
+            print(
+                "Archived non-resumable incomplete "
+                f"output: {archived}"
+            )
     output_dir.mkdir(parents=True, exist_ok=True)
 
     banner(f"Running teacher: {split_name}/{difficulty}")

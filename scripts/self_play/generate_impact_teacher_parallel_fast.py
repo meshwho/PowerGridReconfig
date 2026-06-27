@@ -1617,6 +1617,215 @@ def resolve_num_workers(
 # Execution modes
 # ======================================================================================
 
+CHECKPOINT_VERSION = 1
+
+
+def append_scenario_checkpoint(
+    checkpoint_path: Path,
+    result: dict[str, Any],
+) -> None:
+    """
+    Atomically append one completed scenario result to JSONL checkpoint.
+
+    The main process is the only writer, so concurrent workers never write
+    to the checkpoint directly.
+    """
+
+    checkpoint_path.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    ok = bool(result.get("ok", False))
+
+    payload = {
+        "version": CHECKPOINT_VERSION,
+        "scenario_id": int(result["scenario_id"]),
+        "ok": ok,
+        "reason": result.get("reason"),
+        "rows": result.get("rows", []) if ok else [],
+    }
+
+    encoded = (
+        json.dumps(
+            payload,
+            ensure_ascii=False,
+            allow_nan=False,
+            separators=(",", ":"),
+        )
+        + "\n"
+    ).encode("utf-8")
+
+    # If the previous process died halfway through a JSON line,
+    # separate that damaged line from the new valid record.
+    with checkpoint_path.open("ab+") as checkpoint_file:
+        checkpoint_file.seek(0, os.SEEK_END)
+        size = checkpoint_file.tell()
+
+        if size > 0:
+            checkpoint_file.seek(-1, os.SEEK_END)
+            last_byte = checkpoint_file.read(1)
+            checkpoint_file.seek(0, os.SEEK_END)
+
+            if last_byte != b"\n":
+                checkpoint_file.write(b"\n")
+
+        checkpoint_file.write(encoded)
+        checkpoint_file.flush()
+        os.fsync(checkpoint_file.fileno())
+
+
+def load_scenario_checkpoints(
+    checkpoint_path: Path,
+    allowed_scenario_ids: Sequence[int],
+) -> dict[int, dict[str, Any]]:
+    """
+    Load completed scenario results from the JSONL checkpoint.
+
+    If one final line was damaged by an abrupt shutdown, it is ignored.
+    The scenario will be processed again.
+    """
+
+    allowed = {
+        int(scenario_id)
+        for scenario_id in allowed_scenario_ids
+    }
+
+    results: dict[int, dict[str, Any]] = {}
+
+    if not checkpoint_path.exists():
+        return results
+
+    with checkpoint_path.open(
+        "r",
+        encoding="utf-8",
+        errors="replace",
+    ) as checkpoint_file:
+        for line_number, raw_line in enumerate(
+            checkpoint_file,
+            start=1,
+        ):
+            line = raw_line.strip()
+
+            if not line:
+                continue
+
+            try:
+                payload = json.loads(line)
+                scenario_id = int(payload["scenario_id"])
+            except Exception:
+                print(
+                    "Warning: ignoring invalid checkpoint line "
+                    f"{line_number}: {checkpoint_path}",
+                    flush=True,
+                )
+                continue
+
+            if scenario_id not in allowed:
+                continue
+
+            if int(payload.get("version", -1)) != CHECKPOINT_VERSION:
+                raise RuntimeError(
+                    "Unsupported teacher checkpoint version "
+                    f"for scenario {scenario_id}: "
+                    f"{payload.get('version')}"
+                )
+
+            ok = bool(payload.get("ok", False))
+            rows = payload.get("rows", [])
+
+            if ok and (
+                not isinstance(rows, list)
+                or not rows
+            ):
+                print(
+                    "Warning: ignoring incomplete successful "
+                    f"checkpoint for scenario {scenario_id}",
+                    flush=True,
+                )
+                continue
+
+            results[scenario_id] = {
+                "version": CHECKPOINT_VERSION,
+                "scenario_id": scenario_id,
+                "ok": ok,
+                "reason": payload.get("reason"),
+                "rows": rows if ok else [],
+            }
+
+    return results
+
+
+def ensure_checkpoint_config(
+    config_path: Path,
+    config: dict[str, Any],
+) -> None:
+    """
+    Prevent checkpoints generated with different teacher settings
+    from being mixed into one dataset.
+    """
+
+    normalized = json.loads(
+        json.dumps(
+            config,
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    )
+
+    if config_path.exists():
+        existing = json.loads(
+            config_path.read_text(encoding="utf-8")
+        )
+
+        if existing != normalized:
+            raise RuntimeError(
+                "Teacher checkpoint configuration does not match "
+                "the current command. Use the original settings, "
+                "a different --run-name, or --force."
+            )
+
+        return
+
+    config_path.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    temp_path = config_path.with_suffix(
+        config_path.suffix + ".tmp"
+    )
+
+    temp_path.write_text(
+        json.dumps(
+            normalized,
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+
+    temp_path.replace(config_path)
+
+
+def collect_rows_from_checkpoints(
+    checkpoint_results: dict[int, dict[str, Any]],
+) -> tuple[list[dict[str, Any]], int, int]:
+    rows: list[dict[str, Any]] = []
+    total_saved = 0
+    total_skipped = 0
+
+    for scenario_id in sorted(checkpoint_results):
+        result = checkpoint_results[scenario_id]
+
+        if bool(result["ok"]):
+            rows.extend(result["rows"])
+            total_saved += 1
+        else:
+            total_skipped += 1
+
+    return rows, total_saved, total_skipped
 
 def run_sequential(
     scenario_batches: list[list[int]],
@@ -1624,6 +1833,7 @@ def run_sequential(
     raw_dir: Path,
     states_dir: Path,
     task_config: dict[str, Any],
+    checkpoint_path: Path,
     verbose_success: bool,
 ) -> tuple[list[dict[str, Any]], int, int]:    
     """
@@ -1657,6 +1867,11 @@ def run_sequential(
         results = process_scenario_batch(batch)
 
         for result in results:
+            append_scenario_checkpoint(
+                checkpoint_path=checkpoint_path,
+                result=result,
+            )
+
             if result["ok"]:
                 rows.extend(result["rows"])
                 total_saved += 1
@@ -1676,9 +1891,10 @@ def run_parallel(
     raw_dir: Path,
     states_dir: Path,
     task_config: dict[str, Any],
+    checkpoint_path: Path,
     num_workers: int,
     verbose_success: bool,
-) -> tuple[list[dict[str, Any]], int, int]:    
+) -> tuple[list[dict[str, Any]], int, int]:   
     """
     Parallel mode with persistent per-worker contexts.
     """
@@ -1736,6 +1952,11 @@ def run_parallel(
                 batch_results = future.result()
 
                 for result in batch_results:
+                    append_scenario_checkpoint(
+                        checkpoint_path=checkpoint_path,
+                        result=result,
+                    )
+
                     if result["ok"]:
                         rows.extend(result["rows"])
                         total_saved += 1
@@ -2061,18 +2282,65 @@ def main() -> None:
         limit=args.limit,
     )
 
+    task_config = make_task_config(args)
+
+    checkpoint_path = (
+        output_dir
+        / "teacher_checkpoint.jsonl"
+    )
+
+    checkpoint_config_path = (
+        output_dir
+        / "teacher_checkpoint_config.json"
+    )
+
+    checkpoint_config = {
+        "checkpoint_version": CHECKPOINT_VERSION,
+        "raw_dir": str(raw_dir.resolve()),
+        "transitions_path": str(
+            transitions_path.resolve()
+        ),
+        "scenario_ids": [
+            int(scenario_id)
+            for scenario_id in scenario_ids
+        ],
+        "task_config": task_config,
+    }
+
+    ensure_checkpoint_config(
+        config_path=checkpoint_config_path,
+        config=checkpoint_config,
+    )
+
+    checkpoint_results = load_scenario_checkpoints(
+        checkpoint_path=checkpoint_path,
+        allowed_scenario_ids=scenario_ids,
+    )
+
+    completed_scenario_ids = set(
+        checkpoint_results
+    )
+
+    pending_scenario_ids = [
+        int(scenario_id)
+        for scenario_id in scenario_ids
+        if int(scenario_id)
+        not in completed_scenario_ids
+    ]
+
     scenario_batches = chunk_list(
-        values=scenario_ids,
+        values=pending_scenario_ids,
         batch_size=int(args.batch_size),
     )
 
-    task_config = make_task_config(args)
-
-    resolved_num_workers = resolve_num_workers(
-        num_workers_arg=str(args.num_workers),
-        num_batches=len(scenario_batches),
-        task_config=task_config,
-    )
+    if scenario_batches:
+        resolved_num_workers = resolve_num_workers(
+            num_workers_arg=str(args.num_workers),
+            num_batches=len(scenario_batches),
+            task_config=task_config,
+        )
+    else:
+        resolved_num_workers = 0
 
     print("=" * 100)
     print("Generating multi-step impact-beam teacher examples, FAST")
@@ -2082,6 +2350,15 @@ def main() -> None:
     print(f"Output dir:           {output_dir}")
     print(f"States dir:           {states_dir}")
     print(f"Examples CSV:         {examples_path}")
+    print(f"Checkpoint:           {checkpoint_path}")
+    print(
+        f"Restored scenarios:   "
+        f"{len(completed_scenario_ids)}"
+    )
+    print(
+        f"Pending scenarios:    "
+        f"{len(pending_scenario_ids)}"
+    )
     print(f"Scenarios:            {len(scenario_ids)}")
     print(f"Batches:              {len(scenario_batches)}")
     print(f"Batch size:           {args.batch_size}")
@@ -2128,30 +2405,65 @@ def main() -> None:
 
     verbose_success = not bool(args.quiet_success)
 
-    if int(resolved_num_workers) <= 1:
-        rows, total_saved, total_skipped = run_sequential(
-            scenario_batches=scenario_batches,
-            scenario_ids=scenario_ids,
-            raw_dir=raw_dir,
-            states_dir=states_dir,
-            task_config=task_config,
-            verbose_success=verbose_success,
-        )
+    if pending_scenario_ids:
+        if int(resolved_num_workers) <= 1:
+            run_sequential(
+                scenario_batches=scenario_batches,
+                scenario_ids=pending_scenario_ids,
+                raw_dir=raw_dir,
+                states_dir=states_dir,
+                task_config=task_config,
+                checkpoint_path=checkpoint_path,
+                verbose_success=verbose_success,
+            )
+        else:
+            run_parallel(
+                scenario_batches=scenario_batches,
+                scenario_ids=pending_scenario_ids,
+                raw_dir=raw_dir,
+                states_dir=states_dir,
+                task_config=task_config,
+                checkpoint_path=checkpoint_path,
+                num_workers=int(
+                    resolved_num_workers
+                ),
+                verbose_success=verbose_success,
+            )
     else:
-        rows, total_saved, total_skipped = run_parallel(
-            scenario_batches=scenario_batches,
-            scenario_ids=scenario_ids,
-            raw_dir=raw_dir,
-            states_dir=states_dir,
-            task_config=task_config,
-            num_workers=int(resolved_num_workers),
-            verbose_success=verbose_success,
+        print(
+            "\nAll requested scenarios are already "
+            "present in the checkpoint."
         )
+
+    checkpoint_results = load_scenario_checkpoints(
+        checkpoint_path=checkpoint_path,
+        allowed_scenario_ids=scenario_ids,
+    )
+
+    missing_scenario_ids = sorted(
+        set(int(value) for value in scenario_ids)
+        - set(checkpoint_results)
+    )
+
+    if missing_scenario_ids:
+        raise RuntimeError(
+            "Teacher stopped before all scenarios were "
+            "checkpointed. Missing scenarios: "
+            f"{missing_scenario_ids[:20]} "
+            f"(total {len(missing_scenario_ids)}). "
+            "Run the same command again to resume."
+        )
+
+    rows, total_saved, total_skipped = (
+        collect_rows_from_checkpoints(
+            checkpoint_results
+        )
+    )
 
     if not rows:
-        raise RuntimeError("No teacher examples were generated.")
-
-
+        raise RuntimeError(
+            "No teacher examples were generated."
+        )
     add_outcome_value_targets_to_rows(
         rows=rows,
         gamma=float(args.gamma),
