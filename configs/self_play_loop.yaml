@@ -1,5 +1,5 @@
 # Self-play loop configuration.
-# This file is the single source of truth for iterative training.
+# This file is the single source of truth for iterative pool-guided self-play.
 
 run_name: self_play_v1
 seed: 42
@@ -9,43 +9,80 @@ n_iterations: 15
 n_scenarios_per_iteration: 2000
 epochs_per_iteration: 10
 
+# Fixed scenario pool used for self-play generation.
+# This pool is NOT modified during self-play.
+pool:
+  transitions_csv: data/gridfm_transitions/case118_bootstrap_v1/transitions_train.csv
+  raw_dir: data/gridfm_generated/case118_bootstrap_v1/raw
+  metadata_path: data/gridfm_transitions/case118_bootstrap_v1/pool_metadata.json
+
 # Fixed evaluation set.
 # Important: this file must not be used for training or self-play generation.
-eval_csv: data/eval/eval_transitions_chunk11.csv
-
-# Raw GridFM data used for evaluation.
-eval_raw_dir: data/raw/case118_chunk11
+eval_csv: data/gridfm_transitions/case118_eval_v1/transitions_balanced.csv
+eval_raw_dir: data/gridfm_generated/case118_eval_v1/raw
 
 # Initial supervised checkpoint.
+# This is the bootstrap model from which self-play starts.
 bootstrap_checkpoint: runs/bootstrap/best_checkpoint.pt
 bootstrap_eval_metrics: runs/bootstrap/eval_metrics.json
 
 # Output directory for all self-play artifacts.
 checkpoint_dir: runs/self_play_v1
 
-# Dataset generation
+# Canonical best checkpoint inside the self-play run.
+# loop.py will initialize it from bootstrap_checkpoint if it does not exist yet.
+best_checkpoint_path: runs/self_play_v1/checkpoints/best.pt
+best_metrics_path: runs/self_play_v1/checkpoints/best_metrics.json
+
+# Replay buffer
+replay_buffer:
+  max_size: 50000
+  min_size_to_train: 1000
+  fresh_fraction: 0.70
+  random_seed: 42
+
+# Self-play generation.
+# This section is used by scripts/self_play/run_iteration.py::run_generate().
 generation:
-  value_reward_scale: auto
-  gamma: 0.95
-  max_steps: 5
   simulations: 150
   depth: 4
+  max_steps: 5
   top_k: 30
+  gamma: 0.95
   c_puct: 2.0
   prior_exponent: 0.5
-  use_continuation_gate: true
-  allow_handoff_with_hard_overloads: false
 
-# Training
+  # Model-guided self-play exploration
+  use_root_noise: true
+  selection_temperature: 0.0
+  use_continuation_gate: true
+
+  # Power flow / episode settings
+  pf_alg: 3
+  stop_policy: no_hard_overloads
+
+  # Terminal outcome shaping for generated self-play trajectories
+  terminal_unsolved_penalty: 500.0
+  terminal_handoff_penalty: 150.0
+  terminal_failure_penalty: 1000.0
+  terminal_penalty_weight: 0.10
+
+# Training.
+# This section is used by scripts/self_play/run_iteration.py::run_train().
 training:
+  examples_per_iteration: 20000
   batch_size: 64
   learning_rate: 0.0003
-  weight_decay: 0.00001
+  value_loss_weight: 1.0
   value_huber_delta: 1.0
   num_workers: 0
   device: auto
+  model_type: graph_v2
+  save_multiple_best: true
+  no_tensorboard: true
 
-# Evaluation
+# Evaluation.
+# This section is used by scripts/self_play/run_iteration.py::run_evaluate().
 evaluation:
   simulations: 150
   depth: 4
@@ -62,29 +99,12 @@ evaluation:
   output_csv_name: eval_results.csv
   output_json_name: eval_metrics.json
 
-# Candidate acceptance policy
+# Candidate acceptance policy.
 acceptance:
   metric: solve_rate
   min_improvement: 0.0
+  max_simple_solve_rate_drop: 0.05
   reject_if_failed_scenarios_above: 0
-
-# Bootstrap dataset size.
-# This prevents accidental small runs with target_total=1000.
-bootstrap_dataset:
-  target_total: 12000
-  train_chunks:
-    - chunk00
-    - chunk01
-    - chunk02
-    - chunk03
-    - chunk04
-    - chunk05
-    - chunk06
-    - chunk07
-    - chunk08
-    - chunk09
-    - chunk10
-  eval_chunk: chunk11
 
 # Metadata and reproducibility
 metadata:
@@ -93,3 +113,4 @@ metadata:
   save_config_hash: true
   save_parent_checkpoint: true
   save_reward_config: true
+  save_pool_metadata_hash: true
