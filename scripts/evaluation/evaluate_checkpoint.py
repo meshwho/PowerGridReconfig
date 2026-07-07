@@ -1084,7 +1084,7 @@ def main() -> None:
     if not rows:
         raise RuntimeError("No scenarios were successfully evaluated.")
 
-        df = pd.DataFrame(rows)
+    df = pd.DataFrame(rows)
     df = df.sort_values("scenario_id", ascending=True).reset_index(drop=True)
 
     df = attach_difficulty_metadata(

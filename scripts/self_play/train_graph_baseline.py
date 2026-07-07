@@ -246,6 +246,9 @@ def print_value_target_diagnostics(
 ) -> None:
     """
     Print value target diagnostics in a compact readable form.
+
+    Current training uses outcome_value_target as the strict value target.
+    This target is already bounded to [-1, 1], so no legacy value_scale is needed.
     """
 
     print("")
@@ -257,127 +260,33 @@ def print_value_target_diagnostics(
         print(f"Unavailable: {diagnostics.get('reason')}")
         return
 
-    if diagnostics.get("mode") == "explicit_value_target":
-        print(f"mode:               {diagnostics['mode']}")
-        print(f"count:              {diagnostics['count']}")
-        print("")
-        print(f"target min:         {diagnostics['target_min']:.6f}")
-        print(f"target max:         {diagnostics['target_max']:.6f}")
-        print(f"target mean:        {diagnostics['target_mean']:.6f}")
-        print(f"target std:         {diagnostics['target_std']:.6f}")
-        print("")
-        print(f"abs target p50:     {diagnostics['abs_target_p50']:.6f}")
-        print(f"abs target p90:     {diagnostics['abs_target_p90']:.6f}")
-        print(f"abs target p95:     {diagnostics['abs_target_p95']:.6f}")
-        print(f"abs target p99:     {diagnostics['abs_target_p99']:.6f}")
-        print(f"abs target max:     {diagnostics['abs_target_max']:.6f}")
-        print("")
-        print(f"outside [-1,1]:     {diagnostics['outside_minus1_plus1_count']}")
-        print(
-            f"outside percent:    "
-            f"{diagnostics['outside_minus1_plus1_percent']:.2f}%"
-        )
-        print("")
-        print(f"positive count:     {diagnostics['positive_count']}")
-        print(f"zero count:         {diagnostics['zero_count']}")
-        print(f"negative count:     {diagnostics['negative_count']}")
-        return
-
-    print(f"mode:               {diagnostics.get('mode', 'legacy_scaled_discounted_return')}")
-    print(f"value_scale:        {diagnostics['value_scale']}")
+    print(f"mode:               {diagnostics.get('mode', 'unknown')}")
     print(f"count:              {diagnostics['count']}")
     print("")
-    print(f"raw min:            {diagnostics['raw_min']:.6f}")
-    print(f"raw max:            {diagnostics['raw_max']:.6f}")
-    print(f"raw mean:           {diagnostics['raw_mean']:.6f}")
-    print(f"raw std:            {diagnostics['raw_std']:.6f}")
+    print(f"target min:         {diagnostics['target_min']:.6f}")
+    print(f"target max:         {diagnostics['target_max']:.6f}")
+    print(f"target mean:        {diagnostics['target_mean']:.6f}")
+    print(f"target std:         {diagnostics['target_std']:.6f}")
     print("")
-    print(f"normalized min:     {diagnostics['normalized_min']:.6f}")
-    print(f"normalized max:     {diagnostics['normalized_max']:.6f}")
-    print(f"normalized mean:    {diagnostics['normalized_mean']:.6f}")
-    print(f"normalized std:     {diagnostics['normalized_std']:.6f}")
+    print(f"abs target p50:     {diagnostics['abs_target_p50']:.6f}")
+    print(f"abs target p90:     {diagnostics['abs_target_p90']:.6f}")
+    print(f"abs target p95:     {diagnostics['abs_target_p95']:.6f}")
+    print(f"abs target p99:     {diagnostics['abs_target_p99']:.6f}")
+    print(f"abs target max:     {diagnostics['abs_target_max']:.6f}")
     print("")
-    print(f"abs norm p50:       {diagnostics['abs_normalized_p50']:.6f}")
-    print(f"abs norm p90:       {diagnostics['abs_normalized_p90']:.6f}")
-    print(f"abs norm p95:       {diagnostics['abs_normalized_p95']:.6f}")
-    print(f"abs norm p99:       {diagnostics['abs_normalized_p99']:.6f}")
-    print(f"abs norm max:       {diagnostics['abs_normalized_max']:.6f}")
-    print("")
-    print(f"clipped count:      {diagnostics['clipped_count']}")
-    print(f"clipped percent:    {diagnostics['clipped_percent']:.2f}%")
+    print(f"outside [-1, 1]:    {diagnostics['outside_minus1_plus1_count']}")
+    print(
+        f"outside percent:    "
+        f"{diagnostics['outside_minus1_plus1_percent']:.2f}%"
+    )
     print("")
     print(f"positive count:     {diagnostics['positive_count']}")
     print(f"zero count:         {diagnostics['zero_count']}")
     print(f"negative count:     {diagnostics['negative_count']}")
 
-    if diagnostics["clipped_percent"] > 10.0:
+    if diagnostics["outside_minus1_plus1_count"] > 0:
         print("")
-        print("WARNING: More than 10% of value targets are clipped.")
-        print("The value head may receive saturated targets.")
-    """
-    Print value target diagnostics in a compact readable form.
-    """
-
-    print("")
-    print("=" * 100)
-    print("VALUE TARGET DIAGNOSTICS")
-    print("=" * 100)
-
-    if not diagnostics.get("available", False):
-        print(f"Unavailable: {diagnostics.get('reason')}")
-        return
-
-    print(f"value_scale:        {diagnostics['value_scale']}")
-    print(f"count:              {diagnostics['count']}")
-    print("")
-    print(f"raw min:            {diagnostics['raw_min']:.6f}")
-    print(f"raw max:            {diagnostics['raw_max']:.6f}")
-    print(f"raw mean:           {diagnostics['raw_mean']:.6f}")
-    print(f"raw std:            {diagnostics['raw_std']:.6f}")
-    print("")
-    print(f"normalized min:     {diagnostics['normalized_min']:.6f}")
-    print(f"normalized max:     {diagnostics['normalized_max']:.6f}")
-    print(f"normalized mean:    {diagnostics['normalized_mean']:.6f}")
-    print(f"normalized std:     {diagnostics['normalized_std']:.6f}")
-    print("")
-    print(f"abs norm p50:       {diagnostics['abs_normalized_p50']:.6f}")
-    print(f"abs norm p90:       {diagnostics['abs_normalized_p90']:.6f}")
-    print(f"abs norm p95:       {diagnostics['abs_normalized_p95']:.6f}")
-    print(f"abs norm p99:       {diagnostics['abs_normalized_p99']:.6f}")
-    print(f"abs norm max:       {diagnostics['abs_normalized_max']:.6f}")
-    print("")
-    print(f"clipped count:      {diagnostics['clipped_count']}")
-    print(f"clipped percent:    {diagnostics['clipped_percent']:.2f}%")
-    print("")
-    print(f"positive count:     {diagnostics['positive_count']}")
-    print(f"zero count:         {diagnostics['zero_count']}")
-    print(f"negative count:     {diagnostics['negative_count']}")
-
-    if diagnostics["clipped_percent"] > 10.0:
-        print("")
-        print("WARNING: More than 10% of value targets are clipped.")
-        print("The value head may receive saturated targets.")
-    if diagnostics.get("mode") == "explicit_value_target":
-        print(f"mode:               {diagnostics['mode']}")
-        print(f"count:              {diagnostics['count']}")
-        print("")
-        print(f"target min:         {diagnostics['target_min']:.6f}")
-        print(f"target max:         {diagnostics['target_max']:.6f}")
-        print(f"target mean:        {diagnostics['target_mean']:.6f}")
-        print(f"target std:         {diagnostics['target_std']:.6f}")
-        print("")
-        print(f"abs target p50:     {diagnostics['abs_target_p50']:.6f}")
-        print(f"abs target p90:     {diagnostics['abs_target_p90']:.6f}")
-        print(f"abs target p95:     {diagnostics['abs_target_p95']:.6f}")
-        print(f"abs target p99:     {diagnostics['abs_target_p99']:.6f}")
-        print(f"abs target max:     {diagnostics['abs_target_max']:.6f}")
-        print("")
-        print(f"outside [-1,1]:     {diagnostics['outside_minus1_plus1_count']}")
-        print(
-            f"outside percent:    "
-            f"{diagnostics['outside_minus1_plus1_percent']:.2f}%"
-        )
-    return
+        print("WARNING: Some outcome_value_target values are outside [-1, 1].")
 
 
 def soft_policy_loss(
@@ -443,7 +352,6 @@ def make_checkpoint(
 
     value_target_diagnostics = build_value_target_diagnostics(
         dataset=dataset,
-        value_scale=float(args.value_scale),
     )
 
     checkpoint = {
@@ -461,7 +369,8 @@ def make_checkpoint(
         "dropout": float(args.dropout),
 
         "examples_csv": str(args.examples_csv),
-        "value_scale": float(args.value_scale),
+        "value_scale": 1.0,
+        "value_target_mode": "outcome_value_target",
         "normalize_features": bool(not args.no_normalize_features),
 
         "device_used_for_training": str(device),
