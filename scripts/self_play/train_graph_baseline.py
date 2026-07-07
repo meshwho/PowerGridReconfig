@@ -391,6 +391,89 @@ def make_checkpoint(
 
     return checkpoint
 
+def load_initial_checkpoint_into_model(
+    *,
+    model: torch.nn.Module,
+    checkpoint_path: str | Path,
+    dataset: GraphSelfPlayDataset,
+    args: argparse.Namespace,
+    device: torch.device,
+) -> None:
+    """
+    Load model weights from an existing graph policy-value checkpoint.
+
+    This is used for iterative self-play fine-tuning.
+    """
+
+    checkpoint_path = Path(checkpoint_path)
+
+    if not checkpoint_path.exists():
+        raise FileNotFoundError(
+            f"Initial checkpoint not found: {checkpoint_path}"
+        )
+
+    checkpoint = torch.load(
+        checkpoint_path,
+        map_location=device,
+        weights_only=False,
+    )
+
+    expected_model_type = (
+        "graph_policy_value_net_v2"
+        if args.model_type == "graph_v2"
+        else "graph_policy_value_net"
+    )
+
+    actual_model_type = str(checkpoint.get("model_type", ""))
+
+    if actual_model_type != expected_model_type:
+        raise ValueError(
+            "Initial checkpoint model_type mismatch. "
+            f"Expected {expected_model_type!r}, got {actual_model_type!r}. "
+            f"Checkpoint: {checkpoint_path}"
+        )
+
+    checks = {
+        "num_bus_features": int(dataset.num_bus_features),
+        "num_branch_features": int(dataset.num_branch_features),
+        "num_actions": int(dataset.num_actions),
+        "hidden_dim": int(args.hidden_dim),
+        "num_layers": int(args.num_layers),
+    }
+
+    for key, expected_value in checks.items():
+        if key not in checkpoint:
+            raise KeyError(
+                f"Initial checkpoint is missing required key {key!r}: "
+                f"{checkpoint_path}"
+            )
+
+        actual_value = int(checkpoint[key])
+
+        if actual_value != expected_value:
+            raise ValueError(
+                f"Initial checkpoint {key} mismatch. "
+                f"Expected {expected_value}, got {actual_value}. "
+                f"Checkpoint: {checkpoint_path}"
+            )
+
+    if "model_state_dict" not in checkpoint:
+        raise KeyError(
+            f"Initial checkpoint has no model_state_dict: {checkpoint_path}"
+        )
+
+    model.load_state_dict(checkpoint["model_state_dict"])
+
+    print("")
+    print("=" * 100)
+    print("INITIAL CHECKPOINT LOADED")
+    print("=" * 100)
+    print(f"Checkpoint:     {checkpoint_path}")
+    print(f"Model type:     {actual_model_type}")
+    print(f"Hidden dim:     {checkpoint['hidden_dim']}")
+    print(f"Num layers:     {checkpoint['num_layers']}")
+    print(f"Num actions:    {checkpoint['num_actions']}")
+
 def checkpoint_variant_path(
     output_path: Path,
     variant_name: str,
@@ -1121,6 +1204,16 @@ def main() -> None:
     )
 
     parser.add_argument(
+        "--init-checkpoint",
+        type=str,
+        default=None,
+        help=(
+            "Optional checkpoint used to initialize model weights before training. "
+            "This enables fine-tuning in the iterative self-play loop."
+        ),
+    )
+
+    parser.add_argument(
         "--val-examples-csv",
         type=str,
         default=None,
@@ -1293,6 +1386,15 @@ def main() -> None:
             num_layers=args.num_layers,
             dropout=args.dropout,
         ).to(device)
+
+    if args.init_checkpoint is not None:
+        load_initial_checkpoint_into_model(
+            model=model,
+            checkpoint_path=args.init_checkpoint,
+            dataset=dataset,
+            args=args,
+            device=device,
+        )
 
     optimizer = torch.optim.AdamW(
         model.parameters(),
