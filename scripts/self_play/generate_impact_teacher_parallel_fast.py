@@ -2249,7 +2249,7 @@ def main() -> None:
     parser.add_argument(
         "--value-reward-scale",
         type=str,
-        default="7000",
+        default="auto",
         help=(
             "Reward scale for tanh value target normalization. "
             "Use 'auto' to compute it from generated step_reward values, "

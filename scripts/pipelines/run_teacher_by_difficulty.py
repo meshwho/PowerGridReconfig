@@ -1057,7 +1057,15 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=2048.0,
     )
-    parser.add_argument("--value-reward-scale", default="7000")
+    parser.add_argument(
+        "--value-reward-scale",
+        default="auto",
+        help=(
+            "Reward scale for tanh value target normalization. "
+            "Use 'auto' to compute it from generated step_reward values, "
+            "or pass a positive number for reproducible fixed scaling."
+        ),
+    )
     parser.add_argument(
         "--quiet-success",
         action=argparse.BooleanOptionalAction,
