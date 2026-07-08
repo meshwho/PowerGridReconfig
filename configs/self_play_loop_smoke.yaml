@@ -1,0 +1,107 @@
+# Smoke configuration for self-play loop.
+# This file is only for checking the pipeline on a tiny run.
+
+run_name: self_play_smoke
+seed: 42
+
+# Tiny loop
+n_iterations: 1
+n_scenarios_per_iteration: 5
+epochs_per_iteration: 1
+
+# Use the real bootstrap pool, but write smoke pool metadata separately.
+# This prevents smoke tests from modifying the production pool metadata.
+pool:
+  transitions_csv: data/gridfm_transitions/case118_bootstrap_v1/transitions_train.csv
+  raw_dir: data/gridfm_generated/case118_bootstrap_v1/raw
+  metadata_path: runs/self_play_smoke/inputs/pool_metadata_smoke.json
+
+# Tiny fixed eval set for smoke.
+eval_csv: runs/self_play_smoke/inputs/eval_smoke.csv
+eval_raw_dir: data/gridfm_generated/case118_eval_v1/raw
+
+# Same bootstrap paths as production.
+# These are still missing now; smoke can be planned, but cannot run until bootstrap exists.
+bootstrap_checkpoint: runs/bootstrap/best_checkpoint.pt
+bootstrap_eval_metrics: runs/bootstrap/eval_metrics.json
+
+# Smoke output directory.
+checkpoint_dir: runs/self_play_smoke
+
+# Canonical best checkpoint inside smoke run.
+best_checkpoint_path: runs/self_play_smoke/checkpoints/best.pt
+best_metrics_path: runs/self_play_smoke/checkpoints/best_metrics.json
+
+# Small replay buffer for smoke.
+replay_buffer:
+  max_size: 1000
+  min_size_to_train: 5
+  fresh_fraction: 0.70
+  random_seed: 42
+
+# Very cheap generation settings for smoke.
+generation:
+  simulations: 5
+  depth: 1
+  max_steps: 2
+  top_k: 5
+  gamma: 0.95
+  c_puct: 2.0
+  prior_exponent: 0.5
+
+  use_root_noise: true
+  selection_temperature: 0.0
+  use_continuation_gate: true
+
+  pf_alg: 3
+  stop_policy: no_hard_overloads
+
+  terminal_unsolved_penalty: 500.0
+  terminal_handoff_penalty: 150.0
+  terminal_failure_penalty: 1000.0
+  terminal_penalty_weight: 0.10
+
+# Very cheap training settings for smoke.
+training:
+  examples_per_iteration: 20
+  batch_size: 4
+  learning_rate: 0.0003
+  value_loss_weight: 1.0
+  value_huber_delta: 1.0
+  num_workers: 0
+  device: cpu
+  model_type: graph_v2
+  save_multiple_best: false
+  no_tensorboard: true
+
+# Very cheap evaluation settings for smoke.
+evaluation:
+  simulations: 5
+  depth: 1
+  max_steps: 2
+  top_k: 5
+  gamma: 0.95
+  c_puct: 2.0
+  prior_exponent: 0.5
+  use_continuation_gate: true
+  allow_handoff_with_hard_overloads: false
+  num_workers: 1
+  batch_size: 2
+  device: cpu
+  output_csv_name: eval_results.csv
+  output_json_name: eval_metrics.json
+
+# Keep the same acceptance logic as production.
+acceptance:
+  metric: solve_rate
+  min_improvement: 0.0
+  max_simple_solve_rate_drop: 0.05
+  reject_if_failed_scenarios_above: 0
+
+metadata:
+  save_config_copy_per_iteration: true
+  save_dataset_hash: true
+  save_config_hash: true
+  save_parent_checkpoint: true
+  save_reward_config: true
+  save_pool_metadata_hash: true
