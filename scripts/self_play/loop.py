@@ -556,6 +556,18 @@ def print_execution_plan(
     print(f"  batch_size:               {training_cfg.get('batch_size')}")
     print(f"  learning_rate:            {training_cfg.get('learning_rate')}")
     print(f"  model_type:               {training_cfg.get('model_type')}")
+    print(
+        f"  hidden_dim:                "
+        f"{training_cfg.get('hidden_dim', 128)}"
+    )
+    print(
+        f"  num_layers:                "
+        f"{training_cfg.get('num_layers', 3)}"
+    )
+    print(
+        f"  dropout:                   "
+        f"{training_cfg.get('dropout', 0.0)}"
+    )
     print("")
     print("Evaluation:")
     print(f"  simulations:              {evaluation_cfg.get('simulations')}")
