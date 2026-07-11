@@ -595,7 +595,13 @@ def accept_candidate(
 
     improvement = float(new_metrics[metric]) - float(best_metrics[metric])
 
-    if improvement < min_improvement:
+    # Never replace the best model on an exact tie or numerical noise.
+    comparison_epsilon = 1e-12
+
+    if improvement <= comparison_epsilon:
+        return False
+
+    if improvement + comparison_epsilon < min_improvement:
         return False
 
     simple_guard = float(policy.get("max_simple_solve_rate_drop", 0.05))

@@ -23,7 +23,7 @@ eval_raw_dir: data/gridfm_generated/case118_eval_v1/raw
 # Same bootstrap paths as production.
 # These are still missing now; smoke can be planned, but cannot run until bootstrap exists.
 bootstrap_checkpoint: runs/bootstrap/best_checkpoint.pt
-bootstrap_eval_metrics: runs/bootstrap/eval_metrics.json
+bootstrap_eval_metrics: runs/bootstrap/eval_metrics_smoke.json
 
 # Smoke output directory.
 checkpoint_dir: runs/self_play_smoke
