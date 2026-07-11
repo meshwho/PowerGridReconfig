@@ -1,0 +1,79 @@
+run_name: self_play_pilot
+seed: 42
+n_iterations: 1
+n_scenarios_per_iteration: 50
+epochs_per_iteration: 3
+pool:
+  transitions_csv: data/gridfm_transitions/case118_bootstrap_v1/transitions_train.csv
+  raw_dir: data/gridfm_generated/case118_bootstrap_v1/raw
+  metadata_path: runs/self_play_pilot/inputs/pool_metadata_pilot.json
+eval_csv: runs/self_play_pilot/inputs/eval_pilot.csv
+eval_raw_dir: data/gridfm_generated/case118_eval_v1/raw
+bootstrap_checkpoint: runs/bootstrap/best_checkpoint.pt
+bootstrap_eval_metrics: runs/bootstrap/eval_metrics_pilot.json
+checkpoint_dir: runs/self_play_pilot
+best_checkpoint_path: runs/self_play_pilot/checkpoints/best.pt
+best_metrics_path: runs/self_play_pilot/checkpoints/best_metrics.json
+replay_buffer:
+  max_size: 5000
+  min_size_to_train: 20
+  fresh_fraction: 0.7
+  random_seed: 42
+generation:
+  simulations: 25
+  depth: 2
+  max_steps: 3
+  top_k: 10
+  gamma: 0.95
+  c_puct: 2.0
+  prior_exponent: 0.5
+  use_root_noise: true
+  selection_temperature: 0.0
+  use_continuation_gate: true
+  pf_alg: 3
+  stop_policy: no_hard_overloads
+  terminal_unsolved_penalty: 500.0
+  terminal_handoff_penalty: 150.0
+  terminal_failure_penalty: 1000.0
+  terminal_penalty_weight: 0.1
+training:
+  examples_per_iteration: 128
+  batch_size: 16
+  learning_rate: 0.0003
+  value_loss_weight: 1.0
+  value_huber_delta: 1.0
+  num_workers: 0
+  device: auto
+  model_type: graph_v2
+  hidden_dim: 128
+  num_layers: 3
+  dropout: 0.0
+  save_multiple_best: false
+  no_tensorboard: true
+evaluation:
+  simulations: 50
+  depth: 3
+  max_steps: 4
+  top_k: 15
+  gamma: 0.95
+  c_puct: 2.0
+  prior_exponent: 0.5
+  use_continuation_gate: true
+  allow_handoff_with_hard_overloads: false
+  num_workers: 1
+  batch_size: 5
+  device: cpu
+  output_csv_name: eval_results.csv
+  output_json_name: eval_metrics.json
+acceptance:
+  metric: solve_rate
+  min_improvement: 0.0
+  max_simple_solve_rate_drop: 0.05
+  reject_if_failed_scenarios_above: 0
+metadata:
+  save_config_copy_per_iteration: true
+  save_dataset_hash: true
+  save_config_hash: true
+  save_parent_checkpoint: true
+  save_reward_config: true
+  save_pool_metadata_hash: true

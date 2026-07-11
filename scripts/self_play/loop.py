@@ -286,6 +286,115 @@ def load_or_initialize_learning_curve(path: str | Path) -> list[dict[str, Any]]:
 
     return df.to_dict(orient="records")
 
+def inspect_iteration_state(
+    checkpoint_dir: str | Path,
+) -> tuple[list[int], list[Path]]:
+    """
+    Inspect existing iter_XXX directories.
+
+    An iteration is considered complete only when metadata.json exists.
+    Directories without metadata.json are treated as incomplete.
+    """
+
+    checkpoint_dir = Path(checkpoint_dir)
+
+    completed: list[int] = []
+    incomplete: list[Path] = []
+
+    for iter_dir in sorted(checkpoint_dir.glob("iter_*")):
+        if not iter_dir.is_dir():
+            continue
+
+        suffix = iter_dir.name.removeprefix("iter_")
+
+        try:
+            iteration = int(suffix)
+        except ValueError:
+            continue
+
+        metadata_path = iter_dir / "metadata.json"
+
+        if metadata_path.is_file():
+            completed.append(iteration)
+        else:
+            incomplete.append(iter_dir)
+
+    completed = sorted(set(completed))
+
+    return completed, incomplete
+
+def determine_start_iteration(
+    *,
+    checkpoint_dir: str | Path,
+    n_iterations: int,
+    resume: bool,
+) -> tuple[int, list[int]]:
+    """
+    Determine the first iteration that should run.
+
+    Default mode refuses to overwrite an existing run.
+    Resume mode continues after the last completed iteration.
+    """
+
+    checkpoint_dir = Path(checkpoint_dir)
+
+    completed, incomplete = inspect_iteration_state(checkpoint_dir)
+
+    replay_manifest = (
+        checkpoint_dir
+        / "replay_buffer"
+        / "buffer_manifest.json"
+    )
+
+    learning_curve_path = checkpoint_dir / "learning_curve.csv"
+
+    has_existing_run = bool(
+        completed
+        or incomplete
+        or replay_manifest.exists()
+        or learning_curve_path.exists()
+    )
+
+    if not resume:
+        if has_existing_run:
+            raise RuntimeError(
+                "Existing self-play run artifacts were found in "
+                f"{checkpoint_dir}. Refusing to overwrite them. "
+                "Use --resume to continue the run, or remove the "
+                "existing runtime artifacts before starting again."
+            )
+
+        return 1, []
+
+    if incomplete:
+        formatted = "\n".join(
+            f"  - {path}"
+            for path in incomplete
+        )
+
+        raise RuntimeError(
+            "Cannot safely resume because incomplete iteration "
+            "directories were found:\n"
+            f"{formatted}\n"
+            "Remove or archive these incomplete directories before "
+            "running again with --resume."
+        )
+
+    if not completed:
+        return 1, []
+
+    expected = list(range(1, max(completed) + 1))
+
+    if completed != expected:
+        raise RuntimeError(
+            "Completed iterations are not contiguous. "
+            f"Found={completed}, expected={expected}. "
+            "Manual inspection is required before resuming."
+        )
+
+    start_iteration = max(completed) + 1
+
+    return start_iteration, completed
 
 def save_learning_curve(
     *,
@@ -596,6 +705,7 @@ def run_loop(
     config_path: str | Path,
     validate_only: bool = False,
     plan_only: bool = False,
+    resume: bool = False,
 ) -> None:
     config_path = Path(config_path)
     cfg = load_yaml(config_path)
@@ -631,6 +741,14 @@ def run_loop(
     )
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
+    n_iterations = int(cfg["n_iterations"])
+
+    start_iteration, completed_iterations = determine_start_iteration(
+        checkpoint_dir=checkpoint_dir,
+        n_iterations=n_iterations,
+        resume=resume,
+    )
+
     run_config_copy = checkpoint_dir / "self_play_loop.resolved.yaml"
 
     save_config_copy(
@@ -661,6 +779,43 @@ def run_loop(
         project_root,
         cfg["eval_raw_dir"],
     )
+
+    if resume and completed_iterations:
+        resume_best_checkpoint = as_project_path(
+            project_root,
+            cfg["best_checkpoint_path"],
+        )
+
+        resume_best_metrics = as_project_path(
+            project_root,
+            cfg["best_metrics_path"],
+        )
+
+        resume_replay_manifest = (
+                checkpoint_dir
+                / "replay_buffer"
+                / "buffer_manifest.json"
+        )
+
+        require_file(
+            resume_best_checkpoint,
+            "Resume best checkpoint",
+        )
+
+        require_file(
+            resume_best_metrics,
+            "Resume best metrics",
+        )
+
+        require_file(
+            pool_metadata_path,
+            "Resume pool metadata",
+        )
+
+        require_file(
+            resume_replay_manifest,
+            "Resume replay buffer manifest",
+        )
 
     best_checkpoint, best_metrics = initialize_best_checkpoint(
         project_root=project_root,
@@ -698,6 +853,9 @@ def run_loop(
     print(f"Config:                   {config_path}")
     print(f"Resolved config copy:     {run_config_copy}")
     print(f"Iterations planned:       {cfg['n_iterations']}")
+    print(f"Resume mode:              {resume}")
+    print(f"Completed iterations:     {completed_iterations}")
+    print(f"Starting iteration:       {start_iteration}")
     print(f"Scenarios per iteration:  {cfg['n_scenarios_per_iteration']}")
     print(f"Pool transitions:         {pool_transitions_csv}")
     print(f"Pool raw dir:             {pool_raw_dir}")
@@ -710,7 +868,18 @@ def run_loop(
     n_iterations = int(cfg["n_iterations"])
     n_scenarios_per_iteration = int(cfg["n_scenarios_per_iteration"])
 
-    for iteration in range(1, n_iterations + 1):
+    if start_iteration > n_iterations:
+        print_header("Self-play already complete")
+        print(f"Completed iterations: {completed_iterations}")
+        print(f"Configured total:     {n_iterations}")
+        print(f"Best checkpoint:      {best_checkpoint}")
+        print(
+            f"Best {metric_name}:           "
+            f"{format_metric(best_metrics, metric_name)}"
+        )
+        return
+
+    for iteration in range(start_iteration, n_iterations + 1):
         print_header(f"Iteration {iteration} / {n_iterations}")
 
         iter_dir = checkpoint_dir / f"iter_{iteration:03d}"
@@ -943,12 +1112,23 @@ def main() -> None:
         ),
     )
 
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help=(
+            "Continue after the last completed iteration. "
+            "Refuse to continue if incomplete iteration "
+            "directories are present."
+        ),
+    )
+
     args = parser.parse_args()
 
     run_loop(
         config_path=args.config,
         validate_only=bool(args.validate_only),
         plan_only=bool(args.plan_only),
+        resume=bool(args.resume),
     )
 
 

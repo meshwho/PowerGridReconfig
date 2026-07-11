@@ -389,11 +389,11 @@ def run_train(
         "--model-type",
         str(config.get("model_type", "graph_v2")),
         "--hidden-dim",
-        str(int(training_cfg.get("hidden_dim", 128))),
+        str(int(config.get("hidden_dim", 128))),
         "--num-layers",
-        str(int(training_cfg.get("num_layers", 3))),
+        str(int(config.get("num_layers", 3))),
         "--dropout",
-        str(float(training_cfg.get("dropout", 0.0))),
+        str(float(config.get("dropout", 0.0))),
         "--save-best",
     ]
 
