@@ -367,6 +367,24 @@ def update_pool_metadata(
             difficulty_class=str(meta.get("difficulty_class", "unknown")),
         )
 
+    # Priority depends on current iteration because it includes
+    # a staleness bonus. Therefore priorities must be refreshed
+    # for every scenario, not only for scenarios attempted now.
+    for meta in scenarios.values():
+        meta["priority"] = compute_priority(
+            solve_rate=float(meta.get("solve_rate", 0.0)),
+            times_attempted=int(meta.get("times_attempted", 0)),
+            last_attempted_iter=int(meta.get("last_attempted_iter", 0)),
+            current_iter=int(current_iter),
+            difficulty_class=str(
+                meta.get("difficulty_class", "unknown")
+            ),
+        )
+
+    pool_metadata["last_updated_iteration"] = int(current_iter)
+
+    return pool_metadata
+
     pool_metadata["last_updated_iteration"] = int(current_iter)
 
     return pool_metadata

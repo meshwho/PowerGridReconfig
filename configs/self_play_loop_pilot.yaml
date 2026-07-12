@@ -1,6 +1,6 @@
 run_name: self_play_pilot
 seed: 42
-n_iterations: 1
+n_iterations: 3
 n_scenarios_per_iteration: 50
 epochs_per_iteration: 3
 pool:
