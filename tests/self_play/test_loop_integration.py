@@ -5,7 +5,10 @@ from pathlib import Path
 
 from grid_topology_ai.config import SelfPlayConfig
 from grid_topology_ai.self_play.paths import SelfPlayPaths
-from scripts.self_play.loop import initialize_best_checkpoint
+from scripts.self_play.loop import (
+    initialize_best_checkpoint,
+    print_execution_plan,
+)
 
 
 def _config(tmp_path: Path) -> SelfPlayConfig:
@@ -88,3 +91,41 @@ def test_initialize_best_checkpoint_uses_resolved_paths(
     assert paths.best_checkpoint.read_bytes() == b"checkpoint"
     assert paths.best_metrics.is_file()
     assert best_metrics["solve_rate"] == 0.75
+
+
+def test_execution_plan_uses_typed_paths(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    config = _config(tmp_path)
+    paths = SelfPlayPaths.from_config(
+        config=config,
+        project_root=tmp_path,
+    )
+    paths.pool_transitions_csv.parent.mkdir(parents=True)
+    paths.pool_transitions_csv.write_text(
+        "scenario_id\n1\n2\n2\n",
+        encoding="utf-8",
+    )
+    paths.eval_csv.write_text(
+        "scenario_id\n3\n",
+        encoding="utf-8",
+    )
+    paths.pool_raw_dir.mkdir(parents=True)
+    paths.eval_raw_dir.mkdir(parents=True)
+
+    print_execution_plan(
+        config=config,
+        paths=paths,
+        config_path=tmp_path / "self_play.yaml",
+    )
+
+    output = capsys.readouterr().out
+    assert str(paths.run_dir) in output
+    assert str(paths.iteration_dir(1)) in output
+    assert "No generation, training, evaluation" in output
+
+
+def test_loop_module_has_no_removed_path_helpers() -> None:
+    assert callable(initialize_best_checkpoint)
+    assert callable(print_execution_plan)
