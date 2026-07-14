@@ -1,62 +1,162 @@
-from scripts.self_play.run_iteration import accept_candidate
+from __future__ import annotations
+
+import pytest
+
+from grid_topology_ai.config import AcceptanceConfig
+from grid_topology_ai.self_play.acceptance import accept_candidate
 
 
-POLICY = {
-    "metric": "solve_rate",
-    "min_improvement": 0.0,
-    "max_simple_solve_rate_drop": 0.05,
-    "reject_if_failed_scenarios_above": 0,
-}
-
-
-def metrics(
-    solve_rate: float,
+def _config(
     *,
-    simple: float = 0.50,
-    failed: int = 0,
-) -> dict[str, float | int]:
-    return {
-        "solve_rate": solve_rate,
-        "solve_rate_simple": simple,
-        "failed_scenarios": failed,
-    }
+    metric: str = "solve_rate",
+    min_improvement: float = 0.0,
+    max_simple_solve_rate_drop: float = 0.05,
+    reject_if_failed_scenarios_above: int | None = None,
+) -> AcceptanceConfig:
+    return AcceptanceConfig(
+        metric=metric,
+        min_improvement=min_improvement,
+        max_simple_solve_rate_drop=max_simple_solve_rate_drop,
+        reject_if_failed_scenarios_above=reject_if_failed_scenarios_above,
+    )
 
 
 def test_accepts_strict_improvement() -> None:
     assert accept_candidate(
-        new_metrics=metrics(0.51),
-        best_metrics=metrics(0.50),
-        policy=POLICY,
+        new_metrics={"solve_rate": 0.6},
+        best_metrics={"solve_rate": 0.5},
+        config=_config(),
     )
 
 
 def test_rejects_exact_tie() -> None:
     assert not accept_candidate(
-        new_metrics=metrics(0.50),
-        best_metrics=metrics(0.50),
-        policy=POLICY,
+        new_metrics={"solve_rate": 0.5},
+        best_metrics={"solve_rate": 0.5},
+        config=_config(),
     )
 
 
-def test_rejects_regression() -> None:
+def test_rejects_numerical_noise() -> None:
     assert not accept_candidate(
-        new_metrics=metrics(0.49),
-        best_metrics=metrics(0.50),
-        policy=POLICY,
+        new_metrics={"solve_rate": 0.5 + 5e-13},
+        best_metrics={"solve_rate": 0.5},
+        config=_config(),
     )
 
 
-def test_rejects_excessive_simple_drop() -> None:
+def test_rejects_improvement_below_required_minimum() -> None:
     assert not accept_candidate(
-        new_metrics=metrics(0.51, simple=0.74),
-        best_metrics=metrics(0.50, simple=0.80),
-        policy=POLICY,
+        new_metrics={"solve_rate": 0.54},
+        best_metrics={"solve_rate": 0.5},
+        config=_config(min_improvement=0.05),
     )
 
 
-def test_rejects_failed_scenarios() -> None:
+def test_accepts_improvement_at_required_minimum() -> None:
+    assert accept_candidate(
+        new_metrics={"solve_rate": 0.55},
+        best_metrics={"solve_rate": 0.5},
+        config=_config(min_improvement=0.05),
+    )
+
+
+def test_rejects_excessive_simple_solve_rate_drop() -> None:
     assert not accept_candidate(
-        new_metrics=metrics(0.51, failed=1),
-        best_metrics=metrics(0.50),
-        policy=POLICY,
+        new_metrics={
+            "solve_rate": 0.6,
+            "solve_rate_simple": 0.79,
+        },
+        best_metrics={
+            "solve_rate": 0.5,
+            "solve_rate_simple": 0.9,
+        },
+        config=_config(max_simple_solve_rate_drop=0.1),
     )
+
+
+def test_accepts_allowed_simple_solve_rate_drop() -> None:
+    assert accept_candidate(
+        new_metrics={
+            "solve_rate": 0.6,
+            "solve_rate_simple": 0.8,
+        },
+        best_metrics={
+            "solve_rate": 0.5,
+            "solve_rate_simple": 0.9,
+        },
+        config=_config(max_simple_solve_rate_drop=0.1),
+    )
+
+
+def test_simple_guard_is_optional_when_metric_missing() -> None:
+    assert accept_candidate(
+        new_metrics={"solve_rate": 0.6},
+        best_metrics={
+            "solve_rate": 0.5,
+            "solve_rate_simple": 0.9,
+        },
+        config=_config(max_simple_solve_rate_drop=0.1),
+    )
+
+
+def test_rejects_too_many_failed_scenarios() -> None:
+    assert not accept_candidate(
+        new_metrics={
+            "solve_rate": 0.6,
+            "failed_scenarios": 1,
+        },
+        best_metrics={"solve_rate": 0.5},
+        config=_config(reject_if_failed_scenarios_above=0),
+    )
+
+
+def test_accepts_failed_scenarios_at_threshold() -> None:
+    assert accept_candidate(
+        new_metrics={
+            "solve_rate": 0.6,
+            "failed_scenarios": 2,
+        },
+        best_metrics={"solve_rate": 0.5},
+        config=_config(reject_if_failed_scenarios_above=2),
+    )
+
+
+def test_failed_scenario_guard_is_optional_when_metric_missing() -> None:
+    assert accept_candidate(
+        new_metrics={"solve_rate": 0.6},
+        best_metrics={"solve_rate": 0.5},
+        config=_config(reject_if_failed_scenarios_above=0),
+    )
+
+
+def test_missing_candidate_primary_metric_raises() -> None:
+    with pytest.raises(KeyError, match="solve_rate"):
+        accept_candidate(
+            new_metrics={},
+            best_metrics={"solve_rate": 0.5},
+            config=_config(),
+        )
+
+
+def test_missing_best_primary_metric_raises() -> None:
+    with pytest.raises(KeyError, match="solve_rate"):
+        accept_candidate(
+            new_metrics={"solve_rate": 0.6},
+            best_metrics={},
+            config=_config(),
+        )
+
+
+def test_does_not_mutate_metric_mappings() -> None:
+    new_metrics = {"solve_rate": 0.6}
+    best_metrics = {"solve_rate": 0.5}
+
+    accept_candidate(
+        new_metrics=new_metrics,
+        best_metrics=best_metrics,
+        config=_config(),
+    )
+
+    assert new_metrics == {"solve_rate": 0.6}
+    assert best_metrics == {"solve_rate": 0.5}
