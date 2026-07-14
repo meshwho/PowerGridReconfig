@@ -385,11 +385,6 @@ def update_pool_metadata(
 
     return pool_metadata
 
-    pool_metadata["last_updated_iteration"] = int(current_iter)
-
-    return pool_metadata
-
-
 def update_and_save_pool_metadata(
     pool_metadata: dict[str, Any],
     episode_results: list[dict[str, Any]] | pd.DataFrame,

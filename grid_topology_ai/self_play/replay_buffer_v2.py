@@ -212,33 +212,36 @@ class ReplayBuffer:
         if not isinstance(files, list):
             raise ValueError(f"Invalid replay buffer manifest: {self.manifest_path}")
 
-        loaded_newest_first: list[dict[str, Any]] = []
+        selected_chunks: list[list[dict[str, Any]]] = []
+        selected_count = 0
 
         for item in sorted(
-            files,
-            key=lambda x: int(x.get("iteration", x.get("iter", 0))),
-            reverse=True,
+                files,
+                key=lambda value: int(
+                    value.get("iteration", value.get("iter", 0))
+                ),
+                reverse=True,
         ):
             relative_path = item.get("path")
-
             if not relative_path:
                 continue
 
-            file_path = self.save_dir / str(relative_path)
+            rows = _read_jsonl_gz(
+                self.save_dir / str(relative_path)
+            )
+            selected_chunks.append(rows)
+            selected_count += len(rows)
 
-            rows = _read_jsonl_gz(file_path)
-            loaded_newest_first.extend(rows)
-
-            if len(loaded_newest_first) >= int(self.config.max_size):
+            if selected_count >= self.config.max_size:
                 break
 
-        # We loaded newest -> oldest. Restore FIFO order: oldest -> newest.
-        loaded = list(reversed(loaded_newest_first))
+        loaded = [
+            row
+            for chunk in reversed(selected_chunks)
+            for row in chunk
+        ]
 
-        if len(loaded) > int(self.config.max_size):
-            loaded = loaded[-int(self.config.max_size):]
-
-        self.buffer = loaded
+        self.buffer = loaded[-self.config.max_size:]
 
     def _evict_if_needed(self) -> None:
         """
