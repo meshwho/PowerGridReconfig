@@ -1,17 +1,31 @@
 from __future__ import annotations
 
 import argparse
-import csv
-import json
-import shutil
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
 import yaml
 
+from grid_topology_ai.self_play.acceptance import accept_candidate
+from grid_topology_ai.self_play.artifacts import (
+    save_yaml,
+    sha256_file,
+)
+
 from grid_topology_ai.config import SelfPlayConfig
+from grid_topology_ai.self_play.checkpoint_state import (
+    initialize_best_state,
+    promote_candidate,
+)
+from grid_topology_ai.self_play.learning_curve import (
+    LearningCurveRow,
+    load_learning_curve,
+    save_learning_curve,
+    upsert_iteration_row,
+)
 from grid_topology_ai.self_play.paths import SelfPlayPaths
+from grid_topology_ai.self_play.plan import render_execution_plan
 from grid_topology_ai.self_play.preflight import (
     validate_inputs,
     validate_resume_artifacts,
@@ -25,21 +39,13 @@ from grid_topology_ai.self_play.pool_metadata import (
 from grid_topology_ai.self_play.replay_buffer_v2 import (
     ReplayBuffer,
 )
+from grid_topology_ai.self_play.run_state import resolve_run_state
 from scripts.self_play.run_iteration import (
-    accept_candidate,
-    copy_if_accepted,
     discover_project_root,
-    load_json,
     run_evaluate,
     run_generate,
     run_train,
     save_iteration_metadata,
-    save_json,
-    sha256_file,
-)
-from grid_topology_ai.config import (
-    ReplayBufferConfig,
-    SelfPlayConfig,
 )
 
 
@@ -66,251 +72,6 @@ def load_yaml(path: str | Path) -> dict[str, Any]:
 
 
 
-
-def initialize_best_checkpoint(
-    *,
-    project_root: Path,
-    cfg: dict[str, Any],
-) -> tuple[Path, dict[str, Any]]:
-    """
-    Initialize canonical self-play best checkpoint.
-
-    If runs/self_play_v1/checkpoints/best.pt does not exist yet,
-    copy bootstrap checkpoint there and copy bootstrap metrics.
-    """
-
-    bootstrap_checkpoint = paths.bootstrap_checkpoint
-    bootstrap_metrics_path = paths.bootstrap_metrics
-    best_checkpoint_path = paths.best_checkpoint
-    best_metrics_path = paths.best_metrics
-
-    require_file(bootstrap_checkpoint, "Bootstrap checkpoint")
-    require_file(bootstrap_metrics_path, "Bootstrap eval metrics")
-
-    best_checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
-    best_metrics_path.parent.mkdir(parents=True, exist_ok=True)
-
-    if not best_checkpoint_path.exists():
-        print("Initializing self-play best checkpoint from bootstrap.")
-        print(f"Bootstrap checkpoint: {bootstrap_checkpoint}")
-        print(f"Best checkpoint:      {best_checkpoint_path}")
-
-        shutil.copy2(
-            bootstrap_checkpoint,
-            best_checkpoint_path,
-        )
-
-    if not best_metrics_path.exists():
-        print("Initializing self-play best metrics from bootstrap.")
-        print(f"Bootstrap metrics: {bootstrap_metrics_path}")
-        print(f"Best metrics:      {best_metrics_path}")
-
-        shutil.copy2(
-            bootstrap_metrics_path,
-            best_metrics_path,
-        )
-
-    best_metrics = load_json(best_metrics_path)
-
-    return best_checkpoint_path, best_metrics
-
-
-def save_config_copy(
-    *,
-    cfg: dict[str, Any],
-    output_path: str | Path,
-) -> Path:
-    output_path = Path(output_path)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-
-    with output_path.open("w", encoding="utf-8") as f:
-        yaml.safe_dump(
-            cfg,
-            f,
-            allow_unicode=True,
-            sort_keys=False,
-        )
-
-    return output_path
-
-
-def load_or_initialize_learning_curve(path: str | Path) -> list[dict[str, Any]]:
-    path = Path(path)
-
-    if not path.exists():
-        return []
-
-    df = pd.read_csv(path)
-
-    if df.empty:
-        return []
-
-    return df.to_dict(orient="records")
-
-def inspect_iteration_state(
-    checkpoint_dir: str | Path,
-) -> tuple[list[int], list[Path]]:
-    """
-    Inspect existing iter_XXX directories.
-
-    An iteration is considered complete only when metadata.json exists.
-    Directories without metadata.json are treated as incomplete.
-    """
-
-    checkpoint_dir = Path(checkpoint_dir)
-
-    completed: list[int] = []
-    incomplete: list[Path] = []
-
-    for iter_dir in sorted(checkpoint_dir.glob("iter_*")):
-        if not iter_dir.is_dir():
-            continue
-
-        suffix = iter_dir.name.removeprefix("iter_")
-
-        try:
-            iteration = int(suffix)
-        except ValueError:
-            continue
-
-        metadata_path = iter_dir / "metadata.json"
-
-        if metadata_path.is_file():
-            completed.append(iteration)
-        else:
-            incomplete.append(iter_dir)
-
-    completed = sorted(set(completed))
-
-    return completed, incomplete
-
-def determine_start_iteration(
-    *,
-    checkpoint_dir: str | Path,
-    n_iterations: int,
-    resume: bool,
-) -> tuple[int, list[int]]:
-    """
-    Determine the first iteration that should run.
-
-    Default mode refuses to overwrite an existing run.
-    Resume mode continues after the last completed iteration.
-    """
-
-    checkpoint_dir = Path(checkpoint_dir)
-
-    completed, incomplete = inspect_iteration_state(checkpoint_dir)
-
-    replay_manifest = (
-        checkpoint_dir
-        / "replay_buffer"
-        / "buffer_manifest.json"
-    )
-
-    learning_curve_path = checkpoint_dir / "learning_curve.csv"
-
-    has_existing_run = bool(
-        completed
-        or incomplete
-        or replay_manifest.exists()
-        or learning_curve_path.exists()
-    )
-
-    if not resume:
-        if has_existing_run:
-            raise RuntimeError(
-                "Existing self-play run artifacts were found in "
-                f"{checkpoint_dir}. Refusing to overwrite them. "
-                "Use --resume to continue the run, or remove the "
-                "existing runtime artifacts before starting again."
-            )
-
-        return 1, []
-
-    if incomplete:
-        formatted = "\n".join(
-            f"  - {path}"
-            for path in incomplete
-        )
-
-        raise RuntimeError(
-            "Cannot safely resume because incomplete iteration "
-            "directories were found:\n"
-            f"{formatted}\n"
-            "Remove or archive these incomplete directories before "
-            "running again with --resume."
-        )
-
-    if not completed:
-        return 1, []
-
-    expected = list(range(1, max(completed) + 1))
-
-    if completed != expected:
-        raise RuntimeError(
-            "Completed iterations are not contiguous. "
-            f"Found={completed}, expected={expected}. "
-            "Manual inspection is required before resuming."
-        )
-
-    start_iteration = max(completed) + 1
-
-    return start_iteration, completed
-
-def save_learning_curve(
-    *,
-    rows: list[dict[str, Any]],
-    path: str | Path,
-) -> Path:
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-
-    if not rows:
-        path.write_text("", encoding="utf-8")
-        return path
-
-    # Stable field ordering: important columns first, then all metric columns.
-    preferred = [
-        "iteration",
-        "accepted",
-        "status",
-        "candidate_metric",
-        "best_metric_after",
-        "n_sampled_scenarios",
-        "n_raw_examples",
-        "n_train_examples",
-        "n_fresh",
-        "n_old",
-        "candidate_checkpoint",
-        "best_checkpoint_after",
-    ]
-
-    keys = []
-
-    for key in preferred:
-        if any(key in row for row in rows):
-            keys.append(key)
-
-    for row in rows:
-        for key in row:
-            if key not in keys:
-                keys.append(key)
-
-    with path.open("w", encoding="utf-8", newline="") as f:
-        writer = csv.DictWriter(
-            f,
-            fieldnames=keys,
-            extrasaction="ignore",
-        )
-
-        writer.writeheader()
-
-        for row in rows:
-            writer.writerow(row)
-
-    return path
-
-
 def count_examples_csv(path: str | Path) -> int:
     path = Path(path)
 
@@ -322,61 +83,6 @@ def count_examples_csv(path: str | Path) -> int:
     except Exception:
         return 0
 
-def count_unique_scenarios_in_transitions(path: str | Path) -> int:
-    """
-    Count unique scenario_id values in a transitions CSV.
-    """
-
-    path = Path(path)
-
-    if not path.exists():
-        return 0
-
-    df = pd.read_csv(path)
-
-    if "scenario_id" not in df.columns:
-        return 0
-
-    return int(df["scenario_id"].nunique())
-
-
-def path_status(path: str | Path) -> str:
-    path = Path(path)
-
-    if path.exists():
-        if path.is_dir():
-            return "OK dir"
-
-        if path.is_file():
-            return "OK file"
-
-        return "OK exists"
-
-    return "MISSING"
-
-def make_training_config(
-    cfg: dict[str, Any],
-) -> dict[str, Any]:
-    training_cfg = dict(cfg.get("training", {}))
-
-    training_cfg.setdefault(
-        "epochs",
-        int(cfg.get("epochs_per_iteration", 10)),
-    )
-
-    return training_cfg
-
-
-def update_best_metrics_file(
-    *,
-    metrics: dict[str, Any],
-    path: str | Path,
-) -> Path:
-    path = Path(path)
-    save_json(metrics, path)
-    return path
-
-
 def format_metric(metrics: dict[str, Any], metric_name: str) -> str:
     if metric_name not in metrics:
         return "n/a"
@@ -387,179 +93,6 @@ def format_metric(metrics: dict[str, Any], metric_name: str) -> str:
         return f"{float(value):.4f}"
     except Exception:
         return str(value)
-
-def print_execution_plan(
-    *,
-    cfg: dict[str, Any],
-    project_root: Path,
-    config_path: Path,
-) -> None:
-    """
-    Print what the self-play loop would do without running generation,
-    training, or evaluation.
-    """
-
-    run_name = str(cfg["run_name"])
-    checkpoint_dir = as_project_path(
-        project_root,
-        cfg.get("checkpoint_dir", f"runs/{run_name}"),
-    )
-
-    pool_cfg = cfg["pool"]
-
-    pool_transitions_csv = as_project_path(
-        project_root,
-        pool_cfg["transitions_csv"],
-    )
-    pool_raw_dir = as_project_path(
-        project_root,
-        pool_cfg["raw_dir"],
-    )
-    pool_metadata_path = as_project_path(
-        project_root,
-        pool_cfg["metadata_path"],
-    )
-
-    eval_csv = as_project_path(
-        project_root,
-        cfg["eval_csv"],
-    )
-    eval_raw_dir = as_project_path(
-        project_root,
-        cfg["eval_raw_dir"],
-    )
-
-    bootstrap_checkpoint = as_project_path(
-        project_root,
-        cfg["bootstrap_checkpoint"],
-    )
-    bootstrap_eval_metrics = as_project_path(
-        project_root,
-        cfg["bootstrap_eval_metrics"],
-    )
-
-    best_checkpoint_path = as_project_path(
-        project_root,
-        cfg["best_checkpoint_path"],
-    )
-    best_metrics_path = as_project_path(
-        project_root,
-        cfg["best_metrics_path"],
-    )
-
-    n_iterations = int(cfg["n_iterations"])
-    n_scenarios = int(cfg["n_scenarios_per_iteration"])
-    max_steps = int(cfg.get("generation", {}).get("max_steps", 5))
-
-    pool_size = count_unique_scenarios_in_transitions(pool_transitions_csv)
-    eval_size = count_unique_scenarios_in_transitions(eval_csv)
-
-    estimated_examples_per_iteration = n_scenarios * max_steps
-
-    replay_cfg = cfg.get("replay_buffer", {})
-    training_cfg = cfg.get("training", {})
-    generation_cfg = cfg.get("generation", {})
-    evaluation_cfg = cfg.get("evaluation", {})
-    acceptance_cfg = cfg.get("acceptance", {})
-
-    examples_per_iteration = int(
-        training_cfg.get(
-            "examples_per_iteration",
-            estimated_examples_per_iteration,
-        )
-    )
-
-    print_header("Self-play execution plan")
-    print(f"Project root:              {project_root}")
-    print(f"Config:                    {config_path}")
-    print(f"Run name:                  {run_name}")
-    print(f"Output dir:                {checkpoint_dir}")
-    print("")
-    print("Scenario pool:")
-    print(f"  transitions_csv:          {pool_transitions_csv}")
-    print(f"  transitions status:       {path_status(pool_transitions_csv)}")
-    print(f"  raw_dir:                  {pool_raw_dir}")
-    print(f"  raw status:               {path_status(pool_raw_dir)}")
-    print(f"  metadata_path:            {pool_metadata_path}")
-    print(f"  metadata status:          {path_status(pool_metadata_path)}")
-    print(f"  unique scenarios:         {pool_size}")
-    print("")
-    print("Evaluation set:")
-    print(f"  eval_csv:                 {eval_csv}")
-    print(f"  eval csv status:          {path_status(eval_csv)}")
-    print(f"  eval_raw_dir:             {eval_raw_dir}")
-    print(f"  eval raw status:          {path_status(eval_raw_dir)}")
-    print(f"  unique eval scenarios:    {eval_size}")
-    print("")
-    print("Bootstrap:")
-    print(f"  checkpoint:               {bootstrap_checkpoint}")
-    print(f"  checkpoint status:        {path_status(bootstrap_checkpoint)}")
-    print(f"  metrics:                  {bootstrap_eval_metrics}")
-    print(f"  metrics status:           {path_status(bootstrap_eval_metrics)}")
-    print("")
-    print("Canonical self-play best:")
-    print(f"  best checkpoint:          {best_checkpoint_path}")
-    print(f"  best metrics:             {best_metrics_path}")
-    print("")
-    print("Loop:")
-    print(f"  iterations:               {n_iterations}")
-    print(f"  scenarios per iteration:  {n_scenarios}")
-    print(f"  max_steps:                {max_steps}")
-    print(f"  estimated raw examples:   {estimated_examples_per_iteration} per iteration")
-    print("")
-    print("Replay buffer:")
-    print(f"  max_size:                 {replay_cfg.get('max_size')}")
-    print(f"  min_size_to_train:        {replay_cfg.get('min_size_to_train')}")
-    print(f"  fresh_fraction:           {replay_cfg.get('fresh_fraction')}")
-    print("")
-    print("Generation:")
-    print(f"  simulations:              {generation_cfg.get('simulations')}")
-    print(f"  depth:                    {generation_cfg.get('depth')}")
-    print(f"  top_k:                    {generation_cfg.get('top_k')}")
-    print(f"  gamma:                    {generation_cfg.get('gamma')}")
-    print(f"  use_root_noise:           {generation_cfg.get('use_root_noise')}")
-    print(f"  use_continuation_gate:    {generation_cfg.get('use_continuation_gate')}")
-    print("")
-    print("Training:")
-    print(f"  examples_per_iteration:   {examples_per_iteration}")
-    print(f"  epochs_per_iteration:     {cfg.get('epochs_per_iteration')}")
-    print(f"  batch_size:               {training_cfg.get('batch_size')}")
-    print(f"  learning_rate:            {training_cfg.get('learning_rate')}")
-    print(f"  model_type:               {training_cfg.get('model_type')}")
-    print(
-        f"  hidden_dim:                "
-        f"{training_cfg.get('hidden_dim', 128)}"
-    )
-    print(
-        f"  num_layers:                "
-        f"{training_cfg.get('num_layers', 3)}"
-    )
-    print(
-        f"  dropout:                   "
-        f"{training_cfg.get('dropout', 0.0)}"
-    )
-    print("")
-    print("Evaluation:")
-    print(f"  simulations:              {evaluation_cfg.get('simulations')}")
-    print(f"  depth:                    {evaluation_cfg.get('depth')}")
-    print(f"  max_steps:                {evaluation_cfg.get('max_steps')}")
-    print(f"  device:                   {evaluation_cfg.get('device')}")
-    print("")
-    print("Acceptance:")
-    print(f"  metric:                   {acceptance_cfg.get('metric')}")
-    print(f"  min_improvement:          {acceptance_cfg.get('min_improvement')}")
-    print(f"  max_simple_drop:          {acceptance_cfg.get('max_simple_solve_rate_drop')}")
-    print("")
-    print("First iteration would write:")
-    print(f"  {checkpoint_dir / 'iter_001' / 'selected_scenario_ids.txt'}")
-    print(f"  {checkpoint_dir / 'iter_001' / 'raw' / 'examples.csv'}")
-    print(f"  {checkpoint_dir / 'iter_001' / 'train_batch.csv'}")
-    print(f"  {checkpoint_dir / 'iter_001' / 'candidate_checkpoint.pt'}")
-    print(f"  {checkpoint_dir / 'iter_001' / 'eval_metrics.json'}")
-    print(f"  {checkpoint_dir / 'iter_001' / 'metadata.json'}")
-    print(f"  {checkpoint_dir / 'learning_curve.csv'}")
-    print("")
-    print("No generation, training, evaluation, or file creation was performed.")
 
 def run_loop(
     *,
@@ -578,16 +111,22 @@ def run_loop(
         project_root=project_root,
     )
 
+    if plan_only:
+        rendered_plan = render_execution_plan(
+            config=config,
+            paths=paths,
+            config_path=config_path,
+        )
+        print(rendered_plan)
+        return
+
     warnings = validate_inputs(
         paths,
-        require_bootstrap=not (
-                validate_only or plan_only
-        ),
+        require_bootstrap=not validate_only,
     )
 
     for warning in warnings:
         print(f"WARNING: {warning}")
-
 
     if validate_only:
         print_header("Self-play config validation")
@@ -596,33 +135,26 @@ def run_loop(
         print(f"Config:       {config_path}")
         return
 
-    if plan_only:
-        print_execution_plan(
-            cfg=cfg,
-            project_root=project_root,
-            config_path=config_path,
-        )
-        return
-
-    run_name = str(cfg["run_name"])
-    seed = int(cfg.get("seed", 42))
+    run_name = config.run_name
+    seed = config.seed
 
     checkpoint_dir = paths.run_dir
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
-    n_iterations = int(cfg["n_iterations"])
+    n_iterations = config.n_iterations
 
-    start_iteration, completed_iterations = determine_start_iteration(
-        checkpoint_dir=checkpoint_dir,
-        n_iterations=n_iterations,
+    run_state = resolve_run_state(
+        run_dir=paths.run_dir,
         resume=resume,
     )
+    start_iteration = run_state.start_iteration
+    completed_iterations = run_state.completed_iterations
 
-    run_config_copy = checkpoint_dir / "self_play_loop.resolved.yaml"
+    run_config_copy = paths.resolved_config
 
-    save_config_copy(
-        cfg=cfg,
-        output_path=run_config_copy,
+    save_yaml(
+        payload=cfg,
+        path=run_config_copy,
     )
 
     pool_transitions_csv = paths.pool_transitions_csv
@@ -634,15 +166,9 @@ def run_loop(
     if resume and completed_iterations:
         validate_resume_artifacts(paths)
 
-    best_checkpoint, best_metrics = initialize_best_checkpoint(
-        project_root=project_root,
-        cfg=cfg,
-    )
-
-    best_metrics_path = as_project_path(
-        project_root,
-        cfg["best_metrics_path"],
-    )
+    best_state = initialize_best_state(paths=paths)
+    best_checkpoint = best_state.checkpoint
+    best_metrics = dict(best_state.metrics)
 
     pool_metadata = initialize_pool_metadata(
         transitions_csv=pool_transitions_csv,
@@ -651,19 +177,15 @@ def run_loop(
         overwrite=False,
     )
 
-    replay_cfg = ReplayBufferConfig(
-        **dict(cfg.get("replay_buffer", {}))
-    )
-
     replay_buffer = ReplayBuffer(
-        save_dir=checkpoint_dir / "replay_buffer",
-        config=replay_cfg,
+        save_dir=paths.replay_dir,
+        config=config.replay_buffer,
     )
 
-    learning_curve_path = checkpoint_dir / "learning_curve.csv"
-    learning_curve = load_or_initialize_learning_curve(learning_curve_path)
+    learning_curve_path = paths.learning_curve
+    learning_curve = load_learning_curve(learning_curve_path)
 
-    metric_name = str(cfg["acceptance"].get("metric", "solve_rate"))
+    metric_name = config.acceptance.metric
 
     print_header(f"Self-play loop: {run_name}")
     print(f"Project root:             {project_root}")
@@ -682,8 +204,8 @@ def run_loop(
     print(f"Best checkpoint:          {best_checkpoint}")
     print(f"Best metric {metric_name}:       {format_metric(best_metrics, metric_name)}")
 
-    n_iterations = int(cfg["n_iterations"])
-    n_scenarios_per_iteration = int(cfg["n_scenarios_per_iteration"])
+    n_iterations = config.n_iterations
+    n_scenarios_per_iteration = config.n_scenarios_per_iteration
 
     if start_iteration > n_iterations:
         print_header("Self-play already complete")
@@ -699,7 +221,7 @@ def run_loop(
     for iteration in range(start_iteration, n_iterations + 1):
         print_header(f"Iteration {iteration} / {n_iterations}")
 
-        iter_dir = checkpoint_dir / f"iter_{iteration:03d}"
+        iter_dir = paths.iteration_dir(iteration)
         iter_dir.mkdir(parents=True, exist_ok=True)
 
         parent_checkpoint = best_checkpoint
@@ -722,9 +244,6 @@ def run_loop(
         print(f"Sampled scenarios: {len(scenario_ids)}")
         print(f"Selected IDs:      {selected_ids_path}")
 
-        generation_cfg = dict(cfg.get("generation", {}))
-        generation_cfg.setdefault("seed", seed)
-
         raw_examples_csv = run_generate(
             project_root=project_root,
             raw_dir=pool_raw_dir,
@@ -732,7 +251,8 @@ def run_loop(
             scenario_ids=scenario_ids,
             checkpoint=parent_checkpoint,
             output_dir=iter_dir / "raw",
-            config=generation_cfg,
+            config=config.generation,
+            base_seed=config.seed,
             iteration=iteration,
         )
 
@@ -743,11 +263,11 @@ def run_loop(
             iteration=iteration,
         )
 
-        examples_per_iteration = int(
-            cfg.get("training", {}).get(
-                "examples_per_iteration",
-                len(replay_buffer),
-            )
+        configured_examples = config.training.examples_per_iteration
+        examples_per_iteration = (
+            len(replay_buffer)
+            if configured_examples is None
+            else configured_examples
         )
 
         train_batch_path = iter_dir / "train_batch.csv"
@@ -756,18 +276,16 @@ def run_loop(
             output_path=train_batch_path,
             current_iteration=iteration,
             n_examples=examples_per_iteration,
-            fresh_fraction=float(replay_cfg.fresh_fraction),
+            fresh_fraction=float(config.replay_buffer.fresh_fraction),
             seed=iteration_seed,
         )
-
-        training_cfg = make_training_config(cfg)
 
         candidate_checkpoint = run_train(
             project_root=project_root,
             examples_csv=train_batch_path,
             init_checkpoint=parent_checkpoint,
             output_dir=iter_dir,
-            config=training_cfg,
+            config=config.training,
             iteration=iteration,
         )
 
@@ -777,13 +295,13 @@ def run_loop(
             eval_csv=eval_csv,
             eval_raw_dir=eval_raw_dir,
             output_dir=iter_dir,
-            config=cfg["evaluation"],
+            config=config.evaluation,
         )
 
         accepted = accept_candidate(
             new_metrics=metrics,
             best_metrics=parent_metrics,
-            policy=cfg["acceptance"],
+            config=config.acceptance,
         )
 
         status = "ACCEPTED" if accepted else "REJECTED"
@@ -819,17 +337,13 @@ def run_loop(
         )
 
         if accepted:
-            best_checkpoint = copy_if_accepted(
-                candidate_checkpoint=candidate_checkpoint,
-                best_checkpoint_path=best_checkpoint,
+            best_state = promote_candidate(
+                candidate_checkpoint=Path(candidate_checkpoint),
+                candidate_metrics=metrics,
+                paths=paths,
             )
-
-            best_metrics = dict(metrics)
-
-            update_best_metrics_file(
-                metrics=best_metrics,
-                path=best_metrics_path,
-            )
+            best_checkpoint = best_state.checkpoint
+            best_metrics = dict(best_state.metrics)
 
         else:
             best_checkpoint = parent_checkpoint
@@ -848,7 +362,7 @@ def run_loop(
         candidate_metric = metrics.get(metric_name)
         best_metric_after = best_metrics.get(metric_name)
 
-        row: dict[str, Any] = {
+        row: LearningCurveRow = {
             "iteration": int(iteration),
             "accepted": bool(accepted),
             "status": status,
@@ -869,14 +383,10 @@ def run_loop(
         for key, value in best_metrics.items():
             row[f"best_{key}"] = value
 
-        # Avoid duplicate rows if the same iteration is rerun manually.
-        learning_curve = [
-            item
-            for item in learning_curve
-            if int(item.get("iteration", -1)) != int(iteration)
-        ]
-
-        learning_curve.append(row)
+        learning_curve = upsert_iteration_row(
+            rows=learning_curve,
+            row=row,
+        )
 
         save_learning_curve(
             rows=learning_curve,

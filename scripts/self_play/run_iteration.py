@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-import hashlib
-import json
-import shutil
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -11,37 +8,17 @@ from typing import Any
 
 import pandas as pd
 
+from grid_topology_ai.config import (
+    EvaluationConfig,
+    GenerationConfig,
+    TrainingConfig,
+)
+from grid_topology_ai.self_play.artifacts import (
+    load_json,
+    save_json,
+    sha256_file,
+)
 from grid_topology_ai.value_targets import add_outcome_value_targets_to_rows
-
-
-def save_json(payload: dict[str, Any], path: str | Path) -> None:
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(payload, indent=2, ensure_ascii=False),
-        encoding="utf-8",
-    )
-
-
-def load_json(path: str | Path) -> dict[str, Any]:
-    path = Path(path)
-    return json.loads(path.read_text(encoding="utf-8"))
-
-
-def sha256_file(path: str | Path, chunk_size: int = 1024 * 1024) -> str:
-    path = Path(path)
-    h = hashlib.sha256()
-
-    with path.open("rb") as f:
-        while True:
-            chunk = f.read(chunk_size)
-
-            if not chunk:
-                break
-
-            h.update(chunk)
-
-    return h.hexdigest()
 
 
 def discover_project_root(start: str | Path | None = None) -> Path:
@@ -239,7 +216,8 @@ def run_generate(
     scenario_ids: list[int],
     checkpoint: str | Path,
     output_dir: str | Path,
-    config: dict[str, Any],
+    config: GenerationConfig,
+    base_seed: int,
     iteration: int,
 ) -> Path:
     """
@@ -259,8 +237,7 @@ def run_generate(
     )
 
     log_path = output_dir / "generate.log"
-
-    gamma = float(config.get("gamma", 0.95))
+    iteration_seed = int(base_seed) + int(iteration)
 
     command = [
         sys.executable,
@@ -275,48 +252,48 @@ def run_generate(
         "--checkpoint",
         str(Path(checkpoint)),
         "--simulations",
-        str(int(config.get("simulations", 150))),
+        str(config.simulations),
         "--depth",
-        str(int(config.get("depth", 4))),
+        str(config.depth),
         "--max-steps",
-        str(int(config.get("max_steps", 5))),
+        str(config.max_steps),
         "--top-k",
-        str(int(config.get("top_k", 30))),
+        str(config.top_k),
         "--gamma",
-        str(gamma),
+        str(config.gamma),
         "--c-puct",
-        str(float(config.get("c_puct", 2.0))),
+        str(config.c_puct),
         "--prior-exponent",
-        str(float(config.get("prior_exponent", 0.5))),
+        str(config.prior_exponent),
         "--selection-temperature",
-        str(float(config.get("selection_temperature", 0.0))),
+        str(config.selection_temperature),
         "--seed",
-        str(int(config.get("seed", 42)) + int(iteration)),
+        str(iteration_seed),
         "--pf-alg",
-        str(int(config.get("pf_alg", 3))),
+        str(config.pf_alg),
         "--terminal-unsolved-penalty",
-        str(float(config.get("terminal_unsolved_penalty", 500.0))),
+        str(config.terminal_unsolved_penalty),
         "--terminal-handoff-penalty",
-        str(float(config.get("terminal_handoff_penalty", 150.0))),
+        str(config.terminal_handoff_penalty),
         "--terminal-failure-penalty",
-        str(float(config.get("terminal_failure_penalty", 1000.0))),
+        str(config.terminal_failure_penalty),
         "--terminal-penalty-weight",
-        str(float(config.get("terminal_penalty_weight", 0.10))),
+        str(config.terminal_penalty_weight),
         "--stop-policy",
-        str(config.get("stop_policy", "no_hard_overloads")),
+        config.stop_policy,
         "--clear-cache-between-scenarios",
     ]
 
     _append_bool_flag(
         command,
         "--use-root-noise",
-        bool(config.get("use_root_noise", True)),
+        config.use_root_noise,
     )
 
     _append_bool_flag(
         command,
         "--use-continuation-gate",
-        bool(config.get("use_continuation_gate", True)),
+        config.use_continuation_gate,
     )
 
     run_command(
@@ -329,7 +306,7 @@ def run_generate(
 
     ensure_outcome_value_targets(
         examples_csv=examples_csv,
-        gamma=gamma,
+        gamma=config.gamma,
     )
 
     return examples_csv
@@ -341,7 +318,7 @@ def run_train(
     examples_csv: str | Path,
     init_checkpoint: str | Path,
     output_dir: str | Path,
-    config: dict[str, Any],
+    config: TrainingConfig,
     iteration: int,
 ) -> Path:
     """
@@ -373,34 +350,34 @@ def run_train(
         "--run-name",
         f"self_play_iter_{int(iteration):03d}",
         "--epochs",
-        str(int(config.get("epochs", config.get("epochs_per_iteration", 10)))),
+        str(config.epochs),
         "--batch-size",
-        str(int(config.get("batch_size", 64))),
+        str(config.batch_size),
         "--lr",
-        str(float(config.get("learning_rate", 0.0003))),
+        str(config.learning_rate),
         "--value-loss-weight",
-        str(float(config.get("value_loss_weight", 1.0))),
+        str(config.value_loss_weight),
         "--value-huber-delta",
-        str(float(config.get("value_huber_delta", 1.0))),
+        str(config.value_huber_delta),
         "--device",
-        str(config.get("device", "auto")),
+        config.device,
         "--num-workers",
-        str(int(config.get("num_workers", 0))),
+        str(config.num_workers),
         "--model-type",
-        str(config.get("model_type", "graph_v2")),
+        config.model_type,
         "--hidden-dim",
-        str(int(config.get("hidden_dim", 128))),
+        str(config.hidden_dim),
         "--num-layers",
-        str(int(config.get("num_layers", 3))),
+        str(config.num_layers),
         "--dropout",
-        str(float(config.get("dropout", 0.0))),
+        str(config.dropout),
         "--save-best",
     ]
 
-    if bool(config.get("save_multiple_best", False)):
+    if config.save_multiple_best:
         command.append("--save-multiple-best")
 
-    if bool(config.get("no_tensorboard", True)):
+    if config.no_tensorboard:
         command.append("--no-tensorboard")
 
     run_command(
@@ -424,7 +401,7 @@ def run_evaluate(
     eval_csv: str | Path,
     eval_raw_dir: str | Path,
     output_dir: str | Path,
-    config: dict[str, Any],
+    config: EvaluationConfig,
 ) -> dict[str, Any]:
     """
     Evaluate candidate checkpoint on fixed eval set.
@@ -434,8 +411,8 @@ def run_evaluate(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    output_json = output_dir / str(config.get("output_json_name", "eval_metrics.json"))
-    output_csv = output_dir / str(config.get("output_csv_name", "eval_results.csv"))
+    output_json = output_dir / config.output_json_name
+    output_csv = output_dir / config.output_csv_name
     log_path = output_dir / "evaluate.log"
 
     command = [
@@ -453,38 +430,38 @@ def run_evaluate(
         "--output-json",
         str(output_json),
         "--simulations",
-        str(int(config.get("simulations", 150))),
+        str(config.simulations),
         "--depth",
-        str(int(config.get("depth", 4))),
+        str(config.depth),
         "--max-steps",
-        str(int(config.get("max_steps", 5))),
+        str(config.max_steps),
         "--top-k",
-        str(int(config.get("top_k", 30))),
+        str(config.top_k),
         "--gamma",
-        str(float(config.get("gamma", 0.95))),
+        str(config.gamma),
         "--c-puct",
-        str(float(config.get("c_puct", 2.0))),
+        str(config.c_puct),
         "--prior-exponent",
-        str(float(config.get("prior_exponent", 0.5))),
+        str(config.prior_exponent),
         "--num-workers",
-        str(int(config.get("num_workers", 1))),
+        str(config.num_workers),
         "--batch-size",
-        str(int(config.get("batch_size", 5))),
+        str(config.batch_size),
         "--device",
-        str(config.get("device", "cpu")),
+        config.device,
         "--quiet",
     ]
 
     _append_bool_flag(
         command,
         "--use-continuation-gate",
-        bool(config.get("use_continuation_gate", True)),
+        config.use_continuation_gate,
     )
 
     _append_bool_flag(
         command,
         "--allow-handoff-with-hard-overloads",
-        bool(config.get("allow_handoff_with_hard_overloads", False)),
+        config.allow_handoff_with_hard_overloads,
     )
 
     run_command(
@@ -497,28 +474,6 @@ def run_evaluate(
         raise FileNotFoundError(f"Evaluation JSON was not created: {output_json}")
 
     return load_json(output_json)
-
-
-def copy_if_accepted(
-    *,
-    candidate_checkpoint: str | Path,
-    best_checkpoint_path: str | Path,
-) -> Path:
-    """
-    Copy accepted candidate to canonical best checkpoint path.
-    """
-
-    candidate_checkpoint = Path(candidate_checkpoint)
-    best_checkpoint_path = Path(best_checkpoint_path)
-
-    if not candidate_checkpoint.exists():
-        raise FileNotFoundError(f"Candidate checkpoint not found: {candidate_checkpoint}")
-
-    best_checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(candidate_checkpoint, best_checkpoint_path)
-
-    return best_checkpoint_path
-
 
 def save_iteration_metadata(
     *,
@@ -578,54 +533,3 @@ def save_iteration_metadata(
     save_json(payload, path)
 
     return path
-
-
-def accept_candidate(
-    *,
-    new_metrics: dict[str, Any],
-    best_metrics: dict[str, Any],
-    policy: dict[str, Any],
-) -> bool:
-    """
-    Acceptance policy for candidate checkpoint.
-    """
-
-    metric = str(policy.get("metric", "solve_rate"))
-    min_improvement = float(policy.get("min_improvement", 0.0))
-
-    if metric not in new_metrics:
-        raise KeyError(f"Metric {metric!r} not found in new_metrics.")
-
-    if metric not in best_metrics:
-        raise KeyError(f"Metric {metric!r} not found in best_metrics.")
-
-    improvement = float(new_metrics[metric]) - float(best_metrics[metric])
-
-    # Never replace the best model on an exact tie or numerical noise.
-    comparison_epsilon = 1e-12
-
-    if improvement <= comparison_epsilon:
-        return False
-
-    if improvement + comparison_epsilon < min_improvement:
-        return False
-
-    simple_guard = float(policy.get("max_simple_solve_rate_drop", 0.05))
-
-    if (
-        "solve_rate_simple" in new_metrics
-        and "solve_rate_simple" in best_metrics
-    ):
-        if (
-            float(new_metrics["solve_rate_simple"])
-            < float(best_metrics["solve_rate_simple"]) - simple_guard
-        ):
-            return False
-
-    max_failed = policy.get("reject_if_failed_scenarios_above")
-
-    if max_failed is not None and "failed_scenarios" in new_metrics:
-        if int(new_metrics["failed_scenarios"]) > int(max_failed):
-            return False
-
-    return True
