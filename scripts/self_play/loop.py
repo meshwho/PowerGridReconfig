@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import argparse
-import json
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
 import yaml
+
+from grid_topology_ai.self_play.artifacts import (
+    save_yaml,
+    sha256_file,
+)
 
 from grid_topology_ai.config import SelfPlayConfig
 from grid_topology_ai.self_play.checkpoint_state import (
@@ -42,7 +46,6 @@ from scripts.self_play.run_iteration import (
     run_generate,
     run_train,
     save_iteration_metadata,
-    sha256_file,
 )
 
 
@@ -67,25 +70,6 @@ def load_yaml(path: str | Path) -> dict[str, Any]:
 
     return data
 
-
-
-def save_config_copy(
-    *,
-    cfg: dict[str, Any],
-    output_path: str | Path,
-) -> Path:
-    output_path = Path(output_path)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-
-    with output_path.open("w", encoding="utf-8") as f:
-        yaml.safe_dump(
-            cfg,
-            f,
-            allow_unicode=True,
-            sort_keys=False,
-        )
-
-    return output_path
 
 
 def count_examples_csv(path: str | Path) -> int:
@@ -181,9 +165,9 @@ def run_loop(
 
     run_config_copy = paths.resolved_config
 
-    save_config_copy(
-        cfg=cfg,
-        output_path=run_config_copy,
+    save_yaml(
+        payload=cfg,
+        path=run_config_copy,
     )
 
     pool_transitions_csv = paths.pool_transitions_csv

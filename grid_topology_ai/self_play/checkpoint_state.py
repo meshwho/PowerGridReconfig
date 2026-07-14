@@ -1,11 +1,14 @@
 from __future__ import annotations
 
-import json
 import shutil
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
+from grid_topology_ai.self_play.artifacts import (
+    load_json,
+    save_json,
+)
 from grid_topology_ai.self_play.paths import SelfPlayPaths
 
 
@@ -13,26 +16,6 @@ from grid_topology_ai.self_play.paths import SelfPlayPaths
 class BestState:
     checkpoint: Path
     metrics: dict[str, object]
-
-
-def _load_metrics(path: Path) -> dict[str, object]:
-    payload = json.loads(path.read_text(encoding="utf-8"))
-
-    if not isinstance(payload, Mapping):
-        raise ValueError(f"Best metrics JSON must be an object: {path}")
-
-    return dict(payload)
-
-
-def _save_metrics(path: Path, metrics: Mapping[str, object]) -> None:
-    path.write_text(
-        json.dumps(
-            dict(metrics),
-            indent=2,
-            ensure_ascii=False,
-        ),
-        encoding="utf-8",
-    )
 
 
 def initialize_best_state(
@@ -56,7 +39,7 @@ def initialize_best_state(
 
     return BestState(
         checkpoint=paths.best_checkpoint,
-        metrics=_load_metrics(paths.best_metrics),
+        metrics=load_json(paths.best_metrics),
     )
 
 
@@ -76,7 +59,7 @@ def promote_candidate(
 
     metrics = dict(candidate_metrics)
     shutil.copy2(candidate_checkpoint, paths.best_checkpoint)
-    _save_metrics(paths.best_metrics, metrics)
+    save_json(metrics, paths.best_metrics)
 
     return BestState(
         checkpoint=paths.best_checkpoint,
