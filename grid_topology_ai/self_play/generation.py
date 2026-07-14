@@ -9,6 +9,12 @@ import numpy as np
 import pandas as pd
 
 from grid_topology_ai.config import GenerationConfig
+from grid_topology_ai.data_adapter import (
+    BRANCH_FEATURE_COLUMNS,
+    GridFMState,
+)
+
+_RUNTIME_DEPENDENCIES_LOADED = False
 
 GridFMActionSpace = None
 TopologySwitchingEnv = None
@@ -21,7 +27,6 @@ MCTSPlanner = None
 SelfPlayReplayBuffer = None
 analyze_root_branches = None
 make_do_nothing_action = None
-BRANCH_FEATURE_COLUMNS = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,6 +50,7 @@ class GenerationRequest:
 
 
 def _ensure_runtime_dependencies() -> None:
+    global _RUNTIME_DEPENDENCIES_LOADED
     global GridFMActionSpace
     global TopologySwitchingEnv
     global GridFMPowerFlowBackend
@@ -56,15 +62,11 @@ def _ensure_runtime_dependencies() -> None:
     global SelfPlayReplayBuffer
     global analyze_root_branches
     global make_do_nothing_action
-    global BRANCH_FEATURE_COLUMNS
 
-    if GridFMActionSpace is not None:
+    if _RUNTIME_DEPENDENCIES_LOADED:
         return
 
     from grid_topology_ai.action_space import GridFMActionSpace as _ActionSpace
-    from grid_topology_ai.data_adapter import (
-        BRANCH_FEATURE_COLUMNS as _BRANCH_FEATURE_COLUMNS,
-    )
     from grid_topology_ai.data_adapter import GridFMAdapter as _Adapter
     from grid_topology_ai.environment import TopologySwitchingEnv as _Env
     from grid_topology_ai.models.neural_evaluator import (
@@ -97,7 +99,7 @@ def _ensure_runtime_dependencies() -> None:
     SelfPlayReplayBuffer = _ReplayBuffer
     analyze_root_branches = _analyze_root_branches
     make_do_nothing_action = _make_do_nothing_action
-    BRANCH_FEATURE_COLUMNS = _BRANCH_FEATURE_COLUMNS
+    _RUNTIME_DEPENDENCIES_LOADED = True
 
 
 def discounted_returns(rewards: list[float], gamma: float) -> list[float]:
@@ -150,10 +152,7 @@ def make_one_hot_policy(action_id: int) -> dict[int, float]:
     return {int(action_id): 1.0}
 
 
-def state_security_penalty(state: object) -> float:
-    if BRANCH_FEATURE_COLUMNS is None:
-        raise RuntimeError("Generation runtime dependencies are not loaded.")
-
+def state_security_penalty(state: GridFMState) -> float:
     loading_idx = BRANCH_FEATURE_COLUMNS.index("loading_percent")
     status_idx = BRANCH_FEATURE_COLUMNS.index("br_status")
 
@@ -182,7 +181,7 @@ def state_security_penalty(state: object) -> float:
 
 
 def terminal_outcome_reward(
-    state: object | None,
+    state: GridFMState | None,
     solved: bool,
     termination_reason: str | None,
     terminal_unsolved_penalty: float,

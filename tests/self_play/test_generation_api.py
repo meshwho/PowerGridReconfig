@@ -5,14 +5,21 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import numpy as np
 import pandas as pd
 import pytest
 
+from grid_topology_ai.data_adapter import (
+    BRANCH_FEATURE_COLUMNS,
+    GridFMState,
+)
 from grid_topology_ai.config import GenerationConfig
 from grid_topology_ai.self_play import generation
 from grid_topology_ai.self_play.generation import (
     GenerationRequest,
     generate_self_play_examples,
+    state_security_penalty,
+    terminal_outcome_reward,
 )
 
 
@@ -171,7 +178,11 @@ def fake_generation_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
             selected_reason="fake",
         ),
     )
-    monkeypatch.setattr(generation, "BRANCH_FEATURE_COLUMNS", [])
+    monkeypatch.setattr(
+        generation,
+        "_ensure_runtime_dependencies",
+        lambda: None,
+    )
 
 
 def _request(tmp_path: Path, **kwargs: object) -> GenerationRequest:
@@ -189,6 +200,55 @@ def _request(tmp_path: Path, **kwargs: object) -> GenerationRequest:
     }
     values.update(kwargs)
     return GenerationRequest(**values)  # type: ignore[arg-type]
+
+
+def _minimal_state() -> GridFMState:
+    branch_features = np.zeros((3, len(BRANCH_FEATURE_COLUMNS)), dtype=float)
+    loading_idx = BRANCH_FEATURE_COLUMNS.index("loading_percent")
+    status_idx = BRANCH_FEATURE_COLUMNS.index("br_status")
+    branch_features[:, loading_idx] = [130.0, 105.0, 200.0]
+    branch_features[:, status_idx] = [1.0, 1.0, 0.0]
+
+    return GridFMState(
+        scenario_id=1,
+        load_scenario_idx=1.0,
+        bus_features=np.zeros((1, 1), dtype=float),
+        branch_features=branch_features,
+        edge_index=np.zeros((2, 3), dtype=int),
+        branch_ids=np.array([1, 2, 3], dtype=int),
+        branch_status=np.array([1, 1, 0], dtype=int),
+        metrics={
+            "num_overloaded_branches": 2,
+            "num_hard_overloaded_branches": 1,
+            "total_voltage_violation": 0.2,
+        },
+        outaged_branch_ids=[],
+    )
+
+
+def test_state_security_penalty_works_without_generation_initialization() -> None:
+    assert state_security_penalty(_minimal_state()) == 270.0
+
+
+def test_terminal_outcome_reward_works_without_generation_initialization() -> None:
+    assert terminal_outcome_reward(
+        state=_minimal_state(),
+        solved=False,
+        termination_reason="unsolved",
+        terminal_unsolved_penalty=500.0,
+        terminal_handoff_penalty=150.0,
+        terminal_failure_penalty=1000.0,
+        terminal_penalty_weight=0.1,
+    ) == -527.0
+
+
+def test_runtime_loader_uses_explicit_loaded_flag() -> None:
+    source = Path("grid_topology_ai/self_play/generation.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert "_RUNTIME_DEPENDENCIES_LOADED" in source
+    assert "if GridFMActionSpace is not None" not in source
 
 
 def test_generation_request_is_frozen_and_slotted(tmp_path: Path) -> None:
