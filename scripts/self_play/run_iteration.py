@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import shutil
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -497,27 +496,6 @@ def run_evaluate(
         raise FileNotFoundError(f"Evaluation JSON was not created: {output_json}")
 
     return load_json(output_json)
-
-
-def copy_if_accepted(
-    *,
-    candidate_checkpoint: str | Path,
-    best_checkpoint_path: str | Path,
-) -> Path:
-    """
-    Copy accepted candidate to canonical best checkpoint path.
-    """
-
-    candidate_checkpoint = Path(candidate_checkpoint)
-    best_checkpoint_path = Path(best_checkpoint_path)
-
-    if not candidate_checkpoint.exists():
-        raise FileNotFoundError(f"Candidate checkpoint not found: {candidate_checkpoint}")
-
-    best_checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(candidate_checkpoint, best_checkpoint_path)
-
-    return best_checkpoint_path
 
 
 def save_iteration_metadata(
