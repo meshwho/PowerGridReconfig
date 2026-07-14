@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-import hashlib
-import json
-import shutil
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -11,37 +8,12 @@ from typing import Any
 
 import pandas as pd
 
+from grid_topology_ai.self_play.artifacts import (
+    load_json,
+    save_json,
+    sha256_file,
+)
 from grid_topology_ai.value_targets import add_outcome_value_targets_to_rows
-
-
-def save_json(payload: dict[str, Any], path: str | Path) -> None:
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(payload, indent=2, ensure_ascii=False),
-        encoding="utf-8",
-    )
-
-
-def load_json(path: str | Path) -> dict[str, Any]:
-    path = Path(path)
-    return json.loads(path.read_text(encoding="utf-8"))
-
-
-def sha256_file(path: str | Path, chunk_size: int = 1024 * 1024) -> str:
-    path = Path(path)
-    h = hashlib.sha256()
-
-    with path.open("rb") as f:
-        while True:
-            chunk = f.read(chunk_size)
-
-            if not chunk:
-                break
-
-            h.update(chunk)
-
-    return h.hexdigest()
 
 
 def discover_project_root(start: str | Path | None = None) -> Path:
@@ -499,27 +471,6 @@ def run_evaluate(
     return load_json(output_json)
 
 
-def copy_if_accepted(
-    *,
-    candidate_checkpoint: str | Path,
-    best_checkpoint_path: str | Path,
-) -> Path:
-    """
-    Copy accepted candidate to canonical best checkpoint path.
-    """
-
-    candidate_checkpoint = Path(candidate_checkpoint)
-    best_checkpoint_path = Path(best_checkpoint_path)
-
-    if not candidate_checkpoint.exists():
-        raise FileNotFoundError(f"Candidate checkpoint not found: {candidate_checkpoint}")
-
-    best_checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(candidate_checkpoint, best_checkpoint_path)
-
-    return best_checkpoint_path
-
-
 def save_iteration_metadata(
     *,
     iteration: int,
@@ -578,54 +529,3 @@ def save_iteration_metadata(
     save_json(payload, path)
 
     return path
-
-
-def accept_candidate(
-    *,
-    new_metrics: dict[str, Any],
-    best_metrics: dict[str, Any],
-    policy: dict[str, Any],
-) -> bool:
-    """
-    Acceptance policy for candidate checkpoint.
-    """
-
-    metric = str(policy.get("metric", "solve_rate"))
-    min_improvement = float(policy.get("min_improvement", 0.0))
-
-    if metric not in new_metrics:
-        raise KeyError(f"Metric {metric!r} not found in new_metrics.")
-
-    if metric not in best_metrics:
-        raise KeyError(f"Metric {metric!r} not found in best_metrics.")
-
-    improvement = float(new_metrics[metric]) - float(best_metrics[metric])
-
-    # Never replace the best model on an exact tie or numerical noise.
-    comparison_epsilon = 1e-12
-
-    if improvement <= comparison_epsilon:
-        return False
-
-    if improvement + comparison_epsilon < min_improvement:
-        return False
-
-    simple_guard = float(policy.get("max_simple_solve_rate_drop", 0.05))
-
-    if (
-        "solve_rate_simple" in new_metrics
-        and "solve_rate_simple" in best_metrics
-    ):
-        if (
-            float(new_metrics["solve_rate_simple"])
-            < float(best_metrics["solve_rate_simple"]) - simple_guard
-        ):
-            return False
-
-    max_failed = policy.get("reject_if_failed_scenarios_above")
-
-    if max_failed is not None and "failed_scenarios" in new_metrics:
-        if int(new_metrics["failed_scenarios"]) > int(max_failed):
-            return False
-
-    return True
