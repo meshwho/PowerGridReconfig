@@ -12,6 +12,7 @@ import yaml
 
 from grid_topology_ai.config import SelfPlayConfig
 from grid_topology_ai.self_play.paths import SelfPlayPaths
+from grid_topology_ai.self_play.plan import render_execution_plan
 from grid_topology_ai.self_play.preflight import (
     validate_inputs,
     validate_resume_artifacts,
@@ -295,38 +296,6 @@ def count_examples_csv(path: str | Path) -> int:
     except Exception:
         return 0
 
-def count_unique_scenarios_in_transitions(path: str | Path) -> int:
-    """
-    Count unique scenario_id values in a transitions CSV.
-    """
-
-    path = Path(path)
-
-    if not path.exists():
-        return 0
-
-    df = pd.read_csv(path)
-
-    if "scenario_id" not in df.columns:
-        return 0
-
-    return int(df["scenario_id"].nunique())
-
-
-def path_status(path: str | Path) -> str:
-    path = Path(path)
-
-    if path.exists():
-        if path.is_dir():
-            return "OK dir"
-
-        if path.is_file():
-            return "OK file"
-
-        return "OK exists"
-
-    return "MISSING"
-
 def make_training_config(
     cfg: dict[str, Any],
 ) -> dict[str, Any]:
@@ -361,113 +330,6 @@ def format_metric(metrics: dict[str, Any], metric_name: str) -> str:
     except Exception:
         return str(value)
 
-def print_execution_plan(
-    *,
-    config: SelfPlayConfig,
-    paths: SelfPlayPaths,
-    config_path: Path,
-) -> None:
-    """
-    Print what the self-play loop would do without running generation,
-    training, or evaluation.
-    """
-
-    pool_size = count_unique_scenarios_in_transitions(
-        paths.pool_transitions_csv
-    )
-    eval_size = count_unique_scenarios_in_transitions(paths.eval_csv)
-    estimated_examples_per_iteration = (
-        config.n_scenarios_per_iteration * config.generation.max_steps
-    )
-    examples_per_iteration = (
-        config.training.examples_per_iteration
-        or estimated_examples_per_iteration
-    )
-    first_iter_dir = paths.iteration_dir(1)
-
-    print_header("Self-play execution plan")
-    print(f"Project root:              {paths.project_root}")
-    print(f"Config:                    {config_path}")
-    print(f"Run name:                  {config.run_name}")
-    print(f"Output dir:                {paths.run_dir}")
-    print("")
-    print("Scenario pool:")
-    print(f"  transitions_csv:          {paths.pool_transitions_csv}")
-    print(f"  transitions status:       {path_status(paths.pool_transitions_csv)}")
-    print(f"  raw_dir:                  {paths.pool_raw_dir}")
-    print(f"  raw status:               {path_status(paths.pool_raw_dir)}")
-    print(f"  metadata_path:            {paths.pool_metadata}")
-    print(f"  metadata status:          {path_status(paths.pool_metadata)}")
-    print(f"  unique scenarios:         {pool_size}")
-    print("")
-    print("Evaluation set:")
-    print(f"  eval_csv:                 {paths.eval_csv}")
-    print(f"  eval csv status:          {path_status(paths.eval_csv)}")
-    print(f"  eval_raw_dir:             {paths.eval_raw_dir}")
-    print(f"  eval raw status:          {path_status(paths.eval_raw_dir)}")
-    print(f"  unique eval scenarios:    {eval_size}")
-    print("")
-    print("Bootstrap:")
-    print(f"  checkpoint:               {paths.bootstrap_checkpoint}")
-    print(f"  checkpoint status:        {path_status(paths.bootstrap_checkpoint)}")
-    print(f"  metrics:                  {paths.bootstrap_metrics}")
-    print(f"  metrics status:           {path_status(paths.bootstrap_metrics)}")
-    print("")
-    print("Canonical self-play best:")
-    print(f"  best checkpoint:          {paths.best_checkpoint}")
-    print(f"  best metrics:             {paths.best_metrics}")
-    print("")
-    print("Loop:")
-    print(f"  iterations:               {config.n_iterations}")
-    print(f"  scenarios per iteration:  {config.n_scenarios_per_iteration}")
-    print(f"  max_steps:                {config.generation.max_steps}")
-    print(f"  estimated raw examples:   {estimated_examples_per_iteration} per iteration")
-    print("")
-    print("Replay buffer:")
-    print(f"  max_size:                 {config.replay_buffer.max_size}")
-    print(f"  min_size_to_train:        {config.replay_buffer.min_size_to_train}")
-    print(f"  fresh_fraction:           {config.replay_buffer.fresh_fraction}")
-    print("")
-    print("Generation:")
-    print(f"  simulations:              {config.generation.simulations}")
-    print(f"  depth:                    {config.generation.depth}")
-    print(f"  top_k:                    {config.generation.top_k}")
-    print(f"  gamma:                    {config.generation.gamma}")
-    print(f"  use_root_noise:           {config.generation.use_root_noise}")
-    print(f"  use_continuation_gate:    {config.generation.use_continuation_gate}")
-    print("")
-    print("Training:")
-    print(f"  examples_per_iteration:   {examples_per_iteration}")
-    print(f"  epochs_per_iteration:     {config.training.epochs}")
-    print(f"  batch_size:               {config.training.batch_size}")
-    print(f"  learning_rate:            {config.training.learning_rate}")
-    print(f"  model_type:               {config.training.model_type}")
-    print(f"  hidden_dim:                {config.training.hidden_dim}")
-    print(f"  num_layers:                {config.training.num_layers}")
-    print(f"  dropout:                   {config.training.dropout}")
-    print("")
-    print("Evaluation:")
-    print(f"  simulations:              {config.evaluation.simulations}")
-    print(f"  depth:                    {config.evaluation.depth}")
-    print(f"  max_steps:                {config.evaluation.max_steps}")
-    print(f"  device:                   {config.evaluation.device}")
-    print("")
-    print("Acceptance:")
-    print(f"  metric:                   {config.acceptance.metric}")
-    print(f"  min_improvement:          {config.acceptance.min_improvement}")
-    print(f"  max_simple_drop:          {config.acceptance.max_simple_solve_rate_drop}")
-    print("")
-    print("First iteration would write:")
-    print(f"  {first_iter_dir / 'selected_scenario_ids.txt'}")
-    print(f"  {first_iter_dir / 'raw' / 'examples.csv'}")
-    print(f"  {first_iter_dir / 'train_batch.csv'}")
-    print(f"  {first_iter_dir / 'candidate_checkpoint.pt'}")
-    print(f"  {first_iter_dir / 'eval_metrics.json'}")
-    print(f"  {first_iter_dir / 'metadata.json'}")
-    print(f"  {paths.learning_curve}")
-    print("")
-    print("No generation, training, evaluation, or file creation was performed.")
-
 def run_loop(
     *,
     config_path: str | Path,
@@ -485,9 +347,18 @@ def run_loop(
         project_root=project_root,
     )
 
+    if plan_only:
+        rendered_plan = render_execution_plan(
+            config=config,
+            paths=paths,
+            config_path=config_path,
+        )
+        print(rendered_plan)
+        return
+
     warnings = validate_inputs(
         paths,
-        require_bootstrap=not (validate_only or plan_only),
+        require_bootstrap=not validate_only,
     )
 
     for warning in warnings:
@@ -498,14 +369,6 @@ def run_loop(
         print("Config is valid.")
         print(f"Project root: {project_root}")
         print(f"Config:       {config_path}")
-        return
-
-    if plan_only:
-        print_execution_plan(
-            config=config,
-            paths=paths,
-            config_path=config_path,
-        )
         return
 
     run_name = str(cfg["run_name"])
