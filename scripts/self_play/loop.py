@@ -10,6 +10,13 @@ from typing import Any
 import pandas as pd
 import yaml
 
+from grid_topology_ai.config import SelfPlayConfig
+from grid_topology_ai.self_play.paths import SelfPlayPaths
+from grid_topology_ai.self_play.preflight import (
+    validate_inputs,
+    validate_resume_artifacts,
+)
+
 from grid_topology_ai.self_play.pool_metadata import (
     initialize_pool_metadata,
     sample_from_pool,
@@ -58,101 +65,6 @@ def load_yaml(path: str | Path) -> dict[str, Any]:
     return data
 
 
-def as_project_path(project_root: Path, value: str | Path) -> Path:
-    path = Path(value)
-
-    if path.is_absolute():
-        return path
-
-    return project_root / path
-
-
-def require_file(path: Path, name: str) -> None:
-    if not path.exists():
-        raise FileNotFoundError(f"{name} not found: {path}")
-
-    if not path.is_file():
-        raise FileNotFoundError(f"{name} is not a file: {path}")
-
-
-def require_dir(path: Path, name: str) -> None:
-    if not path.exists():
-        raise FileNotFoundError(f"{name} not found: {path}")
-
-    if not path.is_dir():
-        raise FileNotFoundError(f"{name} is not a directory: {path}")
-
-
-def validate_config(
-    *,
-    cfg: dict[str, Any],
-    project_root: Path,
-    require_runtime_artifacts: bool = True,
-) -> None:
-    config = SelfPlayConfig.from_mapping(cfg)
-
-    require_file(
-        as_project_path(
-            project_root,
-            config.pool.transitions_csv,
-        ),
-        "Pool transitions CSV",
-    )
-    require_dir(
-        as_project_path(
-            project_root,
-            config.pool.raw_dir,
-        ),
-        "Pool raw directory",
-    )
-    require_file(
-        as_project_path(
-            project_root,
-            config.eval_csv,
-        ),
-        "Eval transitions CSV",
-    )
-    require_dir(
-        as_project_path(
-            project_root,
-            config.eval_raw_dir,
-        ),
-        "Eval raw directory",
-    )
-
-    bootstrap_checkpoint = as_project_path(
-        project_root,
-        config.bootstrap_checkpoint,
-    )
-    bootstrap_metrics = as_project_path(
-        project_root,
-        config.bootstrap_eval_metrics,
-    )
-
-    if require_runtime_artifacts:
-        require_file(
-            bootstrap_checkpoint,
-            "Bootstrap checkpoint",
-        )
-        require_file(
-            bootstrap_metrics,
-            "Bootstrap eval metrics",
-        )
-        return
-
-    if not bootstrap_checkpoint.exists():
-        print(
-            "WARNING: Bootstrap checkpoint is missing. "
-            "This is allowed in validation/planning mode: "
-            f"{bootstrap_checkpoint}"
-        )
-
-    if not bootstrap_metrics.exists():
-        print(
-            "WARNING: Bootstrap eval metrics are missing. "
-            "This is allowed in validation/planning mode: "
-            f"{bootstrap_metrics}"
-        )
 
 
 def initialize_best_checkpoint(
@@ -167,23 +79,10 @@ def initialize_best_checkpoint(
     copy bootstrap checkpoint there and copy bootstrap metrics.
     """
 
-    bootstrap_checkpoint = as_project_path(
-        project_root,
-        cfg["bootstrap_checkpoint"],
-    )
-    bootstrap_metrics_path = as_project_path(
-        project_root,
-        cfg["bootstrap_eval_metrics"],
-    )
-
-    best_checkpoint_path = as_project_path(
-        project_root,
-        cfg["best_checkpoint_path"],
-    )
-    best_metrics_path = as_project_path(
-        project_root,
-        cfg["best_metrics_path"],
-    )
+    bootstrap_checkpoint = paths.bootstrap_checkpoint
+    bootstrap_metrics_path = paths.bootstrap_metrics
+    best_checkpoint_path = paths.best_checkpoint
+    best_metrics_path = paths.best_metrics
 
     require_file(bootstrap_checkpoint, "Bootstrap checkpoint")
     require_file(bootstrap_metrics_path, "Bootstrap eval metrics")
@@ -673,11 +572,22 @@ def run_loop(
     cfg = load_yaml(config_path)
     project_root = discover_project_root(config_path)
 
-    validate_config(
-        cfg=cfg,
+    config = SelfPlayConfig.from_mapping(cfg)
+    paths = SelfPlayPaths.from_config(
+        config=config,
         project_root=project_root,
-        require_runtime_artifacts=not (validate_only or plan_only),
     )
+
+    warnings = validate_inputs(
+        paths,
+        require_bootstrap=not (
+                validate_only or plan_only
+        ),
+    )
+
+    for warning in warnings:
+        print(f"WARNING: {warning}")
+
 
     if validate_only:
         print_header("Self-play config validation")
@@ -697,10 +607,7 @@ def run_loop(
     run_name = str(cfg["run_name"])
     seed = int(cfg.get("seed", 42))
 
-    checkpoint_dir = as_project_path(
-        project_root,
-        cfg.get("checkpoint_dir", f"runs/{run_name}"),
-    )
+    checkpoint_dir = paths.run_dir
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
     n_iterations = int(cfg["n_iterations"])
@@ -718,66 +625,14 @@ def run_loop(
         output_path=run_config_copy,
     )
 
-    pool_cfg = cfg["pool"]
-
-    pool_transitions_csv = as_project_path(
-        project_root,
-        pool_cfg["transitions_csv"],
-    )
-    pool_raw_dir = as_project_path(
-        project_root,
-        pool_cfg["raw_dir"],
-    )
-    pool_metadata_path = as_project_path(
-        project_root,
-        pool_cfg["metadata_path"],
-    )
-
-    eval_csv = as_project_path(
-        project_root,
-        cfg["eval_csv"],
-    )
-    eval_raw_dir = as_project_path(
-        project_root,
-        cfg["eval_raw_dir"],
-    )
+    pool_transitions_csv = paths.pool_transitions_csv
+    pool_raw_dir = paths.pool_raw_dir
+    pool_metadata_path = paths.pool_metadata
+    eval_csv = paths.eval_csv
+    eval_raw_dir = paths.eval_raw_dir
 
     if resume and completed_iterations:
-        resume_best_checkpoint = as_project_path(
-            project_root,
-            cfg["best_checkpoint_path"],
-        )
-
-        resume_best_metrics = as_project_path(
-            project_root,
-            cfg["best_metrics_path"],
-        )
-
-        resume_replay_manifest = (
-                checkpoint_dir
-                / "replay_buffer"
-                / "buffer_manifest.json"
-        )
-
-        require_file(
-            resume_best_checkpoint,
-            "Resume best checkpoint",
-        )
-
-        require_file(
-            resume_best_metrics,
-            "Resume best metrics",
-        )
-
-        require_file(
-            pool_metadata_path,
-            "Resume pool metadata",
-        )
-
-        require_file(
-            resume_replay_manifest,
-            "Resume replay buffer manifest",
-        )
+        validate_resume_artifacts(paths)
 
     best_checkpoint, best_metrics = initialize_best_checkpoint(
         project_root=project_root,
