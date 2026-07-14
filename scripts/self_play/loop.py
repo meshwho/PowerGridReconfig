@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import csv
 import json
 import shutil
 from pathlib import Path
@@ -11,6 +10,12 @@ import pandas as pd
 import yaml
 
 from grid_topology_ai.config import SelfPlayConfig
+from grid_topology_ai.self_play.learning_curve import (
+    LearningCurveRow,
+    load_learning_curve,
+    save_learning_curve,
+    upsert_iteration_row,
+)
 from grid_topology_ai.self_play.paths import SelfPlayPaths
 from grid_topology_ai.self_play.plan import render_execution_plan
 from grid_topology_ai.self_play.preflight import (
@@ -107,73 +112,6 @@ def save_config_copy(
         )
 
     return output_path
-
-
-def load_or_initialize_learning_curve(path: str | Path) -> list[dict[str, Any]]:
-    path = Path(path)
-
-    if not path.exists():
-        return []
-
-    df = pd.read_csv(path)
-
-    if df.empty:
-        return []
-
-    return df.to_dict(orient="records")
-
-def save_learning_curve(
-    *,
-    rows: list[dict[str, Any]],
-    path: str | Path,
-) -> Path:
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-
-    if not rows:
-        path.write_text("", encoding="utf-8")
-        return path
-
-    # Stable field ordering: important columns first, then all metric columns.
-    preferred = [
-        "iteration",
-        "accepted",
-        "status",
-        "candidate_metric",
-        "best_metric_after",
-        "n_sampled_scenarios",
-        "n_raw_examples",
-        "n_train_examples",
-        "n_fresh",
-        "n_old",
-        "candidate_checkpoint",
-        "best_checkpoint_after",
-    ]
-
-    keys = []
-
-    for key in preferred:
-        if any(key in row for row in rows):
-            keys.append(key)
-
-    for row in rows:
-        for key in row:
-            if key not in keys:
-                keys.append(key)
-
-    with path.open("w", encoding="utf-8", newline="") as f:
-        writer = csv.DictWriter(
-            f,
-            fieldnames=keys,
-            extrasaction="ignore",
-        )
-
-        writer.writeheader()
-
-        for row in rows:
-            writer.writerow(row)
-
-    return path
 
 
 def count_examples_csv(path: str | Path) -> int:
@@ -312,7 +250,7 @@ def run_loop(
     )
 
     learning_curve_path = paths.learning_curve
-    learning_curve = load_or_initialize_learning_curve(learning_curve_path)
+    learning_curve = load_learning_curve(learning_curve_path)
 
     metric_name = str(cfg["acceptance"].get("metric", "solve_rate"))
 
@@ -499,7 +437,7 @@ def run_loop(
         candidate_metric = metrics.get(metric_name)
         best_metric_after = best_metrics.get(metric_name)
 
-        row: dict[str, Any] = {
+        row: LearningCurveRow = {
             "iteration": int(iteration),
             "accepted": bool(accepted),
             "status": status,
@@ -520,14 +458,10 @@ def run_loop(
         for key, value in best_metrics.items():
             row[f"best_{key}"] = value
 
-        # Avoid duplicate rows if the same iteration is rerun manually.
-        learning_curve = [
-            item
-            for item in learning_curve
-            if int(item.get("iteration", -1)) != int(iteration)
-        ]
-
-        learning_curve.append(row)
+        learning_curve = upsert_iteration_row(
+            rows=learning_curve,
+            row=row,
+        )
 
         save_learning_curve(
             rows=learning_curve,
