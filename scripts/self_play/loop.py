@@ -83,19 +83,6 @@ def count_examples_csv(path: str | Path) -> int:
     except Exception:
         return 0
 
-def make_training_config(
-    cfg: dict[str, Any],
-) -> dict[str, Any]:
-    training_cfg = dict(cfg.get("training", {}))
-
-    training_cfg.setdefault(
-        "epochs",
-        int(cfg.get("epochs_per_iteration", 10)),
-    )
-
-    return training_cfg
-
-
 def format_metric(metrics: dict[str, Any], metric_name: str) -> str:
     if metric_name not in metrics:
         return "n/a"
@@ -148,13 +135,13 @@ def run_loop(
         print(f"Config:       {config_path}")
         return
 
-    run_name = str(cfg["run_name"])
-    seed = int(cfg.get("seed", 42))
+    run_name = config.run_name
+    seed = config.seed
 
     checkpoint_dir = paths.run_dir
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
-    n_iterations = int(cfg["n_iterations"])
+    n_iterations = config.n_iterations
 
     run_state = resolve_run_state(
         run_dir=paths.run_dir,
@@ -217,8 +204,8 @@ def run_loop(
     print(f"Best checkpoint:          {best_checkpoint}")
     print(f"Best metric {metric_name}:       {format_metric(best_metrics, metric_name)}")
 
-    n_iterations = int(cfg["n_iterations"])
-    n_scenarios_per_iteration = int(cfg["n_scenarios_per_iteration"])
+    n_iterations = config.n_iterations
+    n_scenarios_per_iteration = config.n_scenarios_per_iteration
 
     if start_iteration > n_iterations:
         print_header("Self-play already complete")
@@ -257,9 +244,6 @@ def run_loop(
         print(f"Sampled scenarios: {len(scenario_ids)}")
         print(f"Selected IDs:      {selected_ids_path}")
 
-        generation_cfg = dict(cfg.get("generation", {}))
-        generation_cfg.setdefault("seed", seed)
-
         raw_examples_csv = run_generate(
             project_root=project_root,
             raw_dir=pool_raw_dir,
@@ -267,7 +251,8 @@ def run_loop(
             scenario_ids=scenario_ids,
             checkpoint=parent_checkpoint,
             output_dir=iter_dir / "raw",
-            config=generation_cfg,
+            config=config.generation,
+            base_seed=config.seed,
             iteration=iteration,
         )
 
@@ -278,11 +263,11 @@ def run_loop(
             iteration=iteration,
         )
 
-        examples_per_iteration = int(
-            cfg.get("training", {}).get(
-                "examples_per_iteration",
-                len(replay_buffer),
-            )
+        configured_examples = config.training.examples_per_iteration
+        examples_per_iteration = (
+            len(replay_buffer)
+            if configured_examples is None
+            else configured_examples
         )
 
         train_batch_path = iter_dir / "train_batch.csv"
@@ -295,14 +280,12 @@ def run_loop(
             seed=iteration_seed,
         )
 
-        training_cfg = make_training_config(cfg)
-
         candidate_checkpoint = run_train(
             project_root=project_root,
             examples_csv=train_batch_path,
             init_checkpoint=parent_checkpoint,
             output_dir=iter_dir,
-            config=training_cfg,
+            config=config.training,
             iteration=iteration,
         )
 
@@ -312,7 +295,7 @@ def run_loop(
             eval_csv=eval_csv,
             eval_raw_dir=eval_raw_dir,
             output_dir=iter_dir,
-            config=cfg["evaluation"],
+            config=config.evaluation,
         )
 
         accepted = accept_candidate(
