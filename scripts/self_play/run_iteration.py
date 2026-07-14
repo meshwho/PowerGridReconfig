@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-import hashlib
-import json
-import shutil
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -11,37 +8,12 @@ from typing import Any
 
 import pandas as pd
 
+from grid_topology_ai.self_play.artifacts import (
+    load_json,
+    save_json,
+    sha256_file,
+)
 from grid_topology_ai.value_targets import add_outcome_value_targets_to_rows
-
-
-def save_json(payload: dict[str, Any], path: str | Path) -> None:
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(payload, indent=2, ensure_ascii=False),
-        encoding="utf-8",
-    )
-
-
-def load_json(path: str | Path) -> dict[str, Any]:
-    path = Path(path)
-    return json.loads(path.read_text(encoding="utf-8"))
-
-
-def sha256_file(path: str | Path, chunk_size: int = 1024 * 1024) -> str:
-    path = Path(path)
-    h = hashlib.sha256()
-
-    with path.open("rb") as f:
-        while True:
-            chunk = f.read(chunk_size)
-
-            if not chunk:
-                break
-
-            h.update(chunk)
-
-    return h.hexdigest()
 
 
 def discover_project_root(start: str | Path | None = None) -> Path:
@@ -497,27 +469,6 @@ def run_evaluate(
         raise FileNotFoundError(f"Evaluation JSON was not created: {output_json}")
 
     return load_json(output_json)
-
-
-def copy_if_accepted(
-    *,
-    candidate_checkpoint: str | Path,
-    best_checkpoint_path: str | Path,
-) -> Path:
-    """
-    Copy accepted candidate to canonical best checkpoint path.
-    """
-
-    candidate_checkpoint = Path(candidate_checkpoint)
-    best_checkpoint_path = Path(best_checkpoint_path)
-
-    if not candidate_checkpoint.exists():
-        raise FileNotFoundError(f"Candidate checkpoint not found: {candidate_checkpoint}")
-
-    best_checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(candidate_checkpoint, best_checkpoint_path)
-
-    return best_checkpoint_path
 
 
 def save_iteration_metadata(
