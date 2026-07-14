@@ -7,6 +7,7 @@ from typing import Any
 import pandas as pd
 import yaml
 
+from grid_topology_ai.self_play.acceptance import accept_candidate
 from grid_topology_ai.self_play.artifacts import (
     save_yaml,
     sha256_file,
@@ -40,7 +41,6 @@ from grid_topology_ai.self_play.replay_buffer_v2 import (
 )
 from grid_topology_ai.self_play.run_state import resolve_run_state
 from scripts.self_play.run_iteration import (
-    accept_candidate,
     discover_project_root,
     run_evaluate,
     run_generate,
@@ -198,7 +198,7 @@ def run_loop(
     learning_curve_path = paths.learning_curve
     learning_curve = load_learning_curve(learning_curve_path)
 
-    metric_name = str(cfg["acceptance"].get("metric", "solve_rate"))
+    metric_name = config.acceptance.metric
 
     print_header(f"Self-play loop: {run_name}")
     print(f"Project root:             {project_root}")
@@ -318,7 +318,7 @@ def run_loop(
         accepted = accept_candidate(
             new_metrics=metrics,
             best_metrics=parent_metrics,
-            policy=cfg["acceptance"],
+            config=config.acceptance,
         )
 
         status = "ACCEPTED" if accepted else "REJECTED"
