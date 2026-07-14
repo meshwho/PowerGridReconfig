@@ -17,7 +17,6 @@ from grid_topology_ai.self_play.pool_metadata import (
 )
 from grid_topology_ai.self_play.replay_buffer_v2 import (
     ReplayBuffer,
-    ReplayBufferConfig,
 )
 from scripts.self_play.run_iteration import (
     accept_candidate,
@@ -30,6 +29,10 @@ from scripts.self_play.run_iteration import (
     save_iteration_metadata,
     save_json,
     sha256_file,
+)
+from grid_topology_ai.config import (
+    ReplayBufferConfig,
+    SelfPlayConfig,
 )
 
 
@@ -86,69 +89,44 @@ def validate_config(
     project_root: Path,
     require_runtime_artifacts: bool = True,
 ) -> None:
-    required_top_level = [
-        "run_name",
-        "seed",
-        "n_iterations",
-        "n_scenarios_per_iteration",
-        "pool",
-        "eval_csv",
-        "eval_raw_dir",
-        "bootstrap_checkpoint",
-        "bootstrap_eval_metrics",
-        "checkpoint_dir",
-        "best_checkpoint_path",
-        "best_metrics_path",
-        "replay_buffer",
-        "generation",
-        "training",
-        "evaluation",
-        "acceptance",
-    ]
-
-    missing = [
-        key
-        for key in required_top_level
-        if key not in cfg
-    ]
-
-    if missing:
-        raise ValueError(f"Missing top-level config keys: {missing}")
-
-    pool_cfg = cfg["pool"]
-
-    for key in ["transitions_csv", "raw_dir", "metadata_path"]:
-        if key not in pool_cfg:
-            raise ValueError(f"Missing pool.{key} in config.")
+    config = SelfPlayConfig.from_mapping(cfg)
 
     require_file(
-        as_project_path(project_root, pool_cfg["transitions_csv"]),
+        as_project_path(
+            project_root,
+            config.pool.transitions_csv,
+        ),
         "Pool transitions CSV",
     )
-
     require_dir(
-        as_project_path(project_root, pool_cfg["raw_dir"]),
+        as_project_path(
+            project_root,
+            config.pool.raw_dir,
+        ),
         "Pool raw directory",
     )
-
     require_file(
-        as_project_path(project_root, cfg["eval_csv"]),
+        as_project_path(
+            project_root,
+            config.eval_csv,
+        ),
         "Eval transitions CSV",
     )
-
     require_dir(
-        as_project_path(project_root, cfg["eval_raw_dir"]),
+        as_project_path(
+            project_root,
+            config.eval_raw_dir,
+        ),
         "Eval raw directory",
     )
 
     bootstrap_checkpoint = as_project_path(
         project_root,
-        cfg["bootstrap_checkpoint"],
+        config.bootstrap_checkpoint,
     )
-
-    bootstrap_eval_metrics = as_project_path(
+    bootstrap_metrics = as_project_path(
         project_root,
-        cfg["bootstrap_eval_metrics"],
+        config.bootstrap_eval_metrics,
     )
 
     if require_runtime_artifacts:
@@ -156,41 +134,25 @@ def validate_config(
             bootstrap_checkpoint,
             "Bootstrap checkpoint",
         )
-
         require_file(
-            bootstrap_eval_metrics,
+            bootstrap_metrics,
             "Bootstrap eval metrics",
         )
-    else:
-        if not bootstrap_checkpoint.exists():
-            print(
-                "WARNING: Bootstrap checkpoint is missing. "
-                f"This is allowed in validation/planning mode: {bootstrap_checkpoint}"
-            )
+        return
 
-        if not bootstrap_eval_metrics.exists():
-            print(
-                "WARNING: Bootstrap eval metrics are missing. "
-                f"This is allowed in validation/planning mode: {bootstrap_eval_metrics}"
-            )
+    if not bootstrap_checkpoint.exists():
+        print(
+            "WARNING: Bootstrap checkpoint is missing. "
+            "This is allowed in validation/planning mode: "
+            f"{bootstrap_checkpoint}"
+        )
 
-    replay_cfg = cfg["replay_buffer"]
-
-    if int(replay_cfg.get("max_size", 0)) <= 0:
-        raise ValueError("replay_buffer.max_size must be positive.")
-
-    if int(replay_cfg.get("min_size_to_train", 0)) <= 0:
-        raise ValueError("replay_buffer.min_size_to_train must be positive.")
-
-    fresh_fraction = float(replay_cfg.get("fresh_fraction", 0.70))
-
-    if fresh_fraction < 0.0 or fresh_fraction > 1.0:
-        raise ValueError("replay_buffer.fresh_fraction must be in [0, 1].")
-
-    acceptance_metric = str(cfg["acceptance"].get("metric", ""))
-
-    if not acceptance_metric:
-        raise ValueError("acceptance.metric must not be empty.")
+    if not bootstrap_metrics.exists():
+        print(
+            "WARNING: Bootstrap eval metrics are missing. "
+            "This is allowed in validation/planning mode: "
+            f"{bootstrap_metrics}"
+        )
 
 
 def initialize_best_checkpoint(

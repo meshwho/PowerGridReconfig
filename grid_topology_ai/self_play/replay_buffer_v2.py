@@ -2,36 +2,15 @@ from __future__ import annotations
 
 import gzip
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
+from grid_topology_ai.config import ReplayBufferConfig
 
 import numpy as np
 import pandas as pd
 
 
-@dataclass(frozen=True)
-class ReplayBufferConfig:
-    """
-    Configuration for pool-guided self-play replay buffer.
-
-    max_size:
-        Maximum number of examples kept in the rolling buffer.
-
-    min_size_to_train:
-        Minimum number of examples required before exporting a train batch.
-
-    fresh_fraction:
-        Target fraction of examples from the current iteration in each train batch.
-
-    random_seed:
-        Base seed used for reproducible mixed-batch sampling.
-    """
-
-    max_size: int = 50_000
-    min_size_to_train: int = 1_000
-    fresh_fraction: float = 0.70
-    random_seed: int = 42
 
 
 def _json_safe(value: Any) -> Any:
