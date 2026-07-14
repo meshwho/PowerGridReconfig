@@ -26,6 +26,7 @@ from grid_topology_ai.self_play.pool_metadata import (
 from grid_topology_ai.self_play.replay_buffer_v2 import (
     ReplayBuffer,
 )
+from grid_topology_ai.self_play.run_state import resolve_run_state
 from scripts.self_play.run_iteration import (
     accept_candidate,
     copy_if_accepted,
@@ -120,116 +121,6 @@ def load_or_initialize_learning_curve(path: str | Path) -> list[dict[str, Any]]:
         return []
 
     return df.to_dict(orient="records")
-
-def inspect_iteration_state(
-    checkpoint_dir: str | Path,
-) -> tuple[list[int], list[Path]]:
-    """
-    Inspect existing iter_XXX directories.
-
-    An iteration is considered complete only when metadata.json exists.
-    Directories without metadata.json are treated as incomplete.
-    """
-
-    checkpoint_dir = Path(checkpoint_dir)
-
-    completed: list[int] = []
-    incomplete: list[Path] = []
-
-    for iter_dir in sorted(checkpoint_dir.glob("iter_*")):
-        if not iter_dir.is_dir():
-            continue
-
-        suffix = iter_dir.name.removeprefix("iter_")
-
-        try:
-            iteration = int(suffix)
-        except ValueError:
-            continue
-
-        metadata_path = iter_dir / "metadata.json"
-
-        if metadata_path.is_file():
-            completed.append(iteration)
-        else:
-            incomplete.append(iter_dir)
-
-    completed = sorted(set(completed))
-
-    return completed, incomplete
-
-def determine_start_iteration(
-    *,
-    checkpoint_dir: str | Path,
-    n_iterations: int,
-    resume: bool,
-) -> tuple[int, list[int]]:
-    """
-    Determine the first iteration that should run.
-
-    Default mode refuses to overwrite an existing run.
-    Resume mode continues after the last completed iteration.
-    """
-
-    checkpoint_dir = Path(checkpoint_dir)
-
-    completed, incomplete = inspect_iteration_state(checkpoint_dir)
-
-    replay_manifest = (
-        checkpoint_dir
-        / "replay_buffer"
-        / "buffer_manifest.json"
-    )
-
-    learning_curve_path = checkpoint_dir / "learning_curve.csv"
-
-    has_existing_run = bool(
-        completed
-        or incomplete
-        or replay_manifest.exists()
-        or learning_curve_path.exists()
-    )
-
-    if not resume:
-        if has_existing_run:
-            raise RuntimeError(
-                "Existing self-play run artifacts were found in "
-                f"{checkpoint_dir}. Refusing to overwrite them. "
-                "Use --resume to continue the run, or remove the "
-                "existing runtime artifacts before starting again."
-            )
-
-        return 1, []
-
-    if incomplete:
-        formatted = "\n".join(
-            f"  - {path}"
-            for path in incomplete
-        )
-
-        raise RuntimeError(
-            "Cannot safely resume because incomplete iteration "
-            "directories were found:\n"
-            f"{formatted}\n"
-            "Remove or archive these incomplete directories before "
-            "running again with --resume."
-        )
-
-    if not completed:
-        return 1, []
-
-    expected = list(range(1, max(completed) + 1))
-
-    if completed != expected:
-        raise RuntimeError(
-            "Completed iterations are not contiguous. "
-            f"Found={completed}, expected={expected}. "
-            "Manual inspection is required before resuming."
-        )
-
-    start_iteration = max(completed) + 1
-
-    return start_iteration, completed
 
 def save_learning_curve(
     *,
@@ -379,11 +270,12 @@ def run_loop(
 
     n_iterations = int(cfg["n_iterations"])
 
-    start_iteration, completed_iterations = determine_start_iteration(
-        checkpoint_dir=checkpoint_dir,
-        n_iterations=n_iterations,
+    run_state = resolve_run_state(
+        run_dir=paths.run_dir,
         resume=resume,
     )
+    start_iteration = run_state.start_iteration
+    completed_iterations = run_state.completed_iterations
 
     run_config_copy = paths.resolved_config
 
