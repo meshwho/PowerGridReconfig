@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import shutil
 from pathlib import Path
 from typing import Any
 
@@ -10,6 +9,10 @@ import pandas as pd
 import yaml
 
 from grid_topology_ai.config import SelfPlayConfig
+from grid_topology_ai.self_play.checkpoint_state import (
+    initialize_best_state,
+    promote_candidate,
+)
 from grid_topology_ai.self_play.learning_curve import (
     LearningCurveRow,
     load_learning_curve,
@@ -34,14 +37,11 @@ from grid_topology_ai.self_play.replay_buffer_v2 import (
 from grid_topology_ai.self_play.run_state import resolve_run_state
 from scripts.self_play.run_iteration import (
     accept_candidate,
-    copy_if_accepted,
     discover_project_root,
-    load_json,
     run_evaluate,
     run_generate,
     run_train,
     save_iteration_metadata,
-    save_json,
     sha256_file,
 )
 
@@ -67,32 +67,6 @@ def load_yaml(path: str | Path) -> dict[str, Any]:
 
     return data
 
-
-
-def initialize_best_checkpoint(
-    *,
-    paths: SelfPlayPaths,
-) -> tuple[Path, dict[str, Any]]:
-    """Initialize canonical self-play best checkpoint from bootstrap files."""
-
-    paths.best_checkpoint.parent.mkdir(parents=True, exist_ok=True)
-    paths.best_metrics.parent.mkdir(parents=True, exist_ok=True)
-
-    if not paths.best_checkpoint.exists():
-        print("Initializing self-play best checkpoint from bootstrap.")
-        print(f"Bootstrap checkpoint: {paths.bootstrap_checkpoint}")
-        print(f"Best checkpoint:      {paths.best_checkpoint}")
-        shutil.copy2(paths.bootstrap_checkpoint, paths.best_checkpoint)
-
-    if not paths.best_metrics.exists():
-        print("Initializing self-play best metrics from bootstrap.")
-        print(f"Bootstrap metrics: {paths.bootstrap_metrics}")
-        print(f"Best metrics:      {paths.best_metrics}")
-        shutil.copy2(paths.bootstrap_metrics, paths.best_metrics)
-
-    best_metrics = load_json(paths.best_metrics)
-
-    return paths.best_checkpoint, best_metrics
 
 
 def save_config_copy(
@@ -136,16 +110,6 @@ def make_training_config(
     )
 
     return training_cfg
-
-
-def update_best_metrics_file(
-    *,
-    metrics: dict[str, Any],
-    path: str | Path,
-) -> Path:
-    path = Path(path)
-    save_json(metrics, path)
-    return path
 
 
 def format_metric(metrics: dict[str, Any], metric_name: str) -> str:
@@ -231,11 +195,9 @@ def run_loop(
     if resume and completed_iterations:
         validate_resume_artifacts(paths)
 
-    best_checkpoint, best_metrics = initialize_best_checkpoint(
-        paths=paths,
-    )
-
-    best_metrics_path = paths.best_metrics
+    best_state = initialize_best_state(paths=paths)
+    best_checkpoint = best_state.checkpoint
+    best_metrics = dict(best_state.metrics)
 
     pool_metadata = initialize_pool_metadata(
         transitions_csv=pool_transitions_csv,
@@ -408,17 +370,13 @@ def run_loop(
         )
 
         if accepted:
-            best_checkpoint = copy_if_accepted(
-                candidate_checkpoint=candidate_checkpoint,
-                best_checkpoint_path=best_checkpoint,
+            best_state = promote_candidate(
+                candidate_checkpoint=Path(candidate_checkpoint),
+                candidate_metrics=metrics,
+                paths=paths,
             )
-
-            best_metrics = dict(metrics)
-
-            update_best_metrics_file(
-                metrics=best_metrics,
-                path=best_metrics_path,
-            )
+            best_checkpoint = best_state.checkpoint
+            best_metrics = dict(best_state.metrics)
 
         else:
             best_checkpoint = parent_checkpoint

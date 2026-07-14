@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 from grid_topology_ai.config import SelfPlayConfig
@@ -58,38 +57,6 @@ def _config_mapping() -> dict[str, object]:
             "max_simple_solve_rate_drop": 0.05,
         },
     }
-
-
-def _config(tmp_path: Path) -> SelfPlayConfig:
-    return SelfPlayConfig.from_mapping(_config_mapping())
-
-
-def _paths(tmp_path: Path) -> SelfPlayPaths:
-    return SelfPlayPaths.from_config(
-        config=_config(tmp_path),
-        project_root=tmp_path,
-    )
-
-
-def test_initialize_best_checkpoint_uses_resolved_paths(
-    tmp_path: Path,
-) -> None:
-    paths = _paths(tmp_path)
-    paths.bootstrap_checkpoint.parent.mkdir(parents=True)
-    paths.bootstrap_checkpoint.write_bytes(b"checkpoint")
-    paths.bootstrap_metrics.write_text(
-        json.dumps({"solve_rate": 0.75}),
-        encoding="utf-8",
-    )
-
-    best_checkpoint, best_metrics = loop_module.initialize_best_checkpoint(
-        paths=paths,
-    )
-
-    assert best_checkpoint == paths.best_checkpoint
-    assert paths.best_checkpoint.read_bytes() == b"checkpoint"
-    assert paths.best_metrics.is_file()
-    assert best_metrics["solve_rate"] == 0.75
 
 
 def test_plan_only_uses_imported_renderer(
