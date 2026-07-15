@@ -8,6 +8,7 @@ from typing import Any
 from grid_topology_ai.config import SelfPlayConfig
 from grid_topology_ai.self_play.artifacts import save_yaml
 from grid_topology_ai.self_play.checkpoint_state import initialize_best_state
+from grid_topology_ai.self_play.completion import write_iteration_completion_marker
 from grid_topology_ai.self_play.iteration import IterationRequest, run_self_play_iteration
 from grid_topology_ai.self_play.learning_curve import (
     load_learning_curve,
@@ -167,7 +168,6 @@ def run_self_play_pipeline(
         best_checkpoint = result.best_checkpoint
         best_metrics = dict(result.best_metrics)
         pool_metadata = result.pool_metadata
-        executed_iterations.append(iteration)
 
         learning_curve = upsert_iteration_row(
             rows=learning_curve,
@@ -178,6 +178,24 @@ def run_self_play_pipeline(
             rows=learning_curve,
             path=learning_curve_path,
         )
+
+        completion_marker_path = paths.iteration_completion_marker(iteration)
+        write_iteration_completion_marker(
+            path=completion_marker_path,
+            iteration=iteration,
+            accepted=result.accepted,
+            status=result.status,
+            metadata_path=result.metadata_path,
+            candidate_checkpoint=result.candidate_checkpoint,
+            best_checkpoint_after=result.best_checkpoint,
+            best_metrics_path=paths.best_metrics,
+            pool_metadata_path=paths.pool_metadata,
+            replay_manifest_path=paths.replay_manifest,
+            replay_iteration_path=paths.replay_iteration_file(iteration),
+            learning_curve_path=learning_curve_path,
+        )
+
+        executed_iterations.append(iteration)
 
         print("")
         print(
@@ -192,6 +210,7 @@ def run_self_play_pipeline(
         print(f"Best checkpoint:      {best_checkpoint}")
         print(f"Metadata:             {result.metadata_path}")
         print(f"Learning curve:       {learning_curve_path}")
+        print(f"Completion marker:    {completion_marker_path}")
 
     _print_header("Self-play complete")
     print(f"Final best checkpoint: {best_checkpoint}")

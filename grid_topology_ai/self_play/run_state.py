@@ -3,6 +3,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from grid_topology_ai.self_play.completion import (
+    COMPLETION_MARKER_FILENAME,
+    validate_iteration_completion,
+)
+
 
 @dataclass(frozen=True, slots=True)
 class RunState:
@@ -28,10 +33,22 @@ def _scan_iteration_directories(
         except ValueError:
             continue
 
-        if (iteration_dir / "metadata.json").is_file():
-            completed.add(iteration)
-        else:
+        marker_path = iteration_dir / COMPLETION_MARKER_FILENAME
+        if not marker_path.exists():
             incomplete.append(iteration_dir)
+            continue
+
+        try:
+            validate_iteration_completion(
+                iteration_dir=iteration_dir,
+                expected_iteration=iteration,
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                f"Invalid iteration completion marker: {marker_path}"
+            ) from exc
+
+        completed.add(iteration)
 
     return tuple(sorted(completed)), tuple(sorted(incomplete))
 
@@ -70,8 +87,11 @@ def resolve_run_state(
             "Cannot safely resume because incomplete iteration "
             "directories were found:\n"
             f"{formatted}\n"
-            "Remove or archive these incomplete directories before "
-            "running again with --resume."
+            f"Missing required completion marker: {COMPLETION_MARKER_FILENAME}. "
+            "metadata.json is no longer proof that an iteration fully completed. "
+            "Do not blindly delete these directories because replay, pool, or best "
+            "checkpoint artifacts may already have been updated. Manual inspection "
+            "is required before running again with --resume."
         )
 
     if not completed:
