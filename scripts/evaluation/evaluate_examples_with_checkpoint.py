@@ -11,7 +11,7 @@ from torch.utils.data import DataLoader
 from grid_topology_ai.models.graph_policy_value_net import GraphPolicyValueNet
 from grid_topology_ai.models.graph_policy_value_net_v2 import GraphPolicyValueNetV2
 from grid_topology_ai.models.graph_self_play_dataset import GraphSelfPlayDataset
-from scripts.self_play.train_graph_baseline import (
+from grid_topology_ai.training.graph_policy_value import (
     evaluate_one_epoch,
     resolve_device,
 )
