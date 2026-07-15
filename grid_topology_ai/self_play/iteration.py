@@ -13,10 +13,8 @@ from grid_topology_ai.self_play.acceptance import accept_candidate
 from grid_topology_ai.self_play.artifacts import save_json, sha256_file
 from grid_topology_ai.self_play.checkpoint_state import promote_candidate
 from grid_topology_ai.self_play.paths import SelfPlayPaths
-from grid_topology_ai.self_play.pool_metadata import (
-    sample_from_pool,
-    update_and_save_pool_metadata,
-)
+from grid_topology_ai.self_play.pool_sampling import sample_from_pool
+from grid_topology_ai.self_play.pool_state import update_and_save_pool_metadata
 from grid_topology_ai.self_play.replay import RollingReplayBuffer
 from grid_topology_ai.self_play.stages import run_evaluate, run_generate, run_train
 
@@ -275,6 +273,7 @@ def run_self_play_iteration(
         episode_results=raw_examples_df,
         current_iter=iteration,
         path=paths.pool_metadata,
+        selected_scenario_ids=scenario_ids,
     )
 
     candidate_metric = metrics.get(metric_name)

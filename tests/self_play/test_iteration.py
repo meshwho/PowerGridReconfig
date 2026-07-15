@@ -141,7 +141,7 @@ def _install_stage_fakes(monkeypatch: pytest.MonkeyPatch, calls: list[str] | Non
     )
     monkeypatch.setattr(
         "grid_topology_ai.self_play.iteration.update_and_save_pool_metadata",
-        lambda *, pool_metadata, episode_results, current_iter, path: {
+        lambda *, pool_metadata, episode_results, current_iter, path, **kwargs: {
             **pool_metadata,
             "updated": current_iter,
         },

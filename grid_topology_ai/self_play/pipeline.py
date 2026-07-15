@@ -16,7 +16,7 @@ from grid_topology_ai.self_play.learning_curve import (
     upsert_iteration_row,
 )
 from grid_topology_ai.self_play.paths import SelfPlayPaths
-from grid_topology_ai.self_play.pool_metadata import initialize_pool_metadata
+from grid_topology_ai.self_play.pool_state import initialize_pool_metadata
 from grid_topology_ai.self_play.preflight import validate_resume_artifacts
 from grid_topology_ai.self_play.replay import RollingReplayBuffer
 from grid_topology_ai.self_play.run_state import resolve_run_state
