@@ -6,6 +6,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 from grid_topology_ai.config import ReplayBufferConfig
+from grid_topology_ai.self_play.example_validation import load_and_validate_examples_csv
 
 import numpy as np
 import pandas as pd
@@ -88,32 +89,7 @@ def _read_jsonl_gz(path: str | Path) -> list[dict[str, Any]]:
 
 
 def _load_examples_csv(path: str | Path) -> list[dict[str, Any]]:
-    path = Path(path)
-
-    if not path.exists():
-        raise FileNotFoundError(f"Examples CSV not found: {path}")
-
-    df = pd.read_csv(path)
-
-    if df.empty:
-        return []
-
-    required_columns = {
-        "state_path",
-        "mcts_policy_json",
-        "scenario_id",
-        "step",
-        "state_id",
-        "outcome_value_target",
-    }
-
-    missing = required_columns - set(df.columns)
-
-    if missing:
-        raise ValueError(
-            f"Examples CSV is missing required columns: {sorted(missing)}. "
-            f"File: {path}"
-        )
+    df = load_and_validate_examples_csv(path)
 
     return [
         _row_to_json_safe_dict(row)
@@ -246,6 +222,9 @@ class RollingReplayBuffer:
     ) -> None:
         """
         Add examples from one self-play iteration to the in-memory buffer.
+
+        Low-level method: callers are responsible for validating rows before
+        mutation when ingesting production self-play CSV data.
         """
 
         normalized: list[dict[str, Any]] = []

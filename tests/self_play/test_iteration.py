@@ -334,3 +334,47 @@ def test_parent_metrics_are_not_mutated(
     run_self_play_iteration(request)
 
     assert parent_metrics == {"solve_rate": 0.5, "failed_scenarios": 0}
+
+
+def test_iteration_stops_before_training_when_replay_validation_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_generate(**kwargs: Any) -> Path:
+        output_dir = Path(kwargs["output_dir"])
+        output_dir.mkdir(parents=True, exist_ok=True)
+        examples = output_dir / "examples.csv"
+        examples.write_text("scenario_id\n1\n", encoding="utf-8")
+        return examples
+
+    class FailingReplay(_FakeReplayBuffer):
+        def add_and_save_from_csv(self, *, examples_csv: Path, iteration: int):
+            raise ValueError("invalid examples")
+
+    monkeypatch.setattr("grid_topology_ai.self_play.iteration.run_generate", fake_generate)
+    monkeypatch.setattr("grid_topology_ai.self_play.iteration.run_train", lambda **kwargs: pytest.fail("run_train called"))
+    monkeypatch.setattr("grid_topology_ai.self_play.iteration.run_evaluate", lambda **kwargs: pytest.fail("run_evaluate called"))
+    monkeypatch.setattr(
+        "grid_topology_ai.self_play.iteration.update_and_save_pool_metadata",
+        lambda **kwargs: pytest.fail("pool update called"),
+    )
+    monkeypatch.setattr(
+        "grid_topology_ai.self_play.iteration.sample_from_pool",
+        lambda *, pool_metadata, n, seed: [1, 2],
+    )
+    base = _request(tmp_path)
+    request = IterationRequest(
+        iteration=base.iteration,
+        config=base.config,
+        raw_config=base.raw_config,
+        paths=base.paths,
+        parent_checkpoint=base.parent_checkpoint,
+        parent_metrics=base.parent_metrics,
+        pool_metadata=base.pool_metadata,
+        replay_buffer=FailingReplay(),  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(ValueError, match="invalid examples"):
+        run_self_play_iteration(request)
+
+    assert not (_paths(tmp_path).iteration_dir(2) / "metadata.json").exists()

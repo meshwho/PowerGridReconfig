@@ -168,3 +168,31 @@ def test_scenario_pool_static_boundaries() -> None:
 
     assert not any(token in sampling_source for token in ("pandas", "read_csv", "write_text", "save_json", "load_json"))
     assert "def sample_from_pool" not in state_source
+
+
+def test_example_validation_import_is_lightweight_in_fresh_process() -> None:
+    result = _run_fresh_python(
+        """
+import sys
+from grid_topology_ai.self_play.example_validation import (
+    REQUIRED_EXAMPLE_COLUMNS,
+    load_and_validate_examples_csv,
+    validate_examples_dataframe,
+)
+assert "torch" not in sys.modules
+assert "grid_topology_ai.training.graph_policy_value" not in sys.modules
+assert "grid_topology_ai.self_play.pipeline" not in sys.modules
+print(REQUIRED_EXAMPLE_COLUMNS)
+print(load_and_validate_examples_csv.__name__, validate_examples_dataframe.__name__)
+"""
+    )
+    _assert_success(result)
+
+
+def test_example_validation_static_boundaries() -> None:
+    source = (PROJECT_ROOT / "grid_topology_ai/self_play/example_validation.py").read_text(encoding="utf-8")
+    forbidden = ("torch", "scripts.", "subprocess", "GridFMPowerFlowBackend", "TopologySwitchingEnv", "MCTSPlanner")
+    assert all(token not in source for token in forbidden)
+    replay = (PROJECT_ROOT / "grid_topology_ai/self_play/replay.py").read_text(encoding="utf-8")
+    assert "load_and_validate_examples_csv" in replay
+    assert "required_columns = {" not in replay
