@@ -76,6 +76,7 @@ def _patch_basics(monkeypatch, tmp_path: Path, calls: list[str] | None = None, *
     monkeypatch.setattr(pipeline_module, "load_learning_curve", lambda path: (note("load_learning_curve") or []))
     monkeypatch.setattr(pipeline_module, "upsert_iteration_row", lambda *, rows, row: (calls.append(f"upsert {row['iteration']}") if calls is not None else None) or [*rows, row])
     monkeypatch.setattr(pipeline_module, "save_learning_curve", lambda *, rows, path: (calls.append(f"save {rows[-1]['iteration']}") if calls is not None and rows else None))
+    monkeypatch.setattr(pipeline_module, "write_iteration_completion_marker", lambda **kwargs: (calls.append(f"marker {kwargs['iteration']}") if calls is not None else None) or kwargs["path"])
 
 
 def _iteration_result(iteration: int, best: Path, metric: float, pool: dict[str, object]) -> IterationResult:
@@ -134,7 +135,7 @@ def test_pipeline_skips_resume_validation_without_completed_iterations(tmp_path:
     assert "validate_resume_artifacts" not in calls
 
 
-def test_pipeline_saves_learning_curve_after_each_iteration(tmp_path: Path, monkeypatch) -> None:
+def test_pipeline_writes_completion_after_learning_curve(tmp_path: Path, monkeypatch) -> None:
     calls: list[str] = []
     _patch_basics(monkeypatch, tmp_path, calls)
     def fake_run(request):
@@ -142,7 +143,7 @@ def test_pipeline_saves_learning_curve_after_each_iteration(tmp_path: Path, monk
         return _iteration_result(request.iteration, tmp_path / "best.pt", 0.2, {"scenarios": []})
     monkeypatch.setattr(pipeline_module, "run_self_play_iteration", fake_run)
     run_self_play_pipeline(_request(tmp_path, n_iterations=2))
-    assert [c for c in calls if c.startswith(("iteration", "upsert", "save "))] == ["iteration 1", "upsert 1", "save 1", "iteration 2", "upsert 2", "save 2"]
+    assert [c for c in calls if c.startswith(("iteration", "upsert", "save ", "marker"))] == ["iteration 1", "upsert 1", "save 1", "marker 1", "iteration 2", "upsert 2", "save 2", "marker 2"]
 
 
 def test_pipeline_returns_final_state(tmp_path: Path, monkeypatch) -> None:
@@ -175,3 +176,119 @@ def test_pipeline_does_not_mutate_raw_config(tmp_path: Path, monkeypatch) -> Non
     monkeypatch.setattr(pipeline_module, "run_self_play_iteration", lambda request: _iteration_result(request.iteration, tmp_path / "best.pt", 0.2, {"scenarios": []}))
     run_self_play_pipeline(_request(tmp_path, n_iterations=1, raw=raw))
     assert raw == original
+
+
+def test_pipeline_does_not_mark_complete_when_iteration_fails(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _patch_basics(monkeypatch, tmp_path)
+
+    def fail_iteration(request):
+        raise RuntimeError("iteration failed")
+
+    monkeypatch.setattr(pipeline_module, "run_self_play_iteration", fail_iteration)
+    monkeypatch.setattr(
+        pipeline_module,
+        "write_iteration_completion_marker",
+        lambda **kwargs: pytest.fail("completion writer should not be called"),
+    )
+
+    with pytest.raises(RuntimeError, match="iteration failed"):
+        run_self_play_pipeline(_request(tmp_path, n_iterations=1))
+
+
+def test_pipeline_does_not_mark_complete_when_learning_curve_save_fails(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _patch_basics(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        pipeline_module,
+        "run_self_play_iteration",
+        lambda request: _iteration_result(
+            request.iteration,
+            tmp_path / "best.pt",
+            0.2,
+            {"scenarios": []},
+        ),
+    )
+
+    def fail_learning_curve(*, rows, path):
+        raise RuntimeError("learning curve failed")
+
+    monkeypatch.setattr(pipeline_module, "save_learning_curve", fail_learning_curve)
+    monkeypatch.setattr(
+        pipeline_module,
+        "write_iteration_completion_marker",
+        lambda **kwargs: pytest.fail("completion writer should not be called"),
+    )
+
+    with pytest.raises(RuntimeError, match="learning curve failed"):
+        run_self_play_pipeline(_request(tmp_path, n_iterations=1))
+
+
+def test_pipeline_stops_when_completion_marker_fails(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _patch_basics(monkeypatch, tmp_path)
+    iterations: list[int] = []
+
+    def fake_run(request):
+        iterations.append(request.iteration)
+        return _iteration_result(
+            request.iteration,
+            tmp_path / f"best-{request.iteration}.pt",
+            0.2,
+            {"scenarios": []},
+        )
+
+    def fail_marker(**kwargs):
+        raise RuntimeError("marker failed")
+
+    monkeypatch.setattr(pipeline_module, "run_self_play_iteration", fake_run)
+    monkeypatch.setattr(pipeline_module, "write_iteration_completion_marker", fail_marker)
+
+    with pytest.raises(RuntimeError, match="marker failed"):
+        run_self_play_pipeline(_request(tmp_path, n_iterations=2))
+
+    assert iterations == [1]
+
+
+def test_pipeline_passes_completion_artifacts(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _patch_basics(monkeypatch, tmp_path)
+    captured: dict[str, object] = {}
+
+    def fake_run(request):
+        return _iteration_result(
+            request.iteration,
+            tmp_path / "best-after.pt",
+            0.2,
+            {"scenarios": []},
+        )
+
+    def capture_marker(**kwargs):
+        captured.update(kwargs)
+        return kwargs["path"]
+
+    request = _request(tmp_path, n_iterations=1)
+    monkeypatch.setattr(pipeline_module, "run_self_play_iteration", fake_run)
+    monkeypatch.setattr(pipeline_module, "write_iteration_completion_marker", capture_marker)
+
+    run_self_play_pipeline(request)
+
+    assert captured["iteration"] == 1
+    assert captured["accepted"] is True
+    assert captured["status"] == "ACCEPTED"
+    assert captured["metadata_path"] == Path("metadata.json")
+    assert captured["candidate_checkpoint"] == Path("candidate-1.pt")
+    assert captured["best_checkpoint_after"] == tmp_path / "best-after.pt"
+    assert captured["best_metrics_path"] == request.paths.best_metrics
+    assert captured["pool_metadata_path"] == request.paths.pool_metadata
+    assert captured["replay_manifest_path"] == request.paths.replay_manifest
+    assert captured["replay_iteration_path"] == request.paths.replay_iteration_file(1)
+    assert captured["learning_curve_path"] == request.paths.learning_curve
