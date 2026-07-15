@@ -126,3 +126,45 @@ print("legacy modules absent")
     )
 
     _assert_success(result)
+
+
+def test_scenario_pool_imports_in_fresh_process() -> None:
+    result = _run_fresh_python(
+        """
+from grid_topology_ai.self_play.pool_state import (
+    initialize_pool_metadata,
+    update_and_save_pool_metadata,
+)
+from grid_topology_ai.self_play.pool_sampling import sample_from_pool
+print(
+    initialize_pool_metadata.__name__,
+    update_and_save_pool_metadata.__name__,
+    sample_from_pool.__name__,
+)
+"""
+    )
+
+    _assert_success(result)
+
+
+def test_legacy_pool_metadata_module_is_absent_in_fresh_process() -> None:
+    result = _run_fresh_python(
+        """
+import importlib.util
+
+assert importlib.util.find_spec(
+    "grid_topology_ai.self_play." + "pool_" + "metadata"
+) is None
+print("legacy pool metadata module absent")
+"""
+    )
+
+    _assert_success(result)
+
+
+def test_scenario_pool_static_boundaries() -> None:
+    sampling_source = (PROJECT_ROOT / "grid_topology_ai/self_play/pool_sampling.py").read_text(encoding="utf-8")
+    state_source = (PROJECT_ROOT / "grid_topology_ai/self_play/pool_state.py").read_text(encoding="utf-8")
+
+    assert not any(token in sampling_source for token in ("pandas", "read_csv", "write_text", "save_json", "load_json"))
+    assert "def sample_from_pool" not in state_source
