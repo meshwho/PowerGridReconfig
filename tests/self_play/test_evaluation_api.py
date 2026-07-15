@@ -19,8 +19,14 @@ class _FakeReward:
 
 
 class _FakeCache:
+    def __init__(self) -> None:
+        self.clear_count = 0
+
     def cache_info(self) -> str:
         return "cache-info"
+
+    def clear_cache(self) -> None:
+        self.clear_count += 1
 
 
 def _write_inputs(tmp_path: Path, scenario_ids: list[int] | None = None) -> tuple[Path, Path, Path]:
@@ -74,18 +80,119 @@ def _row(scenario_id: int, *, solved: bool = True) -> dict[str, object]:
 
 
 @pytest.fixture(autouse=True)
-def fake_task_config(monkeypatch: pytest.MonkeyPatch) -> None:
+def fake_task_config(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(evaluation, "GridFMReward", _FakeReward)
+    evaluation._WORKER_CONTEXT = None
+    yield
+    evaluation._WORKER_CONTEXT = None
+
+
+def _set_fake_worker_context() -> tuple[_FakeCache, _FakeCache, _FakeCache]:
+    backend = _FakeCache()
+    action_space = _FakeCache()
+    evaluator = _FakeCache()
+    evaluation._WORKER_CONTEXT = {
+        "backend": backend,
+        "action_space": action_space,
+        "evaluator": evaluator,
+    }
+    return backend, action_space, evaluator
+
+
+def _successful_sequential(*rows: dict[str, object]):
+    def fake_sequential(**kwargs: object) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
+        _set_fake_worker_context()
+        return list(rows), []
+
+    return fake_sequential
+
+
+def test_release_worker_context_clears_global_and_caches() -> None:
+    fake_backend = _FakeCache()
+    fake_action_space = _FakeCache()
+    fake_evaluator = _FakeCache()
+    evaluation._WORKER_CONTEXT = {
+        "backend": fake_backend,
+        "action_space": fake_action_space,
+        "evaluator": fake_evaluator,
+        "planner": object(),
+    }
+
+    evaluation._release_worker_context()
+
+    assert evaluation._WORKER_CONTEXT is None
+    assert fake_backend.clear_count == 1
+    assert fake_action_space.clear_count == 1
+    assert fake_evaluator.clear_count == 1
+
+
+def test_sequential_evaluation_releases_context_after_success(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    caches: dict[str, _FakeCache] = {}
+
+    def fake_sequential(**kwargs: object):
+        backend, action_space, evaluator = _set_fake_worker_context()
+        caches["backend"] = backend
+        caches["action_space"] = action_space
+        caches["evaluator"] = evaluator
+        return [_row(1)], []
+
+    monkeypatch.setattr(evaluation, "run_sequential", fake_sequential)
+
+    evaluation.evaluate_checkpoint(_request(tmp_path))
+
+    assert evaluation._WORKER_CONTEXT is None
+    assert caches["backend"].clear_count == 1
+    assert caches["action_space"].clear_count == 1
+    assert caches["evaluator"].clear_count == 1
+
+
+def test_sequential_evaluation_releases_context_after_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    caches: dict[str, _FakeCache] = {}
+
+    def fake_sequential(**kwargs: object):
+        backend, action_space, evaluator = _set_fake_worker_context()
+        caches["backend"] = backend
+        caches["action_space"] = action_space
+        caches["evaluator"] = evaluator
+        raise RuntimeError("evaluation failed")
+
+    monkeypatch.setattr(evaluation, "run_sequential", fake_sequential)
+
+    with pytest.raises(RuntimeError, match="evaluation failed"):
+        evaluation.evaluate_checkpoint(_request(tmp_path))
+
+    assert evaluation._WORKER_CONTEXT is None
+    assert caches["backend"].clear_count == 1
+    assert caches["action_space"].clear_count == 1
+    assert caches["evaluator"].clear_count == 1
+
+
+def test_parallel_evaluation_does_not_require_parent_worker_context(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_parallel(**kwargs: object):
+        assert evaluation._WORKER_CONTEXT is None
+        return [_row(1)], []
+
+    config = EvaluationConfig(num_workers=2, use_continuation_gate=False)
+    monkeypatch.setattr(evaluation, "run_parallel", fake_parallel)
     monkeypatch.setattr(
         evaluation,
-        "_require_worker_context",
-        lambda: {
-            "backend": _FakeCache(),
-            "action_space": _FakeCache(),
-            "evaluator": _FakeCache(),
-        },
+        "run_sequential",
+        lambda **kwargs: pytest.fail("sequential runner should not be called"),
     )
 
+    metrics = evaluation.evaluate_checkpoint(_request(tmp_path, config=config))
+
+    assert metrics["evaluated_scenarios"] == 1
+    assert evaluation._WORKER_CONTEXT is None
 
 def test_evaluation_request_is_frozen_and_slotted(tmp_path: Path) -> None:
     request = _request(tmp_path)
@@ -227,6 +334,7 @@ def test_evaluate_checkpoint_uses_sequential_runner(
 
     def fake_sequential(**kwargs: object) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
         called["sequential"] = True
+        _set_fake_worker_context()
         return [_row(1)], []
 
     monkeypatch.setattr(evaluation, "run_sequential", fake_sequential)
@@ -275,7 +383,7 @@ def test_evaluation_sorts_output_rows_by_scenario_id(
     monkeypatch.setattr(
         evaluation,
         "run_sequential",
-        lambda **kwargs: ([_row(3), _row(1), _row(2)], []),
+        _successful_sequential(_row(3), _row(1), _row(2)),
     )
 
     evaluation.evaluate_checkpoint(request)
@@ -291,7 +399,7 @@ def test_evaluation_saves_csv_and_json(
     output_csv = tmp_path / "eval.csv"
     output_json = tmp_path / "eval.json"
     request = _request(tmp_path, output_csv=output_csv, output_json=output_json)
-    monkeypatch.setattr(evaluation, "run_sequential", lambda **kwargs: ([_row(1)], []))
+    monkeypatch.setattr(evaluation, "run_sequential", _successful_sequential(_row(1)))
 
     metrics = evaluation.evaluate_checkpoint(request)
 
@@ -305,7 +413,7 @@ def test_evaluation_returns_metrics(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(evaluation, "run_sequential", lambda **kwargs: ([_row(1)], []))
+    monkeypatch.setattr(evaluation, "run_sequential", _successful_sequential(_row(1)))
 
     metrics = evaluation.evaluate_checkpoint(_request(tmp_path))
 
@@ -318,7 +426,11 @@ def test_evaluation_rejects_zero_successful_rows(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     failed = [{"ok": False, "scenario_id": 1, "row": None, "traceback": "boom"}]
-    monkeypatch.setattr(evaluation, "run_sequential", lambda **kwargs: ([], failed))
+    def fake_sequential_failure_rows(**kwargs: object):
+        _set_fake_worker_context()
+        return [], failed
+
+    monkeypatch.setattr(evaluation, "run_sequential", fake_sequential_failure_rows)
 
     with pytest.raises(RuntimeError, match="No scenarios"):
         evaluation.evaluate_checkpoint(_request(tmp_path))
@@ -332,7 +444,11 @@ def test_failed_scenarios_are_counted(
         {"ok": False, "scenario_id": 2, "row": None, "traceback": "boom"},
         {"ok": False, "scenario_id": 3, "row": None, "traceback": "boom"},
     ]
-    monkeypatch.setattr(evaluation, "run_sequential", lambda **kwargs: ([_row(1)], failed))
+    def fake_sequential_failed(**kwargs: object):
+        _set_fake_worker_context()
+        return [_row(1)], failed
+
+    monkeypatch.setattr(evaluation, "run_sequential", fake_sequential_failed)
 
     metrics = evaluation.evaluate_checkpoint(_request(tmp_path))
 
@@ -359,7 +475,7 @@ def test_difficulty_metrics_are_preserved(
     monkeypatch.setattr(
         evaluation,
         "run_sequential",
-        lambda **kwargs: ([_row(1), _row(2), _row(3)], []),
+        _successful_sequential(_row(1), _row(2), _row(3)),
     )
 
     metrics = evaluation.evaluate_checkpoint(request)
