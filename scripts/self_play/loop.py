@@ -122,9 +122,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--resume",
         action="store_true",
         help=(
-            "Continue after the last completed iteration. "
-            "Refuse to continue if incomplete iteration "
-            "directories are present."
+            "Continue after the last iteration with a valid "
+            "iteration_complete.json marker. Refuse to continue when "
+            "incomplete iteration directories are present."
         ),
     )
 

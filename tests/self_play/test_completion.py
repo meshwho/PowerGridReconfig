@@ -182,3 +182,132 @@ def test_validate_iteration_completion_detects_hash_mismatch(
             iteration_dir=completion_artifacts["iter_dir"],
             expected_iteration=1,
         )
+
+
+def test_completion_marker_rejects_non_boolean_accepted(
+    completion_artifacts: dict[str, Path],
+) -> None:
+    with pytest.raises(ValueError, match="accepted must be a bool"):
+        write_iteration_completion_marker(
+            path=completion_artifacts["marker"],
+            iteration=1,
+            accepted="false",  # type: ignore[arg-type]
+            status="REJECTED",
+            metadata_path=completion_artifacts["metadata_path"],
+            candidate_checkpoint=completion_artifacts["candidate_checkpoint"],
+            best_checkpoint_after=completion_artifacts["best_checkpoint"],
+            best_metrics_path=completion_artifacts["best_metrics"],
+            pool_metadata_path=completion_artifacts["pool_metadata"],
+            replay_manifest_path=completion_artifacts["replay_manifest"],
+            replay_iteration_path=completion_artifacts["replay_iteration"],
+            learning_curve_path=completion_artifacts["learning_curve"],
+        )
+
+
+def test_completion_marker_validates_metadata_acceptance(
+    completion_artifacts: dict[str, Path],
+) -> None:
+    save_json({"iteration": 1, "accepted": False}, completion_artifacts["metadata_path"])
+
+    with pytest.raises(ValueError, match="metadata.json accepted"):
+        _write_marker(completion_artifacts)
+
+
+def test_completion_marker_rejects_non_boolean_metadata_acceptance(
+    completion_artifacts: dict[str, Path],
+) -> None:
+    save_json({"iteration": 1, "accepted": "false"}, completion_artifacts["metadata_path"])
+
+    with pytest.raises(ValueError, match="metadata.json accepted must be a bool"):
+        _write_marker(completion_artifacts)
+
+
+def test_completion_marker_validates_pool_iteration(
+    completion_artifacts: dict[str, Path],
+) -> None:
+    save_json({"last_updated_iteration": 2}, completion_artifacts["pool_metadata"])
+
+    with pytest.raises(ValueError, match="last_updated_iteration"):
+        _write_marker(completion_artifacts)
+
+
+def test_completion_marker_validates_replay_manifest(
+    completion_artifacts: dict[str, Path],
+) -> None:
+    save_json({"files": []}, completion_artifacts["replay_manifest"])
+
+    with pytest.raises(ValueError, match="Replay manifest"):
+        _write_marker(completion_artifacts)
+
+
+def test_completion_marker_validates_learning_curve_row(
+    completion_artifacts: dict[str, Path],
+) -> None:
+    completion_artifacts["learning_curve"].write_text(
+        "iteration,accepted,status\n2,True,ACCEPTED\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="learning_curve.csv"):
+        _write_marker(completion_artifacts)
+
+
+def test_completion_validation_detects_metadata_tampering(
+    completion_artifacts: dict[str, Path],
+) -> None:
+    _write_marker(completion_artifacts)
+    save_json({"iteration": 1, "accepted": True, "tampered": True}, completion_artifacts["metadata_path"])
+
+    with pytest.raises(ValueError, match="metadata_sha256"):
+        validate_iteration_completion(
+            iteration_dir=completion_artifacts["iter_dir"],
+            expected_iteration=1,
+        )
+
+
+def test_completion_validation_detects_replay_tampering(
+    completion_artifacts: dict[str, Path],
+) -> None:
+    _write_marker(completion_artifacts)
+    with gzip.open(completion_artifacts["replay_iteration"], "wt", encoding="utf-8") as file:
+        file.write(json.dumps({"tampered": True}) + "\n")
+
+    with pytest.raises(ValueError, match="replay_iteration_sha256"):
+        validate_iteration_completion(
+            iteration_dir=completion_artifacts["iter_dir"],
+            expected_iteration=1,
+        )
+
+
+def test_load_completion_marker_rejects_wrong_iteration(
+    completion_artifacts: dict[str, Path],
+) -> None:
+    _write_marker(completion_artifacts)
+
+    with pytest.raises(ValueError, match="expected 2"):
+        load_iteration_completion_marker(
+            completion_artifacts["marker"],
+            expected_iteration=2,
+        )
+
+
+def test_load_completion_marker_rejects_non_boolean_accepted(
+    completion_artifacts: dict[str, Path],
+) -> None:
+    save_json(
+        {
+            "schema_version": COMPLETION_SCHEMA_VERSION,
+            "iteration": 1,
+            "accepted": "true",
+            "status": "ACCEPTED",
+            "artifacts": {
+                "metadata_sha256": "x",
+                "candidate_checkpoint_sha256": "y",
+                "replay_iteration_sha256": "z",
+            },
+        },
+        completion_artifacts["marker"],
+    )
+
+    with pytest.raises(ValueError, match="accepted must be a bool"):
+        load_iteration_completion_marker(completion_artifacts["marker"])

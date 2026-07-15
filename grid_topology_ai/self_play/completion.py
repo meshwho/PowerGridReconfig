@@ -21,11 +21,16 @@ _REQUIRED_HASHES = {
 
 
 def _validate_status(*, accepted: bool, status: str) -> None:
+    if not isinstance(accepted, bool):
+        raise ValueError(
+            f"accepted must be a bool, got {type(accepted).__name__}"
+        )
+
     if status not in _VALID_STATUSES:
         raise ValueError(f"Invalid iteration completion status: {status}")
 
     expected_accepted = status == "ACCEPTED"
-    if bool(accepted) != expected_accepted:
+    if accepted != expected_accepted:
         raise ValueError(
             "accepted must match status "
             f"(accepted={accepted!r}, status={status!r})"
@@ -41,7 +46,11 @@ def _validate_metadata(path: Path, *, iteration: int, accepted: bool) -> None:
     metadata = load_json(path)
     if int(metadata.get("iteration", -1)) != int(iteration):
         raise ValueError(f"metadata.json iteration does not match {iteration}: {path}")
-    if bool(metadata.get("accepted")) != bool(accepted):
+
+    metadata_accepted = metadata.get("accepted")
+    if not isinstance(metadata_accepted, bool):
+        raise ValueError(f"metadata.json accepted must be a bool: {path}")
+    if metadata_accepted != accepted:
         raise ValueError(f"metadata.json accepted does not match {accepted}: {path}")
 
 

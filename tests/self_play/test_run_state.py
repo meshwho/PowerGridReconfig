@@ -185,3 +185,33 @@ def test_ignores_non_numeric_iteration_directories(
         incomplete_directories=(),
         start_iteration=1,
     )
+
+
+def test_metadata_alone_is_not_complete(tmp_path: Path) -> None:
+    iteration_dir = tmp_path / "iter_001"
+    iteration_dir.mkdir()
+    save_json({"iteration": 1, "accepted": True}, iteration_dir / "metadata.json")
+
+    with pytest.raises(RuntimeError) as exc_info:
+        resolve_run_state(
+            run_dir=tmp_path,
+            resume=True,
+        )
+
+    message = str(exc_info.value)
+    assert "iteration_complete.json" in message
+    assert "metadata.json is no longer proof" in message
+
+
+def test_resume_rejects_corrupt_completion_marker(tmp_path: Path) -> None:
+    _complete_iteration(tmp_path, 1)
+    save_json(
+        {"iteration": 1, "accepted": True, "tampered": True},
+        tmp_path / "iter_001" / "metadata.json",
+    )
+
+    with pytest.raises(RuntimeError, match="Invalid iteration completion marker"):
+        resolve_run_state(
+            run_dir=tmp_path,
+            resume=True,
+        )
