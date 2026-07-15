@@ -76,6 +76,7 @@ def _patch_basics(monkeypatch, tmp_path: Path, calls: list[str] | None = None, *
     monkeypatch.setattr(pipeline_module, "load_learning_curve", lambda path: (note("load_learning_curve") or []))
     monkeypatch.setattr(pipeline_module, "upsert_iteration_row", lambda *, rows, row: (calls.append(f"upsert {row['iteration']}") if calls is not None else None) or [*rows, row])
     monkeypatch.setattr(pipeline_module, "save_learning_curve", lambda *, rows, path: (calls.append(f"save {rows[-1]['iteration']}") if calls is not None and rows else None))
+    monkeypatch.setattr(pipeline_module, "write_iteration_completion_marker", lambda **kwargs: (calls.append(f"marker {kwargs['iteration']}") if calls is not None else None) or kwargs["path"])
 
 
 def _iteration_result(iteration: int, best: Path, metric: float, pool: dict[str, object]) -> IterationResult:
@@ -142,7 +143,7 @@ def test_pipeline_saves_learning_curve_after_each_iteration(tmp_path: Path, monk
         return _iteration_result(request.iteration, tmp_path / "best.pt", 0.2, {"scenarios": []})
     monkeypatch.setattr(pipeline_module, "run_self_play_iteration", fake_run)
     run_self_play_pipeline(_request(tmp_path, n_iterations=2))
-    assert [c for c in calls if c.startswith(("iteration", "upsert", "save "))] == ["iteration 1", "upsert 1", "save 1", "iteration 2", "upsert 2", "save 2"]
+    assert [c for c in calls if c.startswith(("iteration", "upsert", "save ", "marker"))] == ["iteration 1", "upsert 1", "save 1", "marker 1", "iteration 2", "upsert 2", "save 2", "marker 2"]
 
 
 def test_pipeline_returns_final_state(tmp_path: Path, monkeypatch) -> None:

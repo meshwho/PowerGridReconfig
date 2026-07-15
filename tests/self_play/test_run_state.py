@@ -4,6 +4,8 @@ from pathlib import Path
 
 import pytest
 
+from grid_topology_ai.self_play.artifacts import load_json, save_json
+from grid_topology_ai.self_play.completion import write_iteration_completion_marker
 from grid_topology_ai.self_play.run_state import (
     RunState,
     resolve_run_state,
@@ -13,9 +15,51 @@ from grid_topology_ai.self_play.run_state import (
 def _complete_iteration(run_dir: Path, iteration: int) -> None:
     iteration_dir = run_dir / f"iter_{iteration:03d}"
     iteration_dir.mkdir(parents=True)
-    (iteration_dir / "metadata.json").write_text(
-        "{}",
-        encoding="utf-8",
+
+    metadata_path = iteration_dir / "metadata.json"
+    candidate_checkpoint = iteration_dir / "candidate_checkpoint.pt"
+    best_checkpoint = run_dir / "checkpoints" / "best.pt"
+    best_metrics = run_dir / "checkpoints" / "best_metrics.json"
+    pool_metadata = run_dir / "inputs" / "pool_metadata.json"
+    replay_iteration = run_dir / "replay_buffer" / f"buffer_iter_{iteration:03d}.jsonl.gz"
+    replay_manifest = run_dir / "replay_buffer" / "buffer_manifest.json"
+    learning_curve = run_dir / "learning_curve.csv"
+
+    save_json({"iteration": iteration, "accepted": True}, metadata_path)
+    candidate_checkpoint.write_bytes(f"candidate-{iteration}".encode())
+    best_checkpoint.parent.mkdir(parents=True, exist_ok=True)
+    best_checkpoint.write_bytes(b"best")
+    save_json({"score": 1.0}, best_metrics)
+    pool_metadata.parent.mkdir(parents=True, exist_ok=True)
+    save_json({"last_updated_iteration": iteration}, pool_metadata)
+    replay_iteration.parent.mkdir(parents=True, exist_ok=True)
+    replay_iteration.write_bytes(f"replay-{iteration}".encode())
+
+    files = []
+    if replay_manifest.exists():
+        files = list(load_json(replay_manifest).get("files", []))
+    files.append({"iteration": iteration, "path": replay_iteration.name})
+    save_json({"files": files}, replay_manifest)
+
+    rows = ["iteration,accepted,status"]
+    if learning_curve.exists():
+        rows = learning_curve.read_text(encoding="utf-8").strip().splitlines()
+    rows.append(f"{iteration},True,ACCEPTED")
+    learning_curve.write_text("\n".join(rows) + "\n", encoding="utf-8")
+
+    write_iteration_completion_marker(
+        path=iteration_dir / "iteration_complete.json",
+        iteration=iteration,
+        accepted=True,
+        status="ACCEPTED",
+        metadata_path=metadata_path,
+        candidate_checkpoint=candidate_checkpoint,
+        best_checkpoint_after=best_checkpoint,
+        best_metrics_path=best_metrics,
+        pool_metadata_path=pool_metadata,
+        replay_manifest_path=replay_manifest,
+        replay_iteration_path=replay_iteration,
+        learning_curve_path=learning_curve,
     )
 
 
@@ -66,7 +110,7 @@ def test_resume_rejects_incomplete_iteration(
 ) -> None:
     (tmp_path / "iter_001").mkdir()
 
-    with pytest.raises(RuntimeError, match="incomplete iteration"):
+    with pytest.raises(RuntimeError, match="iteration_complete.json"):
         resolve_run_state(
             run_dir=tmp_path,
             resume=True,

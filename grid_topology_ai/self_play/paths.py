@@ -6,6 +6,9 @@ from pathlib import Path
 from grid_topology_ai.config import SelfPlayConfig
 
 
+ITERATION_COMPLETION_FILENAME = "iteration_complete.json"
+
+
 def _resolve(root: Path, value: Path) -> Path:
     return value if value.is_absolute() else root / value
 
@@ -111,3 +114,9 @@ class SelfPlayPaths:
 
     def iteration_dir(self, iteration: int) -> Path:
         return self.run_dir / f"iter_{iteration:03d}"
+
+    def iteration_completion_marker(self, iteration: int) -> Path:
+        return self.iteration_dir(iteration) / ITERATION_COMPLETION_FILENAME
+
+    def replay_iteration_file(self, iteration: int) -> Path:
+        return self.replay_dir / f"buffer_iter_{iteration:03d}.jsonl.gz"
