@@ -77,6 +77,8 @@ def _stage_output(log_path: Path) -> Iterator[None]:
         with redirect_stdout(stdout_tee), redirect_stderr(stderr_tee):
             try:
                 yield
+            # Intentional top-level logging boundary:
+            # print the traceback and re-raise the original exception unchanged.
             except Exception:
                 traceback.print_exc()
                 raise

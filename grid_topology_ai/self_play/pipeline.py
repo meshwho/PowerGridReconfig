@@ -63,7 +63,7 @@ def _format_metric(
 
     try:
         return f"{float(value):.4f}"
-    except Exception:
+    except (TypeError, ValueError, OverflowError):
         return str(value)
 
 

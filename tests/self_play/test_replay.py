@@ -1,6 +1,14 @@
+import gzip
+import json
+from copy import deepcopy
 from pathlib import Path
 
+import numpy as np
+import pandas as pd
+import pytest
+
 from grid_topology_ai.config import ReplayBufferConfig
+from grid_topology_ai.self_play import replay as replay_module
 from grid_topology_ai.self_play.replay import RollingReplayBuffer
 
 
@@ -86,13 +94,6 @@ def test_reload_preserves_fifo_order(tmp_path: Path) -> None:
 def test_rolling_replay_buffer_class_name_is_explicit() -> None:
     assert RollingReplayBuffer.__name__ == "RollingReplayBuffer"
 
-import gzip
-import json
-from copy import deepcopy
-
-import numpy as np
-import pandas as pd
-import pytest
 
 
 def _write_valid_state(path: Path) -> Path:
@@ -204,3 +205,28 @@ def test_add_examples_from_csv_validates_before_mutation(tmp_path: Path) -> None
     with pytest.raises(ValueError):
         buffer.add_examples_from_csv(examples_csv=_invalid_csv(tmp_path), iteration=1)
     assert buffer.buffer == before
+
+
+def test_json_safe_converts_scalar_missing_values() -> None:
+    assert replay_module._json_safe(np.nan) is None
+    assert replay_module._json_safe(pd.NA) is None
+
+
+def test_json_safe_preserves_non_missing_scalar() -> None:
+    assert replay_module._json_safe(1) == 1
+    assert replay_module._json_safe("value") == "value"
+
+
+def test_json_safe_does_not_use_array_truth_value() -> None:
+    value = [1, 2]
+    assert replay_module._json_safe(value) is value
+
+
+def test_json_safe_propagates_unexpected_isna_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fail(value: object) -> object:
+        raise RuntimeError("unexpected isna failure")
+
+    monkeypatch.setattr(replay_module.pd, "isna", fail)
+
+    with pytest.raises(RuntimeError, match="unexpected isna failure"):
+        replay_module._json_safe("value")

@@ -43,7 +43,7 @@ def _scan_iteration_directories(
                 iteration_dir=iteration_dir,
                 expected_iteration=iteration,
             )
-        except Exception as exc:
+        except (OSError, TypeError, ValueError) as exc:
             raise RuntimeError(
                 f"Invalid iteration completion marker: {marker_path}"
             ) from exc

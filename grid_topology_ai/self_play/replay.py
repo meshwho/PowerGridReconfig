@@ -33,11 +33,10 @@ def _json_safe(value: Any) -> Any:
     if isinstance(value, (np.bool_,)):
         return bool(value)
 
-    try:
-        if pd.isna(value):
-            return None
-    except Exception:
-        pass
+    missing = pd.isna(value)
+
+    if isinstance(missing, (bool, np.bool_)) and bool(missing):
+        return None
 
     return value
 
