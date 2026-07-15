@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from grid_topology_ai.config import SelfPlayConfig
 from grid_topology_ai.self_play.paths import SelfPlayPaths
 from scripts.self_play import loop as loop_module
@@ -121,10 +123,59 @@ def test_plan_only_uses_imported_renderer(
     assert calls[0][2] == tmp_path / "self_play.yaml"
 
 
-def test_loop_delegates_iteration_to_package_api() -> None:
+def test_loop_delegates_to_pipeline_package_api() -> None:
     source = Path(loop_module.__file__).read_text(encoding="utf-8")
 
-    assert "run_self_play_iteration" in source
+    assert "run_self_play_pipeline" in source
     assert "run_generate(" not in source
     assert "run_train(" not in source
     assert "run_evaluate(" not in source
+
+
+def test_normal_loop_delegates_to_pipeline(tmp_path: Path, monkeypatch) -> None:
+    cfg = _config_mapping()
+    captured = []
+    monkeypatch.setattr(loop_module, "load_yaml", lambda config_path: cfg)
+    monkeypatch.setattr(loop_module, "discover_project_root", lambda config_path: tmp_path)
+    monkeypatch.setattr(loop_module, "validate_inputs", lambda paths, require_bootstrap: [])
+    monkeypatch.setattr(loop_module, "run_self_play_pipeline", lambda request: captured.append(request))
+
+    loop_module.run_loop(config_path=tmp_path / "self_play.yaml", resume=True)
+
+    assert len(captured) == 1
+    request = captured[0]
+    assert request.config.run_name == cfg["run_name"]
+    assert request.raw_config is cfg
+    assert request.paths.run_dir == SelfPlayPaths.from_config(config=SelfPlayConfig.from_mapping(cfg), project_root=tmp_path).run_dir
+    assert request.resume is True
+
+
+def test_validate_only_does_not_run_pipeline(tmp_path: Path, monkeypatch) -> None:
+    cfg = _config_mapping()
+    monkeypatch.setattr(loop_module, "load_yaml", lambda config_path: cfg)
+    monkeypatch.setattr(loop_module, "discover_project_root", lambda config_path: tmp_path)
+    monkeypatch.setattr(loop_module, "validate_inputs", lambda paths, require_bootstrap: [])
+    monkeypatch.setattr(loop_module, "run_self_play_pipeline", lambda request: pytest.fail("pipeline should not run"))
+
+    loop_module.run_loop(config_path=tmp_path / "self_play.yaml", validate_only=True)
+
+
+def test_plan_only_does_not_run_pipeline_or_preflight(tmp_path: Path, monkeypatch) -> None:
+    cfg = _config_mapping()
+    monkeypatch.setattr(loop_module, "load_yaml", lambda config_path: cfg)
+    monkeypatch.setattr(loop_module, "discover_project_root", lambda config_path: tmp_path)
+    monkeypatch.setattr(loop_module, "validate_inputs", lambda paths, require_bootstrap: pytest.fail("preflight should not run"))
+    monkeypatch.setattr(loop_module, "run_self_play_pipeline", lambda request: pytest.fail("pipeline should not run"))
+    monkeypatch.setattr(loop_module, "render_execution_plan", lambda **kwargs: "plan")
+
+    loop_module.run_loop(config_path=tmp_path / "self_play.yaml", plan_only=True)
+
+
+def test_loop_source_does_not_contain_iteration_orchestration() -> None:
+    source = Path(loop_module.__file__).read_text(encoding="utf-8")
+
+    assert "run_self_play_iteration" not in source
+    assert "ReplayBuffer(" not in source
+    assert "initialize_best_state" not in source
+    assert "initialize_pool_metadata" not in source
+    assert "save_learning_curve(" not in source
