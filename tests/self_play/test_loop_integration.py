@@ -119,3 +119,12 @@ def test_plan_only_uses_imported_renderer(
     assert calls[0][0].run_name == cfg["run_name"]
     assert calls[0][1].run_dir == paths.run_dir
     assert calls[0][2] == tmp_path / "self_play.yaml"
+
+
+def test_loop_delegates_iteration_to_package_api() -> None:
+    source = Path(loop_module.__file__).read_text(encoding="utf-8")
+
+    assert "run_self_play_iteration" in source
+    assert "run_generate(" not in source
+    assert "run_train(" not in source
+    assert "run_evaluate(" not in source

@@ -148,6 +148,21 @@ def _ensure_runtime_dependencies() -> None:
     _RUNTIME_DEPENDENCIES_LOADED = True
 
 
+def _release_worker_context() -> None:
+    global _WORKER_CONTEXT
+
+    context = _WORKER_CONTEXT
+    _WORKER_CONTEXT = None
+
+    if context is None:
+        return
+
+    for name in ("backend", "action_space", "evaluator"):
+        cached_object = context.get(name)
+        clear_cache = getattr(cached_object, "clear_cache", None)
+        if clear_cache is not None:
+            clear_cache()
+
 def _require_worker_context() -> dict[str, Any]:
     if _WORKER_CONTEXT is None:
         raise RuntimeError(
@@ -549,126 +564,132 @@ def run_parallel(
 
 
 def evaluate_checkpoint(request: EvaluationRequest) -> dict[str, Any]:
-    raw_dir = request.raw_dir
-    transitions_path = request.transitions_csv
-    checkpoint_path = request.checkpoint
+    sequential_mode = int(request.config.num_workers) <= 1
 
-    if not raw_dir.exists():
-        raise FileNotFoundError(f"Raw directory not found: {raw_dir}")
-    if not transitions_path.exists():
-        raise FileNotFoundError(f"Transitions CSV not found: {transitions_path}")
-    if not checkpoint_path.exists():
-        raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
+    try:
+        raw_dir = request.raw_dir
+        transitions_path = request.transitions_csv
+        checkpoint_path = request.checkpoint
 
-    scenario_ids = load_scenario_ids(
-        transitions_path=transitions_path,
-        limit=request.limit,
-    )
-    scenario_batches = chunk_list(
-        values=scenario_ids,
-        batch_size=int(request.config.batch_size),
-    )
-    task_config = _make_task_config(request)
+        if not raw_dir.exists():
+            raise FileNotFoundError(f"Raw directory not found: {raw_dir}")
+        if not transitions_path.exists():
+            raise FileNotFoundError(f"Transitions CSV not found: {transitions_path}")
+        if not checkpoint_path.exists():
+            raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
 
-    print("=" * 100)
-    print("Evaluating checkpoint")
-    print("=" * 100)
-    print(f"Raw directory:       {raw_dir.resolve()}")
-    print(f"Transitions:         {transitions_path.resolve()}")
-    print(f"Checkpoint:          {checkpoint_path.resolve()}")
-    print(f"Use continuation gate: {request.config.use_continuation_gate}")
-    print(
-        "Allow hard handoff:  "
-        f"{request.config.allow_handoff_with_hard_overloads}"
-    )
-    print(f"Scenarios:           {len(scenario_ids)}")
-    print(f"Batches:             {len(scenario_batches)}")
-    print(f"Batch size:          {request.config.batch_size}")
-    print(f"Num workers:         {request.config.num_workers}")
-    print(f"Device:              {request.config.device}")
-    print(f"Quiet:               {request.quiet}")
-    print(f"Use DC screening:   {request.use_dc_screening}")
+        scenario_ids = load_scenario_ids(
+            transitions_path=transitions_path,
+            limit=request.limit,
+        )
+        scenario_batches = chunk_list(
+            values=scenario_ids,
+            batch_size=int(request.config.batch_size),
+        )
+        task_config = _make_task_config(request)
 
-    if request.use_dc_screening:
-        print(f"  dc max depth:      {request.dc_max_depth}")
-        print(f"  dc top k:          {request.dc_top_k}")
-        print(f"  dc candidate pool: {request.dc_candidate_pool}")
-        print(f"  dc keep policy:    {request.dc_keep_policy_actions}")
-        print(f"  dc keep loading:   {request.dc_keep_loading_actions}")
-        print(f"  dc policy weight:  {request.dc_policy_weight}")
-
-    if request.config.use_continuation_gate:
-        print(f"  min hard improvement: {request.min_hard_improvement}")
-        print(f"  min soft improvement: {request.min_soft_improvement}")
-        print(f"  min gate visits:      {request.min_gate_visits}")
-        print(f"  min gate visit frac:  {request.min_gate_visit_fraction}")
-
-    if (
-        str(request.config.device).lower().startswith("cuda")
-        and int(request.config.num_workers) > 1
-    ):
+        print("=" * 100)
+        print("Evaluating checkpoint")
+        print("=" * 100)
+        print(f"Raw directory:       {raw_dir.resolve()}")
+        print(f"Transitions:         {transitions_path.resolve()}")
+        print(f"Checkpoint:          {checkpoint_path.resolve()}")
+        print(f"Use continuation gate: {request.config.use_continuation_gate}")
         print(
-            "\nWARNING: CUDA + multiple worker processes means each worker loads "
-            "its own model copy on GPU. Start with --num-workers 2. "
-            "If CUDA memory grows too much, use --num-workers 1 or --device cpu.\n"
+            "Allow hard handoff:  "
+            f"{request.config.allow_handoff_with_hard_overloads}"
         )
+        print(f"Scenarios:           {len(scenario_ids)}")
+        print(f"Batches:             {len(scenario_batches)}")
+        print(f"Batch size:          {request.config.batch_size}")
+        print(f"Num workers:         {request.config.num_workers}")
+        print(f"Device:              {request.config.device}")
+        print(f"Quiet:               {request.quiet}")
+        print(f"Use DC screening:   {request.use_dc_screening}")
 
-    if int(request.config.num_workers) <= 1:
-        rows, failed_results = run_sequential(
-            scenario_batches=scenario_batches,
-            raw_dir=raw_dir,
-            checkpoint_path=checkpoint_path,
+        if request.use_dc_screening:
+            print(f"  dc max depth:      {request.dc_max_depth}")
+            print(f"  dc top k:          {request.dc_top_k}")
+            print(f"  dc candidate pool: {request.dc_candidate_pool}")
+            print(f"  dc keep policy:    {request.dc_keep_policy_actions}")
+            print(f"  dc keep loading:   {request.dc_keep_loading_actions}")
+            print(f"  dc policy weight:  {request.dc_policy_weight}")
+
+        if request.config.use_continuation_gate:
+            print(f"  min hard improvement: {request.min_hard_improvement}")
+            print(f"  min soft improvement: {request.min_soft_improvement}")
+            print(f"  min gate visits:      {request.min_gate_visits}")
+            print(f"  min gate visit frac:  {request.min_gate_visit_fraction}")
+
+        if (
+            str(request.config.device).lower().startswith("cuda")
+            and int(request.config.num_workers) > 1
+        ):
+            print(
+                "\nWARNING: CUDA + multiple worker processes means each worker loads "
+                "its own model copy on GPU. Start with --num-workers 2. "
+                "If CUDA memory grows too much, use --num-workers 1 or --device cpu.\n"
+            )
+
+        if sequential_mode:
+            rows, failed_results = run_sequential(
+                scenario_batches=scenario_batches,
+                raw_dir=raw_dir,
+                checkpoint_path=checkpoint_path,
+                task_config=task_config,
+                quiet=bool(request.quiet),
+            )
+        else:
+            rows, failed_results = run_parallel(
+                scenario_batches=scenario_batches,
+                raw_dir=raw_dir,
+                checkpoint_path=checkpoint_path,
+                task_config=task_config,
+                num_workers=int(request.config.num_workers),
+                quiet=bool(request.quiet),
+            )
+
+        if not rows:
+            raise RuntimeError("No scenarios were successfully evaluated.")
+
+        df = pd.DataFrame(rows)
+        df = df.sort_values("scenario_id", ascending=True).reset_index(drop=True)
+        df = attach_difficulty_metadata(df=df, transitions_path=transitions_path)
+        metrics = build_evaluation_metrics(
+            df=df,
+            failed_results=failed_results,
+            requested_scenarios=len(scenario_ids),
             task_config=task_config,
-            quiet=bool(request.quiet),
-        )
-    else:
-        rows, failed_results = run_parallel(
-            scenario_batches=scenario_batches,
-            raw_dir=raw_dir,
-            checkpoint_path=checkpoint_path,
-            task_config=task_config,
-            num_workers=int(request.config.num_workers),
-            quiet=bool(request.quiet),
         )
 
-    if not rows:
-        raise RuntimeError("No scenarios were successfully evaluated.")
+        if request.output_csv is not None:
+            request.output_csv.parent.mkdir(parents=True, exist_ok=True)
+            df.to_csv(request.output_csv, index=False)
+            print(f"\nSaved evaluation CSV: {request.output_csv}")
 
-    df = pd.DataFrame(rows)
-    df = df.sort_values("scenario_id", ascending=True).reset_index(drop=True)
-    df = attach_difficulty_metadata(df=df, transitions_path=transitions_path)
-    metrics = build_evaluation_metrics(
-        df=df,
-        failed_results=failed_results,
-        requested_scenarios=len(scenario_ids),
-        task_config=task_config,
-    )
+        if request.output_json is not None:
+            save_json(payload=metrics, path=request.output_json)
+            print(f"\nSaved evaluation JSON: {request.output_json}")
 
-    if request.output_csv is not None:
-        request.output_csv.parent.mkdir(parents=True, exist_ok=True)
-        df.to_csv(request.output_csv, index=False)
-        print(f"\nSaved evaluation CSV: {request.output_csv}")
+        print_summary(df=df, failed_results=failed_results)
 
-    if request.output_json is not None:
-        save_json(payload=metrics, path=request.output_json)
-        print(f"\nSaved evaluation JSON: {request.output_json}")
+        if sequential_mode:
+            ctx = _require_worker_context()
+            print("\nPower flow cache:")
+            print(ctx["backend"].cache_info())
+            print("\nAction space cache:")
+            print(ctx["action_space"].cache_info())
+            print("\nNeural evaluator cache:")
+            print(ctx["evaluator"].cache_info())
+        else:
+            print("\nCache info:")
+            print(
+                "Parallel mode uses separate per-process caches. "
+                "Global cache statistics are not aggregated."
+            )
 
-    print_summary(df=df, failed_results=failed_results)
-
-    if int(request.config.num_workers) <= 1:
-        ctx = _require_worker_context()
-        print("\nPower flow cache:")
-        print(ctx["backend"].cache_info())
-        print("\nAction space cache:")
-        print(ctx["action_space"].cache_info())
-        print("\nNeural evaluator cache:")
-        print(ctx["evaluator"].cache_info())
-    else:
-        print("\nCache info:")
-        print(
-            "Parallel mode uses separate per-process caches. "
-            "Global cache statistics are not aggregated."
-        )
-
-    print("\nDone.")
-    return metrics
+        print("\nDone.")
+        return metrics
+    finally:
+        if sequential_mode:
+            _release_worker_context()
