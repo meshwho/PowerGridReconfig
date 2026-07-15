@@ -158,7 +158,7 @@ def test_run_train_uses_training_config(
         value_huber_delta=1.5,
         num_workers=2,
         device="cpu",
-        model_type="mlp",
+        model_type="graph_v2",
         hidden_dim=96,
         num_layers=4,
         dropout=0.2,
@@ -183,7 +183,7 @@ def test_run_train_uses_training_config(
     assert _value_after(command, "--value-huber-delta") == "1.5"
     assert _value_after(command, "--device") == "cpu"
     assert _value_after(command, "--num-workers") == "2"
-    assert _value_after(command, "--model-type") == "mlp"
+    assert _value_after(command, "--model-type") == "graph_v2"
     assert _value_after(command, "--hidden-dim") == "96"
     assert _value_after(command, "--num-layers") == "4"
     assert _value_after(command, "--dropout") == "0.2"

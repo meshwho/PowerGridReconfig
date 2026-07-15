@@ -450,14 +450,21 @@ def _build_model(
             dropout=request.config.dropout,
         ).to(device)
 
-    return GraphPolicyValueNet(
-        num_bus_features=dataset.num_bus_features,
-        num_branch_features=dataset.num_branch_features,
-        num_actions=dataset.num_actions,
-        hidden_dim=request.config.hidden_dim,
-        num_layers=request.config.num_layers,
-        dropout=request.config.dropout,
-    ).to(device)
+    if request.config.model_type == "graph_v1":
+        return GraphPolicyValueNet(
+            num_bus_features=dataset.num_bus_features,
+            num_branch_features=dataset.num_branch_features,
+            num_actions=dataset.num_actions,
+            hidden_dim=request.config.hidden_dim,
+            num_layers=request.config.num_layers,
+            dropout=request.config.dropout,
+        ).to(device)
+
+    raise ValueError(
+        "Unsupported training model_type: "
+        f"{request.config.model_type!r}. "
+        "Expected 'graph_v1' or 'graph_v2'."
+    )
 
 
 def train_graph_policy_value_model(

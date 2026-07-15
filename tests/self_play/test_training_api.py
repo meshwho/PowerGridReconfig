@@ -276,6 +276,44 @@ def test_api_loads_init_checkpoint_when_requested(
     assert captured["init_checkpoint"] == init_checkpoint
 
 
+def test_build_model_uses_explicit_architecture_branches(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeV1(_FakeModel):
+        pass
+
+    class FakeV2(_FakeModel):
+        pass
+
+    monkeypatch.setattr(training_api, "GraphPolicyValueNet", FakeV1)
+    monkeypatch.setattr(training_api, "GraphPolicyValueNetV2", FakeV2)
+    dataset = _FakeDataset(
+        examples_csv=tmp_path / "examples.csv",
+        normalize_features=True,
+    )
+
+    model_v1 = training_api._build_model(
+        request=_request(
+            tmp_path,
+            config=TrainingConfig(model_type="graph_v1"),
+        ),
+        dataset=dataset,
+        device=torch.device("cpu"),
+    )
+    model_v2 = training_api._build_model(
+        request=_request(
+            tmp_path,
+            config=TrainingConfig(model_type="graph_v2"),
+        ),
+        dataset=dataset,
+        device=torch.device("cpu"),
+    )
+
+    assert isinstance(model_v1, FakeV1)
+    assert isinstance(model_v2, FakeV2)
+
+
 def test_checkpoint_training_config_uses_legacy_keys(tmp_path: Path) -> None:
     request = _request(
         tmp_path,
