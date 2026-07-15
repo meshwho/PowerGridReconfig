@@ -9,6 +9,8 @@ import pandas as pd
 import torch
 from torch.utils.data import Dataset
 
+from grid_topology_ai.self_play.example_validation import REQUIRED_EXAMPLE_COLUMNS
+
 
 class GraphSelfPlayDataset(Dataset):
     """
@@ -48,14 +50,7 @@ class GraphSelfPlayDataset(Dataset):
         if self.examples.empty:
             raise ValueError("Graph self-play examples CSV is empty.")
 
-        required_columns = {
-            "state_path",
-            "mcts_policy_json",
-            "scenario_id",
-            "step",
-            "state_id",
-            "outcome_value_target",
-        }
+        required_columns = set(REQUIRED_EXAMPLE_COLUMNS)
 
         missing = required_columns - set(self.examples.columns)
 
