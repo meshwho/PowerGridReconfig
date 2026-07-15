@@ -1,7 +1,11 @@
 from __future__ import annotations
 
-import subprocess
+from contextlib import contextmanager, redirect_stderr, redirect_stdout
+import io
+import os
 import sys
+import traceback
+from collections.abc import Iterator, Mapping
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -13,10 +17,22 @@ from grid_topology_ai.config import (
     GenerationConfig,
     TrainingConfig,
 )
+from grid_topology_ai.evaluation.checkpoint import (
+    EvaluationRequest,
+    evaluate_checkpoint,
+)
 from grid_topology_ai.self_play.artifacts import (
     load_json,
     save_json,
     sha256_file,
+)
+from grid_topology_ai.self_play.generation import (
+    GenerationRequest,
+    generate_self_play_examples,
+)
+from grid_topology_ai.training.graph_policy_value import (
+    TrainingRequest,
+    train_graph_policy_value_model,
 )
 from grid_topology_ai.value_targets import add_outcome_value_targets_to_rows
 
@@ -43,64 +59,57 @@ def discover_project_root(start: str | Path | None = None) -> Path:
     )
 
 
-def run_command(
-    command: list[str],
-    *,
-    cwd: str | Path,
-    log_path: str | Path | None = None,
-) -> None:
+class _TeeTextIO(io.TextIOBase):
+    def __init__(self, console_stream: io.TextIOBase, log_file: io.TextIOBase) -> None:
+        self._console_stream = console_stream
+        self._log_file = log_file
+
+    def write(self, text: str) -> int:
+        self._console_stream.write(text)
+        self._log_file.write(text)
+        return len(text)
+
+    def flush(self) -> None:
+        self._console_stream.flush()
+        self._log_file.flush()
+
+
+@contextmanager
+def _working_directory(path: Path) -> Iterator[None]:
     """
-    Run subprocess command.
+    Temporarily switch process cwd for a stage API call.
 
-    Output is streamed to console and optionally saved to a log file.
+    The self-play loop executes stages sequentially, and this context manager
+    changes the process-global cwd to preserve the previous child-process cwd
+    behavior.
     """
 
-    cwd = Path(cwd)
-    log_file = None
-
-    if log_path is not None:
-        log_path = Path(log_path)
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        log_file = log_path.open("w", encoding="utf-8")
-
-    print("")
-    print("=" * 100)
-    print("RUN COMMAND")
-    print("=" * 100)
-    print(" ".join(str(part) for part in command))
-    print(f"cwd: {cwd}")
-
-    process = subprocess.Popen(
-        command,
-        cwd=str(cwd),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        bufsize=1,
-    )
-
-    assert process.stdout is not None
+    previous = Path.cwd()
+    os.chdir(path)
 
     try:
-        for line in process.stdout:
-            print(line, end="")
-
-            if log_file is not None:
-                log_file.write(line)
-
-        return_code = process.wait()
-
-        if return_code != 0:
-            raise subprocess.CalledProcessError(
-                returncode=return_code,
-                cmd=command,
-            )
-
+        yield
     finally:
-        if log_file is not None:
-            log_file.close()
+        os.chdir(previous)
+
+
+@contextmanager
+def _stage_output(log_path: Path) -> Iterator[None]:
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with log_path.open("w", encoding="utf-8") as log_file:
+        stdout_tee = _TeeTextIO(sys.stdout, log_file)
+        stderr_tee = _TeeTextIO(sys.stderr, log_file)
+
+        with redirect_stdout(stdout_tee), redirect_stderr(stderr_tee):
+            try:
+                yield
+            except Exception:
+                traceback.print_exc()
+                raise
+            finally:
+                stdout_tee.flush()
+                stderr_tee.flush()
 
 
 def write_selected_transitions_csv(
@@ -112,8 +121,7 @@ def write_selected_transitions_csv(
     """
     Create a temporary transitions CSV containing only sampled scenario IDs.
 
-    This is needed because scripts.self_play.generate currently reads scenario
-    IDs from --transitions and does not accept --scenario-ids directly.
+    This preserves the selected-transitions artifact and validates sampled IDs.
     """
 
     transitions_csv = Path(transitions_csv)
@@ -165,8 +173,8 @@ def ensure_outcome_value_targets(
     """
     Ensure examples.csv contains strict outcome_value_target.
 
-    scripts.self_play.generate may produce old-style examples without
-    outcome_value_target. GraphSelfPlayDataset requires it.
+    Older generation outputs may lack outcome_value_target.
+    GraphSelfPlayDataset requires it.
     """
 
     examples_csv = Path(examples_csv)
@@ -199,15 +207,6 @@ def ensure_outcome_value_targets(
     return examples_csv
 
 
-def _append_bool_flag(
-    command: list[str],
-    flag: str,
-    enabled: bool,
-) -> None:
-    if bool(enabled):
-        command.append(flag)
-
-
 def run_generate(
     *,
     project_root: str | Path,
@@ -223,7 +222,7 @@ def run_generate(
     """
     Generate model-guided self-play examples for sampled scenarios.
 
-    Uses scripts.self_play.generate because it supports --checkpoint.
+    Uses the self-play generation Python API.
     """
 
     project_root = Path(project_root)
@@ -239,70 +238,22 @@ def run_generate(
     log_path = output_dir / "generate.log"
     iteration_seed = int(base_seed) + int(iteration)
 
-    command = [
-        sys.executable,
-        "-u",
-        "-m",
-        "scripts.self_play.generate",
-        str(Path(raw_dir)),
-        "--transitions",
-        str(selected_transitions_csv),
-        "--output-dir",
-        str(output_dir),
-        "--checkpoint",
-        str(Path(checkpoint)),
-        "--simulations",
-        str(config.simulations),
-        "--depth",
-        str(config.depth),
-        "--max-steps",
-        str(config.max_steps),
-        "--top-k",
-        str(config.top_k),
-        "--gamma",
-        str(config.gamma),
-        "--c-puct",
-        str(config.c_puct),
-        "--prior-exponent",
-        str(config.prior_exponent),
-        "--selection-temperature",
-        str(config.selection_temperature),
-        "--seed",
-        str(iteration_seed),
-        "--pf-alg",
-        str(config.pf_alg),
-        "--terminal-unsolved-penalty",
-        str(config.terminal_unsolved_penalty),
-        "--terminal-handoff-penalty",
-        str(config.terminal_handoff_penalty),
-        "--terminal-failure-penalty",
-        str(config.terminal_failure_penalty),
-        "--terminal-penalty-weight",
-        str(config.terminal_penalty_weight),
-        "--stop-policy",
-        config.stop_policy,
-        "--clear-cache-between-scenarios",
-    ]
-
-    _append_bool_flag(
-        command,
-        "--use-root-noise",
-        config.use_root_noise,
+    request = GenerationRequest(
+        raw_dir=Path(raw_dir),
+        transitions_csv=selected_transitions_csv,
+        output_dir=output_dir,
+        checkpoint=Path(checkpoint),
+        config=config,
+        seed=iteration_seed,
+        clear_cache_between_scenarios=True,
     )
 
-    _append_bool_flag(
-        command,
-        "--use-continuation-gate",
-        config.use_continuation_gate,
-    )
+    with _working_directory(project_root):
+        with _stage_output(log_path):
+            examples_csv = generate_self_play_examples(request)
 
-    run_command(
-        command,
-        cwd=project_root,
-        log_path=log_path,
-    )
-
-    examples_csv = output_dir / "examples.csv"
+    if not examples_csv.exists():
+        raise FileNotFoundError(f"Examples CSV was not created: {examples_csv}")
 
     ensure_outcome_value_targets(
         examples_csv=examples_csv,
@@ -324,7 +275,7 @@ def run_train(
     """
     Fine-tune model from previous best checkpoint.
 
-    Requires train_graph_baseline.py to support --init-checkpoint.
+    Uses the graph policy/value training Python API.
     """
 
     project_root = Path(project_root)
@@ -335,56 +286,30 @@ def run_train(
     metrics_csv = output_dir / "train_metrics.csv"
     log_path = output_dir / "train.log"
 
-    command = [
-        sys.executable,
-        "-u",
-        "-m",
-        "scripts.self_play.train_graph_baseline",
-        str(Path(examples_csv)),
-        "--init-checkpoint",
-        str(Path(init_checkpoint)),
-        "--output",
-        str(candidate_checkpoint),
-        "--metrics-csv",
-        str(metrics_csv),
-        "--run-name",
-        f"self_play_iter_{int(iteration):03d}",
-        "--epochs",
-        str(config.epochs),
-        "--batch-size",
-        str(config.batch_size),
-        "--lr",
-        str(config.learning_rate),
-        "--value-loss-weight",
-        str(config.value_loss_weight),
-        "--value-huber-delta",
-        str(config.value_huber_delta),
-        "--device",
-        config.device,
-        "--num-workers",
-        str(config.num_workers),
-        "--model-type",
-        config.model_type,
-        "--hidden-dim",
-        str(config.hidden_dim),
-        "--num-layers",
-        str(config.num_layers),
-        "--dropout",
-        str(config.dropout),
-        "--save-best",
-    ]
-
-    if config.save_multiple_best:
-        command.append("--save-multiple-best")
-
-    if config.no_tensorboard:
-        command.append("--no-tensorboard")
-
-    run_command(
-        command,
-        cwd=project_root,
-        log_path=log_path,
+    request = TrainingRequest(
+        project_root=project_root.resolve(),
+        examples_csv=Path(examples_csv),
+        output_path=candidate_checkpoint,
+        config=config,
+        init_checkpoint=Path(init_checkpoint),
+        validation_examples_csv=None,
+        use_amp=False,
+        normalize_features=True,
+        save_best=True,
+        tensorboard_log_dir=None,
+        run_name=f"self_play_iter_{int(iteration):03d}",
+        metrics_csv=metrics_csv,
     )
+
+    with _working_directory(project_root):
+        with _stage_output(log_path):
+            result_path = train_graph_policy_value_model(request)
+
+    if Path(result_path) != candidate_checkpoint:
+        raise RuntimeError(
+            "Training API returned unexpected checkpoint path: "
+            f"{result_path} != {candidate_checkpoint}"
+        )
 
     if not candidate_checkpoint.exists():
         raise FileNotFoundError(
@@ -415,65 +340,29 @@ def run_evaluate(
     output_csv = output_dir / config.output_csv_name
     log_path = output_dir / "evaluate.log"
 
-    command = [
-        sys.executable,
-        "-u",
-        "-m",
-        "scripts.evaluation.evaluate_checkpoint",
-        str(Path(eval_raw_dir)),
-        "--transitions",
-        str(Path(eval_csv)),
-        "--checkpoint",
-        str(Path(checkpoint)),
-        "--output-csv",
-        str(output_csv),
-        "--output-json",
-        str(output_json),
-        "--simulations",
-        str(config.simulations),
-        "--depth",
-        str(config.depth),
-        "--max-steps",
-        str(config.max_steps),
-        "--top-k",
-        str(config.top_k),
-        "--gamma",
-        str(config.gamma),
-        "--c-puct",
-        str(config.c_puct),
-        "--prior-exponent",
-        str(config.prior_exponent),
-        "--num-workers",
-        str(config.num_workers),
-        "--batch-size",
-        str(config.batch_size),
-        "--device",
-        config.device,
-        "--quiet",
-    ]
-
-    _append_bool_flag(
-        command,
-        "--use-continuation-gate",
-        config.use_continuation_gate,
+    request = EvaluationRequest(
+        raw_dir=Path(eval_raw_dir),
+        transitions_csv=Path(eval_csv),
+        checkpoint=Path(checkpoint),
+        config=config,
+        output_csv=output_csv,
+        output_json=output_json,
+        limit=None,
+        quiet=True,
     )
 
-    _append_bool_flag(
-        command,
-        "--allow-handoff-with-hard-overloads",
-        config.allow_handoff_with_hard_overloads,
-    )
+    with _working_directory(project_root):
+        with _stage_output(log_path):
+            metrics = evaluate_checkpoint(request)
 
-    run_command(
-        command,
-        cwd=project_root,
-        log_path=log_path,
-    )
+    if not isinstance(metrics, Mapping):
+        raise TypeError("Evaluation API returned non-mapping metrics.")
 
     if not output_json.exists():
         raise FileNotFoundError(f"Evaluation JSON was not created: {output_json}")
 
     return load_json(output_json)
+
 
 def save_iteration_metadata(
     *,
