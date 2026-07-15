@@ -22,7 +22,7 @@ from grid_topology_ai.search.impact_beam_search import (
     ImpactBeamSearchResult,
     safety_score,
 )
-from grid_topology_ai.self_play.replay_buffer import SelfPlayReplayBuffer
+from grid_topology_ai.self_play.examples import ExampleWriter
 
 
 def make_one_hot_policy(action_id: int) -> dict[int, float]:
@@ -246,7 +246,7 @@ def main() -> None:
     )
 
     planner = ImpactBeamSearchPlanner(planner_config)
-    replay_buffer = SelfPlayReplayBuffer(args.output_dir)
+    example_writer = ExampleWriter(args.output_dir)
 
     total_saved = 0
     total_skipped = 0
@@ -328,7 +328,7 @@ def main() -> None:
 
         state_id = f"impact_teacher_scenario_{scenario_id:06d}_step_000"
 
-        replay_buffer.add_example(
+        example_writer.add_example(
             state=state,
             state_id=state_id,
             action_mask=action_mask,
@@ -379,7 +379,7 @@ def main() -> None:
             f"seq={best.short_sequence()}"
         )
 
-    examples_path = replay_buffer.save()
+    examples_path = example_writer.save()
 
     print("\nPower flow cache:")
     print(backend.cache_info())
@@ -393,7 +393,7 @@ def main() -> None:
     print(f"Saved examples:  {total_saved}")
     print(f"Skipped:         {total_skipped}")
     print(f"Examples CSV:    {examples_path}")
-    print(f"States dir:      {replay_buffer.states_dir}")
+    print(f"States dir:      {example_writer.states_dir}")
     print("\nDone.")
 
 

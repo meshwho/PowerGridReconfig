@@ -53,7 +53,7 @@ class _BestState:
     metrics: dict[str, object]
 
 
-class _ReplayBuffer:
+class _RollingReplayBuffer:
     def __init__(self, *, save_dir: Path, config: object) -> None:
         self.save_dir = save_dir
         self.config = config
@@ -72,7 +72,7 @@ def _patch_basics(monkeypatch, tmp_path: Path, calls: list[str] | None = None, *
     monkeypatch.setattr(pipeline_module, "validate_resume_artifacts", lambda paths: note("validate_resume_artifacts"))
     monkeypatch.setattr(pipeline_module, "initialize_best_state", lambda **kwargs: (note("initialize_best_state") or _BestState(tmp_path / "best.pt", {"solve_rate": 0.1})))
     monkeypatch.setattr(pipeline_module, "initialize_pool_metadata", lambda **kwargs: (note("initialize_pool_metadata") or {"scenarios": []}))
-    monkeypatch.setattr(pipeline_module, "ReplayBuffer", lambda **kwargs: (note("ReplayBuffer") or _ReplayBuffer(**kwargs)))
+    monkeypatch.setattr(pipeline_module, "RollingReplayBuffer", lambda **kwargs: (note("RollingReplayBuffer") or _RollingReplayBuffer(**kwargs)))
     monkeypatch.setattr(pipeline_module, "load_learning_curve", lambda path: (note("load_learning_curve") or []))
     monkeypatch.setattr(pipeline_module, "upsert_iteration_row", lambda *, rows, row: (calls.append(f"upsert {row['iteration']}") if calls is not None else None) or [*rows, row])
     monkeypatch.setattr(pipeline_module, "save_learning_curve", lambda *, rows, path: (calls.append(f"save {rows[-1]['iteration']}") if calls is not None and rows else None))
@@ -94,7 +94,7 @@ def test_pipeline_initialization_order(tmp_path: Path, monkeypatch) -> None:
     calls: list[str] = []
     _patch_basics(monkeypatch, tmp_path, calls, start=3, completed=(1, 2))
     run_self_play_pipeline(_request(tmp_path, n_iterations=2))
-    assert calls[:7] == ["resolve_run_state", "save_yaml", "initialize_best_state", "initialize_pool_metadata", "ReplayBuffer", "load_learning_curve"]
+    assert calls[:7] == ["resolve_run_state", "save_yaml", "initialize_best_state", "initialize_pool_metadata", "RollingReplayBuffer", "load_learning_curve"]
 
 
 def test_pipeline_passes_shared_state_between_iterations(tmp_path: Path, monkeypatch) -> None:

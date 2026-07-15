@@ -17,7 +17,7 @@ from grid_topology_ai.self_play.pool_metadata import (
     sample_from_pool,
     update_and_save_pool_metadata,
 )
-from grid_topology_ai.self_play.replay_buffer_v2 import ReplayBuffer
+from grid_topology_ai.self_play.replay import RollingReplayBuffer
 from grid_topology_ai.self_play.stages import run_evaluate, run_generate, run_train
 
 
@@ -32,7 +32,7 @@ class IterationRequest:
     parent_metrics: Mapping[str, object]
 
     pool_metadata: dict[str, Any]
-    replay_buffer: ReplayBuffer
+    replay_buffer: RollingReplayBuffer
 
     def __post_init__(self) -> None:
         if int(self.iteration) <= 0:

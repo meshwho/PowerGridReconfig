@@ -51,11 +51,11 @@ class SelfPlayExample:
     mcts_policy_json: str
 
 
-class SelfPlayReplayBuffer:
+class ExampleWriter:
     """
     Save self-play examples and corresponding state tensors.
 
-    The buffer writes:
+    The writer creates:
         - .npz state files;
         - examples.csv with MCTS policy and returns.
     """

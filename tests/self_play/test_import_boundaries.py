@@ -91,3 +91,38 @@ print(run_self_play_pipeline.__name__)
     )
 
     _assert_success(result)
+
+
+def test_self_play_storage_imports_in_fresh_process() -> None:
+    result = _run_fresh_python(
+        """
+from grid_topology_ai.self_play.examples import (
+    ExampleWriter,
+    SelfPlayExample,
+)
+from grid_topology_ai.self_play.replay import RollingReplayBuffer
+print(ExampleWriter.__name__)
+print(SelfPlayExample.__name__)
+print(RollingReplayBuffer.__name__)
+"""
+    )
+
+    _assert_success(result)
+
+
+def test_legacy_self_play_storage_modules_are_absent_in_fresh_process() -> None:
+    result = _run_fresh_python(
+        """
+import importlib.util
+
+assert importlib.util.find_spec(
+    "grid_topology_ai.self_play." + "replay_buffer"
+) is None
+assert importlib.util.find_spec(
+    "grid_topology_ai.self_play." + "replay_buffer" + "_v2"
+) is None
+print("legacy modules absent")
+"""
+    )
+
+    _assert_success(result)
