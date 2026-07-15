@@ -1,4 +1,5 @@
-﻿from pathlib import Path
+import os
+from pathlib import Path
 
 import pytest
 import torch
@@ -18,10 +19,17 @@ MIXED_TRAIN_CSV = (
     / "data/self_play/impact_teacher_balanced_v1_mixed_lodf/examples_train.csv"
 )
 
+RUN_LOCAL_GRAPH_DATA_TESTS = (
+    os.environ.get("RUN_LOCAL_GRAPH_DATA_TESTS") == "1"
+)
+
 
 @pytest.mark.skipif(
-    not MIXED_VAL_CSV.exists(),
-    reason="Mixed validation dataset is not available locally.",
+    not RUN_LOCAL_GRAPH_DATA_TESTS or not MIXED_VAL_CSV.exists(),
+    reason=(
+        "Local graph dataset integration tests are opt-in. "
+        "Set RUN_LOCAL_GRAPH_DATA_TESTS=1 to run them."
+    ),
 )
 def test_graph_self_play_dataset_reads_mixed_val_sample():
     dataset = GraphSelfPlayDataset(
@@ -81,8 +89,13 @@ def test_graph_self_play_dataset_reads_mixed_val_sample():
 
 
 @pytest.mark.skipif(
-    not MIXED_TRAIN_CSV.exists() or not MIXED_VAL_CSV.exists(),
-    reason="Mixed train/validation datasets are not available locally.",
+    not RUN_LOCAL_GRAPH_DATA_TESTS
+    or not MIXED_TRAIN_CSV.exists()
+    or not MIXED_VAL_CSV.exists(),
+    reason=(
+        "Local graph dataset integration tests are opt-in. "
+        "Set RUN_LOCAL_GRAPH_DATA_TESTS=1 to run them."
+    ),
 )
 def test_val_dataset_can_use_train_normalization_stats():
     train_dataset = GraphSelfPlayDataset(
