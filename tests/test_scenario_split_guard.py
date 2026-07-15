@@ -5,7 +5,7 @@ import pandas as pd
 import pytest
 
 from grid_topology_ai.models.graph_self_play_dataset import GraphSelfPlayDataset
-from scripts.self_play.train_graph_baseline import validate_no_scenario_overlap
+from grid_topology_ai.training.graph_policy_value import validate_no_scenario_overlap
 
 
 def _write_fake_state(path):

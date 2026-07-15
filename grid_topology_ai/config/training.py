@@ -66,6 +66,11 @@ class TrainingConfig:
             self.device,
             {"auto", "cpu", "cuda"},
         )
+        require_choice(
+            "training.model_type",
+            self.model_type,
+            {"graph_v1", "graph_v2"},
+        )
         require_positive(
             "training.hidden_dim",
             self.hidden_dim,
