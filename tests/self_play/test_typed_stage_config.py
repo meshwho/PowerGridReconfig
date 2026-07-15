@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import sys
 from pathlib import Path
+
+import pytest
 
 from grid_topology_ai.config import (
     EvaluationConfig,
@@ -11,57 +14,34 @@ from grid_topology_ai.self_play.artifacts import save_json
 from scripts.self_play import run_iteration
 
 
-def _value_after(command: list[str], flag: str) -> str:
-    return command[command.index(flag) + 1]
-
-
-def test_run_generate_uses_generation_config(
+def test_run_generate_uses_generation_request(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    captured: list[list[str]] = []
+    captured = []
 
-    def fake_run_command(
-        command: list[str],
-        *,
-        cwd: Path,
-        log_path: Path | None = None,
-    ) -> None:
-        captured.append(command)
-        output_dir = Path(_value_after(command, "--output-dir"))
-        output_dir.mkdir(parents=True, exist_ok=True)
-        (output_dir / "examples.csv").write_text(
-            "scenario_id,outcome_value_target\n1,0.5\n",
+    def fake_generate(request):
+        captured.append(request)
+        request.output_dir.mkdir(parents=True, exist_ok=True)
+        examples_csv = request.output_dir / "examples.csv"
+        examples_csv.write_text(
+            "scenario_id,outcome_value_target\n1,0.5\n2,0.4\n",
             encoding="utf-8",
         )
+        print("generated examples")
+        return examples_csv
 
-    monkeypatch.setattr(run_iteration, "run_command", fake_run_command)
+    monkeypatch.setattr(run_iteration, "generate_self_play_examples", fake_generate)
+    original_cwd = Path.cwd()
     transitions_csv = tmp_path / "transitions.csv"
-    transitions_csv.write_text("scenario_id\n1\n", encoding="utf-8")
-    config = GenerationConfig(
-        simulations=17,
-        depth=2,
-        max_steps=3,
-        top_k=11,
-        gamma=0.91,
-        c_puct=1.7,
-        prior_exponent=0.6,
-        selection_temperature=0.25,
-        use_root_noise=False,
-        use_continuation_gate=False,
-        pf_alg=2,
-        stop_policy="solved_only",
-        terminal_unsolved_penalty=321.0,
-        terminal_handoff_penalty=123.0,
-        terminal_failure_penalty=777.0,
-        terminal_penalty_weight=0.2,
-    )
+    transitions_csv.write_text("scenario_id\n1\n2\n3\n", encoding="utf-8")
+    config = GenerationConfig(simulations=17, gamma=0.91)
 
-    run_iteration.run_generate(
+    examples_csv = run_iteration.run_generate(
         project_root=tmp_path,
         raw_dir=tmp_path / "raw",
         transitions_csv=transitions_csv,
-        scenario_ids=[1],
+        scenario_ids=[1, 2],
         checkpoint=tmp_path / "best.pt",
         output_dir=tmp_path / "generated",
         config=config,
@@ -69,104 +49,39 @@ def test_run_generate_uses_generation_config(
         iteration=3,
     )
 
-    command = captured[0]
-    assert _value_after(command, "--simulations") == "17"
-    assert _value_after(command, "--depth") == "2"
-    assert _value_after(command, "--max-steps") == "3"
-    assert _value_after(command, "--top-k") == "11"
-    assert _value_after(command, "--gamma") == "0.91"
-    assert _value_after(command, "--c-puct") == "1.7"
-    assert _value_after(command, "--prior-exponent") == "0.6"
-    assert _value_after(command, "--selection-temperature") == "0.25"
-    assert _value_after(command, "--seed") == "103"
-    assert _value_after(command, "--pf-alg") == "2"
-    assert _value_after(command, "--terminal-unsolved-penalty") == "321.0"
-    assert _value_after(command, "--terminal-handoff-penalty") == "123.0"
-    assert _value_after(command, "--terminal-failure-penalty") == "777.0"
-    assert _value_after(command, "--terminal-penalty-weight") == "0.2"
-    assert _value_after(command, "--stop-policy") == "solved_only"
-    assert "--clear-cache-between-scenarios" in command
-    assert "--use-root-noise" not in command
-    assert "--use-continuation-gate" not in command
+    request = captured[0]
+    assert request.config is config
+    assert request.seed == 103
+    assert request.checkpoint == tmp_path / "best.pt"
+    assert request.raw_dir == tmp_path / "raw"
+    assert request.output_dir == tmp_path / "generated"
+    assert request.clear_cache_between_scenarios is True
+    selected_transitions = tmp_path / "generated" / "selected_transitions.csv"
+    assert selected_transitions.exists()
+    assert "3" not in selected_transitions.read_text(encoding="utf-8")
+    assert examples_csv == tmp_path / "generated" / "examples.csv"
+    assert (tmp_path / "generated" / "generate.log").exists()
+    assert Path.cwd() == original_cwd
 
 
-def test_run_generate_adds_enabled_boolean_flags(
+def test_run_train_uses_training_request(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    captured: list[list[str]] = []
+    captured = []
 
-    def fake_run_command(
-        command: list[str],
-        *,
-        cwd: Path,
-        log_path: Path | None = None,
-    ) -> None:
-        captured.append(command)
-        output_dir = Path(_value_after(command, "--output-dir"))
-        output_dir.mkdir(parents=True, exist_ok=True)
-        (output_dir / "examples.csv").write_text(
-            "scenario_id,outcome_value_target\n1,0.5\n",
-            encoding="utf-8",
-        )
+    def fake_train(request):
+        captured.append(request)
+        request.output_path.parent.mkdir(parents=True, exist_ok=True)
+        request.output_path.write_bytes(b"checkpoint")
+        print("trained model")
+        return request.output_path
 
-    monkeypatch.setattr(run_iteration, "run_command", fake_run_command)
-    transitions_csv = tmp_path / "transitions.csv"
-    transitions_csv.write_text("scenario_id\n1\n", encoding="utf-8")
+    monkeypatch.setattr(run_iteration, "train_graph_policy_value_model", fake_train)
+    original_cwd = Path.cwd()
+    config = TrainingConfig(epochs=4, batch_size=9, no_tensorboard=True)
 
-    run_iteration.run_generate(
-        project_root=tmp_path,
-        raw_dir=tmp_path / "raw",
-        transitions_csv=transitions_csv,
-        scenario_ids=[1],
-        checkpoint=tmp_path / "best.pt",
-        output_dir=tmp_path / "generated",
-        config=GenerationConfig(
-            use_root_noise=True,
-            use_continuation_gate=True,
-        ),
-        base_seed=1,
-        iteration=1,
-    )
-
-    command = captured[0]
-    assert "--use-root-noise" in command
-    assert "--use-continuation-gate" in command
-
-
-def test_run_train_uses_training_config(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    captured: list[list[str]] = []
-
-    def fake_run_command(
-        command: list[str],
-        *,
-        cwd: Path,
-        log_path: Path | None = None,
-    ) -> None:
-        captured.append(command)
-        Path(_value_after(command, "--output")).write_bytes(b"checkpoint")
-
-    monkeypatch.setattr(run_iteration, "run_command", fake_run_command)
-    config = TrainingConfig(
-        epochs=4,
-        batch_size=9,
-        learning_rate=0.002,
-        value_loss_weight=0.7,
-        value_huber_delta=1.5,
-        num_workers=2,
-        device="cpu",
-        model_type="graph_v2",
-        hidden_dim=96,
-        num_layers=4,
-        dropout=0.2,
-        save_multiple_best=True,
-        no_tensorboard=True,
-    )
-
-    run_iteration.run_train(
+    checkpoint = run_iteration.run_train(
         project_root=tmp_path,
         examples_csv=tmp_path / "examples.csv",
         init_checkpoint=tmp_path / "best.pt",
@@ -175,59 +90,46 @@ def test_run_train_uses_training_config(
         iteration=5,
     )
 
-    command = captured[0]
-    assert _value_after(command, "--epochs") == "4"
-    assert _value_after(command, "--batch-size") == "9"
-    assert _value_after(command, "--lr") == "0.002"
-    assert _value_after(command, "--value-loss-weight") == "0.7"
-    assert _value_after(command, "--value-huber-delta") == "1.5"
-    assert _value_after(command, "--device") == "cpu"
-    assert _value_after(command, "--num-workers") == "2"
-    assert _value_after(command, "--model-type") == "graph_v2"
-    assert _value_after(command, "--hidden-dim") == "96"
-    assert _value_after(command, "--num-layers") == "4"
-    assert _value_after(command, "--dropout") == "0.2"
-    assert "--save-multiple-best" in command
-    assert "--no-tensorboard" in command
+    request = captured[0]
+    assert request.config is config
+    assert request.project_root == tmp_path.resolve()
+    assert request.examples_csv == tmp_path / "examples.csv"
+    assert request.init_checkpoint == tmp_path / "best.pt"
+    assert request.output_path == tmp_path / "train" / "candidate_checkpoint.pt"
+    assert request.save_best is True
+    assert request.use_amp is False
+    assert request.normalize_features is True
+    assert request.validation_examples_csv is None
+    assert request.metrics_csv == tmp_path / "train" / "train_metrics.csv"
+    assert request.run_name == "self_play_iter_005"
+    assert checkpoint == tmp_path / "train" / "candidate_checkpoint.pt"
+    assert (tmp_path / "train" / "train.log").exists()
+    assert Path.cwd() == original_cwd
 
 
-def test_run_evaluate_uses_evaluation_config(
+def test_run_evaluate_uses_evaluation_request(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    captured: list[list[str]] = []
+    captured = []
 
-    def fake_run_command(
-        command: list[str],
-        *,
-        cwd: Path,
-        log_path: Path | None = None,
-    ) -> None:
-        captured.append(command)
-        save_json(
-            {"solve_rate": 0.8},
-            Path(_value_after(command, "--output-json")),
-        )
+    def fake_evaluate(request):
+        captured.append(request)
+        request.output_csv.parent.mkdir(parents=True, exist_ok=True)
+        request.output_csv.write_text("scenario_id,solved\n1,true\n", encoding="utf-8")
+        metrics = {"solve_rate": 0.8, "source": "json"}
+        save_json(metrics, request.output_json)
+        print("evaluated checkpoint")
+        return {"solve_rate": 0.1}
 
-    monkeypatch.setattr(run_iteration, "run_command", fake_run_command)
+    monkeypatch.setattr(run_iteration, "evaluate_checkpoint", fake_evaluate)
+    original_cwd = Path.cwd()
     config = EvaluationConfig(
-        simulations=19,
-        depth=3,
-        max_steps=6,
-        top_k=13,
-        gamma=0.88,
-        c_puct=1.9,
-        prior_exponent=0.7,
-        use_continuation_gate=True,
-        allow_handoff_with_hard_overloads=True,
-        num_workers=3,
-        batch_size=7,
-        device="cpu",
         output_csv_name="custom_eval.csv",
         output_json_name="custom_metrics.json",
     )
 
-    run_iteration.run_evaluate(
+    metrics = run_iteration.run_evaluate(
         project_root=tmp_path,
         checkpoint=tmp_path / "candidate.pt",
         eval_csv=tmp_path / "eval.csv",
@@ -236,18 +138,71 @@ def test_run_evaluate_uses_evaluation_config(
         config=config,
     )
 
-    command = captured[0]
-    assert Path(_value_after(command, "--output-csv")).name == "custom_eval.csv"
-    assert Path(_value_after(command, "--output-json")).name == "custom_metrics.json"
-    assert _value_after(command, "--simulations") == "19"
-    assert _value_after(command, "--depth") == "3"
-    assert _value_after(command, "--max-steps") == "6"
-    assert _value_after(command, "--top-k") == "13"
-    assert _value_after(command, "--gamma") == "0.88"
-    assert _value_after(command, "--c-puct") == "1.9"
-    assert _value_after(command, "--prior-exponent") == "0.7"
-    assert _value_after(command, "--num-workers") == "3"
-    assert _value_after(command, "--batch-size") == "7"
-    assert _value_after(command, "--device") == "cpu"
-    assert "--use-continuation-gate" in command
-    assert "--allow-handoff-with-hard-overloads" in command
+    request = captured[0]
+    assert request.config is config
+    assert request.raw_dir == tmp_path / "raw"
+    assert request.transitions_csv == tmp_path / "eval.csv"
+    assert request.checkpoint == tmp_path / "candidate.pt"
+    assert request.output_csv == tmp_path / "eval" / "custom_eval.csv"
+    assert request.output_json == tmp_path / "eval" / "custom_metrics.json"
+    assert request.quiet is True
+    assert request.limit is None
+    assert request.pf_alg == 1
+    assert request.disable_cache is False
+    assert request.leaf_penalty_weight == 0.10
+    assert request.stop_policy == "no_hard_overloads"
+    assert request.use_dc_screening is False
+    assert metrics == {"solve_rate": 0.8, "source": "json"}
+    assert (tmp_path / "eval" / "evaluate.log").exists()
+    assert Path.cwd() == original_cwd
+
+
+def test_stage_output_logs_exception_and_restores_streams(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    def fake_generate(request):
+        print("before failure")
+        raise RuntimeError("stage failed")
+
+    monkeypatch.setattr(run_iteration, "generate_self_play_examples", fake_generate)
+    original_cwd = Path.cwd()
+    original_stdout = sys.stdout
+    original_stderr = sys.stderr
+    transitions_csv = tmp_path / "transitions.csv"
+    transitions_csv.write_text("scenario_id\n1\n", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="stage failed"):
+        run_iteration.run_generate(
+            project_root=tmp_path,
+            raw_dir=tmp_path / "raw",
+            transitions_csv=transitions_csv,
+            scenario_ids=[1],
+            checkpoint=tmp_path / "best.pt",
+            output_dir=tmp_path / "generated",
+            config=GenerationConfig(),
+            base_seed=1,
+            iteration=1,
+        )
+
+    log_path = tmp_path / "generated" / "generate.log"
+    assert log_path.exists()
+    log_text = log_path.read_text(encoding="utf-8")
+    assert "stage failed" in log_text
+    assert Path.cwd() == original_cwd
+    print("stdout still works")
+    assert sys.stdout is original_stdout
+    assert sys.stderr is original_stderr
+    assert not sys.stdout.closed
+    assert not sys.stderr.closed
+
+
+def test_working_directory_restores_after_exception(tmp_path: Path) -> None:
+    original_cwd = Path.cwd()
+
+    with pytest.raises(RuntimeError, match="boom"):
+        with run_iteration._working_directory(tmp_path):
+            assert Path.cwd() == tmp_path
+            raise RuntimeError("boom")
+
+    assert Path.cwd() == original_cwd
