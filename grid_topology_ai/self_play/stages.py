@@ -6,7 +6,6 @@ import os
 import sys
 import traceback
 from collections.abc import Iterator, Mapping
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -21,11 +20,7 @@ from grid_topology_ai.evaluation.checkpoint import (
     EvaluationRequest,
     evaluate_checkpoint,
 )
-from grid_topology_ai.self_play.artifacts import (
-    load_json,
-    save_json,
-    sha256_file,
-)
+from grid_topology_ai.self_play.artifacts import load_json
 from grid_topology_ai.self_play.generation import (
     GenerationRequest,
     generate_self_play_examples,
@@ -35,28 +30,6 @@ from grid_topology_ai.training.graph_policy_value import (
     train_graph_policy_value_model,
 )
 from grid_topology_ai.value_targets import add_outcome_value_targets_to_rows
-
-
-def discover_project_root(start: str | Path | None = None) -> Path:
-    """
-    Find repository root by walking upward until project markers are found.
-    """
-
-    current = Path.cwd() if start is None else Path(start).resolve()
-
-    if current.is_file():
-        current = current.parent
-
-    for candidate in [current, *current.parents]:
-        if (
-            (candidate / "grid_topology_ai").is_dir()
-            and (candidate / "scripts").is_dir()
-        ):
-            return candidate
-
-    raise RuntimeError(
-        "Could not discover project root. Run from inside PowerGridReconfig."
-    )
 
 
 class _TeeTextIO(io.TextIOBase):
@@ -362,63 +335,3 @@ def run_evaluate(
         raise FileNotFoundError(f"Evaluation JSON was not created: {output_json}")
 
     return load_json(output_json)
-
-
-def save_iteration_metadata(
-    *,
-    iteration: int,
-    path: str | Path,
-    accepted: bool,
-    parent_checkpoint: str | Path,
-    candidate_checkpoint: str | Path,
-    train_batch_csv: str | Path,
-    raw_examples_csv: str | Path | None,
-    metrics: dict[str, Any],
-    config: dict[str, Any],
-    extra: dict[str, Any] | None = None,
-) -> Path:
-    """
-    Save reproducibility metadata for one self-play iteration.
-    """
-
-    path = Path(path)
-
-    parent_checkpoint = Path(parent_checkpoint)
-    candidate_checkpoint = Path(candidate_checkpoint)
-    train_batch_csv = Path(train_batch_csv)
-
-    payload: dict[str, Any] = {
-        "iteration": int(iteration),
-        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
-        "accepted": bool(accepted),
-        "parent_checkpoint": str(parent_checkpoint),
-        "candidate_checkpoint": str(candidate_checkpoint),
-        "train_batch_csv": str(train_batch_csv),
-        "raw_examples_csv": None if raw_examples_csv is None else str(raw_examples_csv),
-        "hashes": {},
-        "metrics": metrics,
-        "config": config,
-    }
-
-    for name, file_path in {
-        "parent_checkpoint_sha256": parent_checkpoint,
-        "candidate_checkpoint_sha256": candidate_checkpoint,
-        "train_batch_csv_sha256": train_batch_csv,
-    }.items():
-        if file_path.exists():
-            payload["hashes"][name] = sha256_file(file_path)
-
-    if raw_examples_csv is not None:
-        raw_examples_path = Path(raw_examples_csv)
-
-        if raw_examples_path.exists():
-            payload["hashes"]["raw_examples_csv_sha256"] = sha256_file(
-                raw_examples_path
-            )
-
-    if extra is not None:
-        payload["extra"] = extra
-
-    save_json(payload, path)
-
-    return path

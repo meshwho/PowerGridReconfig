@@ -10,6 +10,28 @@ def _resolve(root: Path, value: Path) -> Path:
     return value if value.is_absolute() else root / value
 
 
+def discover_project_root(start: str | Path | None = None) -> Path:
+    """
+    Find repository root by walking upward until project markers are found.
+    """
+
+    current = Path.cwd() if start is None else Path(start).resolve()
+
+    if current.is_file():
+        current = current.parent
+
+    for candidate in [current, *current.parents]:
+        if (
+            (candidate / "grid_topology_ai").is_dir()
+            and (candidate / "scripts").is_dir()
+        ):
+            return candidate
+
+    raise RuntimeError(
+        "Could not discover project root. Run from inside PowerGridReconfig."
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class SelfPlayPaths:
     project_root: Path

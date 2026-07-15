@@ -11,7 +11,7 @@ from grid_topology_ai.config import (
     TrainingConfig,
 )
 from grid_topology_ai.self_play.artifacts import save_json
-from scripts.self_play import run_iteration
+from grid_topology_ai.self_play import stages
 
 
 def test_run_generate_uses_generation_request(
@@ -31,13 +31,13 @@ def test_run_generate_uses_generation_request(
         print("generated examples")
         return examples_csv
 
-    monkeypatch.setattr(run_iteration, "generate_self_play_examples", fake_generate)
+    monkeypatch.setattr(stages, "generate_self_play_examples", fake_generate)
     original_cwd = Path.cwd()
     transitions_csv = tmp_path / "transitions.csv"
     transitions_csv.write_text("scenario_id\n1\n2\n3\n", encoding="utf-8")
     config = GenerationConfig(simulations=17, gamma=0.91)
 
-    examples_csv = run_iteration.run_generate(
+    examples_csv = stages.run_generate(
         project_root=tmp_path,
         raw_dir=tmp_path / "raw",
         transitions_csv=transitions_csv,
@@ -77,11 +77,11 @@ def test_run_train_uses_training_request(
         print("trained model")
         return request.output_path
 
-    monkeypatch.setattr(run_iteration, "train_graph_policy_value_model", fake_train)
+    monkeypatch.setattr(stages, "train_graph_policy_value_model", fake_train)
     original_cwd = Path.cwd()
     config = TrainingConfig(epochs=4, batch_size=9, no_tensorboard=True)
 
-    checkpoint = run_iteration.run_train(
+    checkpoint = stages.run_train(
         project_root=tmp_path,
         examples_csv=tmp_path / "examples.csv",
         init_checkpoint=tmp_path / "best.pt",
@@ -122,14 +122,14 @@ def test_run_evaluate_uses_evaluation_request(
         print("evaluated checkpoint")
         return {"solve_rate": 0.1}
 
-    monkeypatch.setattr(run_iteration, "evaluate_checkpoint", fake_evaluate)
+    monkeypatch.setattr(stages, "evaluate_checkpoint", fake_evaluate)
     original_cwd = Path.cwd()
     config = EvaluationConfig(
         output_csv_name="custom_eval.csv",
         output_json_name="custom_metrics.json",
     )
 
-    metrics = run_iteration.run_evaluate(
+    metrics = stages.run_evaluate(
         project_root=tmp_path,
         checkpoint=tmp_path / "candidate.pt",
         eval_csv=tmp_path / "eval.csv",
@@ -165,7 +165,7 @@ def test_stage_output_logs_exception_and_restores_streams(
         print("before failure")
         raise RuntimeError("stage failed")
 
-    monkeypatch.setattr(run_iteration, "generate_self_play_examples", fake_generate)
+    monkeypatch.setattr(stages, "generate_self_play_examples", fake_generate)
     original_cwd = Path.cwd()
     original_stdout = sys.stdout
     original_stderr = sys.stderr
@@ -173,7 +173,7 @@ def test_stage_output_logs_exception_and_restores_streams(
     transitions_csv.write_text("scenario_id\n1\n", encoding="utf-8")
 
     with pytest.raises(RuntimeError, match="stage failed"):
-        run_iteration.run_generate(
+        stages.run_generate(
             project_root=tmp_path,
             raw_dir=tmp_path / "raw",
             transitions_csv=transitions_csv,
@@ -201,7 +201,7 @@ def test_working_directory_restores_after_exception(tmp_path: Path) -> None:
     original_cwd = Path.cwd()
 
     with pytest.raises(RuntimeError, match="boom"):
-        with run_iteration._working_directory(tmp_path):
+        with stages._working_directory(tmp_path):
             assert Path.cwd() == tmp_path
             raise RuntimeError("boom")
 
