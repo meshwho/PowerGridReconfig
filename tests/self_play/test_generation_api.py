@@ -100,7 +100,7 @@ class _FakePlanner:
         )
 
 
-class _FakeReplayBuffer:
+class _FakeExampleWriter:
     COLUMNS = [
         "state_id",
         "state_path",
@@ -167,7 +167,7 @@ def fake_generation_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(generation, "NeuralPolicyValueEvaluator", _FakeCache)
     monkeypatch.setattr(generation, "MCTSConfig", _FakeMCTSConfig)
     monkeypatch.setattr(generation, "MCTSPlanner", _FakePlanner)
-    monkeypatch.setattr(generation, "SelfPlayReplayBuffer", _FakeReplayBuffer)
+    monkeypatch.setattr(generation, "ExampleWriter", _FakeExampleWriter)
     monkeypatch.setattr(generation, "make_do_nothing_action", lambda: object())
     monkeypatch.setattr(
         generation,
@@ -249,6 +249,9 @@ def test_runtime_loader_uses_explicit_loaded_flag() -> None:
 
     assert "_RUNTIME_DEPENDENCIES_LOADED" in source
     assert "if GridFMActionSpace is not None" not in source
+    assert "ExampleWriter" in source
+    assert ("SelfPlay" + "ReplayBuffer") not in source
+    assert ("self_play." + "replay_buffer") not in source
 
 
 def test_generation_request_is_frozen_and_slotted(tmp_path: Path) -> None:
@@ -383,7 +386,7 @@ def test_output_schema_matches_existing_generation_schema(
 ) -> None:
     examples_csv = generate_self_play_examples(_request(tmp_path))
 
-    assert list(pd.read_csv(examples_csv).columns) == _FakeReplayBuffer.COLUMNS
+    assert list(pd.read_csv(examples_csv).columns) == _FakeExampleWriter.COLUMNS
 
 
 def test_empty_scenario_selection_preserves_old_behavior(

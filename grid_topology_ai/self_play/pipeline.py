@@ -18,7 +18,7 @@ from grid_topology_ai.self_play.learning_curve import (
 from grid_topology_ai.self_play.paths import SelfPlayPaths
 from grid_topology_ai.self_play.pool_metadata import initialize_pool_metadata
 from grid_topology_ai.self_play.preflight import validate_resume_artifacts
-from grid_topology_ai.self_play.replay_buffer_v2 import ReplayBuffer
+from grid_topology_ai.self_play.replay import RollingReplayBuffer
 from grid_topology_ai.self_play.run_state import resolve_run_state
 
 
@@ -101,7 +101,7 @@ def run_self_play_pipeline(
         overwrite=False,
     )
 
-    replay_buffer = ReplayBuffer(
+    replay_buffer = RollingReplayBuffer(
         save_dir=paths.replay_dir,
         config=config.replay_buffer,
     )

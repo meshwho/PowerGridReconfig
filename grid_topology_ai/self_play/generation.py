@@ -24,7 +24,7 @@ GridFMAdapter = None
 NeuralPolicyValueEvaluator = None
 MCTSConfig = None
 MCTSPlanner = None
-SelfPlayReplayBuffer = None
+ExampleWriter = None
 analyze_root_branches = None
 make_do_nothing_action = None
 
@@ -59,7 +59,7 @@ def _ensure_runtime_dependencies() -> None:
     global NeuralPolicyValueEvaluator
     global MCTSConfig
     global MCTSPlanner
-    global SelfPlayReplayBuffer
+    global ExampleWriter
     global analyze_root_branches
     global make_do_nothing_action
 
@@ -84,8 +84,8 @@ def _ensure_runtime_dependencies() -> None:
     )
     from grid_topology_ai.search.mcts import MCTSConfig as _MCTSConfig
     from grid_topology_ai.search.mcts import MCTSPlanner as _MCTSPlanner
-    from grid_topology_ai.self_play.replay_buffer import (
-        SelfPlayReplayBuffer as _ReplayBuffer,
+    from grid_topology_ai.self_play.examples import (
+        ExampleWriter as _ExampleWriter,
     )
 
     GridFMActionSpace = _ActionSpace
@@ -96,7 +96,7 @@ def _ensure_runtime_dependencies() -> None:
     NeuralPolicyValueEvaluator = _Evaluator
     MCTSConfig = _MCTSConfig
     MCTSPlanner = _MCTSPlanner
-    SelfPlayReplayBuffer = _ReplayBuffer
+    ExampleWriter = _ExampleWriter
     analyze_root_branches = _analyze_root_branches
     make_do_nothing_action = _make_do_nothing_action
     _RUNTIME_DEPENDENCIES_LOADED = True
@@ -328,7 +328,7 @@ def generate_self_play_examples(request: GenerationRequest) -> Path:
 
     rng = np.random.default_rng(request.seed)
     planner = MCTSPlanner(config=mcts_config, evaluator=evaluator)
-    replay_buffer = SelfPlayReplayBuffer(request.output_dir)
+    example_writer = ExampleWriter(request.output_dir)
 
     total_examples = 0
     start_time = time.perf_counter()
@@ -489,7 +489,7 @@ def generate_self_play_examples(request: GenerationRequest) -> Path:
         final_return = returns[0] if returns else terminal_reward
 
         for item, return_from_step in zip(pending_examples, returns):
-            replay_buffer.add_example(
+            example_writer.add_example(
                 state=item["state"],
                 state_id=item["state_id"],
                 action_mask=item["action_mask"],
@@ -537,7 +537,7 @@ def generate_self_play_examples(request: GenerationRequest) -> Path:
             f"reason={final_reason}"
         )
 
-    examples_path = replay_buffer.save()
+    examples_path = example_writer.save()
 
     print("\nPower flow cache:")
     print(backend.cache_info())
@@ -554,7 +554,7 @@ def generate_self_play_examples(request: GenerationRequest) -> Path:
     print("=" * 100)
     print(f"Total examples: {total_examples}")
     print(f"Saved examples: {examples_path}")
-    print(f"States dir:     {replay_buffer.states_dir}")
+    print(f"States dir:     {example_writer.states_dir}")
 
     elapsed = time.perf_counter() - start_time
     print("\nTiming:")
