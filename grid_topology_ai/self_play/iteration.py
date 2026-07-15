@@ -62,13 +62,28 @@ class IterationResult:
 def _count_examples_csv(path: str | Path) -> int:
     path = Path(path)
 
-    if not path.exists():
-        return 0
+    if not path.is_file():
+        raise FileNotFoundError(
+            f"Examples CSV not found while counting rows: {path}"
+        )
 
     try:
-        return int(len(pd.read_csv(path)))
-    except Exception:
-        return 0
+        examples = pd.read_csv(path)
+    except pd.errors.EmptyDataError as exc:
+        raise ValueError(
+            f"Examples CSV has no readable columns: {path}"
+        ) from exc
+    except pd.errors.ParserError as exc:
+        raise ValueError(
+            f"Could not parse examples CSV: {path}"
+        ) from exc
+
+    if examples.empty:
+        raise ValueError(
+            f"Examples CSV contains no rows: {path}"
+        )
+
+    return int(len(examples))
 
 
 def _save_iteration_metadata(

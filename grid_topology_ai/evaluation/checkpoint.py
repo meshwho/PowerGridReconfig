@@ -401,6 +401,9 @@ def run_episode_from_worker_context(scenario_id: int) -> dict[str, Any]:
             "row": row,
             "traceback": None,
         }
+    # Intentional process-worker boundary:
+    # serialize one scenario failure with its traceback instead of
+    # terminating the entire evaluation pool.
     except Exception:
         clear_worker_caches_if_needed()
         return {

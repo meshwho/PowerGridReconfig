@@ -8,8 +8,10 @@ import pytest
 
 from grid_topology_ai.config import SelfPlayConfig
 from grid_topology_ai.self_play.checkpoint_state import BestState
+from grid_topology_ai.self_play import iteration as iteration_module
 from grid_topology_ai.self_play.iteration import (
     IterationRequest,
+    _count_examples_csv,
     run_self_play_iteration,
 )
 from grid_topology_ai.self_play.paths import SelfPlayPaths
@@ -378,3 +380,55 @@ def test_iteration_stops_before_training_when_replay_validation_fails(
         run_self_play_iteration(request)
 
     assert not (_paths(tmp_path).iteration_dir(2) / "metadata.json").exists()
+
+
+def test_count_examples_csv_returns_row_count(tmp_path: Path) -> None:
+    path = tmp_path / "examples.csv"
+    path.write_text("scenario_id,solved\n1,true\n2,false\n", encoding="utf-8")
+
+    assert _count_examples_csv(path) == 2
+
+
+def test_count_examples_csv_rejects_missing_file(tmp_path: Path) -> None:
+    with pytest.raises(FileNotFoundError):
+        _count_examples_csv(tmp_path / "missing.csv")
+
+
+def test_count_examples_csv_rejects_empty_file(tmp_path: Path) -> None:
+    path = tmp_path / "examples.csv"
+    path.write_text("", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="no readable columns"):
+        _count_examples_csv(path)
+
+
+def test_count_examples_csv_rejects_header_only_file(tmp_path: Path) -> None:
+    path = tmp_path / "examples.csv"
+    path.write_text("scenario_id,solved\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="contains no rows"):
+        _count_examples_csv(path)
+
+
+def test_count_examples_csv_rejects_malformed_csv(tmp_path: Path) -> None:
+    path = tmp_path / "examples.csv"
+    path.write_text('scenario_id,solved\n1,"unterminated\n', encoding="utf-8")
+
+    with pytest.raises(ValueError, match="Could not parse examples CSV"):
+        _count_examples_csv(path)
+
+
+def test_count_examples_csv_does_not_hide_unexpected_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "examples.csv"
+    path.write_text("scenario_id,solved\n1,true\n", encoding="utf-8")
+
+    def fail(path: object) -> object:
+        raise RuntimeError("unexpected pandas failure")
+
+    monkeypatch.setattr(iteration_module.pd, "read_csv", fail)
+
+    with pytest.raises(RuntimeError, match="unexpected pandas failure"):
+        _count_examples_csv(path)

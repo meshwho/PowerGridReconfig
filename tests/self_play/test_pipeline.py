@@ -9,7 +9,7 @@ from grid_topology_ai.config import SelfPlayConfig
 from grid_topology_ai.self_play import pipeline as pipeline_module
 from grid_topology_ai.self_play.iteration import IterationResult
 from grid_topology_ai.self_play.paths import SelfPlayPaths
-from grid_topology_ai.self_play.pipeline import PipelineRequest, run_self_play_pipeline
+from grid_topology_ai.self_play.pipeline import PipelineRequest, _format_metric, run_self_play_pipeline
 
 
 def _raw_config(n_iterations: int = 2) -> dict[str, object]:
@@ -292,3 +292,24 @@ def test_pipeline_passes_completion_artifacts(
     assert captured["replay_manifest_path"] == request.paths.replay_manifest
     assert captured["replay_iteration_path"] == request.paths.replay_iteration_file(1)
     assert captured["learning_curve_path"] == request.paths.learning_curve
+
+
+def test_format_metric_formats_numeric_value() -> None:
+    assert _format_metric({"score": 0.123456}, "score") == "0.1235"
+
+
+def test_format_metric_returns_na_for_missing_metric() -> None:
+    assert _format_metric({}, "score") == "n/a"
+
+
+def test_format_metric_stringifies_non_numeric_value() -> None:
+    assert _format_metric({"score": "not numeric"}, "score") == "not numeric"
+
+
+def test_format_metric_does_not_hide_unexpected_runtime_error() -> None:
+    class BrokenMetric:
+        def __float__(self) -> float:
+            raise RuntimeError("broken metric")
+
+    with pytest.raises(RuntimeError, match="broken metric"):
+        _format_metric({"score": BrokenMetric()}, "score")

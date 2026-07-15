@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from grid_topology_ai.self_play.artifacts import load_json, save_json
+from grid_topology_ai.self_play import run_state as run_state_module
 from grid_topology_ai.self_play.completion import write_iteration_completion_marker
 from grid_topology_ai.self_play.run_state import (
     RunState,
@@ -215,3 +216,39 @@ def test_resume_rejects_corrupt_completion_marker(tmp_path: Path) -> None:
             run_dir=tmp_path,
             resume=True,
         )
+
+
+def test_expected_marker_validation_error_is_wrapped(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    iteration_dir = tmp_path / "iter_001"
+    iteration_dir.mkdir()
+    (iteration_dir / "iteration_complete.json").write_text("{}", encoding="utf-8")
+
+    def fail(**kwargs: object) -> None:
+        raise ValueError("corrupt marker")
+
+    monkeypatch.setattr(run_state_module, "validate_iteration_completion", fail)
+
+    with pytest.raises(RuntimeError, match="Invalid iteration completion marker") as exc_info:
+        resolve_run_state(run_dir=tmp_path, resume=True)
+
+    assert isinstance(exc_info.value.__cause__, ValueError)
+
+
+def test_unexpected_marker_validation_bug_is_not_masked(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    iteration_dir = tmp_path / "iter_001"
+    iteration_dir.mkdir()
+    (iteration_dir / "iteration_complete.json").write_text("{}", encoding="utf-8")
+
+    def fail(**kwargs: object) -> None:
+        raise RuntimeError("validator bug")
+
+    monkeypatch.setattr(run_state_module, "validate_iteration_completion", fail)
+
+    with pytest.raises(RuntimeError, match="^validator bug$"):
+        resolve_run_state(run_dir=tmp_path, resume=True)
