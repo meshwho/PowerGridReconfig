@@ -9,6 +9,10 @@ import numpy as np
 import pandas as pd
 
 from grid_topology_ai.config import GenerationConfig
+from grid_topology_ai.physical_objective import (
+    HARD_OVERLOAD_LIMIT_PERCENT,
+    OVERLOAD_LIMIT_PERCENT,
+)
 from grid_topology_ai.data_adapter import (
     BRANCH_FEATURE_COLUMNS,
     GridFMState,
@@ -161,8 +165,8 @@ def state_security_penalty(state: GridFMState) -> float:
 
     active_loading = loading[status > 0]
 
-    total_overload = float(np.sum(np.maximum(active_loading - 100.0, 0.0)))
-    hard_overload = float(np.sum(np.maximum(active_loading - 120.0, 0.0)))
+    total_overload = float(np.sum(np.maximum(active_loading - OVERLOAD_LIMIT_PERCENT, 0.0)))
+    hard_overload = float(np.sum(np.maximum(active_loading - HARD_OVERLOAD_LIMIT_PERCENT, 0.0)))
 
     num_overloaded = int(state.metrics["num_overloaded_branches"])
     num_hard_overloaded = int(state.metrics["num_hard_overloaded_branches"])

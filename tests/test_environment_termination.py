@@ -26,6 +26,7 @@ def _state(
             "num_overloaded_branches": int(num_overloaded_branches),
             "num_hard_overloaded_branches": int(num_hard_overloaded_branches),
             "max_loading_percent": float(max_loading_percent),
+            "total_voltage_violation": 0.0,
         },
         outaged_branch_ids=[],
     )

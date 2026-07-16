@@ -5,6 +5,10 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
+
+if not hasattr(np, "in1d"):
+    np.in1d = np.isin
+
 from pypower.api import ppoption, runpf
 from pypower.idx_brch import (
     ANGMAX,

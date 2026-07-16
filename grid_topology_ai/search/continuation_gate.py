@@ -6,6 +6,10 @@ from typing import Any
 import numpy as np
 
 from grid_topology_ai.action_space import GridFMAction
+from grid_topology_ai.physical_objective import (
+    HARD_OVERLOAD_LIMIT_PERCENT,
+    OVERLOAD_LIMIT_PERCENT,
+)
 from grid_topology_ai.data_adapter import BRANCH_FEATURE_COLUMNS, GridFMState
 from grid_topology_ai.search.mcts import MCTSNode, MCTSResult
 
@@ -83,8 +87,8 @@ def topology_penalty(
 
     loading = _active_loadings(state)
 
-    total_overload = float(np.sum(np.maximum(loading - 100.0, 0.0)))
-    hard_overload = float(np.sum(np.maximum(loading - 120.0, 0.0)))
+    total_overload = float(np.sum(np.maximum(loading - OVERLOAD_LIMIT_PERCENT, 0.0)))
+    hard_overload = float(np.sum(np.maximum(loading - HARD_OVERLOAD_LIMIT_PERCENT, 0.0)))
 
     num_overloaded = int(state.metrics.get("num_overloaded_branches", 0))
     num_hard = int(state.metrics.get("num_hard_overloaded_branches", 0))
@@ -97,7 +101,7 @@ def topology_penalty(
         + 30.0 * hard_overload
         + 80.0 * num_overloaded
         + 4.0 * total_overload
-        + 5.0 * max(0.0, max_loading - 100.0)
+        + 5.0 * max(0.0, max_loading - OVERLOAD_LIMIT_PERCENT)
         + 500.0 * voltage_violation
         + switch_penalty * float(depth)
     )

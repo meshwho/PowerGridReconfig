@@ -21,6 +21,7 @@ from grid_topology_ai.evaluation.metrics import (
     print_row,
     print_summary,
 )
+from grid_topology_ai.physical_objective import assess_physical_state
 from grid_topology_ai.self_play.artifacts import save_json
 
 GridFMActionSpace = None
@@ -344,11 +345,34 @@ def run_episode(
         final_overloaded = -1
         final_hard = -1
         final_outaged = -1
+        thermal_solved = False
+        hard_overload_free = False
+        voltage_feasible = False
+        physically_secure = False
+        safe_handoff = False
+        unsafe_terminal_state = False
     else:
+        assessment = assess_physical_state(final_state.metrics)
+        if bool(env.solved) != assessment.thermal_solved:
+            raise RuntimeError(
+                f"Scenario {scenario_id} solved contract mismatch: "
+                f"env.solved={bool(env.solved)} "
+                f"thermal_solved={assessment.thermal_solved}"
+            )
         final_max_loading = float(final_state.metrics["max_loading_percent"])
         final_overloaded = int(final_state.metrics["num_overloaded_branches"])
         final_hard = int(final_state.metrics["num_hard_overloaded_branches"])
         final_outaged = int(final_state.metrics["num_outaged_branches"])
+        thermal_solved = assessment.thermal_solved
+        hard_overload_free = assessment.hard_overload_free
+        voltage_feasible = assessment.voltage_feasible
+        physically_secure = assessment.physically_secure
+        safe_handoff = (
+            env.termination_reason == "handoff_to_redispatch"
+            and assessment.hard_overload_free
+            and not assessment.thermal_solved
+        )
+        unsafe_terminal_state = not assessment.hard_overload_free
 
     row = {
         "scenario_id": int(scenario_id),
@@ -366,6 +390,12 @@ def run_episode(
         "final_num_overloaded_branches": final_overloaded,
         "final_num_hard_overloaded_branches": final_hard,
         "final_num_outaged_branches": final_outaged,
+        "thermal_solved": thermal_solved,
+        "hard_overload_free": hard_overload_free,
+        "voltage_feasible": voltage_feasible,
+        "physically_secure": physically_secure,
+        "safe_handoff": safe_handoff,
+        "unsafe_terminal_state": unsafe_terminal_state,
     }
     row["safety_score"] = compute_safety_score(row)
     return row

@@ -5,6 +5,11 @@ from typing import Any
 
 import pandas as pd
 
+from grid_topology_ai.physical_objective import (
+    OVERLOAD_LIMIT_PERCENT,
+    physical_objective_contract,
+)
+
 
 def compute_safety_score(row: dict[str, Any]) -> float:
     score = 0.0
@@ -32,8 +37,8 @@ def compute_safety_score(row: dict[str, Any]) -> float:
     score -= 300.0 * hard
     score -= 50.0 * overloaded
 
-    if final_loading > 100.0:
-        score -= 5.0 * (final_loading - 100.0)
+    if final_loading > OVERLOAD_LIMIT_PERCENT:
+        score -= 5.0 * (final_loading - OVERLOAD_LIMIT_PERCENT)
 
     score += 0.05 * discounted_return
     return float(score)
@@ -101,12 +106,59 @@ def build_evaluation_metrics(
         .to_dict()
         .items()
     }
+    evaluated_scenarios = int(len(df))
+    requested_count = int(requested_scenarios)
+    failed_scenarios = int(len(failed_results))
+    solve_count = int(solved.sum())
+
+    def rate(numerator: int, denominator: int) -> float:
+        if denominator == 0:
+            return 0.0
+        return float(numerator) / float(denominator)
+
+    hard_overload_free_count = int(df["hard_overload_free"].astype(bool).sum())
+    voltage_feasible_count = int(df["voltage_feasible"].astype(bool).sum())
+    physically_secure_count = int(df["physically_secure"].astype(bool).sum())
+    safe_handoff_count = int(df["safe_handoff"].astype(bool).sum())
+    unsafe_terminal_state_count = int(
+        df["unsafe_terminal_state"].astype(bool).sum()
+    )
+    power_flow_failure_count = int(
+        (df["termination_reason"] == "power_flow_failed").sum()
+    )
+
     metrics: dict[str, Any] = {
-        "requested_scenarios": int(requested_scenarios),
-        "evaluated_scenarios": int(len(df)),
-        "failed_scenarios": int(len(failed_results)),
-        "solve_count": int(solved.sum()),
-        "solve_rate": float(solved.mean()) if len(df) > 0 else 0.0,
+        "requested_scenarios": requested_count,
+        "evaluated_scenarios": evaluated_scenarios,
+        "failed_scenarios": failed_scenarios,
+        "solve_count": solve_count,
+        "solve_rate": rate(solve_count, evaluated_scenarios),
+        "physical_objective_contract": physical_objective_contract(),
+        "evaluation_coverage_rate": rate(evaluated_scenarios, requested_count),
+        "solve_rate_requested": rate(solve_count, requested_count),
+        "failed_scenario_rate_requested": rate(
+            failed_scenarios, requested_count
+        ),
+        "hard_overload_free_count": hard_overload_free_count,
+        "hard_overload_free_rate": rate(
+            hard_overload_free_count, evaluated_scenarios
+        ),
+        "voltage_feasible_count": voltage_feasible_count,
+        "voltage_feasible_rate": rate(voltage_feasible_count, evaluated_scenarios),
+        "physically_secure_count": physically_secure_count,
+        "physically_secure_rate": rate(
+            physically_secure_count, evaluated_scenarios
+        ),
+        "safe_handoff_count": safe_handoff_count,
+        "safe_handoff_rate": rate(safe_handoff_count, evaluated_scenarios),
+        "unsafe_terminal_state_count": unsafe_terminal_state_count,
+        "unsafe_terminal_state_rate": rate(
+            unsafe_terminal_state_count, evaluated_scenarios
+        ),
+        "power_flow_failure_count": power_flow_failure_count,
+        "power_flow_failure_rate": rate(
+            power_flow_failure_count, evaluated_scenarios
+        ),
         "avg_steps": _safe_mean(df["steps"]),
         "avg_steps_to_solve": _safe_mean(df.loc[solved, "steps"]),
         "avg_discounted_return": _safe_mean(df["discounted_return"]),
