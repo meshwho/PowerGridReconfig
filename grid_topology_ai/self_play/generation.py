@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -152,9 +153,112 @@ def select_action_from_policy(
     return int(rng.choice(action_ids, p=adjusted))
 
 
-def make_one_hot_policy(action_id: int) -> dict[int, float]:
-    return {int(action_id): 1.0}
 
+@dataclass(frozen=True, slots=True)
+class _GenerationActionDecision:
+    selected_action_id: int
+    selected_branch_id: int | None
+    raw_selected_action_id: int
+    raw_selected_branch_id: int | None
+    policy_target: dict[int, float]
+    gate_decision: Any | None
+
+
+def _validate_policy_target(
+    policy_target: dict[int, float],
+    *,
+    scenario_id: int | None,
+    step: int | None,
+) -> None:
+    context = f"scenario_id={scenario_id}, step={step}"
+    if not policy_target:
+        raise ValueError(f"Invalid MCTS policy target: empty policy ({context}).")
+
+    total = 0.0
+    for action_id, probability in policy_target.items():
+        if not isinstance(action_id, int) or action_id < 0:
+            raise ValueError(
+                f"Invalid MCTS policy target action ID {action_id!r} "
+                f"({context})."
+            )
+        if not math.isfinite(float(probability)):
+            raise ValueError(
+                f"Invalid MCTS policy target probability for action "
+                f"{action_id} ({context}): non-finite."
+            )
+        if float(probability) < 0.0:
+            raise ValueError(
+                f"Invalid MCTS policy target probability for action "
+                f"{action_id} ({context}): negative."
+            )
+        total += float(probability)
+
+    if total <= 0.0:
+        raise ValueError(
+            f"Invalid MCTS policy target: probability mass must be > 0 "
+            f"({context})."
+        )
+    if not math.isclose(total, 1.0, rel_tol=1e-9, abs_tol=1e-9):
+        raise ValueError(
+            f"Invalid MCTS policy target: probability mass must sum to 1.0; "
+            f"observed {total:.17g} ({context})."
+        )
+
+
+def _select_generation_action(
+    *,
+    search_result: Any,
+    temperature: float,
+    rng: np.random.Generator,
+    use_continuation_gate: bool,
+    min_hard_improvement: float,
+    min_soft_improvement: float,
+    min_gate_visits: int,
+    min_gate_visit_fraction: float,
+    scenario_id: int | None = None,
+    step: int | None = None,
+) -> _GenerationActionDecision:
+    policy_target = {
+        int(action_id): float(probability)
+        for action_id, probability in search_result.policy.items()
+    }
+    _validate_policy_target(
+        policy_target,
+        scenario_id=scenario_id,
+        step=step,
+    )
+
+    raw_selected_action_id = select_action_from_policy(
+        policy=search_result.policy,
+        temperature=temperature,
+        rng=rng,
+    )
+    raw_selected_action = search_result.root.actions_by_id[raw_selected_action_id]
+    raw_selected_branch_id = raw_selected_action.branch_id
+    gate_decision = None
+
+    if use_continuation_gate:
+        gate_decision = analyze_root_branches(
+            result=search_result,
+            min_hard_improvement=min_hard_improvement,
+            min_soft_improvement=min_soft_improvement,
+            min_visits=min_gate_visits,
+            min_visit_fraction=min_gate_visit_fraction,
+        )
+        selected_action_id = int(gate_decision.selected_action_id)
+        selected_branch_id = gate_decision.selected_branch_id
+    else:
+        selected_action_id = int(raw_selected_action_id)
+        selected_branch_id = raw_selected_branch_id
+
+    return _GenerationActionDecision(
+        selected_action_id=selected_action_id,
+        selected_branch_id=selected_branch_id,
+        raw_selected_action_id=int(raw_selected_action_id),
+        raw_selected_branch_id=raw_selected_branch_id,
+        policy_target=policy_target,
+        gate_decision=gate_decision,
+    )
 
 def state_security_penalty(state: GridFMState) -> float:
     loading_idx = BRANCH_FEATURE_COLUMNS.index("loading_percent")
@@ -375,32 +479,24 @@ def generate_self_play_examples(request: GenerationRequest) -> Path:
                 print("MCTS returned no action. Stop episode.")
                 break
 
-            raw_selected_action_id = select_action_from_policy(
-                policy=search_result.policy,
+            action_decision = _select_generation_action(
+                search_result=search_result,
                 temperature=request.config.selection_temperature,
                 rng=rng,
+                use_continuation_gate=request.config.use_continuation_gate,
+                min_hard_improvement=request.min_hard_improvement,
+                min_soft_improvement=request.min_soft_improvement,
+                min_gate_visits=request.min_gate_visits,
+                min_gate_visit_fraction=request.min_gate_visit_fraction,
+                scenario_id=int(scenario_id),
+                step=int(step),
             )
-            raw_selected_action = search_result.root.actions_by_id[
-                raw_selected_action_id
-            ]
-            raw_selected_branch_id = raw_selected_action.branch_id
-            gate_decision = None
-
-            if request.config.use_continuation_gate:
-                gate_decision = analyze_root_branches(
-                    result=search_result,
-                    min_hard_improvement=request.min_hard_improvement,
-                    min_soft_improvement=request.min_soft_improvement,
-                    min_visits=request.min_gate_visits,
-                    min_visit_fraction=request.min_gate_visit_fraction,
-                )
-                selected_action_id = int(gate_decision.selected_action_id)
-                selected_branch_id = gate_decision.selected_branch_id
-                policy_target = make_one_hot_policy(selected_action_id)
-            else:
-                selected_action_id = int(raw_selected_action_id)
-                selected_branch_id = raw_selected_branch_id
-                policy_target = search_result.policy
+            selected_action_id = action_decision.selected_action_id
+            selected_branch_id = action_decision.selected_branch_id
+            raw_selected_action_id = action_decision.raw_selected_action_id
+            raw_selected_branch_id = action_decision.raw_selected_branch_id
+            policy_target = action_decision.policy_target
+            gate_decision = action_decision.gate_decision
 
             if selected_action_id == 0:
                 selected_action = make_do_nothing_action()
@@ -440,6 +536,26 @@ def generate_self_play_examples(request: GenerationRequest) -> Path:
                         None
                         if gate_decision is None
                         else gate_decision.selected_reason
+                    ),
+                    "policy_target_source": "mcts_visit_distribution",
+                    "execution_action_source": (
+                        "continuation_gate"
+                        if request.config.use_continuation_gate
+                        else "mcts_policy_selection"
+                    ),
+                    "gate_overrode_mcts_selection": bool(
+                        request.config.use_continuation_gate
+                        and selected_action_id != raw_selected_action_id
+                    ),
+                    "mcts_best_action_id": (
+                        None
+                        if search_result.best_action_id is None
+                        else int(search_result.best_action_id)
+                    ),
+                    "mcts_best_branch_id": (
+                        None
+                        if getattr(search_result, "best_branch_id", None) is None
+                        else int(search_result.best_branch_id)
                     ),
                 }
             )
@@ -528,6 +644,13 @@ def generate_self_play_examples(request: GenerationRequest) -> Path:
                         else int(item["raw_selected_branch_id"])
                     ),
                     "gate_reason": item["gate_reason"],
+                    "policy_target_source": item["policy_target_source"],
+                    "execution_action_source": item["execution_action_source"],
+                    "gate_overrode_mcts_selection": item[
+                        "gate_overrode_mcts_selection"
+                    ],
+                    "mcts_best_action_id": item["mcts_best_action_id"],
+                    "mcts_best_branch_id": item["mcts_best_branch_id"],
                 },
             )
             total_examples += 1

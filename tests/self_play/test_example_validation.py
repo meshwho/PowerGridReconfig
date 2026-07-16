@@ -203,3 +203,19 @@ def test_inconsistent_graph_dimensions_are_rejected(tmp_path: Path) -> None:
 def test_optional_selected_action_must_be_valid(tmp_path: Path) -> None:
     row = valid_row(write_state(tmp_path / "s.npz")); row["selected_action_id"] = 2
     assert_rejected(write_csv(tmp_path / "examples.csv", [row]), "selected_action_id")
+
+
+def test_selected_action_may_be_absent_from_mcts_policy_support(tmp_path: Path) -> None:
+    state = write_state(
+        tmp_path / "s.npz",
+        branch_features=np.zeros((2, 4), dtype=np.float32),
+        edge_index=np.array([[0, 1], [1, 0]], dtype=np.int64),
+        action_mask=np.array([True, True, True], dtype=bool),
+    )
+    row = valid_row(state)
+    row["selected_action_id"] = 0
+    row["mcts_policy_json"] = '{"1": 0.7, "2": 0.3}'
+
+    df = load_and_validate_examples_csv(write_csv(tmp_path / "examples.csv", [row]))
+
+    assert len(df) == 1

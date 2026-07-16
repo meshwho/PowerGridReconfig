@@ -82,6 +82,9 @@ def validate_examples_dataframe(examples: pd.DataFrame, *, source_path: str | Pa
         _validate_policy_against_mask(policy, action_mask=action_mask, index=index, source=source)
         if "selected_action_id" in examples.columns and not _is_missing_required_value(row["selected_action_id"]):
             selected = _require_integer(row["selected_action_id"], column="selected_action_id", index=index, source=source)
+            # The selected action is validated only against the environment action mask.
+            # A continuation/safety gate may execute an action absent from the MCTS
+            # policy target, so policy-support membership is intentionally not checked.
             if selected < 0 or selected >= len(action_mask) or not bool(action_mask[selected]):
                 raise ValueError(f"selected_action_id {selected} is invalid for action_mask at row {index}. File: {source}")
 
