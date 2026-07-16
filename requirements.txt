@@ -1,12 +1,2 @@
-pandapower
-pandas
-numpy
-networkx
-tqdm
-numba
-torch
-PyYAML
-tensorboard
-pypower
-pyarrow
-pytest
+-c constraints/py311.txt
+-e .[data,test,train]
