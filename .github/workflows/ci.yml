@@ -49,17 +49,13 @@ jobs:
         run: python -m pip check
 
       - name: Print dependency diagnostics
-        run: |
-          python - <<'PY'
-          import importlib.metadata as m
-          import platform
-
-          print('python', platform.python_version())
-          for package in ('numpy', 'scipy', 'pandas', 'torch', 'pypower'):
-              print(package, m.version(package))
-          assert m.version('numpy') == '1.26.4'
-          assert m.version('pypower') == '5.1.19'
-          PY
+        run: >-
+          python -c "import importlib.metadata as m, platform;
+          print('python', platform.python_version());
+          [print(package, m.version(package)) for package in
+          ('numpy', 'scipy', 'pandas', 'torch', 'pypower')];
+          assert m.version('numpy') == '1.26.4';
+          assert m.version('pypower') == '5.1.19'"
 
       - name: Compile Python sources
         run: python -m compileall -q grid_topology_ai scripts tests
@@ -137,25 +133,17 @@ jobs:
         run: python -m pip check
 
       - name: Import data tools
-        run: |
-          python - <<'PY'
-          import importlib.metadata as m
-          import numpy
-          import numba
-          import pandapower
-          import pandapower.networks
-          import pyarrow
-          import pypower
-
-          assert m.version('pandapower') == '2.14.11'
-          assert m.version('numpy') == '1.26.4'
-          assert m.version('pypower') == '5.1.19'
-          print('pandapower', pandapower.__version__)
-          print('numpy', numpy.__version__)
-          print('numba', numba.__version__)
-          print('pyarrow', pyarrow.__version__)
-          print('pypower', m.version('pypower'))
-          PY
+        run: >-
+          python -c "import importlib.metadata as m;
+          import numpy, numba, pandapower, pandapower.networks, pyarrow, pypower;
+          assert m.version('pandapower') == '2.14.11';
+          assert m.version('numpy') == '1.26.4';
+          assert m.version('pypower') == '5.1.19';
+          print('pandapower', pandapower.__version__);
+          print('numpy', numpy.__version__);
+          print('numba', numba.__version__);
+          print('pyarrow', pyarrow.__version__);
+          print('pypower', m.version('pypower'))"
 
       - name: Data generation CLI help
         run: python -m scripts.data.generate_case118_raw --help

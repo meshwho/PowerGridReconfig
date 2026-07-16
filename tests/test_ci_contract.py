@@ -25,6 +25,10 @@ def test_ci_workflow_contract() -> None:
         "np.in1d =",
         "setattr(np",
         "hasattr(np",
+        "python - <<",
+        "python3 - <<",
+        "<<'PY'",
+        '<<"PY"',
     )
 
     for pattern in required:
