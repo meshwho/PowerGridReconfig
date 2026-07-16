@@ -1,0 +1,14 @@
+numpy==1.26.4
+scipy==1.13.1
+pandas==2.2.3
+networkx==3.3
+tqdm==4.67.1
+PyYAML==6.0.2
+torch==2.5.1
+tensorboard==2.18.0
+PYPOWER==5.1.19
+pandapower==2.14.11
+numba==0.60.0
+pyarrow==18.1.0
+pytest==8.3.5
+build==1.2.2.post1
