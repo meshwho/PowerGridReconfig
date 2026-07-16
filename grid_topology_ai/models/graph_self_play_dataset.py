@@ -77,21 +77,25 @@ class GraphSelfPlayDataset(Dataset):
             )
 
         if normalization_stats is not None:
-            self.bus_feature_mean = np.asarray(
+            self.bus_feature_mean = np.array(
                 normalization_stats["bus_feature_mean"],
                 dtype=np.float32,
+                copy=True,
             )
-            self.bus_feature_std = np.asarray(
+            self.bus_feature_std = np.array(
                 normalization_stats["bus_feature_std"],
                 dtype=np.float32,
+                copy=True,
             )
-            self.branch_feature_mean = np.asarray(
+            self.branch_feature_mean = np.array(
                 normalization_stats["branch_feature_mean"],
                 dtype=np.float32,
+                copy=True,
             )
-            self.branch_feature_std = np.asarray(
+            self.branch_feature_std = np.array(
                 normalization_stats["branch_feature_std"],
                 dtype=np.float32,
+                copy=True,
             )
         elif self.normalize_features:
             (
@@ -388,8 +392,8 @@ class GraphSelfPlayDataset(Dataset):
         """
 
         return {
-            "bus_feature_mean": self.bus_feature_mean.astype(np.float32),
-            "bus_feature_std": self.bus_feature_std.astype(np.float32),
-            "branch_feature_mean": self.branch_feature_mean.astype(np.float32),
-            "branch_feature_std": self.branch_feature_std.astype(np.float32),
+            "bus_feature_mean": self.bus_feature_mean.astype(np.float32, copy=True),
+            "bus_feature_std": self.bus_feature_std.astype(np.float32, copy=True),
+            "branch_feature_mean": self.branch_feature_mean.astype(np.float32, copy=True),
+            "branch_feature_std": self.branch_feature_std.astype(np.float32, copy=True),
         }

@@ -167,3 +167,25 @@ def test_graph_dataset_uses_mcts_policy_not_selected_action(tmp_path: Path):
     assert float(target_policy[0].item()) == pytest.approx(0.0)
     assert float(target_policy[1].item()) == pytest.approx(0.7)
     assert float(target_policy[2].item()) == pytest.approx(0.3)
+
+
+def test_normalization_state_dict_returns_copies(tmp_path: Path):
+    state_path = tmp_path / "state.npz"
+    np.savez(
+        state_path,
+        bus_features=np.array([[1, 2, 3], [4, 5, 6]], dtype=np.float32),
+        branch_features=np.array([[1, 2, 3, 4], [5, 6, 7, 8]], dtype=np.float32),
+        edge_index=np.array([[0, 1], [1, 0]], dtype=np.int64),
+        action_mask=np.array([True, True, True], dtype=bool),
+    )
+    csv_path = tmp_path / "examples.csv"
+    pd.DataFrame([{
+        "state_path": str(state_path), "mcts_policy_json": '{"1": 1.0}',
+        "scenario_id": 1, "step": 0, "state_id": "s", "selected_action_id": 1,
+        "outcome_value_target": 0.0,
+    }]).to_csv(csv_path, index=False)
+    dataset = GraphSelfPlayDataset(csv_path, normalize_features=True)
+    stats = dataset.normalization_state_dict()
+    stats["bus_feature_mean"][0] = 999.0
+    fresh = dataset.normalization_state_dict()
+    assert fresh["bus_feature_mean"][0] != 999.0

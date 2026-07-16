@@ -32,10 +32,16 @@ class _FakeDataset:
         self.examples_csv = Path(examples_csv)
         self.normalize_features = normalize_features
         self.normalization_stats = normalization_stats
-        self.bus_feature_mean = np.array([1.0], dtype=np.float32)
-        self.bus_feature_std = np.array([2.0], dtype=np.float32)
-        self.branch_feature_mean = np.array([3.0], dtype=np.float32)
-        self.branch_feature_std = np.array([4.0], dtype=np.float32)
+        if normalization_stats is None:
+            self.bus_feature_mean = np.array([1.0], dtype=np.float32)
+            self.bus_feature_std = np.array([2.0], dtype=np.float32)
+            self.branch_feature_mean = np.array([3.0], dtype=np.float32)
+            self.branch_feature_std = np.array([4.0], dtype=np.float32)
+        else:
+            self.bus_feature_mean = np.array(normalization_stats["bus_feature_mean"], dtype=np.float32, copy=True)
+            self.bus_feature_std = np.array(normalization_stats["bus_feature_std"], dtype=np.float32, copy=True)
+            self.branch_feature_mean = np.array(normalization_stats["branch_feature_mean"], dtype=np.float32, copy=True)
+            self.branch_feature_std = np.array(normalization_stats["branch_feature_std"], dtype=np.float32, copy=True)
         self.num_bus_features = 1
         self.num_branch_features = 1
         self.num_buses = 1
@@ -131,6 +137,18 @@ def _patch_light_training(
         training_api,
         "load_initial_checkpoint_into_model",
         fake_load_initial_checkpoint_into_model,
+    )
+
+    monkeypatch.setattr(
+        training_api,
+        "load_checkpoint_payload",
+        lambda *args, **kwargs: {
+            "bus_feature_mean": np.array([1.0], dtype=np.float32),
+            "bus_feature_std": np.array([2.0], dtype=np.float32),
+            "branch_feature_mean": np.array([3.0], dtype=np.float32),
+            "branch_feature_std": np.array([4.0], dtype=np.float32),
+            "model_state_dict": {},
+        },
     )
 
     def fake_train_one_epoch(**kwargs: Any) -> tuple[float, float, float]:
@@ -376,3 +394,113 @@ def test_package_modules_do_not_use_argparse_namespace() -> None:
 
     assert "argparse.Namespace" not in text
     assert "scripts." not in text
+
+
+def _sentinel_stats() -> dict[str, np.ndarray]:
+    return {
+        "bus_feature_mean": np.array([10.0], dtype=np.float32),
+        "bus_feature_std": np.array([2.0], dtype=np.float32),
+        "branch_feature_mean": np.array([100.0], dtype=np.float32),
+        "branch_feature_std": np.array([10.0], dtype=np.float32),
+    }
+
+
+def test_fine_tuning_reuses_init_checkpoint_normalization(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured = {"metrics_csv": tmp_path / "metrics.csv"}
+    _patch_light_training(monkeypatch, captured)
+    init_checkpoint = tmp_path / "init.pt"
+    init_checkpoint.write_bytes(b"checkpoint")
+    sentinel = _sentinel_stats()
+    monkeypatch.setattr(training_api, "load_checkpoint_payload", lambda *a, **k: {**sentinel, "model_state_dict": {}})
+    val_csv = tmp_path / "val.csv"
+    val_csv.write_text("scenario_id,state_path,outcome_value_target\n2,state.npz,0\n")
+
+    train_graph_policy_value_model(
+        _request(tmp_path, init_checkpoint=init_checkpoint, validation_examples_csv=val_csv)
+    )
+
+    assert _FakeDataset.created[0]["normalization_stats"] is not None
+    assert _FakeDataset.created[1]["normalization_stats"] is not None
+    for created in _FakeDataset.created[:2]:
+        for key, expected in sentinel.items():
+            np.testing.assert_array_equal(created["normalization_stats"][key], expected)
+    checkpoint = torch.load(tmp_path / "model.pt", weights_only=False)
+    assert checkpoint["normalization_source"] == "init_checkpoint"
+    assert checkpoint["normalization_frozen_from_init_checkpoint"] is True
+    assert checkpoint["normalization_source_checkpoint"] == str(init_checkpoint)
+
+
+def test_fine_tuning_does_not_recompute_normalization(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured = {"metrics_csv": tmp_path / "metrics.csv"}
+    _patch_light_training(monkeypatch, captured)
+    init_checkpoint = tmp_path / "init.pt"; init_checkpoint.write_bytes(b"checkpoint")
+    monkeypatch.setattr(training_api, "load_checkpoint_payload", lambda *a, **k: {**_sentinel_stats(), "model_state_dict": {}})
+    def forbidden(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("normalization was recomputed")
+    monkeypatch.setattr(_FakeDataset, "_compute_feature_statistics", forbidden, raising=False)
+    train_graph_policy_value_model(_request(tmp_path, init_checkpoint=init_checkpoint))
+
+
+def test_training_from_scratch_computes_and_saves_training_normalization(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured = {"metrics_csv": tmp_path / "metrics.csv"}
+    _patch_light_training(monkeypatch, captured)
+    train_graph_policy_value_model(_request(tmp_path))
+    assert _FakeDataset.created[0]["normalization_stats"] is None
+    checkpoint = torch.load(tmp_path / "model.pt", weights_only=False)
+    assert checkpoint["normalization_source"] == "training_dataset"
+    assert checkpoint["normalization_frozen_from_init_checkpoint"] is False
+    assert checkpoint["normalization_source_checkpoint"] is None
+
+
+def test_fine_tuning_rejects_checkpoint_without_normalization(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured = {"metrics_csv": tmp_path / "metrics.csv"}
+    _patch_light_training(monkeypatch, captured)
+    init_checkpoint = tmp_path / "init.pt"; init_checkpoint.write_bytes(b"checkpoint")
+    payload = _sentinel_stats(); del payload["branch_feature_std"]
+    monkeypatch.setattr(training_api, "load_checkpoint_payload", lambda *a, **k: payload)
+    with pytest.raises(ValueError, match="branch_feature_std"):
+        train_graph_policy_value_model(_request(tmp_path, init_checkpoint=init_checkpoint))
+    assert not (tmp_path / "model.pt").exists()
+    assert "train_kwargs" not in captured
+
+
+def test_fine_tuning_rejects_normalization_feature_dimension_mismatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured = {"metrics_csv": tmp_path / "metrics.csv"}
+    _patch_light_training(monkeypatch, captured)
+    init_checkpoint = tmp_path / "init.pt"; init_checkpoint.write_bytes(b"checkpoint")
+    bad = _sentinel_stats(); bad["bus_feature_mean"] = np.array([1.0, 2.0], dtype=np.float32); bad["bus_feature_std"] = np.array([1.0, 2.0], dtype=np.float32)
+    monkeypatch.setattr(training_api, "load_checkpoint_payload", lambda *a, **k: bad)
+    with pytest.raises(ValueError, match="dimension mismatch.*bus_feature_mean"):
+        train_graph_policy_value_model(_request(tmp_path, init_checkpoint=init_checkpoint))
+    assert "train_kwargs" not in captured
+
+
+def test_fine_tuning_loads_init_checkpoint_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured = {"metrics_csv": tmp_path / "metrics.csv"}
+    _patch_light_training(monkeypatch, captured)
+    init_checkpoint = tmp_path / "init.pt"; init_checkpoint.write_bytes(b"checkpoint")
+    calls = {"count": 0}
+    def fake_load(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        calls["count"] += 1
+        return {**_sentinel_stats(), "model_state_dict": {}}
+    monkeypatch.setattr(training_api, "load_checkpoint_payload", fake_load)
+    train_graph_policy_value_model(_request(tmp_path, init_checkpoint=init_checkpoint))
+    assert calls["count"] == 1

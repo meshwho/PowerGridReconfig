@@ -14,7 +14,10 @@ from grid_topology_ai.models.graph_policy_value_net import GraphPolicyValueNet
 from grid_topology_ai.models.graph_policy_value_net_v2 import GraphPolicyValueNetV2
 from grid_topology_ai.models.graph_self_play_dataset import GraphSelfPlayDataset
 from grid_topology_ai.training.checkpoints import (
+    NORMALIZATION_STAT_KEYS,
     checkpoint_variant_path,
+    extract_normalization_stats,
+    load_checkpoint_payload,
     load_initial_checkpoint_into_model,
     make_checkpoint,
     save_checkpoint_now,
@@ -467,6 +470,55 @@ def _build_model(
     )
 
 
+
+def _normalization_provenance(
+    *,
+    init_checkpoint: Path | None,
+) -> dict[str, object]:
+    from_init = init_checkpoint is not None
+    return {
+        "normalization_contract_version": 1,
+        "normalization_source": "init_checkpoint" if from_init else "training_dataset",
+        "normalization_frozen_from_init_checkpoint": from_init,
+        "normalization_source_checkpoint": str(init_checkpoint) if init_checkpoint is not None else None,
+    }
+
+
+def _assert_same_normalization_stats(
+    *,
+    actual: dict[str, np.ndarray],
+    expected: dict[str, np.ndarray],
+    checkpoint_path: Path,
+) -> None:
+    for key in NORMALIZATION_STAT_KEYS:
+        if not np.array_equal(actual[key], expected[key]):
+            raise RuntimeError(
+                "Fine-tuning dataset normalization differs from init checkpoint "
+                f"for {key}. Checkpoint: {checkpoint_path}"
+            )
+
+
+def _validate_normalization_feature_dimensions(
+    *,
+    normalization_stats: dict[str, np.ndarray],
+    dataset: GraphSelfPlayDataset,
+    checkpoint_path: Path,
+) -> None:
+    checks = {
+        "bus_feature_mean": int(dataset.num_bus_features),
+        "bus_feature_std": int(dataset.num_bus_features),
+        "branch_feature_mean": int(dataset.num_branch_features),
+        "branch_feature_std": int(dataset.num_branch_features),
+    }
+    for key, expected in checks.items():
+        observed = normalization_stats[key].shape
+        if observed != (expected,):
+            raise ValueError(
+                f"Initial checkpoint normalization dimension mismatch for {key}. "
+                f"Expected dimension {expected}, observed shape {observed}. "
+                f"Checkpoint: {checkpoint_path}"
+            )
+
 def train_graph_policy_value_model(
     request: TrainingRequest,
 ) -> Path:
@@ -491,22 +543,47 @@ def train_graph_policy_value_model(
 
     print(f"AMP enabled:   {use_amp}")
 
+    init_checkpoint_payload = None
+    checkpoint_normalization_stats = None
+    if request.init_checkpoint is not None:
+        if not request.init_checkpoint.exists():
+            raise FileNotFoundError(
+                f"Initial checkpoint not found: {request.init_checkpoint}"
+            )
+        init_checkpoint_payload = load_checkpoint_payload(
+            request.init_checkpoint,
+            map_location="cpu",
+        )
+        checkpoint_normalization_stats = extract_normalization_stats(
+            init_checkpoint_payload,
+            source=request.init_checkpoint,
+        )
+
     dataset = GraphSelfPlayDataset(
         examples_csv=request.examples_csv,
         normalize_features=request.normalize_features,
+        normalization_stats=checkpoint_normalization_stats,
     )
+    effective_normalization_stats = dataset.normalization_state_dict()
+
+    if checkpoint_normalization_stats is not None:
+        _assert_same_normalization_stats(
+            actual=effective_normalization_stats,
+            expected=checkpoint_normalization_stats,
+            checkpoint_path=request.init_checkpoint,
+        )
+        _validate_normalization_feature_dimensions(
+            normalization_stats=effective_normalization_stats,
+            dataset=dataset,
+            checkpoint_path=request.init_checkpoint,
+        )
 
     val_dataset = None
     if request.validation_examples_csv is not None:
         val_dataset = GraphSelfPlayDataset(
             examples_csv=request.validation_examples_csv,
             normalize_features=request.normalize_features,
-            normalization_stats={
-                "bus_feature_mean": dataset.bus_feature_mean,
-                "bus_feature_std": dataset.bus_feature_std,
-                "branch_feature_mean": dataset.branch_feature_mean,
-                "branch_feature_std": dataset.branch_feature_std,
-            },
+            normalization_stats=effective_normalization_stats,
         )
 
     validate_no_scenario_overlap(train_dataset=dataset, val_dataset=val_dataset)
@@ -568,6 +645,7 @@ def train_graph_policy_value_model(
             hidden_dim=request.config.hidden_dim,
             num_layers=request.config.num_layers,
             device=device,
+            checkpoint_payload=init_checkpoint_payload,
         )
 
     optimizer = torch.optim.AdamW(
@@ -624,6 +702,7 @@ def train_graph_policy_value_model(
                     request=request,
                     device=device,
                     use_amp=use_amp,
+                    normalization_metadata=_normalization_provenance(init_checkpoint=request.init_checkpoint),
                 )
 
             if request.config.save_multiple_best:
@@ -644,6 +723,7 @@ def train_graph_policy_value_model(
                         selector_name="val_loss",
                         selector_value=current_metric,
                         val_metrics=val_metrics,
+                        normalization_metadata=_normalization_provenance(init_checkpoint=request.init_checkpoint),
                     )
 
                 if current_top1 > best_top1:
@@ -660,6 +740,7 @@ def train_graph_policy_value_model(
                         selector_name="val_top1",
                         selector_value=current_top1,
                         val_metrics=val_metrics,
+                        normalization_metadata=_normalization_provenance(init_checkpoint=request.init_checkpoint),
                     )
 
                 if current_top5 > best_top5:
@@ -676,6 +757,7 @@ def train_graph_policy_value_model(
                         selector_name="val_top5",
                         selector_value=current_top5,
                         val_metrics=val_metrics,
+                        normalization_metadata=_normalization_provenance(init_checkpoint=request.init_checkpoint),
                     )
 
                 if current_switch > best_switch:
@@ -692,6 +774,7 @@ def train_graph_policy_value_model(
                         selector_name="val_switch",
                         selector_value=current_switch,
                         val_metrics=val_metrics,
+                        normalization_metadata=_normalization_provenance(init_checkpoint=request.init_checkpoint),
                     )
 
                 if current_policy_score > best_policy_score:
@@ -708,6 +791,7 @@ def train_graph_policy_value_model(
                         selector_name="policy_selection_score",
                         selector_value=current_policy_score,
                         val_metrics=val_metrics,
+                        normalization_metadata=_normalization_provenance(init_checkpoint=request.init_checkpoint),
                     )
 
             print(
@@ -736,6 +820,7 @@ def train_graph_policy_value_model(
                     request=request,
                     device=device,
                     use_amp=use_amp,
+                    normalization_metadata=_normalization_provenance(init_checkpoint=request.init_checkpoint),
                 )
 
             if epoch == 1 or epoch % 25 == 0 or epoch == request.config.epochs:
@@ -773,6 +858,7 @@ def train_graph_policy_value_model(
             request=request,
             device=device,
             use_amp=use_amp,
+            normalization_metadata=_normalization_provenance(init_checkpoint=request.init_checkpoint),
         )
         checkpoint["best_epoch"] = int(best_epoch)
         checkpoint["best_metric"] = float(best_metric)
@@ -787,6 +873,7 @@ def train_graph_policy_value_model(
             request=request,
             device=device,
             use_amp=use_amp,
+            normalization_metadata=_normalization_provenance(init_checkpoint=request.init_checkpoint),
         )
         last_checkpoint["saved_epoch"] = int(request.config.epochs)
         last_checkpoint["selector_name"] = "last_epoch"
