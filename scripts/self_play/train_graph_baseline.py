@@ -137,6 +137,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Disable TensorBoard logging.",
     )
     parser.add_argument(
+        "--seed",
+        type=int,
+        default=42,
+        help="Random seed for model initialization and training DataLoader shuffle.",
+    )
+    parser.add_argument(
         "--metrics-csv",
         type=str,
         default=None,
@@ -200,6 +206,7 @@ def main(argv: list[str] | None = None) -> int:
         ),
         run_name=args.run_name,
         metrics_csv=(None if args.metrics_csv is None else Path(args.metrics_csv)),
+        seed=args.seed,
     )
     checkpoint = train_graph_policy_value_model(request)
     print(checkpoint)

@@ -70,7 +70,7 @@ def _patch_basics(monkeypatch, tmp_path: Path, calls: list[str] | None = None, *
     monkeypatch.setattr(pipeline_module, "resolve_run_state", lambda **kwargs: (note("resolve_run_state") or _RunState(completed, start)))
     monkeypatch.setattr(pipeline_module, "save_yaml", lambda **kwargs: note("save_yaml"))
     monkeypatch.setattr(pipeline_module, "validate_resume_artifacts", lambda paths: note("validate_resume_artifacts"))
-    monkeypatch.setattr(pipeline_module, "initialize_best_state", lambda **kwargs: (note("initialize_best_state") or _BestState(tmp_path / "best.pt", {"solve_rate": 0.1})))
+    monkeypatch.setattr(pipeline_module, "initialize_best_state", lambda **kwargs: (note("initialize_best_state") or _BestState(tmp_path / "best.pt", {"solve_rate": 0.1, "pf_alg": 3, "task_config": {"pf_alg": 3}})))
     monkeypatch.setattr(pipeline_module, "initialize_pool_metadata", lambda **kwargs: (note("initialize_pool_metadata") or {"scenarios": []}))
     monkeypatch.setattr(pipeline_module, "RollingReplayBuffer", lambda **kwargs: (note("RollingReplayBuffer") or _RollingReplayBuffer(**kwargs)))
     monkeypatch.setattr(pipeline_module, "load_learning_curve", lambda path: (note("load_learning_curve") or []))
@@ -80,7 +80,7 @@ def _patch_basics(monkeypatch, tmp_path: Path, calls: list[str] | None = None, *
 
 
 def _iteration_result(iteration: int, best: Path, metric: float, pool: dict[str, object]) -> IterationResult:
-    return IterationResult(iteration=iteration, accepted=True, status="ACCEPTED", selected_scenario_ids=(), raw_examples_csv=Path("raw.csv"), train_batch_csv=Path("train.csv"), candidate_checkpoint=Path(f"candidate-{iteration}.pt"), metadata_path=Path("metadata.json"), candidate_metrics={"solve_rate": metric}, best_checkpoint=best, best_metrics={"solve_rate": metric}, pool_metadata=pool, learning_curve_row={"iteration": iteration, "n_fresh": 1, "n_old": 0})
+    return IterationResult(iteration=iteration, accepted=True, status="ACCEPTED", selected_scenario_ids=(), raw_examples_csv=Path("raw.csv"), train_batch_csv=Path("train.csv"), train_examples_csv=Path("train_examples.csv"), validation_examples_csv=Path("validation_examples.csv"), split_metadata_path=Path("train_validation_split.json"), candidate_checkpoint=Path(f"candidate-{iteration}.pt"), metadata_path=Path("metadata.json"), candidate_metrics={"solve_rate": metric, "pf_alg": 3, "task_config": {"pf_alg": 3}}, best_checkpoint=best, best_metrics={"solve_rate": metric, "pf_alg": 3, "task_config": {"pf_alg": 3}}, pool_metadata=pool, learning_curve_row={"iteration": iteration, "n_fresh": 1, "n_old": 0})
 
 
 def test_pipeline_request_is_frozen_and_slotted(tmp_path: Path) -> None:
@@ -106,7 +106,8 @@ def test_pipeline_passes_shared_state_between_iterations(tmp_path: Path, monkeyp
     monkeypatch.setattr(pipeline_module, "run_self_play_iteration", fake_run)
     run_self_play_pipeline(_request(tmp_path, n_iterations=3))
     assert seen[1][1] == tmp_path / "best-1.pt"
-    assert seen[2][2] == {"solve_rate": 0.2}
+    assert seen[2][2]["solve_rate"] == 0.2
+    assert seen[2][2]["pf_alg"] == 3
     assert seen[2][3]["iter"] == 2
     assert len({id(item[4]) for item in seen}) == 1
 
@@ -151,7 +152,8 @@ def test_pipeline_returns_final_state(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(pipeline_module, "run_self_play_iteration", lambda request: _iteration_result(request.iteration, tmp_path / f"best-{request.iteration}.pt", 0.4, {"scenarios": [], "done": True}))
     result = run_self_play_pipeline(_request(tmp_path, n_iterations=2))
     assert result.best_checkpoint == tmp_path / "best-2.pt"
-    assert result.best_metrics == {"solve_rate": 0.4}
+    assert result.best_metrics["solve_rate"] == 0.4
+    assert result.best_metrics["pf_alg"] == 3
     assert result.start_iteration == 2
     assert result.completed_iterations_before_run == (1,)
     assert result.executed_iterations == (2,)
@@ -313,3 +315,26 @@ def test_format_metric_does_not_hide_unexpected_runtime_error() -> None:
 
     with pytest.raises(RuntimeError, match="broken metric"):
         _format_metric({"score": BrokenMetric()}, "score")
+
+
+def test_pipeline_rejects_bootstrap_metrics_pf_alg_before_iteration(tmp_path: Path, monkeypatch) -> None:
+    _patch_basics(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        pipeline_module,
+        "initialize_best_state",
+        lambda **kwargs: _BestState(
+            tmp_path / "best.pt",
+            {"solve_rate": 0.25, "pf_alg": 1, "task_config": {"pf_alg": 1}},
+        ),
+    )
+    called = False
+
+    def fake_run(request):
+        nonlocal called
+        called = True
+        raise AssertionError("iteration should not run")
+
+    monkeypatch.setattr(pipeline_module, "run_self_play_iteration", fake_run)
+    with pytest.raises(ValueError, match="PF_ALG"):
+        run_self_play_pipeline(_request(tmp_path, n_iterations=1))
+    assert called is False

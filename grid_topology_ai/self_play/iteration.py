@@ -9,14 +9,22 @@ from typing import Any
 import pandas as pd
 
 from grid_topology_ai.config import SelfPlayConfig
-from grid_topology_ai.self_play.acceptance import accept_candidate
+from grid_topology_ai.self_play.acceptance import (
+    accept_candidate,
+    require_metrics_pf_alg,
+)
 from grid_topology_ai.self_play.artifacts import save_json, sha256_file
 from grid_topology_ai.self_play.checkpoint_state import promote_candidate
 from grid_topology_ai.self_play.paths import SelfPlayPaths
 from grid_topology_ai.self_play.pool_sampling import sample_from_pool
 from grid_topology_ai.self_play.pool_state import update_and_save_pool_metadata
 from grid_topology_ai.self_play.replay import RollingReplayBuffer
-from grid_topology_ai.self_play.stages import run_evaluate, run_generate, run_train
+from grid_topology_ai.self_play.stages import (
+    run_evaluate,
+    run_generate,
+    run_train,
+    split_examples_by_scenario,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,6 +55,9 @@ class IterationResult:
 
     raw_examples_csv: Path
     train_batch_csv: Path
+    train_examples_csv: Path
+    validation_examples_csv: Path
+    split_metadata_path: Path
     candidate_checkpoint: Path
     metadata_path: Path
 
@@ -94,6 +105,9 @@ def _save_iteration_metadata(
     parent_checkpoint: str | Path,
     candidate_checkpoint: str | Path,
     train_batch_csv: str | Path,
+    train_examples_csv: str | Path,
+    validation_examples_csv: str | Path,
+    split_metadata_path: str | Path,
     raw_examples_csv: str | Path | None,
     metrics: dict[str, Any],
     config: dict[str, Any],
@@ -108,6 +122,9 @@ def _save_iteration_metadata(
     parent_checkpoint = Path(parent_checkpoint)
     candidate_checkpoint = Path(candidate_checkpoint)
     train_batch_csv = Path(train_batch_csv)
+    train_examples_csv = Path(train_examples_csv)
+    validation_examples_csv = Path(validation_examples_csv)
+    split_metadata_path = Path(split_metadata_path)
 
     payload: dict[str, Any] = {
         "iteration": int(iteration),
@@ -116,6 +133,9 @@ def _save_iteration_metadata(
         "parent_checkpoint": str(parent_checkpoint),
         "candidate_checkpoint": str(candidate_checkpoint),
         "train_batch_csv": str(train_batch_csv),
+        "train_examples_csv": str(train_examples_csv),
+        "validation_examples_csv": str(validation_examples_csv),
+        "split_metadata_path": str(split_metadata_path),
         "raw_examples_csv": None if raw_examples_csv is None else str(raw_examples_csv),
         "hashes": {},
         "metrics": metrics,
@@ -126,6 +146,9 @@ def _save_iteration_metadata(
         "parent_checkpoint_sha256": parent_checkpoint,
         "candidate_checkpoint_sha256": candidate_checkpoint,
         "train_batch_csv_sha256": train_batch_csv,
+        "train_examples_csv_sha256": train_examples_csv,
+        "validation_examples_csv_sha256": validation_examples_csv,
+        "split_metadata_sha256": split_metadata_path,
     }.items():
         if file_path.exists():
             payload["hashes"][name] = sha256_file(file_path)
@@ -213,13 +236,28 @@ def run_self_play_iteration(
         seed=iteration_seed,
     )
 
+    train_examples_path = iter_dir / "train_examples.csv"
+    validation_examples_path = iter_dir / "validation_examples.csv"
+    split_metadata_path = iter_dir / "train_validation_split.json"
+    split_metadata = split_examples_by_scenario(
+        examples_csv=train_batch_path,
+        train_output_csv=train_examples_path,
+        validation_output_csv=validation_examples_path,
+        metadata_output_json=split_metadata_path,
+        validation_fraction=config.training.validation_fraction,
+        min_validation_scenarios=config.training.min_validation_scenarios,
+        seed=iteration_seed,
+    )
+
     candidate_checkpoint = run_train(
         project_root=paths.project_root,
-        examples_csv=train_batch_path,
+        examples_csv=train_examples_path,
+        validation_examples_csv=validation_examples_path,
         init_checkpoint=parent_checkpoint,
         output_dir=iter_dir,
         config=config.training,
         iteration=iteration,
+        seed=iteration_seed,
     )
 
     metrics = run_evaluate(
@@ -229,6 +267,16 @@ def run_self_play_iteration(
         eval_raw_dir=paths.eval_raw_dir,
         output_dir=iter_dir,
         config=config.evaluation,
+    )
+    require_metrics_pf_alg(
+        metrics,
+        expected_pf_alg=config.evaluation.pf_alg,
+        source=str(iter_dir / config.evaluation.output_json_name),
+    )
+    require_metrics_pf_alg(
+        parent_metrics,
+        expected_pf_alg=config.evaluation.pf_alg,
+        source="parent/best metrics",
     )
 
     accepted = accept_candidate(
@@ -247,6 +295,9 @@ def run_self_play_iteration(
         parent_checkpoint=parent_checkpoint,
         candidate_checkpoint=candidate_checkpoint,
         train_batch_csv=train_batch_path,
+        train_examples_csv=train_examples_path,
+        validation_examples_csv=validation_examples_path,
+        split_metadata_path=split_metadata_path,
         raw_examples_csv=raw_examples_csv,
         metrics=metrics,
         config=dict(request.raw_config),
@@ -259,6 +310,9 @@ def run_self_play_iteration(
             "n_raw_examples": raw_examples_count,
             "n_new_examples_loaded": len(new_examples),
             "train_batch_metadata": train_batch_metadata,
+            "training_seed": int(iteration_seed),
+            "validation_fraction": float(config.training.validation_fraction),
+            "train_validation_split": split_metadata,
             "selected_scenario_ids_path": str(selected_ids_path),
             "pool_metadata_path": str(paths.pool_metadata),
             "pool_metadata_sha256_before_update": (
@@ -303,6 +357,12 @@ def run_self_play_iteration(
         "n_sampled_scenarios": int(len(scenario_ids)),
         "n_raw_examples": int(raw_examples_count),
         "n_train_examples": int(train_batch_metadata["n_examples"]),
+        "n_fit_examples": int(split_metadata["train_examples"]),
+        "n_validation_examples": int(split_metadata["validation_examples"]),
+        "n_fit_scenarios": int(split_metadata["train_scenarios"]),
+        "n_validation_scenarios": int(split_metadata["validation_scenarios"]),
+        "training_seed": int(iteration_seed),
+        "checkpoint_selection_metric": "validation_loss",
         "n_fresh": int(train_batch_metadata["n_fresh"]),
         "n_old": int(train_batch_metadata["n_old"]),
         "candidate_checkpoint": str(candidate_checkpoint),
@@ -322,6 +382,9 @@ def run_self_play_iteration(
         selected_scenario_ids=tuple(int(value) for value in scenario_ids),
         raw_examples_csv=raw_examples_csv,
         train_batch_csv=train_batch_path,
+        train_examples_csv=train_examples_path,
+        validation_examples_csv=validation_examples_path,
+        split_metadata_path=split_metadata_path,
         candidate_checkpoint=candidate_checkpoint,
         metadata_path=metadata_path,
         candidate_metrics=metrics,

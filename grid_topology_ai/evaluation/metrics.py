@@ -175,6 +175,9 @@ def build_evaluation_metrics(
         "task_config": dict(task_config),
     }
 
+    if "pf_alg" in task_config:
+        metrics["pf_alg"] = int(task_config["pf_alg"])
+
     if "difficulty_class" in df.columns:
         difficulty_metrics: dict[str, Any] = {}
 

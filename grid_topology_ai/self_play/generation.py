@@ -632,6 +632,7 @@ def generate_self_play_examples(request: GenerationRequest) -> Path:
                     "mcts_simulations": int(request.config.simulations),
                     "mcts_depth": int(request.config.depth),
                     "mcts_top_k": int(request.config.top_k),
+                    "pf_alg": int(request.config.pf_alg),
                     "use_continuation_gate": bool(
                         request.config.use_continuation_gate
                     ),

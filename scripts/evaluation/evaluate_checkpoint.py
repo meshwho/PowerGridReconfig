@@ -88,7 +88,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--pf-alg",
         type=int,
-        default=1,
+        default=3,
         choices=[1, 2, 3, 4],
         help="PYPOWER power flow algorithm: 1=NR, 2=FDXB, 3=FDBX, 4=GS.",
     )
@@ -226,6 +226,7 @@ def main(argv: list[str] | None = None) -> int:
         num_workers=args.num_workers,
         batch_size=args.batch_size,
         device=args.device,
+        pf_alg=args.pf_alg,
     )
     request = EvaluationRequest(
         raw_dir=Path(args.raw_dir),
@@ -236,7 +237,6 @@ def main(argv: list[str] | None = None) -> int:
         output_json=None if args.output_json is None else Path(args.output_json),
         limit=args.limit,
         quiet=args.quiet,
-        pf_alg=args.pf_alg,
         disable_cache=args.disable_cache,
         leaf_penalty_weight=args.leaf_penalty_weight,
         stop_policy=args.stop_policy,

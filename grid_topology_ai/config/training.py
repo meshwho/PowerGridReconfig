@@ -20,6 +20,8 @@ class TrainingConfig:
     learning_rate: float = 3e-4
     value_loss_weight: float = 1.0
     value_huber_delta: float = 1.0
+    validation_fraction: float = 0.20
+    min_validation_scenarios: int = 1
 
     num_workers: int = 0
     device: str = "auto"
@@ -56,6 +58,12 @@ class TrainingConfig:
         require_positive(
             "training.value_huber_delta",
             self.value_huber_delta,
+        )
+        if not 0.0 < float(self.validation_fraction) < 1.0:
+            raise ValueError("training.validation_fraction must be in (0, 1).")
+        require_positive(
+            "training.min_validation_scenarios",
+            self.min_validation_scenarios,
         )
         require_non_negative(
             "training.num_workers",
@@ -107,6 +115,12 @@ class TrainingConfig:
             ),
             value_huber_delta=float(
                 data.get("value_huber_delta", 1.0)
+            ),
+            validation_fraction=float(
+                data.get("validation_fraction", 0.20)
+            ),
+            min_validation_scenarios=int(
+                data.get("min_validation_scenarios", 1)
             ),
             num_workers=int(data.get("num_workers", 0)),
             device=str(data.get("device", "auto")),

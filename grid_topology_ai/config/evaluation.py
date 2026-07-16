@@ -17,6 +17,7 @@ class EvaluationConfig:
     depth: int = 4
     max_steps: int = 5
     top_k: int = 30
+    pf_alg: int = 3
 
     gamma: float = 0.95
     c_puct: float = 2.0
@@ -43,6 +44,11 @@ class EvaluationConfig:
             self.max_steps,
         )
         require_positive("evaluation.top_k", self.top_k)
+        require_choice(
+            "evaluation.pf_alg",
+            self.pf_alg,
+            {1, 2, 3, 4},
+        )
         require_fraction("evaluation.gamma", self.gamma)
         require_positive(
             "evaluation.c_puct",
@@ -86,6 +92,7 @@ class EvaluationConfig:
             depth=int(data.get("depth", 4)),
             max_steps=int(data.get("max_steps", 5)),
             top_k=int(data.get("top_k", 30)),
+            pf_alg=int(data.get("pf_alg", 3)),
             gamma=float(data.get("gamma", 0.95)),
             c_puct=float(data.get("c_puct", 2.0)),
             prior_exponent=float(
