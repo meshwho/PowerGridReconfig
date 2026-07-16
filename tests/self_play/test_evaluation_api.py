@@ -614,9 +614,17 @@ def test_invalid_effective_pf_alg_is_rejected(tmp_path: Path) -> None:
         _request(tmp_path, config=EvaluationConfig(pf_alg=3), pf_alg=9)
 
 
-def test_request_pf_alg_accepts_exact_float_and_string(tmp_path: Path) -> None:
-    assert _request(tmp_path, pf_alg=2.0).resolved_pf_alg == 2
-    assert _request(tmp_path, pf_alg="2").resolved_pf_alg == 2  # type: ignore[arg-type]
+@pytest.mark.parametrize("value", [2.0, "2"])
+def test_request_pf_alg_accepts_exact_float_and_string(
+    tmp_path: Path,
+    value: object,
+) -> None:
+    request = _request(
+        tmp_path,
+        pf_alg=value,  # type: ignore[arg-type]
+    )
+
+    assert request.resolved_pf_alg == 2
 
 
 @pytest.mark.parametrize("value", [3.5, True])
