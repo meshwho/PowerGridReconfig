@@ -505,3 +505,80 @@ def test_fine_tuning_loads_init_checkpoint_once(
     monkeypatch.setattr(training_api, "load_checkpoint_payload", fake_load)
     train_graph_policy_value_model(_request(tmp_path, init_checkpoint=init_checkpoint))
     assert calls["count"] == 1
+
+
+def test_fine_tuning_rejects_disabled_normalization(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured = {"metrics_csv": tmp_path / "metrics.csv"}
+    init_checkpoint = tmp_path / "init.pt"
+    init_checkpoint.write_bytes(b"checkpoint")
+    monkeypatch.setattr(training_api, "load_checkpoint_payload", lambda *a, **k: pytest.fail("checkpoint loaded"))
+    monkeypatch.setattr(training_api, "GraphSelfPlayDataset", lambda *a, **k: pytest.fail("dataset created"))
+    monkeypatch.setattr(torch.optim, "AdamW", lambda *a, **k: pytest.fail("optimizer created"))
+
+    with pytest.raises(ValueError, match="normalize_features=True"):
+        train_graph_policy_value_model(
+            _request(tmp_path, init_checkpoint=init_checkpoint, normalize_features=False)
+        )
+
+    assert not (tmp_path / "model.pt").exists()
+    assert "train_kwargs" not in captured
+
+
+def test_best_validation_epoch_is_saved_and_restored_for_final_diagnostics(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {"metrics_csv": tmp_path / "metrics.csv", "eval_markers": []}
+    _patch_light_training(monkeypatch, captured)
+    val_csv = tmp_path / "val.csv"
+    val_csv.write_text("scenario_id,state_path,outcome_value_target\n2,state.npz,0\n")
+    losses = {1: 0.50, 2: 0.10, 3: 0.40}
+    epoch = {"n": 0}
+
+    def fake_train_one_epoch(**kwargs: Any) -> tuple[float, float, float]:
+        epoch["n"] += 1
+        marker = float(epoch["n"])
+        with torch.no_grad():
+            kwargs["model"].weight.fill_(marker)
+        return marker, 0.5, 0.25
+
+    def fake_evaluate_one_epoch(**kwargs: Any) -> dict[str, float]:
+        current = epoch["n"]
+        return {
+            "loss": losses[current],
+            "policy_loss": 0.2,
+            "value_loss": 0.1,
+            "top1": 0.3,
+            "top3": 0.4,
+            "top5": 0.5,
+            "stop_acc": 0.6,
+            "switch_acc": 0.7,
+            "examples": 4.0,
+        }
+
+    def fake_evaluate_training_samples(**kwargs: Any) -> None:
+        captured["eval_markers"].append(float(kwargs["model"].weight.detach().cpu()))
+
+    monkeypatch.setattr(training_api, "train_one_epoch", fake_train_one_epoch)
+    monkeypatch.setattr(training_api, "evaluate_one_epoch", fake_evaluate_one_epoch)
+    monkeypatch.setattr(training_api, "evaluate_training_samples", fake_evaluate_training_samples)
+
+    train_graph_policy_value_model(
+        _request(
+            tmp_path,
+            config=TrainingConfig(epochs=3, batch_size=2),
+            validation_examples_csv=val_csv,
+            save_best=True,
+        )
+    )
+
+    checkpoint = torch.load(tmp_path / "model.pt", weights_only=False)
+    marker = float(checkpoint["model_state_dict"]["weight"])
+    assert marker == 2.0
+    assert captured["eval_markers"] == [2.0]
+    assert checkpoint["best_epoch"] == 2
+    assert checkpoint["best_metric"] == pytest.approx(0.10)
+    assert checkpoint["checkpoint_selection_metric"] == "validation_loss"
