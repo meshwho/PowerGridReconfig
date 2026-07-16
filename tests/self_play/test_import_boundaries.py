@@ -196,3 +196,25 @@ def test_example_validation_static_boundaries() -> None:
     replay = (PROJECT_ROOT / "grid_topology_ai/self_play/replay.py").read_text(encoding="utf-8")
     assert "load_and_validate_examples_csv" in replay
     assert "required_columns = {" not in replay
+
+
+def test_physical_objective_import_is_lightweight_in_fresh_process() -> None:
+    result = _run_fresh_python(
+        """
+import sys
+from grid_topology_ai.physical_objective import (
+    PhysicalStateAssessment,
+    StopOutcome,
+    assess_physical_state,
+    classify_stop_outcome,
+    physical_objective_contract,
+    stop_allowed_for_policy,
+)
+assert "torch" not in sys.modules
+assert "grid_topology_ai.environment" not in sys.modules
+assert "grid_topology_ai.search.mcts" not in sys.modules
+assert "grid_topology_ai.self_play.pipeline" not in sys.modules
+print(PhysicalStateAssessment.__name__, StopOutcome.__name__)
+"""
+    )
+    _assert_success(result)

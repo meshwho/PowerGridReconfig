@@ -5,6 +5,7 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
+
 from pypower.api import ppoption, runpf
 from pypower.idx_brch import (
     ANGMAX,

@@ -74,6 +74,12 @@ def _row(scenario_id: int, *, solved: bool = True) -> dict[str, object]:
         "final_num_overloaded_branches": 0,
         "final_num_hard_overloaded_branches": 0,
         "final_num_outaged_branches": 0,
+        "thermal_solved": bool(solved),
+        "hard_overload_free": bool(solved),
+        "voltage_feasible": bool(solved),
+        "physically_secure": bool(solved),
+        "safe_handoff": False,
+        "unsafe_terminal_state": not bool(solved),
     }
     row["safety_score"] = compute_safety_score(row)
     return row
@@ -507,3 +513,85 @@ def test_request_validation_rejects_invalid_pf_alg(tmp_path: Path) -> None:
 def test_request_validation_rejects_invalid_stop_policy(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="stop_policy"):
         _request(tmp_path, stop_policy="sometimes")
+
+
+class _FakeFinalState:
+    metrics = {
+        "max_loading_percent": 99.0,
+        "num_overloaded_branches": 0,
+        "num_hard_overloaded_branches": 0,
+        "num_outaged_branches": 0,
+        "total_voltage_violation": 0.0,
+    }
+
+
+class _DoneFakeEnv:
+    solved = True
+    done = True
+    termination_reason = "solved"
+    current_state = _FakeFinalState()
+
+    def __init__(self, **kwargs: object) -> None:
+        self.kwargs = kwargs
+
+    def reset(self, scenario_id: int) -> _FakeFinalState:
+        return self.current_state
+
+
+def test_run_episode_adds_physical_row_fields_directly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(evaluation, "_ensure_runtime_dependencies", lambda: None)
+    monkeypatch.setattr(evaluation, "TopologySwitchingEnv", _DoneFakeEnv)
+
+    row = evaluation.run_episode(
+        scenario_id=7,
+        adapter=object(),
+        backend=object(),
+        action_space=object(),
+        reward_fn=object(),
+        planner=object(),
+        max_steps=3,
+        gamma=0.95,
+        use_continuation_gate=False,
+        min_hard_improvement=0.0,
+        min_soft_improvement=0.0,
+        min_gate_visits=0,
+        min_gate_visit_fraction=0.0,
+    )
+
+    assert row["thermal_solved"] is True
+    assert row["hard_overload_free"] is True
+    assert row["voltage_feasible"] is True
+    assert row["physically_secure"] is True
+    assert row["safe_handoff"] is False
+    assert row["unsafe_terminal_state"] is False
+
+
+class _MismatchDoneFakeEnv(_DoneFakeEnv):
+    solved = False
+    termination_reason = "max_steps_reached"
+
+
+def test_run_episode_rejects_solved_contract_mismatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(evaluation, "_ensure_runtime_dependencies", lambda: None)
+    monkeypatch.setattr(evaluation, "TopologySwitchingEnv", _MismatchDoneFakeEnv)
+
+    with pytest.raises(RuntimeError, match="Scenario 8 solved contract mismatch"):
+        evaluation.run_episode(
+            scenario_id=8,
+            adapter=object(),
+            backend=object(),
+            action_space=object(),
+            reward_fn=object(),
+            planner=object(),
+            max_steps=3,
+            gamma=0.95,
+            use_continuation_gate=False,
+            min_hard_improvement=0.0,
+            min_soft_improvement=0.0,
+            min_gate_visits=0,
+            min_gate_visit_fraction=0.0,
+        )
