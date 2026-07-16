@@ -4,13 +4,91 @@ import hashlib
 import subprocess
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Mapping
 
+import numpy as np
 import torch
 
 from grid_topology_ai.models.graph_self_play_dataset import GraphSelfPlayDataset
 from grid_topology_ai.self_play.artifacts import sha256_file
 from grid_topology_ai.training.metrics import build_value_target_diagnostics
+
+
+NORMALIZATION_STAT_KEYS = (
+    "bus_feature_mean",
+    "bus_feature_std",
+    "branch_feature_mean",
+    "branch_feature_std",
+)
+
+
+def load_checkpoint_payload(
+    checkpoint_path: str | Path,
+    *,
+    map_location: str | torch.device = "cpu",
+) -> dict[str, Any]:
+    checkpoint_path = Path(checkpoint_path)
+    if not checkpoint_path.exists():
+        raise FileNotFoundError(f"Initial checkpoint not found: {checkpoint_path}")
+    payload = torch.load(checkpoint_path, map_location=map_location, weights_only=False)
+    if not isinstance(payload, dict):
+        raise ValueError(f"Checkpoint payload must be a mapping. Checkpoint: {checkpoint_path}")
+    return payload
+
+
+def extract_normalization_stats(
+    checkpoint_payload: Mapping[str, object],
+    *,
+    source: str | Path,
+) -> dict[str, np.ndarray]:
+    source_text = str(source)
+    stats: dict[str, np.ndarray] = {}
+    for key in NORMALIZATION_STAT_KEYS:
+        if key not in checkpoint_payload:
+            raise ValueError(
+                "Initial checkpoint is missing required normalization statistics: "
+                f"{key}. Checkpoint: {source_text}"
+            )
+        try:
+            array = np.array(checkpoint_payload[key], dtype=np.float32, copy=True)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"Invalid normalization statistic {key!r} in checkpoint "
+                f"{source_text}: cannot convert to float32 ({exc})"
+            ) from exc
+        if array.ndim != 1:
+            raise ValueError(
+                f"Invalid normalization statistic {key!r} in checkpoint "
+                f"{source_text}: expected 1D array, got shape {array.shape}"
+            )
+        if array.size == 0:
+            raise ValueError(
+                f"Invalid normalization statistic {key!r} in checkpoint "
+                f"{source_text}: array must not be empty"
+            )
+        if not np.isfinite(array).all():
+            raise ValueError(
+                f"Invalid normalization statistic {key!r} in checkpoint "
+                f"{source_text}: all values must be finite"
+            )
+        if key.endswith("_std") and not (array > 0.0).all():
+            raise ValueError(
+                f"Invalid normalization statistic {key!r} in checkpoint "
+                f"{source_text}: std values must be strictly positive"
+            )
+        stats[key] = array
+
+    for mean_key, std_key in (
+        ("bus_feature_mean", "bus_feature_std"),
+        ("branch_feature_mean", "branch_feature_std"),
+    ):
+        if stats[mean_key].shape != stats[std_key].shape:
+            raise ValueError(
+                f"Invalid normalization statistics in checkpoint {source_text}: "
+                f"{mean_key} shape {stats[mean_key].shape} does not match "
+                f"{std_key} shape {stats[std_key].shape}"
+            )
+    return {key: value.copy() for key, value in stats.items()}
 
 if TYPE_CHECKING:
     from grid_topology_ai.training.graph_policy_value import TrainingRequest
@@ -152,6 +230,7 @@ def make_checkpoint(
     request: "TrainingRequest",
     device: torch.device,
     use_amp: bool,
+    normalization_metadata: Mapping[str, object] | None = None,
 ) -> dict[str, Any]:
     """
     Build checkpoint dictionary.
@@ -199,7 +278,14 @@ def make_checkpoint(
         "bus_feature_std": normalization["bus_feature_std"],
         "branch_feature_mean": normalization["branch_feature_mean"],
         "branch_feature_std": normalization["branch_feature_std"],
+        "normalization_contract_version": 1,
+        "normalization_source": "training_dataset",
+        "normalization_frozen_from_init_checkpoint": False,
+        "normalization_source_checkpoint": None,
     }
+
+    if normalization_metadata is not None:
+        checkpoint.update(make_json_safe(dict(normalization_metadata)))
 
     return checkpoint
 
@@ -213,6 +299,7 @@ def load_initial_checkpoint_into_model(
     hidden_dim: int,
     num_layers: int,
     device: torch.device,
+    checkpoint_payload: Mapping[str, object] | None = None,
 ) -> None:
     """
     Load model weights from an existing graph policy-value checkpoint.
@@ -225,10 +312,10 @@ def load_initial_checkpoint_into_model(
             f"Initial checkpoint not found: {checkpoint_path}"
         )
 
-    checkpoint = torch.load(
-        checkpoint_path,
-        map_location=device,
-        weights_only=False,
+    checkpoint = (
+        dict(checkpoint_payload)
+        if checkpoint_payload is not None
+        else load_checkpoint_payload(checkpoint_path, map_location=device)
     )
 
     expected_model_type = (
@@ -312,6 +399,7 @@ def save_checkpoint_now(
     selector_name: str,
     selector_value: float,
     val_metrics: dict[str, float] | None,
+    normalization_metadata: Mapping[str, object] | None = None,
 ) -> None:
     """
     Save checkpoint immediately when a selector improves.
@@ -323,6 +411,7 @@ def save_checkpoint_now(
         request=request,
         device=device,
         use_amp=use_amp,
+        normalization_metadata=normalization_metadata,
     )
 
     checkpoint["saved_epoch"] = int(epoch)
