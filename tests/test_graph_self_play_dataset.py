@@ -1,4 +1,6 @@
 import os
+import numpy as np
+import pandas as pd
 from pathlib import Path
 
 import pytest
@@ -135,3 +137,33 @@ def test_val_dataset_can_use_train_normalization_stats():
         torch.tensor(val_dataset.branch_feature_mean),
         torch.tensor(train_dataset.branch_feature_mean),
     )
+
+
+def test_graph_dataset_uses_mcts_policy_not_selected_action(tmp_path: Path):
+    state_path = tmp_path / "state.npz"
+    np.savez(
+        state_path,
+        bus_features=np.zeros((2, 3), dtype=np.float32),
+        branch_features=np.zeros((2, 4), dtype=np.float32),
+        edge_index=np.array([[0, 1], [1, 0]], dtype=np.int64),
+        action_mask=np.array([True, True, True], dtype=bool),
+    )
+    csv_path = tmp_path / "examples.csv"
+    pd.DataFrame([
+        {
+            "state_path": str(state_path),
+            "mcts_policy_json": '{"1": 0.7, "2": 0.3}',
+            "scenario_id": 1,
+            "step": 0,
+            "state_id": "state-1",
+            "selected_action_id": 0,
+            "outcome_value_target": 1.0,
+        }
+    ]).to_csv(csv_path, index=False)
+
+    dataset = GraphSelfPlayDataset(csv_path, normalize_features=False)
+    target_policy = dataset[0]["target_policy"]
+
+    assert float(target_policy[0].item()) == pytest.approx(0.0)
+    assert float(target_policy[1].item()) == pytest.approx(0.7)
+    assert float(target_policy[2].item()) == pytest.approx(0.3)
