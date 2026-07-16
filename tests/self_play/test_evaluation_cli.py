@@ -162,7 +162,9 @@ def test_cli_passes_request_only_settings(
     )
 
     assert request.config.allow_handoff_with_hard_overloads is True
-    assert request.pf_alg == 2
+    assert request.pf_alg is None
+    assert request.config.pf_alg == 2
+    assert request.resolved_pf_alg == 2
     assert request.disable_cache is True
     assert request.min_hard_improvement == 7.0
     assert request.min_soft_improvement == 3.0

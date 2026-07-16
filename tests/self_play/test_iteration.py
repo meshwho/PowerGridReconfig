@@ -106,7 +106,7 @@ def _request(tmp_path: Path, *, iteration: int = 2) -> IterationRequest:
         raw_config={"raw": "config"},
         paths=paths,
         parent_checkpoint=parent_checkpoint,
-        parent_metrics={"solve_rate": 0.5, "failed_scenarios": 0},
+        parent_metrics={"solve_rate": 0.5, "failed_scenarios": 0, "pf_alg": 3, "task_config": {"pf_alg": 3}},
         pool_metadata={"scenarios": {"1": {}, "2": {}, "3": {}}},
         replay_buffer=_FakeReplayBuffer(),  # type: ignore[arg-type]
     )
@@ -132,7 +132,7 @@ def _install_stage_fakes(monkeypatch: pytest.MonkeyPatch, calls: list[str] | Non
     def fake_evaluate(**kwargs: Any) -> dict[str, object]:
         if calls is not None:
             calls.append("evaluate")
-        return {"solve_rate": 0.6, "failed_scenarios": 0}
+        return {"solve_rate": 0.6, "failed_scenarios": 0, "pf_alg": 3, "task_config": {"pf_alg": 3}}
 
     monkeypatch.setattr("grid_topology_ai.self_play.iteration.run_generate", fake_generate)
     monkeypatch.setattr("grid_topology_ai.self_play.iteration.run_train", fake_train)
@@ -213,7 +213,7 @@ def test_accepted_iteration_promotes_candidate(
 ) -> None:
     _install_stage_fakes(monkeypatch)
     promoted_checkpoint = tmp_path / "best.pt"
-    promoted_metrics = {"solve_rate": 0.8}
+    promoted_metrics = {"solve_rate": 0.8, "pf_alg": 3, "task_config": {"pf_alg": 3}}
     monkeypatch.setattr("grid_topology_ai.self_play.iteration.accept_candidate", lambda **kwargs: True)
     monkeypatch.setattr(
         "grid_topology_ai.self_play.iteration.promote_candidate",
@@ -320,7 +320,7 @@ def test_parent_metrics_are_not_mutated(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _install_stage_fakes(monkeypatch)
-    parent_metrics = {"solve_rate": 0.5, "failed_scenarios": 0}
+    parent_metrics = {"solve_rate": 0.5, "failed_scenarios": 0, "pf_alg": 3, "task_config": {"pf_alg": 3}}
     request = _request(tmp_path)
     request = IterationRequest(
         iteration=request.iteration,
@@ -335,7 +335,7 @@ def test_parent_metrics_are_not_mutated(
 
     run_self_play_iteration(request)
 
-    assert parent_metrics == {"solve_rate": 0.5, "failed_scenarios": 0}
+    assert parent_metrics == {"solve_rate": 0.5, "failed_scenarios": 0, "pf_alg": 3, "task_config": {"pf_alg": 3}}
 
 
 def test_iteration_stops_before_training_when_replay_validation_fails(
@@ -432,3 +432,25 @@ def test_count_examples_csv_does_not_hide_unexpected_error(
 
     with pytest.raises(RuntimeError, match="unexpected pandas failure"):
         _count_examples_csv(path)
+
+
+def test_iteration_rejects_candidate_metrics_pf_alg_before_acceptance(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_stage_fakes(monkeypatch)
+    monkeypatch.setattr(
+        "grid_topology_ai.self_play.iteration.run_evaluate",
+        lambda **kwargs: {"solve_rate": 0.9, "failed_scenarios": 0, "pf_alg": 1, "task_config": {"pf_alg": 1}},
+    )
+    monkeypatch.setattr(
+        "grid_topology_ai.self_play.iteration.accept_candidate",
+        lambda **kwargs: pytest.fail("accept_candidate should not run"),
+    )
+    request = _request(tmp_path)
+
+    with pytest.raises(ValueError, match="PF_ALG"):
+        run_self_play_iteration(request)
+
+    assert request.parent_checkpoint.read_bytes() == b"parent"
+    assert not (_paths(tmp_path).iteration_completion_marker(request.iteration)).exists()

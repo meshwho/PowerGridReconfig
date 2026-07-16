@@ -80,6 +80,7 @@ training:
 # Very cheap evaluation settings for smoke.
 evaluation:
   simulations: 5
+  pf_alg: 3
   depth: 1
   max_steps: 2
   top_k: 5

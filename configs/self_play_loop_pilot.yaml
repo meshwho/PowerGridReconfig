@@ -52,6 +52,7 @@ training:
   no_tensorboard: true
 evaluation:
   simulations: 50
+  pf_alg: 3
   depth: 3
   max_steps: 4
   top_k: 15

@@ -9,7 +9,10 @@ from typing import Any
 import pandas as pd
 
 from grid_topology_ai.config import SelfPlayConfig
-from grid_topology_ai.self_play.acceptance import accept_candidate
+from grid_topology_ai.self_play.acceptance import (
+    accept_candidate,
+    require_metrics_pf_alg,
+)
 from grid_topology_ai.self_play.artifacts import save_json, sha256_file
 from grid_topology_ai.self_play.checkpoint_state import promote_candidate
 from grid_topology_ai.self_play.paths import SelfPlayPaths
@@ -229,6 +232,16 @@ def run_self_play_iteration(
         eval_raw_dir=paths.eval_raw_dir,
         output_dir=iter_dir,
         config=config.evaluation,
+    )
+    require_metrics_pf_alg(
+        metrics,
+        expected_pf_alg=config.evaluation.pf_alg,
+        source=str(iter_dir / config.evaluation.output_json_name),
+    )
+    require_metrics_pf_alg(
+        parent_metrics,
+        expected_pf_alg=config.evaluation.pf_alg,
+        source="parent/best metrics",
     )
 
     accepted = accept_candidate(

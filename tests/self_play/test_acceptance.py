@@ -160,3 +160,33 @@ def test_does_not_mutate_metric_mappings() -> None:
 
     assert new_metrics == {"solve_rate": 0.6}
     assert best_metrics == {"solve_rate": 0.5}
+
+from grid_topology_ai.self_play.acceptance import require_metrics_pf_alg
+
+
+def test_require_metrics_pf_alg_top_level_accepts() -> None:
+    require_metrics_pf_alg({"pf_alg": 3}, expected_pf_alg=3, source="test")
+
+
+def test_require_metrics_pf_alg_legacy_task_config_accepts() -> None:
+    require_metrics_pf_alg({"task_config": {"pf_alg": 3}}, expected_pf_alg=3, source="test")
+
+
+def test_require_metrics_pf_alg_missing_rejects() -> None:
+    with pytest.raises(ValueError, match="missing"):
+        require_metrics_pf_alg({}, expected_pf_alg=3, source="bootstrap")
+
+
+def test_require_metrics_pf_alg_disagreement_rejects() -> None:
+    with pytest.raises(ValueError, match="task_config"):
+        require_metrics_pf_alg({"pf_alg": 3, "task_config": {"pf_alg": 1}}, expected_pf_alg=3, source="best")
+
+
+def test_require_metrics_pf_alg_mismatch_rejects() -> None:
+    with pytest.raises(ValueError, match="expected PF_ALG=3"):
+        require_metrics_pf_alg({"pf_alg": 1}, expected_pf_alg=3, source="candidate")
+
+
+def test_require_metrics_pf_alg_invalid_rejects() -> None:
+    with pytest.raises(ValueError, match="invalid"):
+        require_metrics_pf_alg({"pf_alg": 9}, expected_pf_alg=3, source="candidate")
