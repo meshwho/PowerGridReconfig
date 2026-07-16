@@ -4,6 +4,11 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from grid_topology_ai.physical_objective import (
+    HARD_OVERLOAD_LIMIT_PERCENT,
+    OVERLOAD_LIMIT_PERCENT,
+    assess_physical_state,
+)
 from grid_topology_ai.data_adapter import (
     BRANCH_FEATURE_COLUMNS,
     BUS_FEATURE_COLUMNS,
@@ -65,8 +70,8 @@ class GridFMReward:
 
     def __init__(
         self,
-        overload_limit_percent: float = 100.0,
-        hard_overload_limit_percent: float = 120.0,
+        overload_limit_percent: float = OVERLOAD_LIMIT_PERCENT,
+        hard_overload_limit_percent: float = HARD_OVERLOAD_LIMIT_PERCENT,
         switching_penalty: float = 1.0,
         non_convergence_penalty: float = 1000.0,
         solved_bonus: float = 50.0,
@@ -175,10 +180,8 @@ class GridFMReward:
         reward = improvement - topology_cost
 
         # If the action fully removes all overloads, give a bonus.
-        done = (
-            after_state.metrics["num_overloaded_branches"] == 0
-            and after_state.metrics["num_hard_overloaded_branches"] == 0
-        )
+        assessment = assess_physical_state(after_state.metrics)
+        done = assessment.thermal_solved
 
         if done:
             reward += self.solved_bonus

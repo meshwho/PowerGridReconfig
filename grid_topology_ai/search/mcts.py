@@ -9,6 +9,10 @@ import numpy as np
 
 from grid_topology_ai.action_space import GridFMAction
 from grid_topology_ai.data_adapter import BRANCH_FEATURE_COLUMNS, GridFMState
+from grid_topology_ai.physical_objective import (
+    assess_physical_state,
+    stop_allowed_for_policy,
+)
 from grid_topology_ai.environment import TopologyStepResult, TopologySwitchingEnv
 from grid_topology_ai.search.dc_action_screener import DCActionScreener
 
@@ -359,29 +363,12 @@ class MCTSPlanner:
             stop is available after hard overloads are removed.
         """
 
-        if not self.config.include_stop_action:
-            return False
-
-        stop_policy = self.config.stop_policy
-
-        num_overloaded = int(state.metrics["num_overloaded_branches"])
-        num_hard_overloaded = int(
-            state.metrics["num_hard_overloaded_branches"]
+        state_assessment = assess_physical_state(state.metrics)
+        return stop_allowed_for_policy(
+            state_assessment,
+            stop_policy=self.config.stop_policy,
+            include_stop_action=self.config.include_stop_action,
         )
-
-        if stop_policy == "never":
-            return False
-
-        if stop_policy == "always":
-            return True
-
-        if stop_policy == "solved_only":
-            return num_overloaded == 0 and num_hard_overloaded == 0
-
-        if stop_policy == "no_hard_overloads":
-            return num_hard_overloaded == 0
-
-        raise ValueError(f"Unknown stop_policy: {stop_policy}")
 
     def _run_one_simulation(self, root: MCTSNode) -> None:
         """

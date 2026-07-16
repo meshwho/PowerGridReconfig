@@ -7,6 +7,11 @@ from typing import Any, Sequence
 import numpy as np
 import pandas as pd
 
+from grid_topology_ai.physical_objective import (
+    HARD_OVERLOAD_LIMIT_PERCENT,
+    OVERLOAD_LIMIT_PERCENT,
+)
+
 
 BUS_FEATURE_COLUMNS = [
     "Pd",
@@ -320,8 +325,8 @@ class GridFMAdapter:
             in_service = branch[branch["br_status"] > 0]
             outaged = branch[branch["br_status"] <= 0]
 
-            overloaded = in_service[in_service["loading_percent"] > 100.0]
-            hard_overloaded = in_service[in_service["loading_percent"] > 120.0]
+            overloaded = in_service[in_service["loading_percent"] > OVERLOAD_LIMIT_PERCENT]
+            hard_overloaded = in_service[in_service["loading_percent"] > HARD_OVERLOAD_LIMIT_PERCENT]
 
             voltage_metrics = compute_voltage_violation_metrics(bus)
 
@@ -421,8 +426,8 @@ class GridFMAdapter:
         in_service = branch[branch["br_status"] > 0]
         outaged = branch[branch["br_status"] <= 0]
 
-        overloaded = in_service[in_service["loading_percent"] > 100.0]
-        hard_overloaded = in_service[in_service["loading_percent"] > 120.0]
+        overloaded = in_service[in_service["loading_percent"] > OVERLOAD_LIMIT_PERCENT]
+        hard_overloaded = in_service[in_service["loading_percent"] > HARD_OVERLOAD_LIMIT_PERCENT]
 
         voltage_metrics = compute_voltage_violation_metrics(bus)
 

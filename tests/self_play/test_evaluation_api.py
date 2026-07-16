@@ -74,6 +74,12 @@ def _row(scenario_id: int, *, solved: bool = True) -> dict[str, object]:
         "final_num_overloaded_branches": 0,
         "final_num_hard_overloaded_branches": 0,
         "final_num_outaged_branches": 0,
+        "thermal_solved": bool(solved),
+        "hard_overload_free": bool(solved),
+        "voltage_feasible": bool(solved),
+        "physically_secure": bool(solved),
+        "safe_handoff": False,
+        "unsafe_terminal_state": not bool(solved),
     }
     row["safety_score"] = compute_safety_score(row)
     return row

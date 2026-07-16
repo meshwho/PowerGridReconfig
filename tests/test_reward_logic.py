@@ -293,3 +293,36 @@ def test_reward_config_dict_contains_all_weights():
     assert config["num_overloaded_weight"] == pytest.approx(11.0)
     assert config["num_hard_overloaded_weight"] == pytest.approx(31.0)
     assert config["voltage_violation_weight"] == pytest.approx(600.0)
+
+def test_done_remains_true_for_thermal_solved_state():
+    reward_fn = GridFMReward(switching_penalty=1.0, solved_bonus=50.0)
+    result = reward_fn.compute(_state(loadings=(130.0,)), _state(loadings=(99.0,)), True, True)
+    assert result.done is True
+
+
+def test_done_remains_false_for_soft_overload_state():
+    reward_fn = GridFMReward(switching_penalty=1.0, solved_bonus=50.0)
+    result = reward_fn.compute(_state(loadings=(130.0,)), _state(loadings=(110.0,)), True, True)
+    assert result.done is False
+
+
+def test_voltage_violation_without_thermal_overload_remains_done():
+    reward_fn = GridFMReward(switching_penalty=1.0, solved_bonus=50.0)
+    result = reward_fn.compute(
+        _state(loadings=(130.0,)),
+        _state(loadings=(90.0,), total_voltage_violation=0.5),
+        True,
+        True,
+    )
+    assert result.done is True
+
+
+def test_existing_reward_fixture_numerical_value_is_unchanged():
+    reward_fn = GridFMReward(switching_penalty=1.0, solved_bonus=50.0)
+    result = reward_fn.compute(
+        _state(loadings=(130.0,)),
+        _state(loadings=(90.0,)),
+        True,
+        True,
+    )
+    assert result.reward == pytest.approx(199.0)

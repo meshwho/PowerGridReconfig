@@ -10,6 +10,10 @@ from grid_topology_ai.pypower_backend import (
     GridFMPowerFlowBackend,
     GridFMPowerFlowResult,
 )
+from grid_topology_ai.physical_objective import (
+    assess_physical_state,
+    classify_stop_outcome,
+)
 from grid_topology_ai.reward import GridFMReward, GridFMRewardBreakdown
 
 
@@ -236,24 +240,17 @@ class TopologySwitchingEnv:
             power_flow_success=True,
         )
 
-        num_overloaded = int(
-            self.current_state.metrics["num_overloaded_branches"]
-        )
-        num_hard_overloaded = int(
-            self.current_state.metrics["num_hard_overloaded_branches"]
+        assessment = assess_physical_state(self.current_state.metrics)
+        outcome = classify_stop_outcome(
+            assessment,
+            allow_handoff_with_hard_overloads=(
+                self.allow_handoff_with_hard_overloads
+            ),
         )
 
         self.done = True
-        self.solved = bool(reward_breakdown.done)
-
-        if self.solved:
-            self.termination_reason = "solved"
-        elif num_hard_overloaded == 0:
-            self.termination_reason = "handoff_to_redispatch"
-        elif self.allow_handoff_with_hard_overloads:
-            self.termination_reason = "handoff_to_redispatch_with_hard_overload"
-        else:
-            self.termination_reason = "unsafe_stop_with_hard_overload"
+        self.solved = outcome.solved
+        self.termination_reason = outcome.termination_reason
 
         return TopologyStepResult(
             next_state=self.current_state,
