@@ -356,6 +356,7 @@ def test_checkpoint_training_config_uses_legacy_keys(tmp_path: Path) -> None:
 
     assert list(payload) == [
         "examples_csv",
+        "seed",
         "epochs",
         "lr",
         "hidden_dim",

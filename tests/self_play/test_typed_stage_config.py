@@ -73,7 +73,8 @@ def test_run_train_uses_training_request(
     def fake_train(request):
         captured.append(request)
         request.output_path.parent.mkdir(parents=True, exist_ok=True)
-        request.output_path.write_bytes(b"checkpoint")
+        import torch
+        torch.save({"checkpoint_selection_metric": "validation_loss"}, request.output_path)
         print("trained model")
         return request.output_path
 
@@ -81,25 +82,33 @@ def test_run_train_uses_training_request(
     original_cwd = Path.cwd()
     config = TrainingConfig(epochs=4, batch_size=9, no_tensorboard=True)
 
+    examples_csv = tmp_path / "examples.csv"
+    validation_csv = tmp_path / "validation.csv"
+    examples_csv.write_text("scenario_id\n1\n", encoding="utf-8")
+    validation_csv.write_text("scenario_id\n2\n", encoding="utf-8")
+
     checkpoint = stages.run_train(
         project_root=tmp_path,
-        examples_csv=tmp_path / "examples.csv",
+        examples_csv=examples_csv,
+        validation_examples_csv=validation_csv,
         init_checkpoint=tmp_path / "best.pt",
         output_dir=tmp_path / "train",
         config=config,
         iteration=5,
+        seed=47,
     )
 
     request = captured[0]
     assert request.config is config
     assert request.project_root == tmp_path.resolve()
-    assert request.examples_csv == tmp_path / "examples.csv"
+    assert request.examples_csv == examples_csv
+    assert request.validation_examples_csv == validation_csv
     assert request.init_checkpoint == tmp_path / "best.pt"
     assert request.output_path == tmp_path / "train" / "candidate_checkpoint.pt"
     assert request.save_best is True
+    assert request.seed == 47
     assert request.use_amp is False
     assert request.normalize_features is True
-    assert request.validation_examples_csv is None
     assert request.metrics_csv == tmp_path / "train" / "train_metrics.csv"
     assert request.run_name == "self_play_iter_005"
     assert checkpoint == tmp_path / "train" / "candidate_checkpoint.pt"

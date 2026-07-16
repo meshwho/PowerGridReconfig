@@ -147,6 +147,7 @@ def build_training_config_payload(request: "TrainingRequest") -> dict[str, Any]:
 
     return {
         "examples_csv": make_json_safe(request.examples_csv),
+        "seed": int(request.seed),
         "epochs": int(request.config.epochs),
         "lr": float(request.config.learning_rate),
         "hidden_dim": int(request.config.hidden_dim),
@@ -231,6 +232,7 @@ def make_checkpoint(
     device: torch.device,
     use_amp: bool,
     normalization_metadata: Mapping[str, object] | None = None,
+    validation_dataset: GraphSelfPlayDataset | None = None,
 ) -> dict[str, Any]:
     """
     Build checkpoint dictionary.
@@ -249,6 +251,19 @@ def make_checkpoint(
         dataset=dataset,
         repo_root=repo_root,
     )
+    validation_examples_count = 0 if validation_dataset is None else int(len(validation_dataset))
+    validation_scenario_count = (
+        0
+        if validation_dataset is None
+        else int(validation_dataset.examples["scenario_id"].nunique())
+        if "scenario_id" in validation_dataset.examples.columns
+        else 0
+    )
+    training_scenario_count = (
+        int(dataset.examples["scenario_id"].nunique())
+        if "scenario_id" in dataset.examples.columns
+        else 0
+    )
     value_target_diagnostics = build_value_target_diagnostics(dataset=dataset)
 
     checkpoint = {
@@ -263,6 +278,17 @@ def make_checkpoint(
         "num_layers": int(request.config.num_layers),
         "dropout": float(request.config.dropout),
         "examples_csv": str(request.examples_csv),
+        "training_seed": int(request.seed),
+        "checkpoint_selection_metric": (
+            "validation_loss" if validation_dataset is not None else "training_loss"
+        ),
+        "validation_examples_csv": (
+            None if request.validation_examples_csv is None else str(request.validation_examples_csv)
+        ),
+        "validation_examples_count": validation_examples_count,
+        "validation_scenario_count": validation_scenario_count,
+        "training_scenario_count": training_scenario_count,
+        "scenario_split_verified": bool(validation_dataset is not None),
         "value_scale": 1.0,
         "value_target_mode": "outcome_value_target",
         "normalize_features": bool(request.normalize_features),
@@ -400,6 +426,7 @@ def save_checkpoint_now(
     selector_value: float,
     val_metrics: dict[str, float] | None,
     normalization_metadata: Mapping[str, object] | None = None,
+    validation_dataset: GraphSelfPlayDataset | None = None,
 ) -> None:
     """
     Save checkpoint immediately when a selector improves.
@@ -412,6 +439,7 @@ def save_checkpoint_now(
         device=device,
         use_amp=use_amp,
         normalization_metadata=normalization_metadata,
+        validation_dataset=validation_dataset,
     )
 
     checkpoint["saved_epoch"] = int(epoch)

@@ -38,6 +38,8 @@ generation:
   terminal_penalty_weight: 0.1
 training:
   examples_per_iteration: 128
+  validation_fraction: 0.20
+  min_validation_scenarios: 1
   batch_size: 16
   learning_rate: 0.0003
   value_loss_weight: 1.0

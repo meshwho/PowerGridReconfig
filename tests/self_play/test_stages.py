@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from grid_topology_ai.config import EvaluationConfig
 from grid_topology_ai.self_play import stages
 from grid_topology_ai.self_play.artifacts import save_json
@@ -29,3 +31,76 @@ def test_run_evaluate_resolves_config_pf_alg(tmp_path: Path, monkeypatch) -> Non
 
     assert captured[0].pf_alg is None
     assert captured[0].resolved_pf_alg == 3
+
+import torch
+from grid_topology_ai.config import TrainingConfig
+
+
+def test_run_train_requires_validation_csv(tmp_path: Path) -> None:
+    train_csv = tmp_path / "train.csv"
+    train_csv.write_text("scenario_id\n1\n", encoding="utf-8")
+    with pytest.raises(FileNotFoundError, match="Validation"):
+        stages.run_train(
+            project_root=tmp_path,
+            examples_csv=train_csv,
+            validation_examples_csv=tmp_path / "missing.csv",
+            init_checkpoint=tmp_path / "best.pt",
+            output_dir=tmp_path / "train",
+            config=TrainingConfig(),
+            iteration=1,
+            seed=8,
+        )
+
+
+def test_run_train_passes_validation_and_seed(tmp_path: Path, monkeypatch) -> None:
+    train_csv = tmp_path / "train.csv"
+    validation_csv = tmp_path / "validation.csv"
+    train_csv.write_text("scenario_id\n1\n", encoding="utf-8")
+    validation_csv.write_text("scenario_id\n2\n", encoding="utf-8")
+    captured = []
+
+    def fake_train(request):
+        captured.append(request)
+        torch.save({"checkpoint_selection_metric": "validation_loss"}, request.output_path)
+        return request.output_path
+
+    monkeypatch.setattr(stages, "train_graph_policy_value_model", fake_train)
+    stages.run_train(
+        project_root=tmp_path,
+        examples_csv=train_csv,
+        validation_examples_csv=validation_csv,
+        init_checkpoint=tmp_path / "best.pt",
+        output_dir=tmp_path / "train",
+        config=TrainingConfig(),
+        iteration=1,
+        seed=8,
+    )
+    request = captured[0]
+    assert request.examples_csv == train_csv
+    assert request.validation_examples_csv == validation_csv
+    assert request.seed == 8
+    assert request.save_best is True
+
+
+def test_run_train_rejects_non_validation_selector(tmp_path: Path, monkeypatch) -> None:
+    train_csv = tmp_path / "train.csv"
+    validation_csv = tmp_path / "validation.csv"
+    train_csv.write_text("scenario_id\n1\n", encoding="utf-8")
+    validation_csv.write_text("scenario_id\n2\n", encoding="utf-8")
+
+    def fake_train(request):
+        torch.save({"checkpoint_selection_metric": "training_loss"}, request.output_path)
+        return request.output_path
+
+    monkeypatch.setattr(stages, "train_graph_policy_value_model", fake_train)
+    with pytest.raises(RuntimeError, match="validation_loss"):
+        stages.run_train(
+            project_root=tmp_path,
+            examples_csv=train_csv,
+            validation_examples_csv=validation_csv,
+            init_checkpoint=tmp_path / "best.pt",
+            output_dir=tmp_path / "train",
+            config=TrainingConfig(),
+            iteration=1,
+            seed=8,
+        )

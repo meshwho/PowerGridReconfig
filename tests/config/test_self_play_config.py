@@ -89,3 +89,49 @@ def test_all_repository_self_play_configs_use_matching_pf_alg() -> None:
     ]:
         config = SelfPlayConfig.load(path)
         assert config.generation.pf_alg == config.evaluation.pf_alg
+
+
+def test_training_config_validation_defaults() -> None:
+    from grid_topology_ai.config import TrainingConfig
+
+    config = TrainingConfig()
+    assert config.validation_fraction == 0.20
+    assert config.min_validation_scenarios == 1
+
+
+def test_training_config_reads_validation_contract() -> None:
+    from grid_topology_ai.config import TrainingConfig
+
+    config = TrainingConfig.from_mapping(
+        {"validation_fraction": 0.3, "min_validation_scenarios": 2}
+    )
+    assert config.validation_fraction == 0.3
+    assert config.min_validation_scenarios == 2
+
+
+def test_training_config_rejects_invalid_validation_fraction() -> None:
+    from grid_topology_ai.config import TrainingConfig
+    import pytest
+
+    for value in [0.0, 1.0, -0.1]:
+        with pytest.raises(ValueError, match="validation_fraction"):
+            TrainingConfig(validation_fraction=value)
+
+
+def test_training_config_rejects_zero_min_validation_scenarios() -> None:
+    from grid_topology_ai.config import TrainingConfig
+    import pytest
+
+    with pytest.raises(ValueError, match="min_validation_scenarios"):
+        TrainingConfig(min_validation_scenarios=0)
+
+
+def test_repository_self_play_configs_have_validation_contract() -> None:
+    for path in [
+        "configs/self_play_loop.yaml",
+        "configs/self_play_loop_pilot.yaml",
+        "configs/self_play_loop_smoke.yaml",
+    ]:
+        config = SelfPlayConfig.load(path)
+        assert 0.0 < config.training.validation_fraction < 1.0
+        assert config.training.min_validation_scenarios > 0

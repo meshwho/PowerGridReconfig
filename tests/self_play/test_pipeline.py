@@ -80,7 +80,7 @@ def _patch_basics(monkeypatch, tmp_path: Path, calls: list[str] | None = None, *
 
 
 def _iteration_result(iteration: int, best: Path, metric: float, pool: dict[str, object]) -> IterationResult:
-    return IterationResult(iteration=iteration, accepted=True, status="ACCEPTED", selected_scenario_ids=(), raw_examples_csv=Path("raw.csv"), train_batch_csv=Path("train.csv"), candidate_checkpoint=Path(f"candidate-{iteration}.pt"), metadata_path=Path("metadata.json"), candidate_metrics={"solve_rate": metric, "pf_alg": 3, "task_config": {"pf_alg": 3}}, best_checkpoint=best, best_metrics={"solve_rate": metric, "pf_alg": 3, "task_config": {"pf_alg": 3}}, pool_metadata=pool, learning_curve_row={"iteration": iteration, "n_fresh": 1, "n_old": 0})
+    return IterationResult(iteration=iteration, accepted=True, status="ACCEPTED", selected_scenario_ids=(), raw_examples_csv=Path("raw.csv"), train_batch_csv=Path("train.csv"), train_examples_csv=Path("train_examples.csv"), validation_examples_csv=Path("validation_examples.csv"), split_metadata_path=Path("train_validation_split.json"), candidate_checkpoint=Path(f"candidate-{iteration}.pt"), metadata_path=Path("metadata.json"), candidate_metrics={"solve_rate": metric, "pf_alg": 3, "task_config": {"pf_alg": 3}}, best_checkpoint=best, best_metrics={"solve_rate": metric, "pf_alg": 3, "task_config": {"pf_alg": 3}}, pool_metadata=pool, learning_curve_row={"iteration": iteration, "n_fresh": 1, "n_old": 0})
 
 
 def test_pipeline_request_is_frozen_and_slotted(tmp_path: Path) -> None:

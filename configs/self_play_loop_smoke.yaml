@@ -64,6 +64,8 @@ generation:
 # Very cheap training settings for smoke.
 training:
   examples_per_iteration: 20
+  validation_fraction: 0.20
+  min_validation_scenarios: 1
   batch_size: 4
   learning_rate: 0.0003
   value_loss_weight: 1.0

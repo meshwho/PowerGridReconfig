@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import random
 from pathlib import Path
 from typing import Any
 
@@ -48,6 +49,7 @@ class TrainingRequest:
     tensorboard_log_dir: Path | None = None
     run_name: str | None = None
     metrics_csv: Path | None = None
+    seed: int = 42
 
 
 def resolve_device(device_arg: str) -> torch.device:
@@ -525,6 +527,13 @@ def train_graph_policy_value_model(
     if not request.examples_csv.exists():
         raise FileNotFoundError(f"Examples CSV not found: {request.examples_csv}")
 
+    seed = int(request.seed)
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
     device = resolve_device(request.config.device)
     use_amp = bool(request.use_amp and device.type == "cuda")
     output_path = request.output_path
@@ -616,12 +625,16 @@ def train_graph_policy_value_model(
     )
 
     pin_memory = device.type == "cuda"
+    train_generator = torch.Generator()
+    train_generator.manual_seed(int(request.seed))
+
     loader = DataLoader(
         dataset,
         batch_size=min(request.config.batch_size, len(dataset)),
         shuffle=True,
         num_workers=int(request.config.num_workers),
         pin_memory=pin_memory,
+        generator=train_generator,
     )
 
     val_loader = None
@@ -703,6 +716,7 @@ def train_graph_policy_value_model(
                     device=device,
                     use_amp=use_amp,
                     normalization_metadata=_normalization_provenance(init_checkpoint=request.init_checkpoint),
+                    validation_dataset=val_dataset,
                 )
 
             if request.config.save_multiple_best:
@@ -724,6 +738,7 @@ def train_graph_policy_value_model(
                         selector_value=current_metric,
                         val_metrics=val_metrics,
                         normalization_metadata=_normalization_provenance(init_checkpoint=request.init_checkpoint),
+                        validation_dataset=val_dataset,
                     )
 
                 if current_top1 > best_top1:
@@ -741,6 +756,7 @@ def train_graph_policy_value_model(
                         selector_value=current_top1,
                         val_metrics=val_metrics,
                         normalization_metadata=_normalization_provenance(init_checkpoint=request.init_checkpoint),
+                        validation_dataset=val_dataset,
                     )
 
                 if current_top5 > best_top5:
@@ -758,6 +774,7 @@ def train_graph_policy_value_model(
                         selector_value=current_top5,
                         val_metrics=val_metrics,
                         normalization_metadata=_normalization_provenance(init_checkpoint=request.init_checkpoint),
+                        validation_dataset=val_dataset,
                     )
 
                 if current_switch > best_switch:
@@ -775,6 +792,7 @@ def train_graph_policy_value_model(
                         selector_value=current_switch,
                         val_metrics=val_metrics,
                         normalization_metadata=_normalization_provenance(init_checkpoint=request.init_checkpoint),
+                        validation_dataset=val_dataset,
                     )
 
                 if current_policy_score > best_policy_score:
@@ -792,6 +810,7 @@ def train_graph_policy_value_model(
                         selector_value=current_policy_score,
                         val_metrics=val_metrics,
                         normalization_metadata=_normalization_provenance(init_checkpoint=request.init_checkpoint),
+                        validation_dataset=val_dataset,
                     )
 
             print(
@@ -821,6 +840,7 @@ def train_graph_policy_value_model(
                     device=device,
                     use_amp=use_amp,
                     normalization_metadata=_normalization_provenance(init_checkpoint=request.init_checkpoint),
+                    validation_dataset=val_dataset,
                 )
 
             if epoch == 1 or epoch % 25 == 0 or epoch == request.config.epochs:
@@ -859,11 +879,15 @@ def train_graph_policy_value_model(
             device=device,
             use_amp=use_amp,
             normalization_metadata=_normalization_provenance(init_checkpoint=request.init_checkpoint),
+            validation_dataset=val_dataset,
         )
         checkpoint["best_epoch"] = int(best_epoch)
         checkpoint["best_metric"] = float(best_metric)
 
     torch.save(checkpoint, output_path)
+
+    if request.save_best and checkpoint is best_checkpoint:
+        model.load_state_dict(checkpoint["model_state_dict"])
 
     if request.config.save_multiple_best:
         last_checkpoint_path = checkpoint_variant_path(output_path, "last")
@@ -874,6 +898,7 @@ def train_graph_policy_value_model(
             device=device,
             use_amp=use_amp,
             normalization_metadata=_normalization_provenance(init_checkpoint=request.init_checkpoint),
+            validation_dataset=val_dataset,
         )
         last_checkpoint["saved_epoch"] = int(request.config.epochs)
         last_checkpoint["selector_name"] = "last_epoch"
