@@ -126,3 +126,45 @@ def test_non_finite_metric_is_rejected():
 def test_bool_is_not_accepted_as_numeric():
     with pytest.raises(TypeError):
         assess_physical_state(_metrics(max_loading_percent=True))
+
+
+def test_integer_valued_float_count_is_accepted():
+    a = assess_physical_state(
+        _metrics(
+            max_loading_percent=110.0,
+            num_overloaded_branches=1.0,
+            num_hard_overloaded_branches=0.0,
+        )
+    )
+    assert a.num_overloaded_branches == 1
+    assert a.num_hard_overloaded_branches == 0
+
+
+def test_fractional_count_is_rejected():
+    with pytest.raises(ValueError, match="integer-valued"):
+        assess_physical_state(_metrics(num_overloaded_branches=1.5))
+
+
+def test_non_finite_count_is_rejected():
+    for value in (math.inf, math.nan):
+        with pytest.raises(ValueError, match="finite"):
+            assess_physical_state(_metrics(num_overloaded_branches=value))
+
+
+def test_bool_count_is_rejected():
+    with pytest.raises(TypeError, match="integer-valued"):
+        assess_physical_state(_metrics(num_overloaded_branches=True))
+
+
+def test_numpy_integer_count_is_accepted():
+    import numpy as np
+
+    a = assess_physical_state(
+        _metrics(
+            max_loading_percent=110.0,
+            num_overloaded_branches=np.int64(1),
+            num_hard_overloaded_branches=np.int64(0),
+        )
+    )
+    assert a.num_overloaded_branches == 1
+    assert a.num_hard_overloaded_branches == 0

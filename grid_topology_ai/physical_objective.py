@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import math
+import operator
 from dataclasses import dataclass
+from numbers import Real
 from typing import Mapping
 
 
@@ -41,7 +43,7 @@ def _require_key(metrics: Mapping[str, object], key: str) -> object:
 
 
 def _validate_finite_nonnegative_number(value: object, key: str) -> float:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
+    if isinstance(value, bool) or not isinstance(value, Real):
         raise TypeError(f"{key} must be a numeric value.")
     numeric = float(value)
     if not math.isfinite(numeric):
@@ -52,11 +54,29 @@ def _validate_finite_nonnegative_number(value: object, key: str) -> float:
 
 
 def _validate_nonnegative_integer(value: object, key: str) -> int:
-    if isinstance(value, bool) or not isinstance(value, int):
-        raise TypeError(f"{key} must be an integer value.")
-    if value < 0:
+    if isinstance(value, bool):
+        raise TypeError(f"{key} must be an integer-valued number.")
+
+    try:
+        integer = operator.index(value)
+    except TypeError:
+        if not isinstance(value, Real):
+            raise TypeError(f"{key} must be an integer-valued number.")
+
+        numeric = float(value)
+
+        if not math.isfinite(numeric):
+            raise ValueError(f"{key} must be finite.")
+
+        if not numeric.is_integer():
+            raise ValueError(f"{key} must be integer-valued.")
+
+        integer = int(numeric)
+
+    if integer < 0:
         raise ValueError(f"{key} must be non-negative.")
-    return int(value)
+
+    return int(integer)
 
 
 def assess_physical_state(metrics: Mapping[str, object]) -> PhysicalStateAssessment:

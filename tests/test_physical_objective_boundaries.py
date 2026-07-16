@@ -29,3 +29,9 @@ def test_selected_literal_threshold_comparisons_were_removed():
         text = (ROOT / "grid_topology_ai" / rel).read_text()
         for token in forbidden:
             assert token not in text
+
+
+def test_pypower_backend_does_not_patch_numpy_in1d():
+    text = (ROOT / "grid_topology_ai/pypower_backend.py").read_text()
+    for token in ('np.in1d =', 'np.isin', 'hasattr(np, "in1d")'):
+        assert token not in text
