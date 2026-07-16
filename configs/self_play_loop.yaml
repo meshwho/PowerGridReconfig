@@ -88,6 +88,7 @@ training:
 # This section is used by scripts/self_play/run_iteration.py::run_evaluate().
 evaluation:
   simulations: 150
+  pf_alg: 3
   depth: 4
   max_steps: 5
   top_k: 30

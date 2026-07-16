@@ -147,7 +147,8 @@ def test_run_evaluate_uses_evaluation_request(
     assert request.output_json == tmp_path / "eval" / "custom_metrics.json"
     assert request.quiet is True
     assert request.limit is None
-    assert request.pf_alg == 1
+    assert request.pf_alg is None
+    assert request.resolved_pf_alg == 3
     assert request.disable_cache is False
     assert request.leaf_penalty_weight == 0.10
     assert request.stop_policy == "no_hard_overloads"

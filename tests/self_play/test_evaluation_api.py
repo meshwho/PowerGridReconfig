@@ -595,3 +595,20 @@ def test_run_episode_rejects_solved_contract_mismatch(
             min_gate_visits=0,
             min_gate_visit_fraction=0.0,
         )
+
+
+def test_task_config_uses_evaluation_config_pf_alg(tmp_path: Path) -> None:
+    request = _request(tmp_path, config=EvaluationConfig(pf_alg=3), pf_alg=None)
+    assert request.resolved_pf_alg == 3
+    assert evaluation._make_task_config(request)["pf_alg"] == 3
+
+
+def test_explicit_request_pf_alg_override_remains_supported(tmp_path: Path) -> None:
+    request = _request(tmp_path, config=EvaluationConfig(pf_alg=3), pf_alg=2)
+    assert request.resolved_pf_alg == 2
+    assert evaluation._make_task_config(request)["pf_alg"] == 2
+
+
+def test_invalid_effective_pf_alg_is_rejected(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="pf_alg"):
+        _request(tmp_path, config=EvaluationConfig(pf_alg=3), pf_alg=9)

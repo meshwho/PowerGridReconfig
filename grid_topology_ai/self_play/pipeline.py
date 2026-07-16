@@ -7,6 +7,7 @@ from typing import Any
 
 from grid_topology_ai.config import SelfPlayConfig
 from grid_topology_ai.self_play.artifacts import save_yaml
+from grid_topology_ai.self_play.acceptance import require_metrics_pf_alg
 from grid_topology_ai.self_play.checkpoint_state import initialize_best_state
 from grid_topology_ai.self_play.completion import write_iteration_completion_marker
 from grid_topology_ai.self_play.iteration import IterationRequest, run_self_play_iteration
@@ -93,6 +94,11 @@ def run_self_play_pipeline(
     best_state = initialize_best_state(paths=paths)
     best_checkpoint = best_state.checkpoint
     best_metrics = dict(best_state.metrics)
+    require_metrics_pf_alg(
+        best_metrics,
+        expected_pf_alg=config.evaluation.pf_alg,
+        source=str(paths.best_metrics),
+    )
 
     pool_metadata = initialize_pool_metadata(
         transitions_csv=paths.pool_transitions_csv,

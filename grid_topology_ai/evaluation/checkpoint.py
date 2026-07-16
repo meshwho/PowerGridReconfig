@@ -49,7 +49,7 @@ class EvaluationRequest:
     output_json: Path | None = None
     limit: int | None = None
     quiet: bool = False
-    pf_alg: int = 1
+    pf_alg: int | None = None
     disable_cache: bool = False
     leaf_penalty_weight: float = 0.10
     stop_policy: str = "no_hard_overloads"
@@ -67,11 +67,17 @@ class EvaluationRequest:
     dc_failure_penalty: float = 1_000_000_000.0
     dc_max_depth: int = 0
 
+    @property
+    def resolved_pf_alg(self) -> int:
+        if self.pf_alg is None:
+            return int(self.config.pf_alg)
+        return int(self.pf_alg)
+
     def __post_init__(self) -> None:
         if self.limit is not None and int(self.limit) <= 0:
             raise ValueError("limit must be None or > 0")
-        if int(self.pf_alg) not in {1, 2, 3, 4}:
-            raise ValueError("pf_alg must be one of 1, 2, 3, or 4")
+        if self.resolved_pf_alg not in {1, 2, 3, 4}:
+            raise ValueError("resolved pf_alg must be one of 1, 2, 3, or 4")
         if float(self.leaf_penalty_weight) < 0.0:
             raise ValueError("leaf_penalty_weight must be >= 0")
         if self.stop_policy not in {
@@ -489,7 +495,7 @@ def _make_task_config(request: EvaluationRequest) -> dict[str, Any]:
         "leaf_penalty_weight": float(request.leaf_penalty_weight),
         "stop_policy": str(request.stop_policy),
         "device": str(config.device),
-        "pf_alg": int(request.pf_alg),
+        "pf_alg": int(request.resolved_pf_alg),
         "disable_cache": bool(request.disable_cache),
         "use_continuation_gate": bool(config.use_continuation_gate),
         "min_hard_improvement": float(request.min_hard_improvement),

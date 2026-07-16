@@ -109,6 +109,13 @@ class SelfPlayConfig:
             "n_scenarios_per_iteration",
             self.n_scenarios_per_iteration,
         )
+        if int(self.generation.pf_alg) != int(self.evaluation.pf_alg):
+            raise ValueError(
+                "Power-flow algorithm mismatch: "
+                f"generation.pf_alg={self.generation.pf_alg}, "
+                f"evaluation.pf_alg={self.evaluation.pf_alg}. "
+                "Self-play generation and fixed evaluation must use the same PF_ALG."
+            )
 
     @classmethod
     def from_mapping(
