@@ -612,3 +612,14 @@ def test_explicit_request_pf_alg_override_remains_supported(tmp_path: Path) -> N
 def test_invalid_effective_pf_alg_is_rejected(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="pf_alg"):
         _request(tmp_path, config=EvaluationConfig(pf_alg=3), pf_alg=9)
+
+
+def test_request_pf_alg_accepts_exact_float_and_string(tmp_path: Path) -> None:
+    assert _request(tmp_path, pf_alg=2.0).resolved_pf_alg == 2
+    assert _request(tmp_path, pf_alg="2").resolved_pf_alg == 2  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("value", [3.5, True])
+def test_request_pf_alg_rejects_non_exact_values(tmp_path: Path, value: object) -> None:
+    with pytest.raises(ValueError, match="exact integer|pf_alg"):
+        _request(tmp_path, pf_alg=value)  # type: ignore[arg-type]

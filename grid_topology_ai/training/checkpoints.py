@@ -14,6 +14,16 @@ from grid_topology_ai.self_play.artifacts import sha256_file
 from grid_topology_ai.training.metrics import build_value_target_diagnostics
 
 
+_SELECTOR_METRIC_NAMES = {
+    "val_loss": "validation_loss",
+    "val_top1": "validation_top1",
+    "val_top5": "validation_top5",
+    "val_switch": "validation_switch_accuracy",
+    "policy_selection_score": "policy_selection_score",
+    "last_epoch": "last_epoch",
+}
+
+
 NORMALIZATION_STAT_KEYS = (
     "bus_feature_mean",
     "bus_feature_std",
@@ -442,9 +452,13 @@ def save_checkpoint_now(
         validation_dataset=validation_dataset,
     )
 
+    if selector_name not in _SELECTOR_METRIC_NAMES:
+        raise ValueError(f"Unknown checkpoint selector: {selector_name!r}")
+
     checkpoint["saved_epoch"] = int(epoch)
     checkpoint["selector_name"] = str(selector_name)
     checkpoint["selector_value"] = float(selector_value)
+    checkpoint["checkpoint_selection_metric"] = _SELECTOR_METRIC_NAMES[selector_name]
 
     if val_metrics is not None:
         checkpoint["val_metrics"] = {

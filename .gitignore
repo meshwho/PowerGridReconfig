@@ -41,3 +41,12 @@ temp/
 SSHOutput
 .venvwsl
 runs
+# Packaging artifacts
+build/
+dist/
+*.egg-info/
+
+# Test/tool caches
+.pytest_cache/
+.coverage
+htmlcov/

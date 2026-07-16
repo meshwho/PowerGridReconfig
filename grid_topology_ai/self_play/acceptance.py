@@ -3,16 +3,17 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 from grid_topology_ai.config import AcceptanceConfig
+from grid_topology_ai.config._validation import coerce_exact_int
 
 _COMPARISON_EPSILON = 1e-12
 
 
 def _coerce_pf_alg(value: object, *, source: str) -> int:
     try:
-        pf_alg = int(value)
-    except (TypeError, ValueError):
+        pf_alg = coerce_exact_int("PF_ALG", value)
+    except ValueError:
         raise ValueError(
-            f"PF_ALG mismatch for {source}: expected PF_ALG value, "
+            f"PF_ALG mismatch for {source}: expected exact integer PF_ALG value, "
             f"observed PF_ALG={value!r}. Regenerate fixed evaluation metrics "
             "with the configured PF_ALG before running self-play."
         ) from None
@@ -32,7 +33,7 @@ def require_metrics_pf_alg(
     expected_pf_alg: int,
     source: str,
 ) -> None:
-    expected = int(expected_pf_alg)
+    expected = _coerce_pf_alg(expected_pf_alg, source=source)
     top_level = metrics.get("pf_alg")
     task_pf_alg = None
     task_config = metrics.get("task_config")

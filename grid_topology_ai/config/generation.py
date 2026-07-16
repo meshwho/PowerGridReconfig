@@ -4,6 +4,7 @@ from dataclasses import dataclass
 
 from grid_topology_ai.config._mapping import ConfigMapping
 from grid_topology_ai.config._validation import (
+    coerce_exact_int,
     require_choice,
     require_fraction,
     require_non_negative,
@@ -108,7 +109,10 @@ class GenerationConfig:
             use_continuation_gate=bool(
                 data.get("use_continuation_gate", True)
             ),
-            pf_alg=int(data.get("pf_alg", 3)),
+            pf_alg=coerce_exact_int(
+                "generation.pf_alg",
+                data.get("pf_alg", 3),
+            ),
             stop_policy=str(
                 data.get(
                     "stop_policy",

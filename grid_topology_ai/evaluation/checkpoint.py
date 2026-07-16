@@ -14,6 +14,7 @@ except ImportError:  # pragma: no cover
     tqdm = None
 
 from grid_topology_ai.config import EvaluationConfig
+from grid_topology_ai.config._validation import coerce_exact_int
 from grid_topology_ai.evaluation.metrics import (
     attach_difficulty_metadata,
     build_evaluation_metrics,
@@ -69,9 +70,11 @@ class EvaluationRequest:
 
     @property
     def resolved_pf_alg(self) -> int:
-        if self.pf_alg is None:
-            return int(self.config.pf_alg)
-        return int(self.pf_alg)
+        value = self.config.pf_alg if self.pf_alg is None else self.pf_alg
+        return coerce_exact_int(
+            "evaluation request pf_alg",
+            value,
+        )
 
     def __post_init__(self) -> None:
         if self.limit is not None and int(self.limit) <= 0:

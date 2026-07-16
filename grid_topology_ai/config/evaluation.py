@@ -4,6 +4,7 @@ from dataclasses import dataclass
 
 from grid_topology_ai.config._mapping import ConfigMapping
 from grid_topology_ai.config._validation import (
+    coerce_exact_int,
     require_choice,
     require_fraction,
     require_non_negative,
@@ -92,7 +93,10 @@ class EvaluationConfig:
             depth=int(data.get("depth", 4)),
             max_steps=int(data.get("max_steps", 5)),
             top_k=int(data.get("top_k", 30)),
-            pf_alg=int(data.get("pf_alg", 3)),
+            pf_alg=coerce_exact_int(
+                "evaluation.pf_alg",
+                data.get("pf_alg", 3),
+            ),
             gamma=float(data.get("gamma", 0.95)),
             c_puct=float(data.get("c_puct", 2.0)),
             prior_exponent=float(

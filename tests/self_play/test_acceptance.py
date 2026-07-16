@@ -190,3 +190,18 @@ def test_require_metrics_pf_alg_mismatch_rejects() -> None:
 def test_require_metrics_pf_alg_invalid_rejects() -> None:
     with pytest.raises(ValueError, match="invalid"):
         require_metrics_pf_alg({"pf_alg": 9}, expected_pf_alg=3, source="candidate")
+
+
+def test_require_metrics_pf_alg_accepts_exact_float_and_string() -> None:
+    require_metrics_pf_alg({"pf_alg": 3.0}, expected_pf_alg="3", source="test")  # type: ignore[arg-type]
+    require_metrics_pf_alg({"pf_alg": "3"}, expected_pf_alg=3.0, source="test")  # type: ignore[arg-type]
+
+
+def test_require_metrics_pf_alg_rejects_fractional_top_level() -> None:
+    with pytest.raises(ValueError, match="exact integer"):
+        require_metrics_pf_alg({"pf_alg": 3.5}, expected_pf_alg=3, source="candidate")
+
+
+def test_require_metrics_pf_alg_rejects_fractional_task_config() -> None:
+    with pytest.raises(ValueError, match="exact integer"):
+        require_metrics_pf_alg({"task_config": {"pf_alg": 3.5}}, expected_pf_alg=3, source="candidate")

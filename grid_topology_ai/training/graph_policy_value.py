@@ -524,6 +524,13 @@ def _validate_normalization_feature_dimensions(
 def train_graph_policy_value_model(
     request: TrainingRequest,
 ) -> Path:
+    if request.init_checkpoint is not None and not request.normalize_features:
+        raise ValueError(
+            "Fine-tuning from an initial checkpoint requires "
+            "normalize_features=True because checkpoint weights and "
+            "normalization statistics form one model contract."
+        )
+
     if not request.examples_csv.exists():
         raise FileNotFoundError(f"Examples CSV not found: {request.examples_csv}")
 
@@ -903,6 +910,7 @@ def train_graph_policy_value_model(
         last_checkpoint["saved_epoch"] = int(request.config.epochs)
         last_checkpoint["selector_name"] = "last_epoch"
         last_checkpoint["selector_value"] = float(request.config.epochs)
+        last_checkpoint["checkpoint_selection_metric"] = "last_epoch"
         torch.save(last_checkpoint, last_checkpoint_path)
 
         print("\nSaved additional checkpoint variants:")

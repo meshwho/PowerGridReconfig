@@ -135,3 +135,31 @@ def test_repository_self_play_configs_have_validation_contract() -> None:
         config = SelfPlayConfig.load(path)
         assert 0.0 < config.training.validation_fraction < 1.0
         assert config.training.min_validation_scenarios > 0
+
+@pytest.mark.parametrize("value", [3.0, "3"])
+def test_pf_alg_exact_integer_values_are_accepted(value: object) -> None:
+    from grid_topology_ai.config import EvaluationConfig, GenerationConfig
+
+    assert GenerationConfig.from_mapping({"pf_alg": value}).pf_alg == 3
+    assert EvaluationConfig.from_mapping({"pf_alg": value}).pf_alg == 3
+
+
+def test_generation_config_rejects_fractional_pf_alg() -> None:
+    from grid_topology_ai.config import GenerationConfig
+
+    with pytest.raises(ValueError, match="exact integer"):
+        GenerationConfig.from_mapping({"pf_alg": 3.5})
+
+
+def test_evaluation_config_rejects_fractional_pf_alg() -> None:
+    from grid_topology_ai.config import EvaluationConfig
+
+    with pytest.raises(ValueError, match="exact integer"):
+        EvaluationConfig.from_mapping({"pf_alg": 3.5})
+
+
+def test_evaluation_config_rejects_out_of_choice_pf_alg_from_mapping() -> None:
+    from grid_topology_ai.config import EvaluationConfig
+
+    with pytest.raises(ValueError, match="evaluation.pf_alg"):
+        EvaluationConfig.from_mapping({"pf_alg": 5})
