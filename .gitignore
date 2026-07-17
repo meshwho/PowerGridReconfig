@@ -50,3 +50,6 @@ dist/
 .pytest_cache/
 .coverage
 htmlcov/
+
+fixplan.md
+.codex
