@@ -4,6 +4,13 @@ from collections.abc import Mapping
 
 from grid_topology_ai.config import AcceptanceConfig
 from grid_topology_ai.config._validation import coerce_exact_int
+from grid_topology_ai.contracts import (
+    EVALUATION_METRICS_CONTRACT_VERSION,
+    require_exact_contract_version,
+)
+from grid_topology_ai.physical_objective import (
+    PHYSICAL_OBJECTIVE_SCHEMA_VERSION,
+)
 
 _COMPARISON_EPSILON = 1e-12
 
@@ -33,6 +40,7 @@ def require_metrics_pf_alg(
     expected_pf_alg: int,
     source: str,
 ) -> None:
+    require_metrics_semantic_versions(metrics, source=source)
     expected = _coerce_pf_alg(expected_pf_alg, source=source)
     top_level = metrics.get("pf_alg")
     task_pf_alg = None
@@ -71,12 +79,40 @@ def require_metrics_pf_alg(
         )
 
 
+def require_metrics_semantic_versions(
+    metrics: Mapping[str, object],
+    *,
+    source: str,
+) -> None:
+    require_exact_contract_version(
+        metrics.get("evaluation_metrics_contract_version"),
+        expected=EVALUATION_METRICS_CONTRACT_VERSION,
+        name="evaluation-metrics contract",
+        source=source,
+        regeneration_command="python -m scripts.evaluation.evaluate_checkpoint ...",
+    )
+    physical_contract = metrics.get("physical_objective_contract")
+    physical_version = (
+        physical_contract.get("schema_version")
+        if isinstance(physical_contract, Mapping)
+        else None
+    )
+    require_exact_contract_version(
+        physical_version,
+        expected=PHYSICAL_OBJECTIVE_SCHEMA_VERSION,
+        name="physical-objective contract",
+        source=source,
+        regeneration_command="python -m scripts.evaluation.evaluate_checkpoint ...",
+    )
+
 def accept_candidate(
     *,
     new_metrics: Mapping[str, object],
     best_metrics: Mapping[str, object],
     config: AcceptanceConfig,
 ) -> bool:
+    require_metrics_semantic_versions(new_metrics, source="candidate metrics")
+    require_metrics_semantic_versions(best_metrics, source="best metrics")
     metric = config.metric
 
     if metric not in new_metrics:

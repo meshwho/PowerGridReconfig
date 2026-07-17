@@ -4,6 +4,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from grid_topology_ai.contracts import OUTCOME_VALUE_TARGET_CONTRACT_VERSION
+from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
 from grid_topology_ai.self_play.examples import ExampleWriter, SelfPlayExample
 
 
@@ -34,6 +36,10 @@ def test_example_writer_save_preserves_csv_schema(tmp_path: Path) -> None:
             solved=True,
             done=True,
             termination_reason="solved",
+            physical_objective_schema_version=PHYSICAL_OBJECTIVE_SCHEMA_VERSION,
+            outcome_value_target_contract_version=(
+                OUTCOME_VALUE_TARGET_CONTRACT_VERSION
+            ),
             visit_counts_json='{"2": 4}',
             mcts_policy_json='{"2": 1.0}',
         )
@@ -54,6 +60,8 @@ def test_example_writer_save_preserves_csv_schema(tmp_path: Path) -> None:
         "solved",
         "done",
         "termination_reason",
+        "physical_objective_schema_version",
+        "outcome_value_target_contract_version",
         "visit_counts_json",
         "mcts_policy_json",
     ]

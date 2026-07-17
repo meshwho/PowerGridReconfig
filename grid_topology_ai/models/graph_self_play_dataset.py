@@ -9,7 +9,10 @@ import pandas as pd
 import torch
 from torch.utils.data import Dataset
 
-from grid_topology_ai.self_play.example_validation import REQUIRED_EXAMPLE_COLUMNS
+from grid_topology_ai.self_play.example_validation import (
+    REQUIRED_EXAMPLE_COLUMNS,
+    validate_example_contract_versions,
+)
 
 
 class GraphSelfPlayDataset(Dataset):
@@ -59,6 +62,10 @@ class GraphSelfPlayDataset(Dataset):
                 f"Examples CSV is missing required columns: {sorted(missing)}"
             )
 
+        validate_example_contract_versions(
+            self.examples,
+            source_path=self.examples_csv,
+        )
         self._validate_outcome_value_targets()
         self._validate_state_files()
 

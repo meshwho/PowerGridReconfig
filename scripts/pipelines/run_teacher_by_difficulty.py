@@ -14,6 +14,10 @@ from typing import Iterable, Sequence
 import numpy as np
 import pandas as pd
 
+from grid_topology_ai.self_play.example_validation import (
+    load_and_validate_examples_csv,
+)
+
 
 DIFFICULTIES: tuple[str, ...] = ("simple", "medium", "hard")
 SPLITS: tuple[str, ...] = ("train", "val")
@@ -307,23 +311,9 @@ def validate_teacher_examples(path: Path) -> tuple[bool, str]:
         return False, "examples.csv is missing"
 
     try:
-        frame = pd.read_csv(path)
+        frame = load_and_validate_examples_csv(path)
     except Exception as exc:
-        return False, f"cannot read examples.csv: {exc}"
-
-    if frame.empty:
-        return False, "examples.csv is empty"
-
-    required = {
-        "scenario_id",
-        "state_path",
-        "mcts_policy_json",
-        "outcome_value_target",
-    }
-    missing = sorted(required - set(frame.columns))
-
-    if missing:
-        return False, f"missing required columns: {missing}"
+        return False, f"invalid examples.csv: {exc}"
 
     return True, "ok"
 

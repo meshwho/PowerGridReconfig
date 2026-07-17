@@ -9,7 +9,13 @@ from typing import TYPE_CHECKING, Any, Mapping
 import numpy as np
 import torch
 
+from grid_topology_ai.contracts import (
+    CHECKPOINT_CONTRACT_VERSION,
+    OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
+    require_checkpoint_contracts,
+)
 from grid_topology_ai.models.graph_self_play_dataset import GraphSelfPlayDataset
+from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
 from grid_topology_ai.self_play.artifacts import sha256_file
 from grid_topology_ai.training.metrics import build_value_target_diagnostics
 
@@ -43,6 +49,7 @@ def load_checkpoint_payload(
     payload = torch.load(checkpoint_path, map_location=map_location, weights_only=False)
     if not isinstance(payload, dict):
         raise ValueError(f"Checkpoint payload must be a mapping. Checkpoint: {checkpoint_path}")
+    require_checkpoint_contracts(payload, source=str(checkpoint_path))
     return payload
 
 
@@ -231,6 +238,10 @@ def build_dataset_metadata(
         "missing_state_count": int(missing_state_count),
         "state_total_bytes": int(state_total_bytes),
         "state_paths_sha256": sha256_text("\n".join(unique_state_paths)),
+        "physical_objective_schema_version": PHYSICAL_OBJECTIVE_SCHEMA_VERSION,
+        "outcome_value_target_contract_version": (
+            OUTCOME_VALUE_TARGET_CONTRACT_VERSION
+        ),
     }
 
 
@@ -277,6 +288,11 @@ def make_checkpoint(
     value_target_diagnostics = build_value_target_diagnostics(dataset=dataset)
 
     checkpoint = {
+        "checkpoint_contract_version": CHECKPOINT_CONTRACT_VERSION,
+        "physical_objective_schema_version": PHYSICAL_OBJECTIVE_SCHEMA_VERSION,
+        "outcome_value_target_contract_version": (
+            OUTCOME_VALUE_TARGET_CONTRACT_VERSION
+        ),
         "model_type": str(getattr(model, "model_type", "graph_policy_value_net")),
         "model_state_dict": model_state_dict_cpu,
         "num_bus_features": int(dataset.num_bus_features),
@@ -353,6 +369,7 @@ def load_initial_checkpoint_into_model(
         if checkpoint_payload is not None
         else load_checkpoint_payload(checkpoint_path, map_location=device)
     )
+    require_checkpoint_contracts(checkpoint, source=str(checkpoint_path))
 
     expected_model_type = (
         "graph_policy_value_net_v2"

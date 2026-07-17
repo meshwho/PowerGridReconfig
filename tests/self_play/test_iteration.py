@@ -5,8 +5,15 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import torch
 
 from grid_topology_ai.config import SelfPlayConfig
+from grid_topology_ai.contracts import (
+    CHECKPOINT_CONTRACT_VERSION,
+    EVALUATION_METRICS_CONTRACT_VERSION,
+    OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
+)
+from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
 from grid_topology_ai.self_play.checkpoint_state import BestState
 from grid_topology_ai.self_play import iteration as iteration_module
 from grid_topology_ai.self_play.iteration import (
@@ -51,6 +58,24 @@ class _FakeReplayBuffer:
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text("scenario_id\n1\n2\n3\n", encoding="utf-8")
         return {"n_examples": int(n_examples), "n_fresh": 2, "n_old": 1}
+
+
+def _metrics(
+    solve_rate: float,
+    *,
+    pf_alg: int = 3,
+    failed_scenarios: int = 0,
+) -> dict[str, object]:
+    return {
+        "solve_rate": solve_rate,
+        "failed_scenarios": failed_scenarios,
+        "pf_alg": pf_alg,
+        "task_config": {"pf_alg": pf_alg},
+        "evaluation_metrics_contract_version": EVALUATION_METRICS_CONTRACT_VERSION,
+        "physical_objective_contract": {
+            "schema_version": PHYSICAL_OBJECTIVE_SCHEMA_VERSION
+        },
+    }
 
 
 def _config() -> SelfPlayConfig:
@@ -106,7 +131,7 @@ def _request(tmp_path: Path, *, iteration: int = 2) -> IterationRequest:
         raw_config={"raw": "config"},
         paths=paths,
         parent_checkpoint=parent_checkpoint,
-        parent_metrics={"solve_rate": 0.5, "failed_scenarios": 0, "pf_alg": 3, "task_config": {"pf_alg": 3}},
+        parent_metrics=_metrics(0.5),
         pool_metadata={"scenarios": {"1": {}, "2": {}, "3": {}}},
         replay_buffer=_FakeReplayBuffer(),  # type: ignore[arg-type]
     )
@@ -126,13 +151,24 @@ def _install_stage_fakes(monkeypatch: pytest.MonkeyPatch, calls: list[str] | Non
         if calls is not None:
             calls.append("train")
         checkpoint = Path(kwargs["output_dir"]) / "candidate_checkpoint.pt"
-        checkpoint.write_bytes(b"candidate")
+        torch.save(
+            {
+                "checkpoint_contract_version": CHECKPOINT_CONTRACT_VERSION,
+                "physical_objective_schema_version": (
+                    PHYSICAL_OBJECTIVE_SCHEMA_VERSION
+                ),
+                "outcome_value_target_contract_version": (
+                    OUTCOME_VALUE_TARGET_CONTRACT_VERSION
+                ),
+            },
+            checkpoint,
+        )
         return checkpoint
 
     def fake_evaluate(**kwargs: Any) -> dict[str, object]:
         if calls is not None:
             calls.append("evaluate")
-        return {"solve_rate": 0.6, "failed_scenarios": 0, "pf_alg": 3, "task_config": {"pf_alg": 3}}
+        return _metrics(0.6)
 
     monkeypatch.setattr("grid_topology_ai.self_play.iteration.run_generate", fake_generate)
     monkeypatch.setattr("grid_topology_ai.self_play.iteration.run_train", fake_train)
@@ -213,7 +249,7 @@ def test_accepted_iteration_promotes_candidate(
 ) -> None:
     _install_stage_fakes(monkeypatch)
     promoted_checkpoint = tmp_path / "best.pt"
-    promoted_metrics = {"solve_rate": 0.8, "pf_alg": 3, "task_config": {"pf_alg": 3}}
+    promoted_metrics = _metrics(0.8)
     monkeypatch.setattr("grid_topology_ai.self_play.iteration.accept_candidate", lambda **kwargs: True)
     monkeypatch.setattr(
         "grid_topology_ai.self_play.iteration.promote_candidate",
@@ -260,7 +296,7 @@ def test_metadata_is_saved_before_promotion(
 
     def fake_promote(**kwargs: Any) -> BestState:
         calls.append("promote")
-        return BestState(checkpoint=tmp_path / "best.pt", metrics={"solve_rate": 0.7})
+        return BestState(checkpoint=tmp_path / "best.pt", metrics=_metrics(0.7))
 
     monkeypatch.setattr("grid_topology_ai.self_play.iteration._save_iteration_metadata", fake_save_metadata)
     monkeypatch.setattr("grid_topology_ai.self_play.iteration.promote_candidate", fake_promote)
@@ -320,7 +356,7 @@ def test_parent_metrics_are_not_mutated(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _install_stage_fakes(monkeypatch)
-    parent_metrics = {"solve_rate": 0.5, "failed_scenarios": 0, "pf_alg": 3, "task_config": {"pf_alg": 3}}
+    parent_metrics = _metrics(0.5)
     request = _request(tmp_path)
     request = IterationRequest(
         iteration=request.iteration,
@@ -335,7 +371,7 @@ def test_parent_metrics_are_not_mutated(
 
     run_self_play_iteration(request)
 
-    assert parent_metrics == {"solve_rate": 0.5, "failed_scenarios": 0, "pf_alg": 3, "task_config": {"pf_alg": 3}}
+    assert parent_metrics == _metrics(0.5)
 
 
 def test_iteration_stops_before_training_when_replay_validation_fails(
@@ -441,7 +477,7 @@ def test_iteration_rejects_candidate_metrics_pf_alg_before_acceptance(
     _install_stage_fakes(monkeypatch)
     monkeypatch.setattr(
         "grid_topology_ai.self_play.iteration.run_evaluate",
-        lambda **kwargs: {"solve_rate": 0.9, "failed_scenarios": 0, "pf_alg": 1, "task_config": {"pf_alg": 1}},
+        lambda **kwargs: _metrics(0.9, pf_alg=1),
     )
     monkeypatch.setattr(
         "grid_topology_ai.self_play.iteration.accept_candidate",

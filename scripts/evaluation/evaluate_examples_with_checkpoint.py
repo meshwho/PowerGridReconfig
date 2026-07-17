@@ -15,20 +15,13 @@ from grid_topology_ai.training.graph_policy_value import (
     evaluate_one_epoch,
     resolve_device,
 )
+from grid_topology_ai.training.checkpoints import load_checkpoint_payload
 
 
 def load_model_from_checkpoint(checkpoint_path: Path, device: torch.device):
-    try:
-        checkpoint = torch.load(
-            checkpoint_path,
-            map_location=device,
-            weights_only=False,
-        )
-    except TypeError:
-        checkpoint = torch.load(
-            checkpoint_path,
-            map_location=device,
-        )
+    checkpoint = dict(
+        load_checkpoint_payload(checkpoint_path, map_location=device)
+    )
 
     model_type = str(checkpoint.get("model_type", "graph_policy_value_net"))
 

@@ -33,7 +33,13 @@ from grid_topology_ai.search.impact_beam_search import (
     safety_score,
 )
 from grid_topology_ai.state_store import GridFMStateStore
+from grid_topology_ai.termination import (
+    TerminationReason,
+    parse_termination_reason,
+    termination_reason_value,
+)
 from grid_topology_ai.value_targets import add_outcome_value_targets_to_rows
+from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
 
 
 # ======================================================================================
@@ -678,7 +684,9 @@ def make_handoff_step_item(
         "env_reward": 0.0,
         "done_after_step": True,
         "solved_after_step": False,
-        "termination_reason_after_step": "handoff_to_redispatch_teacher",
+        "termination_reason_after_step": (
+            TerminationReason.HANDOFF_TO_REDISPATCH_TEACHER
+        ),
         "teacher_decision_reason": reason,
     }
 
@@ -1318,13 +1326,22 @@ def process_one_scenario_fast(scenario_id: int) -> dict[str, Any]:
                     "discounted_return_from_step": float(return_from_step),
                     "solved": bool(item.get("solved_after_step", replay_env.solved)),
                     "done": bool(item.get("done_after_step", replay_env.done)),
-                    "termination_reason": (
-                        item.get("termination_reason_after_step")
-                        or (
-                            "handoff_to_redispatch_teacher"
-                            if handoff_added
-                            else (replay_env.termination_reason or "teacher_depth_limit")
+                    "termination_reason": termination_reason_value(
+                        parse_termination_reason(
+                            item.get("termination_reason_after_step")
+                            or (
+                                TerminationReason.HANDOFF_TO_REDISPATCH_TEACHER
+                                if handoff_added
+                                else (
+                                    replay_env.termination_reason
+                                    or TerminationReason.TEACHER_DEPTH_LIMIT
+                                )
+                            ),
+                            allow_none=False,
                         )
+                    ),
+                    "physical_objective_schema_version": (
+                        PHYSICAL_OBJECTIVE_SCHEMA_VERSION
                     ),
                     "visit_counts_json": json.dumps(
                         {str(k): int(v) for k, v in item["visit_counts"].items()}
@@ -1617,7 +1634,7 @@ def resolve_num_workers(
 # Execution modes
 # ======================================================================================
 
-CHECKPOINT_VERSION = 1
+CHECKPOINT_VERSION = 2
 
 
 def append_scenario_checkpoint(

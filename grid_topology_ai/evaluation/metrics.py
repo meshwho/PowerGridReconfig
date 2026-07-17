@@ -5,16 +5,28 @@ from typing import Any
 
 import pandas as pd
 
+from grid_topology_ai.contracts import EVALUATION_METRICS_CONTRACT_VERSION
 from grid_topology_ai.physical_objective import (
     OVERLOAD_LIMIT_PERCENT,
     physical_objective_contract,
+)
+from grid_topology_ai.termination import (
+    TerminationReason,
+    parse_termination_reason,
+    validate_outcome_invariants,
 )
 
 
 def compute_safety_score(row: dict[str, Any]) -> float:
     score = 0.0
-    reason = row.get("termination_reason")
+    reason = parse_termination_reason(row.get("termination_reason"))
     solved = bool(row.get("solved", False))
+    physically_secure = bool(row.get("physically_secure", False))
+    validate_outcome_invariants(
+        solved=solved,
+        termination_reason=reason,
+        physically_secure=physically_secure,
+    )
     final_loading = float(row.get("final_max_loading_percent", 999.0))
     overloaded = int(row.get("final_num_overloaded_branches", 99))
     hard = int(row.get("final_num_hard_overloaded_branches", 99))
@@ -22,14 +34,11 @@ def compute_safety_score(row: dict[str, Any]) -> float:
 
     if solved:
         score += 1000.0
-    elif reason in {
-        "handoff_to_redispatch",
-        "handoff_to_redispatch_with_hard_overload",
-    }:
+    elif reason is TerminationReason.HANDOFF_TO_REDISPATCH and hard == 0:
         score += 500.0
-    elif reason == "max_steps_reached":
+    elif reason is TerminationReason.MAX_STEPS_REACHED:
         score -= 300.0
-    elif reason == "power_flow_failed":
+    elif reason is TerminationReason.POWER_FLOW_FAILED:
         score -= 1000.0
     else:
         score -= 100.0
@@ -99,6 +108,18 @@ def build_evaluation_metrics(
     task_config: dict[str, Any],
 ) -> dict[str, Any]:
     solved = df["solved"].astype(bool)
+    physically_secure = df["physically_secure"].astype(bool)
+    if not solved.equals(physically_secure):
+        raise ValueError(
+            "Evaluation rows violate the outcome contract: solved must equal "
+            "physically_secure. Regenerate evaluation metrics."
+        )
+    for index, row in df.iterrows():
+        validate_outcome_invariants(
+            solved=bool(row["solved"]),
+            termination_reason=row["termination_reason"],
+            physically_secure=bool(row["physically_secure"]),
+        )
     termination_counts = {
         str(key): int(value)
         for key, value in df["termination_reason"]
@@ -109,25 +130,44 @@ def build_evaluation_metrics(
     evaluated_scenarios = int(len(df))
     requested_count = int(requested_scenarios)
     failed_scenarios = int(len(failed_results))
-    solve_count = int(solved.sum())
+    solve_count = int(physically_secure.sum())
 
     def rate(numerator: int, denominator: int) -> float:
         if denominator == 0:
             return 0.0
         return float(numerator) / float(denominator)
 
-    hard_overload_free_count = int(df["hard_overload_free"].astype(bool).sum())
-    voltage_feasible_count = int(df["voltage_feasible"].astype(bool).sum())
-    physically_secure_count = int(df["physically_secure"].astype(bool).sum())
+    component_fields = (
+        "power_flow_converged",
+        "all_values_finite",
+        "topology_connected",
+        "thermal_solved",
+        "thermal_feasible",
+        "hard_overload_free",
+        "voltage_feasible",
+        "generator_p_feasible",
+        "generator_q_feasible",
+        "angle_difference_feasible",
+        "physically_secure",
+    )
+    component_counts = {
+        field: int(df[field].astype(bool).sum()) for field in component_fields
+    }
+    hard_overload_free_count = component_counts["hard_overload_free"]
+    voltage_feasible_count = component_counts["voltage_feasible"]
+    physically_secure_count = component_counts["physically_secure"]
     safe_handoff_count = int(df["safe_handoff"].astype(bool).sum())
     unsafe_terminal_state_count = int(
         df["unsafe_terminal_state"].astype(bool).sum()
     )
     power_flow_failure_count = int(
-        (df["termination_reason"] == "power_flow_failed").sum()
+        (df["termination_reason"] == TerminationReason.POWER_FLOW_FAILED.value).sum()
     )
 
     metrics: dict[str, Any] = {
+        "evaluation_metrics_contract_version": (
+            EVALUATION_METRICS_CONTRACT_VERSION
+        ),
         "requested_scenarios": requested_count,
         "evaluated_scenarios": evaluated_scenarios,
         "failed_scenarios": failed_scenarios,
@@ -174,6 +214,24 @@ def build_evaluation_metrics(
         "termination_reason_counts": termination_counts,
         "task_config": dict(task_config),
     }
+
+    for field, count in component_counts.items():
+        metrics[f"{field}_count"] = count
+        metrics[f"{field}_rate"] = rate(count, evaluated_scenarios)
+
+    for field in (
+        "num_low_voltage_buses",
+        "num_high_voltage_buses",
+        "num_generator_p_violations",
+        "num_generator_q_violations",
+        "num_angle_difference_violations",
+        "total_thermal_overload_mva",
+        "total_generator_p_violation_mw",
+        "total_generator_q_violation_mvar",
+        "total_angle_difference_violation_degrees",
+        "total_voltage_violation",
+    ):
+        metrics[f"avg_{field}"] = _safe_mean(df[field])
 
     if "pf_alg" in task_config:
         metrics["pf_alg"] = int(task_config["pf_alg"])

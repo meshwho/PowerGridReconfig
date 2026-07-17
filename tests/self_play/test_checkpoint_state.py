@@ -4,8 +4,15 @@ import json
 from pathlib import Path
 
 import pytest
+import torch
 
 from grid_topology_ai.config import SelfPlayConfig
+from grid_topology_ai.contracts import (
+    CHECKPOINT_CONTRACT_VERSION,
+    EVALUATION_METRICS_CONTRACT_VERSION,
+    OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
+)
+from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
 from grid_topology_ai.self_play.checkpoint_state import (
     initialize_best_state,
     promote_candidate,
@@ -77,26 +84,51 @@ def _paths(tmp_path: Path) -> SelfPlayPaths:
 def _write_bootstrap(
     paths: SelfPlayPaths,
     *,
-    checkpoint: bytes = b"bootstrap",
+    checkpoint: str = "bootstrap",
     solve_rate: float = 0.75,
 ) -> None:
     paths.bootstrap_checkpoint.parent.mkdir(parents=True, exist_ok=True)
-    paths.bootstrap_checkpoint.write_bytes(checkpoint)
+    _write_checkpoint(paths.bootstrap_checkpoint, tag=checkpoint)
     paths.bootstrap_metrics.write_text(
-        json.dumps({"solve_rate": solve_rate}),
+        json.dumps(_metrics(solve_rate)),
         encoding="utf-8",
     )
+
+
+def _write_checkpoint(path: Path, *, tag: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    torch.save(
+        {
+            "tag": tag,
+            "checkpoint_contract_version": CHECKPOINT_CONTRACT_VERSION,
+            "physical_objective_schema_version": PHYSICAL_OBJECTIVE_SCHEMA_VERSION,
+            "outcome_value_target_contract_version": (
+                OUTCOME_VALUE_TARGET_CONTRACT_VERSION
+            ),
+        },
+        path,
+    )
+
+
+def _metrics(solve_rate: float) -> dict[str, object]:
+    return {
+        "solve_rate": solve_rate,
+        "evaluation_metrics_contract_version": EVALUATION_METRICS_CONTRACT_VERSION,
+        "physical_objective_contract": {
+            "schema_version": PHYSICAL_OBJECTIVE_SCHEMA_VERSION
+        },
+    }
 
 
 def test_initialize_best_state_copies_bootstrap_files(
     tmp_path: Path,
 ) -> None:
     paths = _paths(tmp_path)
-    _write_bootstrap(paths, checkpoint=b"checkpoint", solve_rate=0.75)
+    _write_bootstrap(paths, checkpoint="checkpoint", solve_rate=0.75)
 
     state = initialize_best_state(paths=paths)
 
-    assert paths.best_checkpoint.read_bytes() == b"checkpoint"
+    assert torch.load(paths.best_checkpoint, weights_only=False)["tag"] == "checkpoint"
     assert paths.best_metrics.is_file()
     assert state.checkpoint == paths.best_checkpoint
     assert state.metrics["solve_rate"] == 0.75
@@ -106,20 +138,18 @@ def test_initialize_best_state_does_not_overwrite_existing_best(
     tmp_path: Path,
 ) -> None:
     paths = _paths(tmp_path)
-    _write_bootstrap(paths, checkpoint=b"bootstrap", solve_rate=0.1)
+    _write_bootstrap(paths, checkpoint="bootstrap", solve_rate=0.1)
     paths.best_checkpoint.parent.mkdir(parents=True)
-    paths.best_checkpoint.write_bytes(b"existing")
+    _write_checkpoint(paths.best_checkpoint, tag="existing")
     paths.best_metrics.write_text(
-        json.dumps({"solve_rate": 0.9}),
+        json.dumps(_metrics(0.9)),
         encoding="utf-8",
     )
 
     state = initialize_best_state(paths=paths)
 
-    assert paths.best_checkpoint.read_bytes() == b"existing"
-    assert json.loads(paths.best_metrics.read_text(encoding="utf-8")) == {
-        "solve_rate": 0.9,
-    }
+    assert torch.load(paths.best_checkpoint, weights_only=False)["tag"] == "existing"
+    assert json.loads(paths.best_metrics.read_text(encoding="utf-8")) == _metrics(0.9)
     assert state.metrics["solve_rate"] == 0.9
 
 
@@ -142,24 +172,22 @@ def test_promote_candidate_replaces_canonical_best(
     paths.best_checkpoint.parent.mkdir(parents=True)
     paths.best_checkpoint.write_bytes(b"old")
     paths.best_metrics.write_text(
-        json.dumps({"solve_rate": 0.1}),
+        json.dumps(_metrics(0.1)),
         encoding="utf-8",
     )
     candidate = tmp_path / "candidate.pt"
-    candidate.write_bytes(b"candidate")
+    _write_checkpoint(candidate, tag="candidate")
 
     state = promote_candidate(
         candidate_checkpoint=candidate,
-        candidate_metrics={"solve_rate": 0.95},
+        candidate_metrics=_metrics(0.95),
         paths=paths,
     )
 
-    assert paths.best_checkpoint.read_bytes() == b"candidate"
-    assert json.loads(paths.best_metrics.read_text(encoding="utf-8")) == {
-        "solve_rate": 0.95,
-    }
+    assert torch.load(paths.best_checkpoint, weights_only=False)["tag"] == "candidate"
+    assert json.loads(paths.best_metrics.read_text(encoding="utf-8")) == _metrics(0.95)
     assert state.checkpoint == paths.best_checkpoint
-    assert state.metrics == {"solve_rate": 0.95}
+    assert state.metrics == _metrics(0.95)
 
 
 def test_promote_candidate_requires_checkpoint_file(
@@ -170,7 +198,7 @@ def test_promote_candidate_requires_checkpoint_file(
     with pytest.raises(FileNotFoundError, match="Candidate checkpoint"):
         promote_candidate(
             candidate_checkpoint=tmp_path / "missing.pt",
-            candidate_metrics={"solve_rate": 0.95},
+            candidate_metrics=_metrics(0.95),
             paths=paths,
         )
 
@@ -180,11 +208,11 @@ def test_promote_candidate_creates_parent_directories(
 ) -> None:
     paths = _paths(tmp_path)
     candidate = tmp_path / "candidate.pt"
-    candidate.write_bytes(b"candidate")
+    _write_checkpoint(candidate, tag="candidate")
 
     promote_candidate(
         candidate_checkpoint=candidate,
-        candidate_metrics={"solve_rate": 0.95},
+        candidate_metrics=_metrics(0.95),
         paths=paths,
     )
 
@@ -197,8 +225,8 @@ def test_promote_candidate_does_not_mutate_input_metrics(
 ) -> None:
     paths = _paths(tmp_path)
     candidate = tmp_path / "candidate.pt"
-    candidate.write_bytes(b"candidate")
-    metrics = {"solve_rate": 0.95}
+    _write_checkpoint(candidate, tag="candidate")
+    metrics = _metrics(0.95)
 
     promote_candidate(
         candidate_checkpoint=candidate,
@@ -206,4 +234,4 @@ def test_promote_candidate_does_not_mutate_input_metrics(
         paths=paths,
     )
 
-    assert metrics == {"solve_rate": 0.95}
+    assert metrics == _metrics(0.95)

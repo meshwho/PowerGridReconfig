@@ -7,6 +7,10 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from grid_topology_ai.self_play.example_validation import (
+    validate_example_contract_versions,
+)
+
 
 def load_json_dict(value: str) -> dict:
     if pd.isna(value):
@@ -41,6 +45,9 @@ def main() -> None:
         raise FileNotFoundError(f"Examples file not found: {examples_path}")
 
     df = pd.read_csv(examples_path)
+
+    if not df.empty:
+        validate_example_contract_versions(df, source_path=examples_path)
 
     print("=" * 100)
     print("Inspecting self-play replay buffer")

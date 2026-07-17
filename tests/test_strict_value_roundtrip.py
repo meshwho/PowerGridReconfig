@@ -7,6 +7,15 @@ import torch
 
 from grid_topology_ai.models.graph_self_play_dataset import GraphSelfPlayDataset
 from grid_topology_ai.value_targets import add_outcome_value_targets_to_rows
+from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
+
+
+def _current(rows):
+    for row in rows:
+        row["physical_objective_schema_version"] = (
+            PHYSICAL_OBJECTIVE_SCHEMA_VERSION
+        )
+    return rows
 
 def _write_fake_state(path):
     """
@@ -58,7 +67,7 @@ def test_outcome_value_target_roundtrip_from_generator_to_dataset(tmp_path):
         },
     ]
 
-    add_outcome_value_targets_to_rows(rows, gamma=0.9)
+    add_outcome_value_targets_to_rows(_current(rows), gamma=0.9)
 
     examples_csv = tmp_path / "examples.csv"
     pd.DataFrame(rows).to_csv(examples_csv, index=False)
@@ -98,7 +107,7 @@ def test_roundtrip_handoff_target_is_zero(tmp_path):
         },
     ]
 
-    add_outcome_value_targets_to_rows(rows, gamma=0.95)
+    add_outcome_value_targets_to_rows(_current(rows), gamma=0.95)
 
     examples_csv = tmp_path / "examples.csv"
     pd.DataFrame(rows).to_csv(examples_csv, index=False)
@@ -131,7 +140,7 @@ def test_roundtrip_failed_target_is_negative(tmp_path):
         },
     ]
 
-    add_outcome_value_targets_to_rows(rows, gamma=0.95)
+    add_outcome_value_targets_to_rows(_current(rows), gamma=0.95)
 
     examples_csv = tmp_path / "examples.csv"
     pd.DataFrame(rows).to_csv(examples_csv, index=False)

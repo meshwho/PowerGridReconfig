@@ -8,6 +8,13 @@ from typing import Any, NamedTuple
 import numpy as np
 import pandas as pd
 
+from grid_topology_ai.contracts import (
+    OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
+    require_exact_contract_version,
+)
+from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
+from grid_topology_ai.termination import validate_outcome_invariants
+
 REQUIRED_EXAMPLE_COLUMNS: tuple[str, ...] = (
     "state_path",
     "mcts_policy_json",
@@ -15,6 +22,8 @@ REQUIRED_EXAMPLE_COLUMNS: tuple[str, ...] = (
     "step",
     "state_id",
     "outcome_value_target",
+    "physical_objective_schema_version",
+    "outcome_value_target_contract_version",
 )
 
 _REQUIRED_STATE_ARRAYS = ("bus_features", "branch_features", "edge_index", "action_mask")
@@ -50,6 +59,8 @@ def validate_examples_dataframe(examples: pd.DataFrame, *, source_path: str | Pa
     if examples.empty:
         raise ValueError(f"Examples CSV is empty: {source}")
 
+    validate_example_contract_versions(examples, source_path=source)
+
     for column in REQUIRED_EXAMPLE_COLUMNS:
         for index, value in examples[column].items():
             if _is_missing_required_value(value):
@@ -67,6 +78,19 @@ def validate_examples_dataframe(examples: pd.DataFrame, *, source_path: str | Pa
         if step < 0:
             raise ValueError(f"step must be >= 0 at row {index}. File: {source}")
         _ = scenario_id
+        if "solved" in examples.columns and "termination_reason" in examples.columns:
+            solved = _require_bool(
+                row["solved"], column="solved", index=index, source=source
+            )
+            reason_value = (
+                None
+                if _is_missing_required_value(row["termination_reason"])
+                else row["termination_reason"]
+            )
+            validate_outcome_invariants(
+                solved=solved,
+                termination_reason=reason_value,
+            )
         _validate_outcome(row["outcome_value_target"], index=index, source=source)
         policy = _parse_policy(row["mcts_policy_json"], index=index, source=source)
         state_path = Path(str(row["state_path"]).strip())
@@ -89,6 +113,33 @@ def validate_examples_dataframe(examples: pd.DataFrame, *, source_path: str | Pa
                 raise ValueError(f"selected_action_id {selected} is invalid for action_mask at row {index}. File: {source}")
 
 
+def validate_example_contract_versions(
+    examples: pd.DataFrame,
+    *,
+    source_path: str | Path,
+) -> None:
+    source = Path(source_path)
+    for index, row in examples.iterrows():
+        require_exact_contract_version(
+            row.get("physical_objective_schema_version"),
+            expected=PHYSICAL_OBJECTIVE_SCHEMA_VERSION,
+            name="physical-objective contract",
+            source=f"{source} row {index}",
+            regeneration_command=(
+                "python -m scripts" ".self_play.generate ..."
+            ),
+        )
+        require_exact_contract_version(
+            row.get("outcome_value_target_contract_version"),
+            expected=OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
+            name="outcome/value-target contract",
+            source=f"{source} row {index}",
+            regeneration_command=(
+                "python -m scripts" ".self_play.generate ..."
+            ),
+        )
+
+
 def _is_missing_required_value(value: Any) -> bool:
     if value is None:
         return True
@@ -105,6 +156,18 @@ def _require_integer(value: Any, *, column: str, index: Any, source: Path) -> in
     if pd.isna(number) or not math.isfinite(float(number)) or not float(number).is_integer():
         raise ValueError(f"{column} must be finite integer-valued at row {index}. File: {source}")
     return int(number)
+
+
+def _require_bool(value: Any, *, column: str, index: Any, source: Path) -> bool:
+    if isinstance(value, (bool, np.bool_)):
+        return bool(value)
+    if isinstance(value, str) and value.strip().lower() in {"true", "false"}:
+        return value.strip().lower() == "true"
+    if isinstance(value, (int, np.integer)) and int(value) in {0, 1}:
+        return bool(value)
+    raise ValueError(
+        f"{column} must be boolean at row {index}. File: {source}"
+    )
 
 
 def _validate_outcome(value: Any, *, index: Any, source: Path) -> None:

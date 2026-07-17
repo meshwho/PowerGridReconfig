@@ -68,10 +68,24 @@ def _state(
         branch_ids=np.arange(num_branches, dtype=np.int64),
         branch_status=np.ones(num_branches, dtype=np.int64),
         metrics={
+            "power_flow_converged": True,
+            "all_values_finite": True,
+            "topology_connected": True,
             "max_loading_percent": float(max(loadings) if loadings else 0.0),
             "num_overloaded_branches": num_overloaded,
             "num_hard_overloaded_branches": num_hard_overloaded,
+            "total_thermal_overload_mva": float(
+                sum(max(float(x) - 100.0, 0.0) for x in loadings)
+            ),
+            "num_low_voltage_buses": 0,
+            "num_high_voltage_buses": int(total_voltage_violation > 0.0),
             "total_voltage_violation": float(total_voltage_violation),
+            "num_generator_p_violations": 0,
+            "total_generator_p_violation_mw": 0.0,
+            "num_generator_q_violations": 0,
+            "total_generator_q_violation_mvar": 0.0,
+            "num_angle_difference_violations": 0,
+            "total_angle_difference_violation_degrees": 0.0,
         },
         outaged_branch_ids=[],
     )
@@ -306,7 +320,7 @@ def test_done_remains_false_for_soft_overload_state():
     assert result.done is False
 
 
-def test_voltage_violation_without_thermal_overload_remains_done():
+def test_voltage_violation_without_thermal_overload_is_not_done_or_solved_bonus():
     reward_fn = GridFMReward(switching_penalty=1.0, solved_bonus=50.0)
     result = reward_fn.compute(
         _state(loadings=(130.0,)),
@@ -314,7 +328,8 @@ def test_voltage_violation_without_thermal_overload_remains_done():
         True,
         True,
     )
-    assert result.done is True
+    assert result.done is False
+    assert result.reward < 199.0
 
 
 def test_existing_reward_fixture_numerical_value_is_unchanged():

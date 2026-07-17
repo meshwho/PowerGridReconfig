@@ -32,6 +32,14 @@ from grid_topology_ai.training.graph_policy_value import (
     train_graph_policy_value_model,
 )
 from grid_topology_ai.value_targets import add_outcome_value_targets_to_rows
+from grid_topology_ai.contracts import (
+    OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
+    require_checkpoint_contracts,
+)
+from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
+from grid_topology_ai.self_play.example_validation import (
+    validate_example_contract_versions,
+)
 
 
 class _TeeTextIO(io.TextIOBase):
@@ -284,8 +292,9 @@ def ensure_outcome_value_targets(
     """
     Ensure examples.csv contains strict outcome_value_target.
 
-    Older generation outputs may lack outcome_value_target.
-    GraphSelfPlayDataset requires it.
+    Only freshly generated rows carrying the current physical-objective
+    provenance may receive current value targets. Legacy solved labels are not
+    scientifically upgradeable and must be regenerated.
     """
 
     examples_csv = Path(examples_csv)
@@ -298,9 +307,25 @@ def ensure_outcome_value_targets(
     if df.empty:
         raise ValueError(f"Examples CSV is empty: {examples_csv}")
 
+    if "physical_objective_schema_version" not in df.columns:
+        raise ValueError(
+            "Examples CSV predates the current physical-objective contract. "
+            "Regenerate episodes with python -m scripts.self_play.generate; "
+            "legacy solved labels cannot be upgraded in place."
+        )
+
     if "outcome_value_target" in df.columns:
+        validate_example_contract_versions(df, source_path=examples_csv)
         print(f"outcome_value_target already exists: {examples_csv}")
         return examples_csv
+
+    if "outcome_value_target_contract_version" in df.columns:
+        observed = set(df["outcome_value_target_contract_version"].tolist())
+        if observed != {OUTCOME_VALUE_TARGET_CONTRACT_VERSION}:
+            raise ValueError(
+                "Examples CSV has incompatible outcome target provenance. "
+                "Regenerate episodes and targets instead of rewriting versions."
+            )
 
     rows = df.to_dict(orient="records")
 
@@ -440,6 +465,9 @@ def run_train(
     import torch
 
     checkpoint = torch.load(candidate_checkpoint, map_location="cpu", weights_only=False)
+    if not isinstance(checkpoint, dict):
+        raise RuntimeError("Candidate checkpoint payload must be a mapping.")
+    require_checkpoint_contracts(checkpoint, source=str(candidate_checkpoint))
     if checkpoint.get("checkpoint_selection_metric") != "validation_loss":
         raise RuntimeError(
             "Self-play fine-tuning candidate must be selected by validation_loss; "

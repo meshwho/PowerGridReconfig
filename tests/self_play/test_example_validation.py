@@ -8,6 +8,8 @@ import pandas as pd
 import pytest
 
 from grid_topology_ai.self_play.example_validation import load_and_validate_examples_csv
+from grid_topology_ai.contracts import OUTCOME_VALUE_TARGET_CONTRACT_VERSION
+from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
 
 
 def write_state(path: Path, **overrides: object) -> Path:
@@ -30,6 +32,12 @@ def valid_row(state_path: Path) -> dict[str, object]:
         "step": 0,
         "state_id": "state-1",
         "outcome_value_target": 1.0,
+        "physical_objective_schema_version": PHYSICAL_OBJECTIVE_SCHEMA_VERSION,
+        "outcome_value_target_contract_version": (
+            OUTCOME_VALUE_TARGET_CONTRACT_VERSION
+        ),
+        "solved": True,
+        "termination_reason": "solved",
     }
 
 
@@ -57,13 +65,37 @@ def test_empty_file_is_rejected(tmp_path: Path) -> None:
 
 def test_header_only_csv_is_rejected(tmp_path: Path) -> None:
     csv = tmp_path / "examples.csv"
-    csv.write_text("state_path,mcts_policy_json,scenario_id,step,state_id,outcome_value_target\n", encoding="utf-8")
+    csv.write_text(
+        "state_path,mcts_policy_json,scenario_id,step,state_id,"
+        "outcome_value_target,physical_objective_schema_version,"
+        "outcome_value_target_contract_version,solved,termination_reason\n",
+        encoding="utf-8",
+    )
     assert_rejected(csv, "empty")
 
 
 def test_missing_required_columns_are_rejected(tmp_path: Path) -> None:
     csv = write_csv(tmp_path / "examples.csv", [{"state_path": "x"}])
     assert_rejected(csv, "missing required columns")
+
+
+def test_legacy_contract_version_is_rejected(tmp_path: Path) -> None:
+    row = valid_row(write_state(tmp_path / "s.npz"))
+    row["physical_objective_schema_version"] = 1
+    assert_rejected(
+        write_csv(tmp_path / "examples.csv", [row]),
+        "legacy artifacts cannot be upgraded safely",
+    )
+
+
+def test_unknown_termination_reason_is_rejected(tmp_path: Path) -> None:
+    row = valid_row(write_state(tmp_path / "s.npz"))
+    row["solved"] = False
+    row["termination_reason"] = "reason_17"
+    assert_rejected(
+        write_csv(tmp_path / "examples.csv", [row]),
+        "Unknown termination_reason",
+    )
 
 
 def test_null_required_value_is_rejected(tmp_path: Path) -> None:

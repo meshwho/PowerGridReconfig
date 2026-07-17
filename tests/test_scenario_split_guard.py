@@ -3,6 +3,8 @@ import json
 import numpy as np
 import pandas as pd
 import pytest
+from grid_topology_ai.contracts import OUTCOME_VALUE_TARGET_CONTRACT_VERSION
+from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
 
 from grid_topology_ai.models.graph_self_play_dataset import GraphSelfPlayDataset
 from grid_topology_ai.training.graph_policy_value import validate_no_scenario_overlap
@@ -27,6 +29,8 @@ def _write_examples_csv(path, state_path, scenario_ids):
                 "state_path": str(state_path),
                 "mcts_policy_json": json.dumps({"0": 1.0}),
                 "outcome_value_target": 0.0,
+                "physical_objective_schema_version": PHYSICAL_OBJECTIVE_SCHEMA_VERSION,
+                "outcome_value_target_contract_version": OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
                 "scenario_id": scenario_id,
                 "step": i,
                 "state_id": f"state_{i}",

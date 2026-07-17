@@ -14,12 +14,30 @@ from grid_topology_ai.physical_objective import (
 
 def _metrics(**overrides):
     metrics = {
+        "power_flow_converged": True,
+        "all_values_finite": True,
+        "topology_connected": True,
         "max_loading_percent": 99.0,
         "num_overloaded_branches": 0,
         "num_hard_overloaded_branches": 0,
+        "total_thermal_overload_mva": 0.0,
+        "num_low_voltage_buses": 0,
+        "num_high_voltage_buses": 0,
         "total_voltage_violation": 0.0,
+        "num_generator_p_violations": 0,
+        "total_generator_p_violation_mw": 0.0,
+        "num_generator_q_violations": 0,
+        "total_generator_q_violation_mvar": 0.0,
+        "num_angle_difference_violations": 0,
+        "total_angle_difference_violation_degrees": 0.0,
     }
     metrics.update(overrides)
+    if (
+        float(metrics["total_voltage_violation"]) > 0.0
+        and "num_low_voltage_buses" not in overrides
+        and "num_high_voltage_buses" not in overrides
+    ):
+        metrics["num_high_voltage_buses"] = 1
     return metrics
 
 
@@ -35,6 +53,24 @@ def test_contract_metadata_is_deterministic_and_json_safe():
 def test_thermal_solved_and_voltage_feasible_is_physically_secure():
     a = assess_physical_state(_metrics())
     assert a.thermal_solved and a.voltage_feasible and a.physically_secure
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("power_flow_converged", False),
+        ("all_values_finite", False),
+        ("topology_connected", False),
+        ("num_overloaded_branches", 1),
+        ("num_low_voltage_buses", 1),
+        ("num_generator_p_violations", 1),
+        ("num_generator_q_violations", 1),
+        ("num_angle_difference_violations", 1),
+    ],
+)
+def test_each_physical_component_fails_closed(field, value):
+    assessment = assess_physical_state(_metrics(**{field: value}))
+    assert assessment.physically_secure is False
 
 
 def test_thermal_solved_with_voltage_violation_is_not_physically_secure():

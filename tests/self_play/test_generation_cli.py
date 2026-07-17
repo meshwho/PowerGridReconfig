@@ -26,6 +26,11 @@ def _capture_request(
         "generate_self_play_examples",
         fake_generate_self_play_examples,
     )
+    monkeypatch.setattr(
+        generate_cli,
+        "ensure_outcome_value_targets",
+        lambda examples_csv, *, gamma: Path(examples_csv),
+    )
 
 
 def test_cli_builds_generation_request(

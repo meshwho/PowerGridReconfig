@@ -14,6 +14,10 @@ from grid_topology_ai.physical_objective import (
     HARD_OVERLOAD_LIMIT_PERCENT,
     OVERLOAD_LIMIT_PERCENT,
 )
+from grid_topology_ai.termination import (
+    TerminationReason,
+    validate_outcome_invariants,
+)
 from grid_topology_ai.data_adapter import (
     BRANCH_FEATURE_COLUMNS,
     GridFMState,
@@ -291,12 +295,16 @@ def state_security_penalty(state: GridFMState) -> float:
 def terminal_outcome_reward(
     state: GridFMState | None,
     solved: bool,
-    termination_reason: str | None,
+    termination_reason: TerminationReason | None,
     terminal_unsolved_penalty: float,
     terminal_handoff_penalty: float,
     terminal_failure_penalty: float,
     terminal_penalty_weight: float,
 ) -> float:
+    reason = validate_outcome_invariants(
+        solved=bool(solved),
+        termination_reason=termination_reason,
+    )
     if solved:
         return 0.0
 
@@ -305,12 +313,12 @@ def terminal_outcome_reward(
 
     penalty = state_security_penalty(state)
 
-    if termination_reason == "handoff_to_redispatch":
+    if reason is TerminationReason.HANDOFF_TO_REDISPATCH:
         return -float(terminal_handoff_penalty) - (
             float(terminal_penalty_weight) * penalty
         )
 
-    if termination_reason == "power_flow_failed":
+    if reason is TerminationReason.POWER_FLOW_FAILED:
         return -float(terminal_failure_penalty) - (
             float(terminal_penalty_weight) * penalty
         )

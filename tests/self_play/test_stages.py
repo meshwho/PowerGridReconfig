@@ -7,6 +7,20 @@ import pytest
 from grid_topology_ai.config import EvaluationConfig
 from grid_topology_ai.self_play import stages
 from grid_topology_ai.self_play.artifacts import save_json
+from grid_topology_ai.contracts import (
+    CHECKPOINT_CONTRACT_VERSION,
+    OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
+)
+from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
+
+
+def _checkpoint_metadata(selector: str) -> dict[str, object]:
+    return {
+        "checkpoint_selection_metric": selector,
+        "checkpoint_contract_version": CHECKPOINT_CONTRACT_VERSION,
+        "physical_objective_schema_version": PHYSICAL_OBJECTIVE_SCHEMA_VERSION,
+        "outcome_value_target_contract_version": OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
+    }
 
 
 def test_run_evaluate_resolves_config_pf_alg(tmp_path: Path, monkeypatch) -> None:
@@ -61,7 +75,7 @@ def test_run_train_passes_validation_and_seed(tmp_path: Path, monkeypatch) -> No
 
     def fake_train(request):
         captured.append(request)
-        torch.save({"checkpoint_selection_metric": "validation_loss"}, request.output_path)
+        torch.save(_checkpoint_metadata("validation_loss"), request.output_path)
         return request.output_path
 
     monkeypatch.setattr(stages, "train_graph_policy_value_model", fake_train)
@@ -89,7 +103,7 @@ def test_run_train_rejects_non_validation_selector(tmp_path: Path, monkeypatch) 
     validation_csv.write_text("scenario_id\n2\n", encoding="utf-8")
 
     def fake_train(request):
-        torch.save({"checkpoint_selection_metric": "training_loss"}, request.output_path)
+        torch.save(_checkpoint_metadata("training_loss"), request.output_path)
         return request.output_path
 
     monkeypatch.setattr(stages, "train_graph_policy_value_model", fake_train)

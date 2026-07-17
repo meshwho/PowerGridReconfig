@@ -15,6 +15,11 @@ from grid_topology_ai.physical_objective import (
     classify_stop_outcome,
 )
 from grid_topology_ai.reward import GridFMReward, GridFMRewardBreakdown
+from grid_topology_ai.termination import (
+    TerminationReason,
+    termination_reason_value,
+    validate_outcome_invariants,
+)
 
 
 @dataclass(frozen=True)
@@ -87,20 +92,41 @@ class TopologySwitchingEnv:
         self.done: bool = False
         self.solved: bool = False
         self.switched_branch_ids: list[int] = []
-        self.termination_reason: str | None = None
+        self.termination_reason: TerminationReason | None = None
 
     def reset(self, scenario_id: int) -> GridFMState:
         """
         Reset environment to one emergency scenario.
         """
 
-        self.current_state = self.adapter.build_state(int(scenario_id))
+        initial_state = self.adapter.build_state(int(scenario_id))
         self.initial_scenario_id = int(scenario_id)
         self.step_count = 0
         self.done = False
         self.solved = False
         self.switched_branch_ids = []
         self.termination_reason = None
+
+        # GridFM parquet states do not provide trustworthy convergence
+        # provenance. Establish it once with a no-op AC power flow before the
+        # state can participate in terminal classification or MCTS.
+        initial_result = self.backend.run_power_flow(
+            scenario_id=int(scenario_id),
+            switched_off_branch_id=None,
+        )
+        if not initial_result.success or initial_result.next_state is None:
+            self.current_state = initial_state
+            self.done = True
+            self.solved = False
+            self.termination_reason = TerminationReason.POWER_FLOW_FAILED
+            return self.current_state
+
+        self.current_state = initial_result.next_state
+        assessment = assess_physical_state(self.current_state.metrics)
+        if assessment.physically_secure:
+            self.done = True
+            self.solved = True
+            self.termination_reason = TerminationReason.SOLVED
 
         return self.current_state
 
@@ -222,7 +248,7 @@ class TopologySwitchingEnv:
         In a multi-step environment, do_nothing is interpreted as:
 
         1. solved
-           if all overloads are removed;
+           if the authoritative physical contract is satisfied;
 
         2. handoff_to_redispatch
            if topology switching should stop but the grid is not fully solved.
@@ -233,14 +259,14 @@ class TopologySwitchingEnv:
 
         assert self.current_state is not None
 
+        assessment = assess_physical_state(self.current_state.metrics)
         reward_breakdown = self.reward_fn.compute(
             before_state=self.current_state,
             after_state=self.current_state,
             action_is_switching=False,
-            power_flow_success=True,
+            power_flow_success=assessment.power_flow_converged,
         )
 
-        assessment = assess_physical_state(self.current_state.metrics)
         outcome = classify_stop_outcome(
             assessment,
             allow_handoff_with_hard_overloads=(
@@ -251,13 +277,18 @@ class TopologySwitchingEnv:
         self.done = True
         self.solved = outcome.solved
         self.termination_reason = outcome.termination_reason
+        validate_outcome_invariants(
+            solved=self.solved,
+            termination_reason=self.termination_reason,
+            physically_secure=assessment.physically_secure,
+        )
 
         return TopologyStepResult(
             next_state=self.current_state,
-            reward=0.0,
+            reward=float(reward_breakdown.reward),
             done=True,
             solved=self.solved,
-            power_flow_success=True,
+            power_flow_success=assessment.power_flow_converged,
             action=action,
             reward_breakdown=reward_breakdown,
             power_flow_result=None,
@@ -293,7 +324,7 @@ class TopologySwitchingEnv:
         if not power_flow_result.success or power_flow_result.next_state is None:
             self.done = True
             self.solved = False
-            self.termination_reason = "power_flow_failed"
+            self.termination_reason = TerminationReason.POWER_FLOW_FAILED
 
             return TopologyStepResult(
                 next_state=None,
@@ -308,18 +339,25 @@ class TopologySwitchingEnv:
             )
 
         self.current_state = power_flow_result.next_state
-
-        self.solved = bool(reward_breakdown.done)
+        assessment = assess_physical_state(self.current_state.metrics)
+        self.solved = assessment.physically_secure
 
         if self.solved:
             self.done = True
-            self.termination_reason = "solved"
+            self.termination_reason = TerminationReason.SOLVED
         elif self.step_count >= self.max_steps:
             self.done = True
-            self.termination_reason = "max_steps_reached"
+            self.termination_reason = TerminationReason.MAX_STEPS_REACHED
         else:
             self.done = False
             self.termination_reason = None
+
+        if self.done:
+            validate_outcome_invariants(
+                solved=self.solved,
+                termination_reason=self.termination_reason,
+                physically_secure=assessment.physically_secure,
+            )
 
         return TopologyStepResult(
             next_state=self.current_state,
@@ -345,6 +383,9 @@ class TopologySwitchingEnv:
             "done": self.done,
             "solved": self.solved,
             "termination_reason": self.termination_reason,
+            "termination_reason_value": termination_reason_value(
+                self.termination_reason
+            ),
             "switched_branch_ids": list(self.switched_branch_ids),
         }
 

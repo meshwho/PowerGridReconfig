@@ -6,6 +6,7 @@ from grid_topology_ai.data_adapter import GridFMState
 from grid_topology_ai.environment import TopologySwitchingEnv
 from grid_topology_ai.pypower_backend import GridFMPowerFlowResult
 from grid_topology_ai.reward import GridFMRewardBreakdown
+from grid_topology_ai.termination import TerminationReason
 
 
 def _state(
@@ -13,6 +14,11 @@ def _state(
     num_overloaded_branches=1,
     num_hard_overloaded_branches=0,
     max_loading_percent=110.0,
+    voltage_feasible=True,
+    generator_p_feasible=True,
+    generator_q_feasible=True,
+    angle_difference_feasible=True,
+    topology_connected=True,
 ):
     return GridFMState(
         scenario_id=scenario_id,
@@ -23,10 +29,26 @@ def _state(
         branch_ids=np.array([10], dtype=np.int64),
         branch_status=np.array([1], dtype=np.int64),
         metrics={
+            "power_flow_converged": True,
+            "all_values_finite": True,
+            "topology_connected": bool(topology_connected),
             "num_overloaded_branches": int(num_overloaded_branches),
             "num_hard_overloaded_branches": int(num_hard_overloaded_branches),
             "max_loading_percent": float(max_loading_percent),
-            "total_voltage_violation": 0.0,
+            "total_thermal_overload_mva": 0.0,
+            "num_low_voltage_buses": 0,
+            "num_high_voltage_buses": int(not voltage_feasible),
+            "total_voltage_violation": 0.0 if voltage_feasible else 0.1,
+            "num_generator_p_violations": int(not generator_p_feasible),
+            "total_generator_p_violation_mw": 0.0 if generator_p_feasible else 1.0,
+            "num_generator_q_violations": int(not generator_q_feasible),
+            "total_generator_q_violation_mvar": 0.0 if generator_q_feasible else 1.0,
+            "num_angle_difference_violations": int(
+                not angle_difference_feasible
+            ),
+            "total_angle_difference_violation_degrees": (
+                0.0 if angle_difference_feasible else 1.0
+            ),
         },
         outaged_branch_ids=[],
     )
@@ -103,9 +125,20 @@ class FakeReward:
 
 
 class FakeBackend:
-    def __init__(self, success=True, next_state=None):
+    def __init__(self, initial_state, success=True, next_state=None):
+        self.initial_state = initial_state
         self.success = bool(success)
         self.next_state = next_state
+
+    def run_power_flow(self, scenario_id, switched_off_branch_id=None):
+        return GridFMPowerFlowResult(
+            success=True,
+            scenario_id=int(scenario_id),
+            switched_off_branch_id=switched_off_branch_id,
+            next_state=self.initial_state,
+            raw_result=None,
+            message="fake initial power flow",
+        )
 
     def run_power_flow_from_state(
         self,
@@ -133,6 +166,7 @@ def _env(
     return TopologySwitchingEnv(
         adapter=FakeAdapter(initial_state),
         backend=FakeBackend(
+            initial_state=initial_state,
             success=backend_success,
             next_state=next_state,
         ),
@@ -143,7 +177,7 @@ def _env(
     )
 
 
-def test_do_nothing_solved_terminates_as_solved():
+def test_reset_of_secure_state_terminates_as_solved():
     state = _state(
         num_overloaded_branches=0,
         num_hard_overloaded_branches=0,
@@ -157,16 +191,9 @@ def test_do_nothing_solved_terminates_as_solved():
 
     env.reset(scenario_id=1)
 
-    result = env.step(
-        GridFMAction(
-            action_id=0,
-            action_type="do_nothing",
-        )
-    )
-
-    assert result.done is True
-    assert result.solved is True
-    assert result.info["termination_reason"] == "solved"
+    assert env.done is True
+    assert env.solved is True
+    assert env.termination_reason is TerminationReason.SOLVED
 
 
 def test_do_nothing_handoff_without_hard_overload():
@@ -318,6 +345,28 @@ def test_switch_off_branch_solved_terminates_as_solved():
     assert result.solved is True
     assert result.power_flow_success is True
     assert result.info["termination_reason"] == "solved"
+    assert isinstance(result.info["termination_reason"], TerminationReason)
+
+
+def test_thermal_safe_voltage_violation_continues_without_solved_bonus_semantics():
+    before_state = _state(num_overloaded_branches=1, max_loading_percent=110.0)
+    after_state = _state(
+        num_overloaded_branches=0,
+        max_loading_percent=90.0,
+        voltage_feasible=False,
+    )
+    env = _env(
+        initial_state=before_state,
+        reward_done=True,
+        backend_success=True,
+        next_state=after_state,
+        max_steps=5,
+    )
+    env.reset(scenario_id=1)
+    result = env.step(1)
+    assert result.done is False
+    assert result.solved is False
+    assert env.termination_reason is None
 
 
 def test_switch_off_branch_max_steps_reached():
@@ -371,13 +420,6 @@ def test_step_after_done_requires_reset():
     )
 
     env.reset(scenario_id=1)
-
-    env.step(
-        GridFMAction(
-            action_id=0,
-            action_type="do_nothing",
-        )
-    )
 
     with pytest.raises(RuntimeError, match="Episode is already done"):
         env.step(

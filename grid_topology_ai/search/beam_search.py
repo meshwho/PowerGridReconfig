@@ -8,6 +8,7 @@ from grid_topology_ai.search.continuation_gate import topology_penalty
 from grid_topology_ai.action_space import GridFMAction
 from grid_topology_ai.data_adapter import BRANCH_FEATURE_COLUMNS
 from grid_topology_ai.environment import TopologyStepResult, TopologySwitchingEnv
+from grid_topology_ai.termination import TerminationReason
 
 
 @dataclass(frozen=True)
@@ -57,7 +58,7 @@ class BeamSearchNode:
     depth: int = 0
     done: bool = False
     solved: bool = False
-    termination_reason: str | None = None
+    termination_reason: TerminationReason | None = None
     last_step_result: TopologyStepResult | None = None
 
     def short_sequence(self) -> str:
@@ -128,9 +129,9 @@ class BeamSearchPlanner:
             discounted_return=0.0,
             undiscounted_return=0.0,
             depth=0,
-            done=False,
-            solved=False,
-            termination_reason=None,
+            done=bool(root_env.done),
+            solved=bool(root_env.solved),
+            termination_reason=root_env.termination_reason,
             last_step_result=None,
         )
 

@@ -12,6 +12,11 @@ from grid_topology_ai.config import (
 )
 from grid_topology_ai.self_play.artifacts import save_json
 from grid_topology_ai.self_play import stages
+from grid_topology_ai.contracts import (
+    CHECKPOINT_CONTRACT_VERSION,
+    OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
+)
+from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
 
 
 def test_run_generate_uses_generation_request(
@@ -25,7 +30,12 @@ def test_run_generate_uses_generation_request(
         request.output_dir.mkdir(parents=True, exist_ok=True)
         examples_csv = request.output_dir / "examples.csv"
         examples_csv.write_text(
-            "scenario_id,outcome_value_target\n1,0.5\n2,0.4\n",
+            "scenario_id,outcome_value_target,physical_objective_schema_version,"
+            "outcome_value_target_contract_version\n"
+            f"1,0.5,{PHYSICAL_OBJECTIVE_SCHEMA_VERSION},"
+            f"{OUTCOME_VALUE_TARGET_CONTRACT_VERSION}\n"
+            f"2,0.4,{PHYSICAL_OBJECTIVE_SCHEMA_VERSION},"
+            f"{OUTCOME_VALUE_TARGET_CONTRACT_VERSION}\n",
             encoding="utf-8",
         )
         print("generated examples")
@@ -74,7 +84,15 @@ def test_run_train_uses_training_request(
         captured.append(request)
         request.output_path.parent.mkdir(parents=True, exist_ok=True)
         import torch
-        torch.save({"checkpoint_selection_metric": "validation_loss"}, request.output_path)
+        torch.save(
+            {
+                "checkpoint_selection_metric": "validation_loss",
+                "checkpoint_contract_version": CHECKPOINT_CONTRACT_VERSION,
+                "physical_objective_schema_version": PHYSICAL_OBJECTIVE_SCHEMA_VERSION,
+                "outcome_value_target_contract_version": OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
+            },
+            request.output_path,
+        )
         print("trained model")
         return request.output_path
 

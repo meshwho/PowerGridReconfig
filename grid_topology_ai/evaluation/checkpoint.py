@@ -24,6 +24,11 @@ from grid_topology_ai.evaluation.metrics import (
 )
 from grid_topology_ai.physical_objective import assess_physical_state
 from grid_topology_ai.self_play.artifacts import save_json
+from grid_topology_ai.termination import (
+    TerminationReason,
+    termination_reason_value,
+    validate_outcome_invariants,
+)
 
 GridFMActionSpace = None
 GridFMAdapter = None
@@ -355,33 +360,76 @@ def run_episode(
         final_hard = -1
         final_outaged = -1
         thermal_solved = False
+        thermal_feasible = False
+        power_flow_converged = False
+        all_values_finite = False
+        topology_connected = False
         hard_overload_free = False
         voltage_feasible = False
+        generator_p_feasible = False
+        generator_q_feasible = False
+        angle_difference_feasible = False
         physically_secure = False
+        num_generator_p_violations = -1
+        num_generator_q_violations = -1
+        num_angle_difference_violations = -1
+        total_generator_p_violation_mw = float("nan")
+        total_generator_q_violation_mvar = float("nan")
+        total_angle_difference_violation_degrees = float("nan")
+        total_voltage_violation = float("nan")
+        num_low_voltage_buses = -1
+        num_high_voltage_buses = -1
+        total_thermal_overload_mva = float("nan")
         safe_handoff = False
-        unsafe_terminal_state = False
+        unsafe_terminal_state = bool(env.done)
     else:
         assessment = assess_physical_state(final_state.metrics)
-        if bool(env.solved) != assessment.thermal_solved:
-            raise RuntimeError(
-                f"Scenario {scenario_id} solved contract mismatch: "
-                f"env.solved={bool(env.solved)} "
-                f"thermal_solved={assessment.thermal_solved}"
-            )
+        validate_outcome_invariants(
+            solved=bool(env.solved),
+            termination_reason=env.termination_reason,
+            physically_secure=assessment.physically_secure,
+        )
         final_max_loading = float(final_state.metrics["max_loading_percent"])
         final_overloaded = int(final_state.metrics["num_overloaded_branches"])
         final_hard = int(final_state.metrics["num_hard_overloaded_branches"])
         final_outaged = int(final_state.metrics["num_outaged_branches"])
         thermal_solved = assessment.thermal_solved
+        thermal_feasible = assessment.thermal_feasible
+        power_flow_converged = assessment.power_flow_converged
+        all_values_finite = assessment.all_values_finite
+        topology_connected = assessment.topology_connected
         hard_overload_free = assessment.hard_overload_free
         voltage_feasible = assessment.voltage_feasible
+        generator_p_feasible = assessment.generator_p_feasible
+        generator_q_feasible = assessment.generator_q_feasible
+        angle_difference_feasible = assessment.angle_difference_feasible
         physically_secure = assessment.physically_secure
-        safe_handoff = (
-            env.termination_reason == "handoff_to_redispatch"
-            and assessment.hard_overload_free
-            and not assessment.thermal_solved
+        num_generator_p_violations = assessment.num_generator_p_violations
+        num_generator_q_violations = assessment.num_generator_q_violations
+        num_angle_difference_violations = (
+            assessment.num_angle_difference_violations
         )
-        unsafe_terminal_state = not assessment.hard_overload_free
+        total_generator_p_violation_mw = (
+            assessment.total_generator_p_violation_mw
+        )
+        total_generator_q_violation_mvar = (
+            assessment.total_generator_q_violation_mvar
+        )
+        total_angle_difference_violation_degrees = (
+            assessment.total_angle_difference_violation_degrees
+        )
+        total_voltage_violation = assessment.total_voltage_violation
+        num_low_voltage_buses = assessment.num_low_voltage_buses
+        num_high_voltage_buses = assessment.num_high_voltage_buses
+        total_thermal_overload_mva = assessment.total_thermal_overload_mva
+        safe_handoff = (
+            env.termination_reason is TerminationReason.HANDOFF_TO_REDISPATCH
+            and assessment.hard_overload_free
+            and not assessment.physically_secure
+        )
+        unsafe_terminal_state = bool(
+            env.done and not assessment.physically_secure and not safe_handoff
+        )
 
     row = {
         "scenario_id": int(scenario_id),
@@ -394,15 +442,34 @@ def run_episode(
         "discounted_return": float(discounted_return),
         "done": bool(env.done),
         "solved": bool(env.solved),
-        "termination_reason": env.termination_reason,
+        "termination_reason": termination_reason_value(env.termination_reason),
         "final_max_loading_percent": final_max_loading,
         "final_num_overloaded_branches": final_overloaded,
         "final_num_hard_overloaded_branches": final_hard,
         "final_num_outaged_branches": final_outaged,
         "thermal_solved": thermal_solved,
+        "thermal_feasible": thermal_feasible,
+        "power_flow_converged": power_flow_converged,
+        "all_values_finite": all_values_finite,
+        "topology_connected": topology_connected,
         "hard_overload_free": hard_overload_free,
         "voltage_feasible": voltage_feasible,
+        "generator_p_feasible": generator_p_feasible,
+        "generator_q_feasible": generator_q_feasible,
+        "angle_difference_feasible": angle_difference_feasible,
         "physically_secure": physically_secure,
+        "num_generator_p_violations": num_generator_p_violations,
+        "num_generator_q_violations": num_generator_q_violations,
+        "num_angle_difference_violations": num_angle_difference_violations,
+        "total_generator_p_violation_mw": total_generator_p_violation_mw,
+        "total_generator_q_violation_mvar": total_generator_q_violation_mvar,
+        "total_angle_difference_violation_degrees": (
+            total_angle_difference_violation_degrees
+        ),
+        "total_voltage_violation": total_voltage_violation,
+        "num_low_voltage_buses": num_low_voltage_buses,
+        "num_high_voltage_buses": num_high_voltage_buses,
+        "total_thermal_overload_mva": total_thermal_overload_mva,
         "safe_handoff": safe_handoff,
         "unsafe_terminal_state": unsafe_terminal_state,
     }

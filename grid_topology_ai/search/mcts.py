@@ -72,7 +72,7 @@ class MCTSConfig:
     min_switch_prior_score: float = 1.0
     # Stop policy:
     #   "never"             - never include stop action;
-    #   "solved_only"       - include stop only when no overloads remain;
+    #   "solved_only"       - include stop only when physically secure;
     #   "no_hard_overloads" - include stop when hard overloads are removed;
     #   "always"            - always include stop.
     #

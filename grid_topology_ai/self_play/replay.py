@@ -7,6 +7,12 @@ from pathlib import Path
 from typing import Any
 from grid_topology_ai.config import ReplayBufferConfig
 from grid_topology_ai.self_play.example_validation import load_and_validate_examples_csv
+from grid_topology_ai.contracts import (
+    OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
+    REPLAY_BUFFER_SCHEMA_VERSION,
+    require_exact_contract_version,
+)
+from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
 
 import numpy as np
 import pandas as pd
@@ -96,6 +102,23 @@ def _load_examples_csv(path: str | Path) -> list[dict[str, Any]]:
     ]
 
 
+def _require_replay_row_contracts(row: dict[str, Any], *, source: str) -> None:
+    require_exact_contract_version(
+        row.get("physical_objective_schema_version"),
+        expected=PHYSICAL_OBJECTIVE_SCHEMA_VERSION,
+        name="physical-objective contract",
+        source=source,
+        regeneration_command="python -m scripts.self_play.generate ...",
+    )
+    require_exact_contract_version(
+        row.get("outcome_value_target_contract_version"),
+        expected=OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
+        name="outcome/value-target contract",
+        source=source,
+        regeneration_command="python -m scripts.self_play.generate ...",
+    )
+
+
 def _save_manifest(
     manifest: dict[str, Any],
     path: str | Path,
@@ -161,6 +184,31 @@ class RollingReplayBuffer:
             self.buffer = []
             return
 
+        require_exact_contract_version(
+            manifest.get("schema_version"),
+            expected=REPLAY_BUFFER_SCHEMA_VERSION,
+            name="replay-buffer schema",
+            source=str(self.manifest_path),
+            regeneration_command=(
+                "remove or archive the legacy replay directory, then run "
+                "python -m scripts.self_play.loop ..."
+            ),
+        )
+        require_exact_contract_version(
+            manifest.get("physical_objective_schema_version"),
+            expected=PHYSICAL_OBJECTIVE_SCHEMA_VERSION,
+            name="physical-objective contract",
+            source=str(self.manifest_path),
+            regeneration_command="python -m scripts.self_play.generate ...",
+        )
+        require_exact_contract_version(
+            manifest.get("outcome_value_target_contract_version"),
+            expected=OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
+            name="outcome/value-target contract",
+            source=str(self.manifest_path),
+            regeneration_command="python -m scripts.self_play.generate ...",
+        )
+
         files = manifest.get("files", [])
 
         if not isinstance(files, list):
@@ -183,6 +231,11 @@ class RollingReplayBuffer:
             rows = _read_jsonl_gz(
                 self.save_dir / str(relative_path)
             )
+            for row_index, row in enumerate(rows):
+                _require_replay_row_contracts(
+                    row,
+                    source=f"{relative_path} row {row_index}",
+                )
             selected_chunks.append(rows)
             selected_count += len(rows)
 
@@ -230,6 +283,10 @@ class RollingReplayBuffer:
 
         for row in examples:
             item = _row_to_json_safe_dict(dict(row))
+            _require_replay_row_contracts(
+                item,
+                source=f"replay iteration {iteration}",
+            )
             item["replay_iteration"] = int(iteration)
             normalized.append(item)
 
@@ -280,6 +337,10 @@ class RollingReplayBuffer:
 
         for row in examples:
             item = _row_to_json_safe_dict(dict(row))
+            _require_replay_row_contracts(
+                item,
+                source=f"replay iteration {iteration}",
+            )
             item["replay_iteration"] = iteration
             rows.append(item)
 
@@ -321,7 +382,13 @@ class RollingReplayBuffer:
         total_on_disk = int(sum(item["n"] for item in files))
 
         manifest = {
-            "schema_version": 1,
+            "schema_version": REPLAY_BUFFER_SCHEMA_VERSION,
+            "physical_objective_schema_version": (
+                PHYSICAL_OBJECTIVE_SCHEMA_VERSION
+            ),
+            "outcome_value_target_contract_version": (
+                OUTCOME_VALUE_TARGET_CONTRACT_VERSION
+            ),
             "config": asdict(self.config),
             "total_examples_on_disk": total_on_disk,
             "total_examples_loaded": int(len(self.buffer)),

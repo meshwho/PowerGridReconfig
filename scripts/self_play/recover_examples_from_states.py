@@ -9,6 +9,11 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from grid_topology_ai.contracts import require_exact_contract_version
+from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
+from grid_topology_ai.termination import TerminationReason
+from grid_topology_ai.value_targets import add_outcome_value_targets_to_rows
+
 
 STATE_RE = re.compile(r"impact_teacher_scenario_(\d+)_step_(\d+)\.npz$")
 
@@ -48,6 +53,14 @@ def recover_examples(states_dir: Path, gamma: float) -> pd.DataFrame:
             print(f"WARNING: failed to read {path}: {exc}")
             continue
 
+        require_exact_contract_version(
+            meta.get("physical_objective_schema_version"),
+            expected=PHYSICAL_OBJECTIVE_SCHEMA_VERSION,
+            name="physical-objective contract",
+            source=str(path),
+            regeneration_command="python -m scripts.self_play.generate ...",
+        )
+
         scenario_id = int(meta.get("scenario_id", scenario_id_from_name))
         step = int(meta.get("step", step_from_name))
 
@@ -64,15 +77,19 @@ def recover_examples(states_dir: Path, gamma: float) -> pd.DataFrame:
         # This is approximate for recovered CSV.
         # Training mainly needs state_path, selected_action_id, policy json and returns.
         if selected_action_id == 0:
-            termination_reason = "handoff_to_redispatch_teacher"
+            termination_reason = (
+                TerminationReason.HANDOFF_TO_REDISPATCH_TEACHER.value
+            )
             solved = False
             done = True
         else:
             handoff_added = bool(meta.get("handoff_added", False))
             if handoff_added:
-                termination_reason = "handoff_to_redispatch_teacher"
+                termination_reason = (
+                    TerminationReason.HANDOFF_TO_REDISPATCH_TEACHER.value
+                )
             else:
-                termination_reason = "max_steps_reached"
+                termination_reason = TerminationReason.MAX_STEPS_REACHED.value
 
             solved = False
             done = False
@@ -91,6 +108,9 @@ def recover_examples(states_dir: Path, gamma: float) -> pd.DataFrame:
                 "solved": bool(solved),
                 "done": bool(done),
                 "termination_reason": termination_reason,
+                "physical_objective_schema_version": (
+                    PHYSICAL_OBJECTIVE_SCHEMA_VERSION
+                ),
                 "visit_counts_json": make_visit_counts_json(selected_action_id),
                 "mcts_policy_json": make_policy_json(selected_action_id),
                 "teacher_decision_reason": teacher_reason,
@@ -124,6 +144,14 @@ def recover_examples(states_dir: Path, gamma: float) -> pd.DataFrame:
 
     recovered = pd.concat(recovered_parts, ignore_index=True)
     recovered = recovered.sort_values(["scenario_id", "step"]).reset_index(drop=True)
+
+    rows = recovered.to_dict(orient="records")
+    add_outcome_value_targets_to_rows(
+        rows=rows,
+        gamma=float(gamma),
+        group_keys=("scenario_id",),
+    )
+    recovered = pd.DataFrame(rows)
 
     return recovered
 

@@ -8,6 +8,7 @@ from grid_topology_ai.self_play.generation import (
     GenerationRequest,
     generate_self_play_examples,
 )
+from grid_topology_ai.self_play.stages import ensure_outcome_value_targets
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -259,6 +260,7 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     examples_csv = generate_self_play_examples(request)
+    ensure_outcome_value_targets(examples_csv, gamma=config.gamma)
     print(examples_csv)
     return 0
 

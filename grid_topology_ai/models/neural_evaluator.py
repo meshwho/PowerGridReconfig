@@ -5,6 +5,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
+from grid_topology_ai.contracts import require_checkpoint_contracts
 from grid_topology_ai.data_adapter import GridFMState
 from grid_topology_ai.models.graph_policy_value_net import GraphPolicyValueNet
 from grid_topology_ai.models.self_play_dataset import SelfPlayDataset
@@ -50,8 +51,15 @@ class NeuralPolicyValueEvaluator:
             map_location=self.device,
             weights_only=False,
         )
+        if not isinstance(self.checkpoint, dict):
+            raise ValueError(
+                f"Checkpoint payload must be a mapping: {self.checkpoint_path}"
+            )
+        require_checkpoint_contracts(
+            self.checkpoint,
+            source=str(self.checkpoint_path),
+        )
 
-        # Old MLP checkpoints did not have model_type.
         self.model_type = str(
             self.checkpoint.get("model_type", "simple_policy_value_net")
         )

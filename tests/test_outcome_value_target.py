@@ -1,6 +1,15 @@
 import math
 import pytest
 from grid_topology_ai.value_targets import add_outcome_value_targets_to_rows
+from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
+
+
+def _current(rows):
+    for row in rows:
+        row["physical_objective_schema_version"] = (
+            PHYSICAL_OBJECTIVE_SCHEMA_VERSION
+        )
+    return rows
 
 
 def test_outcome_value_target_solved_episode():
@@ -28,7 +37,7 @@ def test_outcome_value_target_solved_episode():
         },
     ]
 
-    add_outcome_value_targets_to_rows(rows, gamma=0.99)
+    add_outcome_value_targets_to_rows(_current(rows), gamma=0.99)
 
     assert rows[0]["outcome_class"] == "solved"
     assert math.isclose(rows[0]["outcome_value_target"], 0.99**3)
@@ -54,9 +63,9 @@ def test_outcome_value_target_handoff_episode():
         },
     ]
 
-    add_outcome_value_targets_to_rows(rows, gamma=0.95)
+    add_outcome_value_targets_to_rows(_current(rows), gamma=0.95)
 
-    assert rows[0]["outcome_class"] == "handoff_to_redispatch_teacher"
+    assert rows[0]["outcome_class"] == "handoff_to_redispatch"
     assert rows[0]["outcome_value_target"] == 0.0
     assert rows[1]["outcome_value_target"] == 0.0
 
@@ -79,7 +88,7 @@ def test_outcome_value_target_max_steps_episode():
         },
     ]
 
-    add_outcome_value_targets_to_rows(rows, gamma=0.95)
+    add_outcome_value_targets_to_rows(_current(rows), gamma=0.95)
 
     assert rows[0]["outcome_class"] == "max_steps_reached"
     assert math.isclose(rows[0]["outcome_value_target"], -(0.95**2))
@@ -97,7 +106,7 @@ def test_outcome_value_target_teacher_depth_limit_is_negative():
         },
     ]
 
-    add_outcome_value_targets_to_rows(rows, gamma=0.99)
+    add_outcome_value_targets_to_rows(_current(rows), gamma=0.99)
 
     assert rows[0]["outcome_class"] == "teacher_depth_limit"
     assert rows[0]["outcome_steps_to_terminal"] == 1
@@ -116,7 +125,23 @@ def test_terminal_value_from_outcome_public_helper():
     assert terminal_value_from_outcome(
         solved=False,
         termination_reason="handoff_to_redispatch",
-    ) == (0.0, "handoff_to_redispatch_teacher")
+    ) == (0.0, "handoff_to_redispatch")
+
+
+def test_contradictory_solved_and_reason_are_rejected():
+    with pytest.raises(ValueError, match="Contradictory outcome"):
+        terminal_value_from_outcome(
+            solved=False,
+            termination_reason="solved",
+        )
+
+
+def test_unknown_reason_is_rejected():
+    with pytest.raises(ValueError, match="Unknown termination_reason"):
+        terminal_value_from_outcome(
+            solved=False,
+            termination_reason="reason_17",
+        )
 
     assert terminal_value_from_outcome(
         solved=False,

@@ -11,6 +11,7 @@ from grid_topology_ai.config import EvaluationConfig
 from grid_topology_ai.evaluation import checkpoint as evaluation
 from grid_topology_ai.evaluation.checkpoint import EvaluationRequest
 from grid_topology_ai.evaluation.metrics import compute_safety_score
+from grid_topology_ai.termination import TerminationReason
 
 
 class _FakeReward:
@@ -75,9 +76,26 @@ def _row(scenario_id: int, *, solved: bool = True) -> dict[str, object]:
         "final_num_hard_overloaded_branches": 0,
         "final_num_outaged_branches": 0,
         "thermal_solved": bool(solved),
+        "thermal_feasible": bool(solved),
+        "power_flow_converged": bool(solved),
+        "all_values_finite": bool(solved),
+        "topology_connected": bool(solved),
         "hard_overload_free": bool(solved),
         "voltage_feasible": bool(solved),
+        "generator_p_feasible": bool(solved),
+        "generator_q_feasible": bool(solved),
+        "angle_difference_feasible": bool(solved),
         "physically_secure": bool(solved),
+        "num_generator_p_violations": 0 if solved else 1,
+        "num_generator_q_violations": 0 if solved else 1,
+        "num_angle_difference_violations": 0 if solved else 1,
+        "total_generator_p_violation_mw": 0.0,
+        "total_generator_q_violation_mvar": 0.0,
+        "total_angle_difference_violation_degrees": 0.0,
+        "total_voltage_violation": 0.0,
+        "num_low_voltage_buses": 0 if solved else 1,
+        "num_high_voltage_buses": 0,
+        "total_thermal_overload_mva": 0.0,
         "safe_handoff": False,
         "unsafe_terminal_state": not bool(solved),
     }
@@ -495,6 +513,7 @@ def test_difficulty_metrics_are_preserved(
 def test_safety_score_formula_is_unchanged() -> None:
     row = {
         "solved": False,
+        "physically_secure": False,
         "termination_reason": "max_steps_reached",
         "final_max_loading_percent": 130.0,
         "final_num_overloaded_branches": 2,
@@ -517,18 +536,30 @@ def test_request_validation_rejects_invalid_stop_policy(tmp_path: Path) -> None:
 
 class _FakeFinalState:
     metrics = {
+        "power_flow_converged": True,
+        "all_values_finite": True,
+        "topology_connected": True,
         "max_loading_percent": 99.0,
         "num_overloaded_branches": 0,
         "num_hard_overloaded_branches": 0,
+        "total_thermal_overload_mva": 0.0,
         "num_outaged_branches": 0,
+        "num_low_voltage_buses": 0,
+        "num_high_voltage_buses": 0,
         "total_voltage_violation": 0.0,
+        "num_generator_p_violations": 0,
+        "total_generator_p_violation_mw": 0.0,
+        "num_generator_q_violations": 0,
+        "total_generator_q_violation_mvar": 0.0,
+        "num_angle_difference_violations": 0,
+        "total_angle_difference_violation_degrees": 0.0,
     }
 
 
 class _DoneFakeEnv:
     solved = True
     done = True
-    termination_reason = "solved"
+    termination_reason = TerminationReason.SOLVED
     current_state = _FakeFinalState()
 
     def __init__(self, **kwargs: object) -> None:
@@ -561,6 +592,7 @@ def test_run_episode_adds_physical_row_fields_directly(
     )
 
     assert row["thermal_solved"] is True
+    assert row["thermal_feasible"] is True
     assert row["hard_overload_free"] is True
     assert row["voltage_feasible"] is True
     assert row["physically_secure"] is True
@@ -570,7 +602,7 @@ def test_run_episode_adds_physical_row_fields_directly(
 
 class _MismatchDoneFakeEnv(_DoneFakeEnv):
     solved = False
-    termination_reason = "max_steps_reached"
+    termination_reason = TerminationReason.MAX_STEPS_REACHED
 
 
 def test_run_episode_rejects_solved_contract_mismatch(
@@ -579,7 +611,7 @@ def test_run_episode_rejects_solved_contract_mismatch(
     monkeypatch.setattr(evaluation, "_ensure_runtime_dependencies", lambda: None)
     monkeypatch.setattr(evaluation, "TopologySwitchingEnv", _MismatchDoneFakeEnv)
 
-    with pytest.raises(RuntimeError, match="Scenario 8 solved contract mismatch"):
+    with pytest.raises(ValueError, match="solved must equal physically_secure"):
         evaluation.run_episode(
             scenario_id=8,
             adapter=object(),

@@ -11,6 +11,9 @@ from grid_topology_ai.physical_objective import (
     HARD_OVERLOAD_LIMIT_PERCENT,
     OVERLOAD_LIMIT_PERCENT,
 )
+from grid_topology_ai.physical_constraints import (
+    calculate_physical_metrics_from_frames,
+)
 
 
 BUS_FEATURE_COLUMNS = [
@@ -251,14 +254,31 @@ class GridFMAdapter:
             *BRANCH_FEATURE_COLUMNS,
         }
 
+        required_gen = {
+            "scenario",
+            "idx",
+            "bus",
+            "p_mw",
+            "q_mvar",
+            "min_p_mw",
+            "max_p_mw",
+            "min_q_mvar",
+            "max_q_mvar",
+            "in_service",
+        }
+
         missing_bus = required_bus - set(self.bus_df.columns)
         missing_branch = required_branch - set(self.branch_df.columns)
+        missing_gen = required_gen - set(self.gen_df.columns)
 
         if missing_bus:
             raise ValueError(f"Missing bus columns: {sorted(missing_bus)}")
 
         if missing_branch:
             raise ValueError(f"Missing branch columns: {sorted(missing_branch)}")
+
+        if missing_gen:
+            raise ValueError(f"Missing generator columns: {sorted(missing_gen)}")
 
     @staticmethod
     def _add_branch_loading(branch_df: pd.DataFrame) -> pd.DataFrame:
@@ -405,6 +425,7 @@ class GridFMAdapter:
 
         bus = self.bus_df[self.bus_df["scenario"] == scenario_id].copy()
         branch = self.branch_df[self.branch_df["scenario"] == scenario_id].copy()
+        gen = self.gen_df[self.gen_df["scenario"] == scenario_id].copy()
 
         if bus.empty:
             raise ValueError(f"Scenario {scenario_id} not found in bus_data.")
@@ -412,8 +433,12 @@ class GridFMAdapter:
         if branch.empty:
             raise ValueError(f"Scenario {scenario_id} not found in branch_data.")
 
+        if gen.empty:
+            raise ValueError(f"Scenario {scenario_id} not found in gen_data.")
+
         bus = bus.sort_values("bus")
         branch = branch.sort_values("idx")
+        gen = gen.sort_values("idx")
 
         bus_features = bus[BUS_FEATURE_COLUMNS].to_numpy(dtype=np.float32)
         branch_features = branch[BRANCH_FEATURE_COLUMNS].to_numpy(dtype=np.float32)
@@ -426,41 +451,28 @@ class GridFMAdapter:
         in_service = branch[branch["br_status"] > 0]
         outaged = branch[branch["br_status"] <= 0]
 
-        overloaded = in_service[in_service["loading_percent"] > OVERLOAD_LIMIT_PERCENT]
-        hard_overloaded = in_service[in_service["loading_percent"] > HARD_OVERLOAD_LIMIT_PERCENT]
-
-        voltage_metrics = compute_voltage_violation_metrics(bus)
-
-        low_voltage_violation = np.maximum(
-            bus["min_vm_pu"].to_numpy(dtype=float) - bus["Vm"].to_numpy(dtype=float),
-            0.0,
-        )
-
-        high_voltage_violation = np.maximum(
-            bus["Vm"].to_numpy(dtype=float) - bus["max_vm_pu"].to_numpy(dtype=float),
-            0.0,
-        )
-
-        total_low_voltage_violation = float(np.sum(low_voltage_violation))
-        total_high_voltage_violation = float(np.sum(high_voltage_violation))
-        total_voltage_violation = (
-                total_low_voltage_violation + total_high_voltage_violation
+        physical_metrics = calculate_physical_metrics_from_frames(
+            bus_df=bus,
+            branch_df=branch,
+            gen_df=gen,
+            # GridFM parquet rows do not carry reliable AC-PF convergence
+            # provenance. The environment obtains it with an explicit no-op PF.
+            power_flow_converged=False,
         )
 
         metrics = {
             "num_buses": int(len(bus)),
             "num_branches": int(len(branch)),
-            "max_loading_percent": float(in_service["loading_percent"].max()),
-            "mean_loading_percent": float(in_service["loading_percent"].mean()),
-            "num_overloaded_branches": int(len(overloaded)),
-            "num_hard_overloaded_branches": int(len(hard_overloaded)),
+            "num_generators": int(len(gen)),
+            "mean_loading_percent": (
+                float(in_service["loading_percent"].mean())
+                if len(in_service)
+                else 0.0
+            ),
             "min_vm_pu": float(bus["Vm"].min()),
             "max_vm_pu": float(bus["Vm"].max()),
-            **voltage_metrics,
             "num_outaged_branches": int(len(outaged)),
-            "total_low_voltage_violation": total_low_voltage_violation,
-            "total_high_voltage_violation": total_high_voltage_violation,
-            "total_voltage_violation": total_voltage_violation,
+            **physical_metrics,
         }
 
         return GridFMState(

@@ -6,6 +6,8 @@ from pathlib import Path
 import pytest
 
 from grid_topology_ai.config import SelfPlayConfig
+from grid_topology_ai.contracts import EVALUATION_METRICS_CONTRACT_VERSION
+from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
 from grid_topology_ai.self_play import pipeline as pipeline_module
 from grid_topology_ai.self_play.iteration import IterationResult
 from grid_topology_ai.self_play.paths import SelfPlayPaths
@@ -62,6 +64,18 @@ class _RollingReplayBuffer:
         return 0
 
 
+def _metrics(solve_rate: float) -> dict[str, object]:
+    return {
+        "solve_rate": solve_rate,
+        "pf_alg": 3,
+        "task_config": {"pf_alg": 3},
+        "evaluation_metrics_contract_version": EVALUATION_METRICS_CONTRACT_VERSION,
+        "physical_objective_contract": {
+            "schema_version": PHYSICAL_OBJECTIVE_SCHEMA_VERSION
+        },
+    }
+
+
 def _patch_basics(monkeypatch, tmp_path: Path, calls: list[str] | None = None, *, start: int = 1, completed: tuple[int, ...] = ()) -> None:
     def note(name: str) -> None:
         if calls is not None:
@@ -70,7 +84,7 @@ def _patch_basics(monkeypatch, tmp_path: Path, calls: list[str] | None = None, *
     monkeypatch.setattr(pipeline_module, "resolve_run_state", lambda **kwargs: (note("resolve_run_state") or _RunState(completed, start)))
     monkeypatch.setattr(pipeline_module, "save_yaml", lambda **kwargs: note("save_yaml"))
     monkeypatch.setattr(pipeline_module, "validate_resume_artifacts", lambda paths: note("validate_resume_artifacts"))
-    monkeypatch.setattr(pipeline_module, "initialize_best_state", lambda **kwargs: (note("initialize_best_state") or _BestState(tmp_path / "best.pt", {"solve_rate": 0.1, "pf_alg": 3, "task_config": {"pf_alg": 3}})))
+    monkeypatch.setattr(pipeline_module, "initialize_best_state", lambda **kwargs: (note("initialize_best_state") or _BestState(tmp_path / "best.pt", _metrics(0.1))))
     monkeypatch.setattr(pipeline_module, "initialize_pool_metadata", lambda **kwargs: (note("initialize_pool_metadata") or {"scenarios": []}))
     monkeypatch.setattr(pipeline_module, "RollingReplayBuffer", lambda **kwargs: (note("RollingReplayBuffer") or _RollingReplayBuffer(**kwargs)))
     monkeypatch.setattr(pipeline_module, "load_learning_curve", lambda path: (note("load_learning_curve") or []))
@@ -80,7 +94,7 @@ def _patch_basics(monkeypatch, tmp_path: Path, calls: list[str] | None = None, *
 
 
 def _iteration_result(iteration: int, best: Path, metric: float, pool: dict[str, object]) -> IterationResult:
-    return IterationResult(iteration=iteration, accepted=True, status="ACCEPTED", selected_scenario_ids=(), raw_examples_csv=Path("raw.csv"), train_batch_csv=Path("train.csv"), train_examples_csv=Path("train_examples.csv"), validation_examples_csv=Path("validation_examples.csv"), split_metadata_path=Path("train_validation_split.json"), candidate_checkpoint=Path(f"candidate-{iteration}.pt"), metadata_path=Path("metadata.json"), candidate_metrics={"solve_rate": metric, "pf_alg": 3, "task_config": {"pf_alg": 3}}, best_checkpoint=best, best_metrics={"solve_rate": metric, "pf_alg": 3, "task_config": {"pf_alg": 3}}, pool_metadata=pool, learning_curve_row={"iteration": iteration, "n_fresh": 1, "n_old": 0})
+    return IterationResult(iteration=iteration, accepted=True, status="ACCEPTED", selected_scenario_ids=(), raw_examples_csv=Path("raw.csv"), train_batch_csv=Path("train.csv"), train_examples_csv=Path("train_examples.csv"), validation_examples_csv=Path("validation_examples.csv"), split_metadata_path=Path("train_validation_split.json"), candidate_checkpoint=Path(f"candidate-{iteration}.pt"), metadata_path=Path("metadata.json"), candidate_metrics=_metrics(metric), best_checkpoint=best, best_metrics=_metrics(metric), pool_metadata=pool, learning_curve_row={"iteration": iteration, "n_fresh": 1, "n_old": 0})
 
 
 def test_pipeline_request_is_frozen_and_slotted(tmp_path: Path) -> None:
@@ -324,7 +338,7 @@ def test_pipeline_rejects_bootstrap_metrics_pf_alg_before_iteration(tmp_path: Pa
         "initialize_best_state",
         lambda **kwargs: _BestState(
             tmp_path / "best.pt",
-            {"solve_rate": 0.25, "pf_alg": 1, "task_config": {"pf_alg": 1}},
+            {**_metrics(0.25), "pf_alg": 1, "task_config": {"pf_alg": 1}},
         ),
     )
     called = False

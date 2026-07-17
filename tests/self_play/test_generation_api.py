@@ -14,6 +14,8 @@ from grid_topology_ai.data_adapter import (
     GridFMState,
 )
 from grid_topology_ai.config import GenerationConfig
+from grid_topology_ai.contracts import OUTCOME_VALUE_TARGET_CONTRACT_VERSION
+from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
 from grid_topology_ai.self_play import generation
 from grid_topology_ai.self_play.generation import (
     GenerationRequest,
@@ -21,6 +23,7 @@ from grid_topology_ai.self_play.generation import (
     state_security_penalty,
     terminal_outcome_reward,
 )
+from grid_topology_ai.termination import TerminationReason
 
 
 class _FakeAction:
@@ -31,7 +34,7 @@ class _FakeStepResult:
     reward = 1.0
     done = True
     solved = True
-    info = {"termination_reason": "solved"}
+    info = {"termination_reason": TerminationReason.SOLVED}
 
 
 class _FakeEnv:
@@ -54,7 +57,7 @@ class _FakeEnv:
     def step(self, action: object) -> _FakeStepResult:
         self.done = True
         self.solved = True
-        self.termination_reason = "solved"
+        self.termination_reason = TerminationReason.SOLVED
         return _FakeStepResult()
 
     def action_by_id(self, action_id: int) -> _FakeAction:
@@ -114,6 +117,8 @@ class _FakeExampleWriter:
         "solved",
         "done",
         "termination_reason",
+        "physical_objective_schema_version",
+        "outcome_value_target_contract_version",
         "visit_counts_json",
         "mcts_policy_json",
     ]
@@ -141,6 +146,12 @@ class _FakeExampleWriter:
                 "solved": kwargs["solved"],
                 "done": kwargs["done"],
                 "termination_reason": kwargs["termination_reason"],
+                "physical_objective_schema_version": (
+                    PHYSICAL_OBJECTIVE_SCHEMA_VERSION
+                ),
+                "outcome_value_target_contract_version": (
+                    OUTCOME_VALUE_TARGET_CONTRACT_VERSION
+                ),
                 "visit_counts_json": '{"1": 3}',
                 "mcts_policy_json": '{"1": 1.0}',
             }
@@ -234,7 +245,7 @@ def test_terminal_outcome_reward_works_without_generation_initialization() -> No
     assert terminal_outcome_reward(
         state=_minimal_state(),
         solved=False,
-        termination_reason="unsolved",
+        termination_reason=TerminationReason.MAX_STEPS_REACHED,
         terminal_unsolved_penalty=500.0,
         terminal_handoff_penalty=150.0,
         terminal_failure_penalty=1000.0,

@@ -8,6 +8,11 @@ import pandas as pd
 import torch
 from torch.utils.data import Dataset
 
+from grid_topology_ai.self_play.example_validation import (
+    REQUIRED_EXAMPLE_COLUMNS,
+    validate_example_contract_versions,
+)
+
 
 class SelfPlayDataset(Dataset):
     """
@@ -41,6 +46,16 @@ class SelfPlayDataset(Dataset):
 
         if self.examples.empty:
             raise ValueError("Self-play examples CSV is empty.")
+
+        missing = set(REQUIRED_EXAMPLE_COLUMNS) - set(self.examples.columns)
+        if missing:
+            raise ValueError(
+                f"Examples CSV is missing required columns: {sorted(missing)}"
+            )
+        validate_example_contract_versions(
+            self.examples,
+            source_path=self.examples_csv,
+        )
 
         # Precompute normalization statistics for the flat state vectors.
         # This is important because raw features have very different scales:
@@ -107,10 +122,13 @@ class SelfPlayDataset(Dataset):
         if target_sum > 0:
             target_policy = target_policy / target_sum
 
-        raw_value = float(row["discounted_return_from_step"])
-
-        target_value = raw_value / self.value_scale
-        target_value = float(np.clip(target_value, -1.0, 1.0))
+        # The public value_scale argument remains for CLI compatibility, but
+        # current datasets train exclusively on the versioned outcome target.
+        target_value = float(row["outcome_value_target"])
+        if not np.isfinite(target_value) or abs(target_value) > 1.0 + 1e-6:
+            raise ValueError(
+                f"Invalid outcome_value_target at row {idx}: {target_value!r}."
+            )
 
         state_vector = self._make_flat_state_vector(
             bus_features=bus_features,
@@ -124,7 +142,10 @@ class SelfPlayDataset(Dataset):
             "state_vector": torch.tensor(state_vector, dtype=torch.float32),
             "action_mask": torch.tensor(action_mask, dtype=torch.bool),
             "target_policy": torch.tensor(target_policy, dtype=torch.float32),
-            "target_value": torch.tensor(target_value, dtype=torch.float32),
+            "target_value": torch.tensor(
+                float(np.clip(target_value, -1.0, 1.0)),
+                dtype=torch.float32,
+            ),
             "scenario_id": int(row["scenario_id"]),
             "step": int(row["step"]),
             "state_id": str(row["state_id"]),

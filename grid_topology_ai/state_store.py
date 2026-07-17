@@ -7,6 +7,7 @@ from typing import Any
 import numpy as np
 
 from grid_topology_ai.data_adapter import GridFMState
+from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
 
 
 class GridFMStateStore:
@@ -65,6 +66,9 @@ class GridFMStateStore:
             "scenario_id": int(state.scenario_id),
             "load_scenario_idx": float(state.load_scenario_idx),
             "outaged_branch_ids": [int(x) for x in state.outaged_branch_ids],
+            "physical_objective_schema_version": (
+                PHYSICAL_OBJECTIVE_SCHEMA_VERSION
+            ),
         }
 
         if extra_metadata is not None:

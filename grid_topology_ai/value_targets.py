@@ -1,9 +1,17 @@
 from __future__ import annotations
 
+from grid_topology_ai.contracts import OUTCOME_VALUE_TARGET_CONTRACT_VERSION
+from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
+from grid_topology_ai.termination import (
+    TerminationReason,
+    parse_termination_reason,
+    validate_outcome_invariants,
+)
+
 
 def terminal_value_from_outcome(
     solved: bool,
-    termination_reason: str | None,
+    termination_reason: TerminationReason | str | None,
 ) -> tuple[float, str]:
     """
     Convert terminal episode outcome into a bounded AlphaZero-style value.
@@ -20,19 +28,22 @@ def terminal_value_from_outcome(
             Normalized textual outcome class used for diagnostics.
     """
 
-    reason = "" if termination_reason is None else str(termination_reason)
+    reason = validate_outcome_invariants(
+        solved=bool(solved),
+        termination_reason=termination_reason,
+    )
 
-    if bool(solved) or reason == "solved":
-        return 1.0, "solved"
+    if reason is TerminationReason.SOLVED:
+        return 1.0, TerminationReason.SOLVED.value
 
     if reason in {
-        "handoff_to_redispatch",
-        "handoff_to_redispatch_teacher",
-        "handoff_to_redispatch_with_hard_overload",
+        TerminationReason.HANDOFF_TO_REDISPATCH,
+        TerminationReason.HANDOFF_TO_REDISPATCH_TEACHER,
+        TerminationReason.HANDOFF_TO_REDISPATCH_WITH_HARD_OVERLOAD,
     }:
-        return 0.0, "handoff_to_redispatch_teacher"
+        return 0.0, TerminationReason.HANDOFF_TO_REDISPATCH.value
 
-    return -1.0, reason or "unsolved_terminal"
+    return -1.0, "unsolved_terminal" if reason is None else reason.value
 
 
 def add_outcome_value_targets_to_rows(
@@ -64,6 +75,16 @@ def add_outcome_value_targets_to_rows(
     groups: dict[tuple, list[dict]] = {}
 
     for row in rows:
+        physical_version = row.get("physical_objective_schema_version")
+        if physical_version != PHYSICAL_OBJECTIVE_SCHEMA_VERSION:
+            raise ValueError(
+                "Cannot derive current outcome value targets from legacy "
+                "solved labels. Regenerate episodes with "
+                "python -m scripts.self_play.generate before computing targets. "
+                f"Expected physical_objective_schema_version="
+                f"{PHYSICAL_OBJECTIVE_SCHEMA_VERSION}, observed "
+                f"{physical_version!r}."
+            )
         key = tuple(row.get(k) for k in group_keys)
         groups.setdefault(key, []).append(row)
 
@@ -77,7 +98,9 @@ def add_outcome_value_targets_to_rows(
 
         terminal_value, outcome_class = terminal_value_from_outcome(
             solved=bool(terminal_row.get("solved", False)),
-            termination_reason=terminal_row.get("termination_reason"),
+            termination_reason=parse_termination_reason(
+                terminal_row.get("termination_reason")
+            ),
         )
 
         n = len(group_rows)
@@ -92,3 +115,6 @@ def add_outcome_value_targets_to_rows(
             row["outcome_steps_to_terminal"] = int(steps_to_terminal)
             row["outcome_value_target_mode"] = "alphazero_discounted"
             row["outcome_gamma"] = float(gamma)
+            row["outcome_value_target_contract_version"] = (
+                OUTCOME_VALUE_TARGET_CONTRACT_VERSION
+            )

@@ -10,6 +10,8 @@ import pytest
 from grid_topology_ai.config import ReplayBufferConfig
 from grid_topology_ai.self_play import replay as replay_module
 from grid_topology_ai.self_play.replay import RollingReplayBuffer
+from grid_topology_ai.contracts import OUTCOME_VALUE_TARGET_CONTRACT_VERSION
+from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
 
 
 def rows(prefix: str, count: int) -> list[dict[str, object]]:
@@ -17,6 +19,8 @@ def rows(prefix: str, count: int) -> list[dict[str, object]]:
         {
             "state_id": f"{prefix}_{index}",
             "scenario_id": index,
+            "physical_objective_schema_version": PHYSICAL_OBJECTIVE_SCHEMA_VERSION,
+            "outcome_value_target_contract_version": OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
         }
         for index in range(count)
     ]
@@ -115,6 +119,8 @@ def _valid_example_row(state_path: Path, *, state_id: str = "state-1") -> dict[s
         "step": 0,
         "state_id": state_id,
         "outcome_value_target": 1.0,
+        "physical_objective_schema_version": PHYSICAL_OBJECTIVE_SCHEMA_VERSION,
+        "outcome_value_target_contract_version": OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
     }
 
 
@@ -144,11 +150,27 @@ def test_valid_csv_is_added_and_persisted(tmp_path: Path) -> None:
     assert manifest.exists()
     with gzip.open(iter_file, "rt", encoding="utf-8") as f:
         assert json.loads(f.readline())["replay_iteration"] == 1
+    manifest_payload = json.loads(manifest.read_text(encoding="utf-8"))
+    assert manifest_payload["schema_version"] == 2
+    assert manifest_payload["physical_objective_schema_version"] == (
+        PHYSICAL_OBJECTIVE_SCHEMA_VERSION
+    )
+
+
+def test_legacy_replay_manifest_is_rejected(tmp_path: Path) -> None:
+    save_dir = tmp_path / "replay"
+    save_dir.mkdir()
+    (save_dir / "buffer_manifest.json").write_text(
+        json.dumps({"schema_version": 1, "files": []}),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="legacy artifacts cannot be upgraded safely"):
+        RollingReplayBuffer(save_dir=save_dir)
 
 
 def test_invalid_csv_does_not_mutate_buffer(tmp_path: Path) -> None:
     buffer = RollingReplayBuffer(save_dir=tmp_path / "replay", config=ReplayBufferConfig(max_size=1, min_size_to_train=1))
-    buffer.add_examples([{"state_id": "old"}], iteration=0)
+    buffer.add_examples(rows("old", 1), iteration=0)
     before = deepcopy(buffer.buffer)
     with pytest.raises(ValueError):
         buffer.add_and_save_from_csv(examples_csv=_invalid_csv(tmp_path), iteration=1)
@@ -182,7 +204,7 @@ def test_invalid_csv_does_not_overwrite_existing_iteration_file(tmp_path: Path) 
 
 def test_missing_state_file_does_not_mutate_replay(tmp_path: Path) -> None:
     buffer = RollingReplayBuffer(save_dir=tmp_path / "replay")
-    buffer.add_examples([{"state_id": "old"}], iteration=0)
+    buffer.add_examples(rows("old", 1), iteration=0)
     before = deepcopy(buffer.buffer)
     csv = _write_examples_csv(tmp_path / "missing.csv", [_valid_example_row(tmp_path / "missing.npz")])
     with pytest.raises(FileNotFoundError):
@@ -192,7 +214,7 @@ def test_missing_state_file_does_not_mutate_replay(tmp_path: Path) -> None:
 
 def test_invalid_policy_does_not_mutate_replay(tmp_path: Path) -> None:
     buffer = RollingReplayBuffer(save_dir=tmp_path / "replay")
-    buffer.add_examples([{"state_id": "old"}], iteration=0)
+    buffer.add_examples(rows("old", 1), iteration=0)
     before = deepcopy(buffer.buffer)
     with pytest.raises(ValueError):
         buffer.add_and_save_from_csv(examples_csv=_invalid_csv(tmp_path), iteration=1)

@@ -7,8 +7,15 @@ from typing import Any
 
 import pandas as pd
 
+from grid_topology_ai.contracts import OUTCOME_VALUE_TARGET_CONTRACT_VERSION
+from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
 from grid_topology_ai.state_store import GridFMStateStore
 from grid_topology_ai.data_adapter import GridFMState
+from grid_topology_ai.termination import (
+    TerminationReason,
+    termination_reason_value,
+    validate_outcome_invariants,
+)
 
 
 @dataclass(frozen=True)
@@ -46,6 +53,8 @@ class SelfPlayExample:
     solved: bool
     done: bool
     termination_reason: str | None
+    physical_objective_schema_version: int
+    outcome_value_target_contract_version: int
 
     visit_counts_json: str
     mcts_policy_json: str
@@ -85,7 +94,7 @@ class ExampleWriter:
         discounted_return_from_step: float,
         solved: bool,
         done: bool,
-        termination_reason: str | None,
+        termination_reason: TerminationReason | str | None,
         visit_counts: dict[int, int],
         mcts_policy: dict[int, float],
         extra_metadata: dict[str, Any] | None = None,
@@ -101,6 +110,10 @@ class ExampleWriter:
             extra_metadata=extra_metadata,
         )
 
+        parsed_reason = validate_outcome_invariants(
+            solved=bool(solved),
+            termination_reason=termination_reason,
+        )
         example = SelfPlayExample(
             state_id=state_id,
             state_path=str(state_path),
@@ -115,7 +128,13 @@ class ExampleWriter:
             discounted_return_from_step=float(discounted_return_from_step),
             solved=bool(solved),
             done=bool(done),
-            termination_reason=termination_reason,
+            termination_reason=termination_reason_value(parsed_reason),
+            physical_objective_schema_version=(
+                PHYSICAL_OBJECTIVE_SCHEMA_VERSION
+            ),
+            outcome_value_target_contract_version=(
+                OUTCOME_VALUE_TARGET_CONTRACT_VERSION
+            ),
             visit_counts_json=json.dumps(
                 {str(k): int(v) for k, v in visit_counts.items()}
             ),

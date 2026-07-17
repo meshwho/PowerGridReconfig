@@ -7,6 +7,7 @@ import numpy as np
 from grid_topology_ai.action_space import GridFMAction
 from grid_topology_ai.data_adapter import BRANCH_FEATURE_COLUMNS, GridFMState
 from grid_topology_ai.environment import TopologyStepResult, TopologySwitchingEnv
+from grid_topology_ai.termination import TerminationReason
 
 from tqdm import tqdm
 # ======================================================================================
@@ -243,7 +244,7 @@ class ImpactBeamSearchNode:
     depth: int = 0
     done: bool = False
     solved: bool = False
-    termination_reason: str | None = None
+    termination_reason: TerminationReason | None = None
 
     last_step_result: TopologyStepResult | None = None
 
@@ -409,9 +410,9 @@ class ImpactBeamSearchPlanner:
                 impact_scores=[],
                 cumulative_score=0.0,
                 discounted_score=0.0,
-                done=False,
-                solved=False,
-                termination_reason=None,
+                done=bool(root_env.done),
+                solved=bool(root_env.solved),
+                termination_reason=root_env.termination_reason,
                 last_step_result=None,
             )
 
@@ -508,7 +509,7 @@ class ImpactBeamSearchPlanner:
         discounted_score: float,
         done: bool,
         solved: bool,
-        termination_reason: str | None,
+        termination_reason: TerminationReason | None,
         last_step_result: TopologyStepResult | None,
     ) -> ImpactBeamSearchNode:
         state = env.current_state
@@ -688,7 +689,7 @@ class ImpactBeamSearchPlanner:
                 depth=child_depth,
                 done=True,
                 solved=False,
-                termination_reason="power_flow_failed",
+                termination_reason=TerminationReason.POWER_FLOW_FAILED,
                 last_step_result=step_result,
             )
 

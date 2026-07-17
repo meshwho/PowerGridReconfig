@@ -8,6 +8,11 @@ from typing import Any
 
 import pandas as pd
 
+from grid_topology_ai.termination import (
+    TerminationReason,
+    parse_termination_reason,
+)
+
 
 def safe_parse_list(value: Any) -> list[Any]:
     """
@@ -110,7 +115,7 @@ def parse_bad_reasons(text: str) -> set[str]:
     """
 
     return {
-        item.strip()
+        parse_termination_reason(item.strip(), allow_none=False).value
         for item in str(text).split(",")
         if item.strip()
     }
@@ -126,6 +131,7 @@ def ensure_required_columns(df: pd.DataFrame, path: Path) -> None:
         "steps",
         "termination_reason",
         "solved",
+        "physically_secure",
         "branches",
         "actions",
         "discounted_return",
@@ -141,6 +147,27 @@ def ensure_required_columns(df: pd.DataFrame, path: Path) -> None:
         raise ValueError(
             f"CSV file is missing required columns: {missing}\n"
             f"File: {path}"
+        )
+
+    normalized_reasons = [
+        parse_termination_reason(value, allow_none=False).value
+        for value in df["termination_reason"]
+    ]
+    df["termination_reason"] = normalized_reasons
+
+    solved = df["solved"].astype(bool)
+    physically_secure = df["physically_secure"].astype(bool)
+    if not solved.equals(physically_secure):
+        raise ValueError(
+            "Evaluation CSV has contradictory solved/physically_secure values. "
+            "Regenerate it with python -m scripts.self_play.evaluate_checkpoint."
+        )
+
+    solved_reason = df["termination_reason"].eq(TerminationReason.SOLVED.value)
+    if not solved.equals(solved_reason):
+        raise ValueError(
+            "Evaluation CSV has contradictory solved/termination_reason values. "
+            "Regenerate it with python -m scripts.self_play.evaluate_checkpoint."
         )
 
 
@@ -172,13 +199,16 @@ def add_derived_columns(df: pd.DataFrame) -> pd.DataFrame:
     )
 
     df["is_max_steps"] = df["termination_reason"].astype(str).eq(
-        "max_steps_reached"
+        TerminationReason.MAX_STEPS_REACHED.value
     )
 
-    df["is_handoff"] = df["termination_reason"].astype(str).str.contains(
-        "handoff",
-        case=False,
-        na=False,
+    handoff_reasons = {
+        TerminationReason.HANDOFF_TO_REDISPATCH.value,
+        TerminationReason.HANDOFF_TO_REDISPATCH_WITH_HARD_OVERLOAD.value,
+        TerminationReason.HANDOFF_TO_REDISPATCH_TEACHER.value,
+    }
+    df["is_handoff"] = df["termination_reason"].isin(
+        handoff_reasons,
     )
 
     return df
@@ -412,7 +442,11 @@ def analyze_one_file(
     )
 
     top_max_step_sequences = print_top_sequences(
-        df=df[df["termination_reason"].eq("max_steps_reached")],
+        df=df[
+            df["termination_reason"].eq(
+                TerminationReason.MAX_STEPS_REACHED.value
+            )
+        ],
         title="Top repeated branch sequences among max_steps_reached cases",
         top_n=top_n,
     )
@@ -431,7 +465,11 @@ def analyze_one_file(
     )
 
     max_step_branch_freq = branch_frequency(
-        df=df[df["termination_reason"].eq("max_steps_reached")],
+        df=df[
+            df["termination_reason"].eq(
+                TerminationReason.MAX_STEPS_REACHED.value
+            )
+        ],
         title="Most frequent branches in max_steps_reached trajectories",
         top_n=top_n,
     )

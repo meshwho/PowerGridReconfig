@@ -5,6 +5,8 @@ import pandas as pd
 import pytest
 
 from grid_topology_ai.models.graph_self_play_dataset import GraphSelfPlayDataset
+from grid_topology_ai.contracts import OUTCOME_VALUE_TARGET_CONTRACT_VERSION
+from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
 
 
 def _write_fake_state(path):
@@ -32,6 +34,10 @@ def test_dataset_rejects_legacy_csv_without_outcome_value_target(tmp_path):
                 "scenario_id": 1,
                 "step": 0,
                 "state_id": "state_0",
+                "physical_objective_schema_version": PHYSICAL_OBJECTIVE_SCHEMA_VERSION,
+                "outcome_value_target_contract_version": OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
+                "solved": False,
+                "termination_reason": "max_steps_reached",
             }
         ]
     )
@@ -60,6 +66,10 @@ def test_dataset_reads_strict_outcome_value_target(tmp_path):
                 "scenario_id": 1,
                 "step": 0,
                 "state_id": "state_0",
+                "physical_objective_schema_version": PHYSICAL_OBJECTIVE_SCHEMA_VERSION,
+                "outcome_value_target_contract_version": OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
+                "solved": False,
+                "termination_reason": "handoff_to_redispatch",
             }
         ]
     )

@@ -6,7 +6,45 @@ The loop reads a YAML configuration, resolves run directories, verifies artifact
 
 ## 2. Bootstrap initialization
 
-A run starts from a bootstrap checkpoint and bootstrap fixed-evaluation metrics. The metrics must include `pf_alg` provenance compatible with generation and evaluation settings.
+A run starts from a bootstrap checkpoint and bootstrap fixed-evaluation metrics. The metrics must include `pf_alg` provenance compatible with generation and evaluation settings. Both artifacts must also carry the current semantic contract versions; validation happens before a bootstrap checkpoint is copied to the canonical best path.
+
+## 2.1 Physical success and episode termination
+
+`solved`, `TerminationReason.SOLVED`, positive solved bonuses, positive terminal
+outcome targets, and `solve_rate` all use one authoritative predicate:
+
+```text
+physically_secure =
+    power_flow_converged
+    and all_values_finite
+    and topology_connected
+    and thermal_feasible
+    and voltage_feasible
+    and generator_p_feasible
+    and generator_q_feasible
+    and angle_difference_feasible
+```
+
+The calculator uses the raw PYPOWER result before feature sanitization and the
+static GridFM/PYPOWER limits: `VM/VMIN/VMAX/VA`, branch status, `RATE_A`, angle
+limits, endpoints and terminal flows, plus each active generator's `PG/PMIN/PMAX`
+and `QG/QMIN/QMAX`. Bus IDs are mapped to array positions for angle checks.
+Disabled elements do not create violations. `RATE_A=0` and angle bounds at
+`-360/360` follow MATPOWER's unconstrained semantics. Invalid mandatory data,
+unknown active endpoints, NaN, and infinity fail closed.
+
+The related terms are deliberately different:
+
+- `thermal_solved` / `thermal_feasible`: diagnostic only; no active rated branch is thermally overloaded.
+- `physically_secure`: all eight physical components above are simultaneously true; this is the exact definition of solved.
+- `done`: the control episode ended. Solved, PF failure, max steps, and explicit stop/handoff can all be done.
+- `handoff`: topology control stops and transfers the case to redispatch; it is terminal but never solved unless the state was already physically secure, in which case the reason is `SOLVED` rather than handoff.
+
+`stop_policy=solved_only` exposes stop only for a physically secure state.
+Thermal-safe but voltage-, generator-, angle-, or connectivity-infeasible states
+continue when steps remain and no explicit stop was chosen. Initial GridFM
+states receive a no-op AC power flow because parquet input alone has no reliable
+convergence provenance.
 
 ## 3. Pool metadata
 
@@ -26,7 +64,7 @@ The policy target is the MCTS visit distribution. The continuation gate may alte
 
 ## 7. Replay buffer
 
-Generated examples are appended to replay. Replay accumulation allows later iterations to train on current and prior experience according to configured limits.
+Generated examples are appended to replay. Replay accumulation allows later iterations to train on current and prior experience according to configured limits. Replay manifests and every replay row are checked against the current physical and outcome/value-target versions before loading or mutation.
 
 ## 8. Train/validation split
 
@@ -42,7 +80,7 @@ The main candidate checkpoint records `checkpoint_selection_metric=validation_lo
 
 ## 11. Fixed evaluation
 
-Candidate checkpoints are evaluated on the fixed evaluation transitions and raw states. This keeps acceptance comparable across iterations.
+Candidate checkpoints are evaluated on the fixed evaluation transitions and raw states. This keeps acceptance comparable across iterations. `solve_count` and `solve_rate` count only physically secure outcomes and therefore equal `physically_secure_count` and `physically_secure_rate`. Thermal feasibility remains a separate diagnostic rate. Evaluation also records counts/rates for PF convergence, finite values, topology connectivity, thermal, voltage, generator P/Q, and angle feasibility, plus violation diagnostics.
 
 ## 12. PF_ALG provenance
 
@@ -50,7 +88,7 @@ Generation config, evaluation config, evaluation requests, and fixed metrics mus
 
 ## 13. Acceptance
 
-Acceptance compares candidate metrics with the best accepted metrics. The primary configured metric is usually `solve_rate`; thresholds and safety constraints decide whether the candidate replaces the best checkpoint.
+Acceptance compares candidate metrics with the best accepted metrics. The primary configured metric is usually `solve_rate`; thresholds and safety constraints decide whether the candidate replaces the best checkpoint. Candidate and best metrics must match both the configured `PF_ALG` and the current evaluation/physical semantic versions, so thermal-only historical metrics cannot influence checkpoint promotion.
 
 ## 14. Atomic completion marker
 
@@ -79,3 +117,37 @@ A pilot workflow is: prepare bootstrap artifacts, run `--validate-only`, run `--
 ## 20. Bootstrap metrics recalculation rules
 
 Recompute bootstrap metrics whenever the fixed evaluation set, raw states, checkpoint, `PF_ALG`, evaluation settings, or metrics schema changes. Do not reuse metrics with missing, fractional, boolean, or mismatched `pf_alg` values.
+
+## 21. Semantic artifact versions and regeneration
+
+The current incompatible contract versions are:
+
+- `PHYSICAL_OBJECTIVE_SCHEMA_VERSION=2`;
+- `OUTCOME_VALUE_TARGET_CONTRACT_VERSION=2`;
+- `EVALUATION_METRICS_CONTRACT_VERSION=2`;
+- `CHECKPOINT_CONTRACT_VERSION=2`;
+- replay buffer schema `2`.
+
+The version bump is intentional: former `solved` labels meant only
+thermal-feasible, so their value targets, trained weights, solve rates, and
+acceptance comparisons have different scientific meaning. Missing or old
+versions are rejected. `ensure_outcome_value_targets` refuses to stamp current
+targets onto legacy solved labels. User artifacts are not deleted automatically.
+
+Create a clean artifact chain in this order (replace angle-bracket paths):
+
+```bash
+# Fresh physical episodes and versioned outcome targets.
+python -m scripts.self_play.generate <POOL_RAW_DIR> --transitions <POOL_TRANSITIONS.csv> --output-dir <NEW_SELF_PLAY_DIR> --pf-alg 3
+
+# Fresh checkpoint, without a legacy --init-checkpoint.
+python -m scripts.self_play.train_graph_baseline <NEW_SELF_PLAY_DIR>/examples.csv --output <NEW_CHECKPOINT.pt> --device cpu
+
+# Fresh fixed evaluation and summary metrics.
+python -m scripts.evaluation.evaluate_checkpoint <EVAL_RAW_DIR> --transitions <EVAL_TRANSITIONS.csv> --checkpoint <NEW_CHECKPOINT.pt> --pf-alg 3 --output-csv <NEW_EVAL_RESULTS.csv> --output-json <NEW_EVAL_METRICS.json>
+```
+
+Archive the old replay/run directory, update `bootstrap_checkpoint` and
+`bootstrap_eval_metrics` in the YAML, and start a new run. Existing evaluation
+metrics cannot be compared across the version boundary, and a checkpoint trained
+on legacy targets cannot be used as a compatible parent.

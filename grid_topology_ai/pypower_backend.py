@@ -64,6 +64,13 @@ from grid_topology_ai.data_adapter import (
     GridFMState,
     compute_voltage_violation_metrics,
 )
+from grid_topology_ai.physical_constraints import (
+    calculate_physical_metrics_from_result,
+)
+from grid_topology_ai.physical_objective import (
+    HARD_OVERLOAD_LIMIT_PERCENT,
+    OVERLOAD_LIMIT_PERCENT,
+)
 import copy
 
 def pf_algorithm_name(pf_alg: int) -> str:
@@ -677,6 +684,10 @@ class GridFMPowerFlowBackend:
         bus_res = result_ppc["bus"]
         branch_res = result_ppc["branch"]
         gen_res = result_ppc["gen"]
+        physical_metrics = calculate_physical_metrics_from_result(
+            result_ppc,
+            power_flow_converged=True,
+        )
 
         bus_features = previous_state.bus_features.copy()
         branch_features = previous_state.branch_features.copy()
@@ -775,10 +786,6 @@ class GridFMPowerFlowBackend:
             max_loading = 0.0
             mean_loading = 0.0
 
-        overloaded = active & (loading > 100.0)
-        hard_overloaded = active & (loading > 120.0)
-
-
         vmin = bus_df["min_vm_pu"].to_numpy(dtype=np.float32)
         vmax = bus_df["max_vm_pu"].to_numpy(dtype=np.float32)
 
@@ -796,18 +803,11 @@ class GridFMPowerFlowBackend:
         metrics = {
             "num_buses": int(bus_features.shape[0]),
             "num_branches": int(branch_features.shape[0]),
-            "max_loading_percent": max_loading,
             "mean_loading_percent": mean_loading,
-            "num_overloaded_branches": int(np.sum(overloaded)),
-            "num_hard_overloaded_branches": int(np.sum(hard_overloaded)),
             "min_vm_pu": float(np.min(vm)),
             "max_vm_pu": float(np.max(vm)),
-            "num_low_voltage_buses": int(np.sum(low_voltage_violation > 0.0)),
-            "num_high_voltage_buses": int(np.sum(high_voltage_violation > 0.0)),
-            "total_low_voltage_violation": total_low_voltage_violation,
-            "total_high_voltage_violation": total_high_voltage_violation,
-            "total_voltage_violation": total_voltage_violation,
             "num_outaged_branches": int(np.sum(outaged_mask)),
+            **physical_metrics,
         }
 
         outaged_branch_ids = [
@@ -844,6 +844,10 @@ class GridFMPowerFlowBackend:
         bus_res = result_ppc["bus"]
         branch_res = result_ppc["branch"]
         gen_res = result_ppc["gen"]
+        physical_metrics = calculate_physical_metrics_from_result(
+            result_ppc,
+            power_flow_converged=True,
+        )
 
         bus_df["Vm"] = bus_res[:, VM]
         bus_df["Va"] = bus_res[:, VA]
@@ -875,6 +879,7 @@ class GridFMPowerFlowBackend:
             scenario_id=scenario_id,
             bus_df=bus_df,
             branch_df=branch_df,
+            physical_metrics=physical_metrics,
         )
 
     @staticmethod
@@ -882,6 +887,7 @@ class GridFMPowerFlowBackend:
         scenario_id: int,
         bus_df: pd.DataFrame,
         branch_df: pd.DataFrame,
+        physical_metrics: dict[str, object],
     ) -> GridFMState:
         """
         Build GridFMState from updated bus/branch dataframes.
@@ -901,11 +907,6 @@ class GridFMPowerFlowBackend:
         in_service = branch_df[branch_df["br_status"] > 0]
         outaged = branch_df[branch_df["br_status"] <= 0]
 
-        overloaded = in_service[in_service["loading_percent"] > 100.0]
-        hard_overloaded = in_service[in_service["loading_percent"] > 120.0]
-
-        voltage_metrics = compute_voltage_violation_metrics(bus_df)
-
         if len(in_service) > 0:
             max_loading = float(in_service["loading_percent"].max())
             mean_loading = float(in_service["loading_percent"].mean())
@@ -916,14 +917,11 @@ class GridFMPowerFlowBackend:
         metrics = {
             "num_buses": int(len(bus_df)),
             "num_branches": int(len(branch_df)),
-            "max_loading_percent": max_loading,
             "mean_loading_percent": mean_loading,
-            "num_overloaded_branches": int(len(overloaded)),
-            "num_hard_overloaded_branches": int(len(hard_overloaded)),
             "min_vm_pu": float(bus_df["Vm"].min()),
             "max_vm_pu": float(bus_df["Vm"].max()),
-            **voltage_metrics,
             "num_outaged_branches": int(len(outaged)),
+            **physical_metrics,
         }
 
         return GridFMState(

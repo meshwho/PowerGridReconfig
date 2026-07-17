@@ -7,6 +7,8 @@ import pytest
 import torch
 
 from grid_topology_ai.models.graph_self_play_dataset import GraphSelfPlayDataset
+from grid_topology_ai.contracts import OUTCOME_VALUE_TARGET_CONTRACT_VERSION
+from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -158,6 +160,10 @@ def test_graph_dataset_uses_mcts_policy_not_selected_action(tmp_path: Path):
             "state_id": "state-1",
             "selected_action_id": 0,
             "outcome_value_target": 1.0,
+            "physical_objective_schema_version": PHYSICAL_OBJECTIVE_SCHEMA_VERSION,
+            "outcome_value_target_contract_version": OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
+            "solved": True,
+            "termination_reason": "solved",
         }
     ]).to_csv(csv_path, index=False)
 
@@ -183,6 +189,10 @@ def test_normalization_state_dict_returns_copies(tmp_path: Path):
         "state_path": str(state_path), "mcts_policy_json": '{"1": 1.0}',
         "scenario_id": 1, "step": 0, "state_id": "s", "selected_action_id": 1,
         "outcome_value_target": 0.0,
+        "physical_objective_schema_version": PHYSICAL_OBJECTIVE_SCHEMA_VERSION,
+        "outcome_value_target_contract_version": OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
+        "solved": False,
+        "termination_reason": "handoff_to_redispatch",
     }]).to_csv(csv_path, index=False)
     dataset = GraphSelfPlayDataset(csv_path, normalize_features=True)
     stats = dataset.normalization_state_dict()
