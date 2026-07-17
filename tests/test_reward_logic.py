@@ -306,7 +306,7 @@ def test_done_remains_false_for_soft_overload_state():
     assert result.done is False
 
 
-def test_voltage_violation_without_thermal_overload_remains_done():
+def test_voltage_violation_without_thermal_overload_is_not_done():
     reward_fn = GridFMReward(switching_penalty=1.0, solved_bonus=50.0)
     result = reward_fn.compute(
         _state(loadings=(130.0,)),
@@ -314,7 +314,8 @@ def test_voltage_violation_without_thermal_overload_remains_done():
         True,
         True,
     )
-    assert result.done is True
+    assert result.done is False
+    assert result.reward == pytest.approx(-101.0)
 
 
 def test_existing_reward_fixture_numerical_value_is_unchanged():

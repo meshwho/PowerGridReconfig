@@ -6,9 +6,15 @@ from grid_topology_ai.config import AcceptanceConfig
 from grid_topology_ai.self_play.acceptance import accept_candidate
 
 
+def _metrics(values: dict) -> dict:
+    out = {"physical_objective_contract": {"schema_version": 2}}
+    out.update(values)
+    return out
+
+
 def _config(
     *,
-    metric: str = "solve_rate",
+    metric: str = "physically_secure_rate_requested",
     min_improvement: float = 0.0,
     max_simple_solve_rate_drop: float = 0.05,
     reject_if_failed_scenarios_above: int | None = None,
@@ -23,134 +29,134 @@ def _config(
 
 def test_accepts_strict_improvement() -> None:
     assert accept_candidate(
-        new_metrics={"solve_rate": 0.6},
-        best_metrics={"solve_rate": 0.5},
+        new_metrics=_metrics({"physically_secure_rate_requested": 0.6}),
+        best_metrics=_metrics({"physically_secure_rate_requested": 0.5}),
         config=_config(),
     )
 
 
 def test_rejects_exact_tie() -> None:
     assert not accept_candidate(
-        new_metrics={"solve_rate": 0.5},
-        best_metrics={"solve_rate": 0.5},
+        new_metrics=_metrics({"physically_secure_rate_requested": 0.5}),
+        best_metrics=_metrics({"physically_secure_rate_requested": 0.5}),
         config=_config(),
     )
 
 
 def test_rejects_numerical_noise() -> None:
     assert not accept_candidate(
-        new_metrics={"solve_rate": 0.5 + 5e-13},
-        best_metrics={"solve_rate": 0.5},
+        new_metrics=_metrics({"physically_secure_rate_requested": 0.5 + 5e-13}),
+        best_metrics=_metrics({"physically_secure_rate_requested": 0.5}),
         config=_config(),
     )
 
 
 def test_rejects_improvement_below_required_minimum() -> None:
     assert not accept_candidate(
-        new_metrics={"solve_rate": 0.54},
-        best_metrics={"solve_rate": 0.5},
+        new_metrics=_metrics({"physically_secure_rate_requested": 0.54}),
+        best_metrics=_metrics({"physically_secure_rate_requested": 0.5}),
         config=_config(min_improvement=0.05),
     )
 
 
 def test_accepts_improvement_at_required_minimum() -> None:
     assert accept_candidate(
-        new_metrics={"solve_rate": 0.55},
-        best_metrics={"solve_rate": 0.5},
+        new_metrics=_metrics({"physically_secure_rate_requested": 0.55}),
+        best_metrics=_metrics({"physically_secure_rate_requested": 0.5}),
         config=_config(min_improvement=0.05),
     )
 
 
 def test_rejects_excessive_simple_solve_rate_drop() -> None:
     assert not accept_candidate(
-        new_metrics={
-            "solve_rate": 0.6,
+        new_metrics=_metrics({
+            "physically_secure_rate_requested": 0.6,
             "solve_rate_simple": 0.79,
-        },
-        best_metrics={
-            "solve_rate": 0.5,
+        }),
+        best_metrics=_metrics({
+            "physically_secure_rate_requested": 0.5,
             "solve_rate_simple": 0.9,
-        },
+        }),
         config=_config(max_simple_solve_rate_drop=0.1),
     )
 
 
 def test_accepts_allowed_simple_solve_rate_drop() -> None:
     assert accept_candidate(
-        new_metrics={
-            "solve_rate": 0.6,
+        new_metrics=_metrics({
+            "physically_secure_rate_requested": 0.6,
             "solve_rate_simple": 0.8,
-        },
-        best_metrics={
-            "solve_rate": 0.5,
+        }),
+        best_metrics=_metrics({
+            "physically_secure_rate_requested": 0.5,
             "solve_rate_simple": 0.9,
-        },
+        }),
         config=_config(max_simple_solve_rate_drop=0.1),
     )
 
 
 def test_simple_guard_is_optional_when_metric_missing() -> None:
     assert accept_candidate(
-        new_metrics={"solve_rate": 0.6},
-        best_metrics={
-            "solve_rate": 0.5,
+        new_metrics=_metrics({"physically_secure_rate_requested": 0.6}),
+        best_metrics=_metrics({
+            "physically_secure_rate_requested": 0.5,
             "solve_rate_simple": 0.9,
-        },
+        }),
         config=_config(max_simple_solve_rate_drop=0.1),
     )
 
 
 def test_rejects_too_many_failed_scenarios() -> None:
     assert not accept_candidate(
-        new_metrics={
-            "solve_rate": 0.6,
+        new_metrics=_metrics({
+            "physically_secure_rate_requested": 0.6,
             "failed_scenarios": 1,
-        },
-        best_metrics={"solve_rate": 0.5},
+        }),
+        best_metrics=_metrics({"physically_secure_rate_requested": 0.5}),
         config=_config(reject_if_failed_scenarios_above=0),
     )
 
 
 def test_accepts_failed_scenarios_at_threshold() -> None:
     assert accept_candidate(
-        new_metrics={
-            "solve_rate": 0.6,
+        new_metrics=_metrics({
+            "physically_secure_rate_requested": 0.6,
             "failed_scenarios": 2,
-        },
-        best_metrics={"solve_rate": 0.5},
+        }),
+        best_metrics=_metrics({"physically_secure_rate_requested": 0.5}),
         config=_config(reject_if_failed_scenarios_above=2),
     )
 
 
 def test_failed_scenario_guard_is_optional_when_metric_missing() -> None:
     assert accept_candidate(
-        new_metrics={"solve_rate": 0.6},
-        best_metrics={"solve_rate": 0.5},
+        new_metrics=_metrics({"physically_secure_rate_requested": 0.6}),
+        best_metrics=_metrics({"physically_secure_rate_requested": 0.5}),
         config=_config(reject_if_failed_scenarios_above=0),
     )
 
 
 def test_missing_candidate_primary_metric_raises() -> None:
-    with pytest.raises(KeyError, match="solve_rate"):
+    with pytest.raises(KeyError, match="physically_secure_rate_requested"):
         accept_candidate(
-            new_metrics={},
-            best_metrics={"solve_rate": 0.5},
+            new_metrics=_metrics({}),
+            best_metrics=_metrics({"physically_secure_rate_requested": 0.5}),
             config=_config(),
         )
 
 
 def test_missing_best_primary_metric_raises() -> None:
-    with pytest.raises(KeyError, match="solve_rate"):
+    with pytest.raises(KeyError, match="physically_secure_rate_requested"):
         accept_candidate(
-            new_metrics={"solve_rate": 0.6},
-            best_metrics={},
+            new_metrics=_metrics({"physically_secure_rate_requested": 0.6}),
+            best_metrics=_metrics({}),
             config=_config(),
         )
 
 
 def test_does_not_mutate_metric_mappings() -> None:
-    new_metrics = {"solve_rate": 0.6}
-    best_metrics = {"solve_rate": 0.5}
+    new_metrics = _metrics({"physically_secure_rate_requested": 0.6})
+    best_metrics = _metrics({"physically_secure_rate_requested": 0.5})
 
     accept_candidate(
         new_metrics=new_metrics,
@@ -158,8 +164,8 @@ def test_does_not_mutate_metric_mappings() -> None:
         config=_config(),
     )
 
-    assert new_metrics == {"solve_rate": 0.6}
-    assert best_metrics == {"solve_rate": 0.5}
+    assert new_metrics == _metrics({"physically_secure_rate_requested": 0.6})
+    assert best_metrics == _metrics({"physically_secure_rate_requested": 0.5})
 
 from grid_topology_ai.self_play.acceptance import require_metrics_pf_alg
 

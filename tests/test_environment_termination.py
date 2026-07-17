@@ -219,7 +219,7 @@ def test_do_nothing_hard_overload_without_handoff_permission_is_unsafe_stop():
 
     assert result.done is True
     assert result.solved is False
-    assert result.info["termination_reason"] == "unsafe_stop_with_hard_overload"
+    assert result.info["termination_reason"] == "unsafe_stop"
 
 
 def test_do_nothing_hard_overload_with_handoff_permission():

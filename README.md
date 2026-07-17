@@ -202,3 +202,9 @@ Teacher generators remain useful for bootstrap datasets, baseline comparison, an
 ## Reproducibility
 
 Reproducibility relies on Python 3.11, pinned constraints, explicit seeds, artifact hashes, fixed evaluation data, checkpoint provenance, and CI checks. Checkpoints store selection metadata, normalization metadata, dataset metadata, and training configuration.
+
+### Physical security contract (schema v2)
+
+`solved` now means exactly `physically_secure`: power flow converged, state values are finite, topology is connected, no thermal overload remains, voltages are feasible, active generator P/Q limits are feasible, and active branch angle-difference limits are feasible. `thermal_solved` is diagnostic only and must not be used as the success label.
+
+Evaluation metrics and value-target examples produced under physical objective schema version 1 are incompatible with this contract. Regenerate evaluation metrics and value targets/examples; bootstrap models trained on old targets must be retrained after migration.

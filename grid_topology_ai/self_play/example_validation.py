@@ -46,9 +46,14 @@ def validate_examples_dataframe(examples: pd.DataFrame, *, source_path: str | Pa
         raise ValueError(f"Examples CSV has no readable columns: {source}")
     missing = sorted(set(REQUIRED_EXAMPLE_COLUMNS) - set(examples.columns))
     if missing:
-        raise ValueError(f"Examples CSV is missing required columns: {missing}. File: {source}")
+        raise ValueError(f"Examples CSV is missing required columns: {missing}. Old schema version 1 examples are incompatible and must be regenerated. File: {source}")
     if examples.empty:
         raise ValueError(f"Examples CSV is empty: {source}")
+
+    if "value_target_schema_version" in examples.columns and not (examples["value_target_schema_version"].astype(int) == 2).all():
+        raise ValueError("Old value target schema version 1 examples are incompatible and must be regenerated.")
+    if "physical_objective_schema_version" in examples.columns and not (examples["physical_objective_schema_version"].astype(int) == 2).all():
+        raise ValueError("Old physical objective schema version 1 examples are incompatible and must be regenerated.")
 
     for column in REQUIRED_EXAMPLE_COLUMNS:
         for index, value in examples[column].items():

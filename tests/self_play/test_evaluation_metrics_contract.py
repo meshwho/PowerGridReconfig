@@ -15,7 +15,7 @@ def test_evaluation_physical_contract_counts_and_rates():
     df = pd.DataFrame([
         dict(zip(COLS, [True, "solved", 1, 10.0, 90.0, 0, 0, 100.0, True, True, True, False, False])),
         dict(zip(COLS, [False, "handoff_to_redispatch", 1, 5.0, 110.0, 1, 0, 50.0, True, True, False, True, False])),
-        dict(zip(COLS, [False, "unsafe_stop_with_hard_overload", 1, 0.0, 130.0, 1, 1, -50.0, False, True, False, False, True])),
+        dict(zip(COLS, [False, "unsafe_stop", 1, 0.0, 130.0, 1, 1, -50.0, False, True, False, False, True])),
         dict(zip(COLS, [False, "power_flow_failed", 0, 0.0, float("nan"), -1, -1, -100.0, False, False, False, False, False])),
     ])
     metrics = build_evaluation_metrics(
@@ -34,7 +34,7 @@ def test_evaluation_physical_contract_counts_and_rates():
     assert metrics["safe_handoff_count"] == 1
     assert metrics["unsafe_terminal_state_count"] == 1
     assert metrics["power_flow_failure_count"] == 1
-    assert metrics["physical_objective_contract"]["schema_version"] == 1
+    assert metrics["physical_objective_contract"]["schema_version"] == 2
 
 
 def test_evaluation_physical_contract_rates_are_zero_for_empty_request():

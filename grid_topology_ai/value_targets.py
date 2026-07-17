@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+from grid_topology_ai.outcome import TerminationReason, parse_termination_reason
+from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
+
+VALUE_TARGET_SCHEMA_VERSION = 2
+
 
 def terminal_value_from_outcome(
     solved: bool,
@@ -20,19 +25,18 @@ def terminal_value_from_outcome(
             Normalized textual outcome class used for diagnostics.
     """
 
-    reason = "" if termination_reason is None else str(termination_reason)
-
-    if bool(solved) or reason == "solved":
-        return 1.0, "solved"
-
-    if reason in {
-        "handoff_to_redispatch",
-        "handoff_to_redispatch_teacher",
-        "handoff_to_redispatch_with_hard_overload",
-    }:
-        return 0.0, "handoff_to_redispatch_teacher"
-
-    return -1.0, reason or "unsolved_terminal"
+    reason = parse_termination_reason(termination_reason)
+    if bool(solved) and reason is not TerminationReason.SOLVED:
+        raise ValueError("solved=True is only valid with termination_reason='solved'; regenerate old examples with schema version 2")
+    if reason is TerminationReason.SOLVED:
+        if not bool(solved):
+            raise ValueError("termination_reason='solved' requires solved=True; regenerate old examples with schema version 2")
+        return 1.0, reason.value
+    if reason in {TerminationReason.HANDOFF_TO_REDISPATCH, TerminationReason.HANDOFF_TO_REDISPATCH_TEACHER}:
+        return 0.0, reason.value
+    if reason is None:
+        return -1.0, "unsolved_terminal"
+    return -1.0, reason.value
 
 
 def add_outcome_value_targets_to_rows(
@@ -92,3 +96,5 @@ def add_outcome_value_targets_to_rows(
             row["outcome_steps_to_terminal"] = int(steps_to_terminal)
             row["outcome_value_target_mode"] = "alphazero_discounted"
             row["outcome_gamma"] = float(gamma)
+            row["value_target_schema_version"] = VALUE_TARGET_SCHEMA_VERSION
+            row["physical_objective_schema_version"] = PHYSICAL_OBJECTIVE_SCHEMA_VERSION

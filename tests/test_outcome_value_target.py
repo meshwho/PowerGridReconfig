@@ -116,7 +116,7 @@ def test_terminal_value_from_outcome_public_helper():
     assert terminal_value_from_outcome(
         solved=False,
         termination_reason="handoff_to_redispatch",
-    ) == (0.0, "handoff_to_redispatch_teacher")
+    ) == (0.0, "handoff_to_redispatch")
 
     assert terminal_value_from_outcome(
         solved=False,

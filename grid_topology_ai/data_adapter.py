@@ -11,6 +11,7 @@ from grid_topology_ai.physical_objective import (
     HARD_OVERLOAD_LIMIT_PERCENT,
     OVERLOAD_LIMIT_PERCENT,
 )
+from grid_topology_ai.security import ANGLE_TOLERANCE_DEG, GEN_TOLERANCE, topology_connected
 
 
 BUS_FEATURE_COLUMNS = [
@@ -82,6 +83,44 @@ def compute_voltage_violation_metrics(bus_df: pd.DataFrame) -> dict[str, float |
         "total_low_voltage_violation": total_low_voltage_violation,
         "total_high_voltage_violation": total_high_voltage_violation,
         "total_voltage_violation": total_voltage_violation,
+    }
+
+
+def compute_security_metrics(bus_df: pd.DataFrame, branch_df: pd.DataFrame, gen_df: pd.DataFrame | None = None, *, power_flow_converged: bool = True) -> dict[str, Any]:
+    active_branch = branch_df[branch_df["br_status"] > 0]
+    num_voltage_violations = int(compute_voltage_violation_metrics(bus_df)["num_low_voltage_buses"] + compute_voltage_violation_metrics(bus_df)["num_high_voltage_buses"])
+    arrays = [bus_df[["Vm","Va","Pd","Qd","Pg","Qg","min_vm_pu","max_vm_pu"]].to_numpy(dtype=float), branch_df[["pf","qf","pt","qt","loading_percent","br_status","rate_a","ang_min","ang_max"]].to_numpy(dtype=float)]
+    if gen_df is not None and not gen_df.empty:
+        arrays.append(gen_df[["p_mw","q_mvar","min_p_mw","max_p_mw","min_q_mvar","max_q_mvar","in_service"]].to_numpy(dtype=float))
+    state_finite = all(np.all(np.isfinite(a)) for a in arrays)
+    edge_index = branch_df[["from_bus", "to_bus"]].to_numpy(dtype=np.int64).T
+    connected = topology_connected(len(bus_df), edge_index, branch_df["br_status"].to_numpy(dtype=float))
+    pg_bad = qg_bad = 0
+    if gen_df is not None and not gen_df.empty:
+        active_gen = gen_df["in_service"].to_numpy(dtype=float) > 0
+        pg = gen_df["p_mw"].to_numpy(dtype=float); qg = gen_df["q_mvar"].to_numpy(dtype=float)
+        pg_bad = int(np.sum(active_gen & ((pg < gen_df["min_p_mw"].to_numpy(dtype=float) - GEN_TOLERANCE) | (pg > gen_df["max_p_mw"].to_numpy(dtype=float) + GEN_TOLERANCE))))
+        qg_bad = int(np.sum(active_gen & ((qg < gen_df["min_q_mvar"].to_numpy(dtype=float) - GEN_TOLERANCE) | (qg > gen_df["max_q_mvar"].to_numpy(dtype=float) + GEN_TOLERANCE))))
+    va_by_bus = dict(zip(bus_df["bus"].astype(int), bus_df["Va"].astype(float)))
+    angle_bad = 0
+    for _, row in active_branch.iterrows():
+        amin = float(row.get("ang_min", -360.0)); amax = float(row.get("ang_max", 360.0))
+        if amin <= -359.999 and amax >= 359.999:
+            continue
+        delta = va_by_bus[int(row["from_bus"])] - va_by_bus[int(row["to_bus"])]
+        if (amin > -359.999 and delta < amin - ANGLE_TOLERANCE_DEG) or (amax < 359.999 and delta > amax + ANGLE_TOLERANCE_DEG):
+            angle_bad += 1
+    return {
+        "power_flow_converged": bool(power_flow_converged),
+        "state_finite": bool(state_finite),
+        "topology_connected": bool(connected),
+        "num_voltage_violations": num_voltage_violations,
+        "generator_p_feasible": pg_bad == 0,
+        "generator_q_feasible": qg_bad == 0,
+        "num_generator_p_violations": pg_bad,
+        "num_generator_q_violations": qg_bad,
+        "angle_difference_feasible": angle_bad == 0,
+        "num_angle_difference_violations": int(angle_bad),
     }
 
 
@@ -457,6 +496,7 @@ class GridFMAdapter:
             "min_vm_pu": float(bus["Vm"].min()),
             "max_vm_pu": float(bus["Vm"].max()),
             **voltage_metrics,
+            **compute_security_metrics(bus, branch, gen),
             "num_outaged_branches": int(len(outaged)),
             "total_low_voltage_violation": total_low_voltage_violation,
             "total_high_voltage_violation": total_high_voltage_violation,

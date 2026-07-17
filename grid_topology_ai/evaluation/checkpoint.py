@@ -362,11 +362,11 @@ def run_episode(
         unsafe_terminal_state = False
     else:
         assessment = assess_physical_state(final_state.metrics)
-        if bool(env.solved) != assessment.thermal_solved:
+        if bool(env.solved) != assessment.physically_secure:
             raise RuntimeError(
                 f"Scenario {scenario_id} solved contract mismatch: "
                 f"env.solved={bool(env.solved)} "
-                f"thermal_solved={assessment.thermal_solved}"
+                f"physically_secure={assessment.physically_secure}"
             )
         final_max_loading = float(final_state.metrics["max_loading_percent"])
         final_overloaded = int(final_state.metrics["num_overloaded_branches"])
@@ -377,7 +377,7 @@ def run_episode(
         voltage_feasible = assessment.voltage_feasible
         physically_secure = assessment.physically_secure
         safe_handoff = (
-            env.termination_reason == "handoff_to_redispatch"
+            str(env.termination_reason) == "handoff_to_redispatch"
             and assessment.hard_overload_free
             and not assessment.thermal_solved
         )
@@ -394,7 +394,7 @@ def run_episode(
         "discounted_return": float(discounted_return),
         "done": bool(env.done),
         "solved": bool(env.solved),
-        "termination_reason": env.termination_reason,
+        "termination_reason": getattr(env.termination_reason, "value", env.termination_reason),
         "final_max_loading_percent": final_max_loading,
         "final_num_overloaded_branches": final_overloaded,
         "final_num_hard_overloaded_branches": final_hard,
@@ -403,6 +403,16 @@ def run_episode(
         "hard_overload_free": hard_overload_free,
         "voltage_feasible": voltage_feasible,
         "physically_secure": physically_secure,
+        "power_flow_converged": False if final_state is None else assessment.power_flow_converged,
+        "state_finite": False if final_state is None else assessment.state_finite,
+        "topology_connected": False if final_state is None else assessment.topology_connected,
+        "generator_p_feasible": False if final_state is None else assessment.generator_p_feasible,
+        "generator_q_feasible": False if final_state is None else assessment.generator_q_feasible,
+        "angle_difference_feasible": False if final_state is None else assessment.angle_difference_feasible,
+        "num_voltage_violations": -1 if final_state is None else assessment.num_voltage_violations,
+        "num_generator_p_violations": -1 if final_state is None else assessment.num_generator_p_violations,
+        "num_generator_q_violations": -1 if final_state is None else assessment.num_generator_q_violations,
+        "num_angle_difference_violations": -1 if final_state is None else assessment.num_angle_difference_violations,
         "safe_handoff": safe_handoff,
         "unsafe_terminal_state": unsafe_terminal_state,
     }

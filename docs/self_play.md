@@ -79,3 +79,9 @@ A pilot workflow is: prepare bootstrap artifacts, run `--validate-only`, run `--
 ## 20. Bootstrap metrics recalculation rules
 
 Recompute bootstrap metrics whenever the fixed evaluation set, raw states, checkpoint, `PF_ALG`, evaluation settings, or metrics schema changes. Do not reuse metrics with missing, fractional, boolean, or mismatched `pf_alg` values.
+
+## Physical objective schema v2
+
+Self-play acceptance uses `physically_secure_rate_requested` as the primary success metric. `solve_rate` remains an alias for physically secure success in new evaluation output, while `thermal_solved_rate` is diagnostic only.
+
+Schema version 1 evaluation metrics and training examples are incompatible with schema version 2 and must be regenerated rather than converted. New examples include `value_target_schema_version=2` and `physical_objective_schema_version=2`. Bootstrap checkpoints trained on schema version 1 targets should be retrained.

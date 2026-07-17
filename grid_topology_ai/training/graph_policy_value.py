@@ -1,4 +1,6 @@
 from __future__ import annotations
+from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
+from grid_topology_ai.value_targets import VALUE_TARGET_SCHEMA_VERSION
 
 from dataclasses import dataclass
 import random

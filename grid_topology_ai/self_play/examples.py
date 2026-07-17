@@ -9,6 +9,8 @@ import pandas as pd
 
 from grid_topology_ai.state_store import GridFMStateStore
 from grid_topology_ai.data_adapter import GridFMState
+from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
+from grid_topology_ai.value_targets import VALUE_TARGET_SCHEMA_VERSION
 
 
 @dataclass(frozen=True)
@@ -49,6 +51,8 @@ class SelfPlayExample:
 
     visit_counts_json: str
     mcts_policy_json: str
+    value_target_schema_version: int = VALUE_TARGET_SCHEMA_VERSION
+    physical_objective_schema_version: int = PHYSICAL_OBJECTIVE_SCHEMA_VERSION
 
 
 class ExampleWriter:
@@ -116,6 +120,8 @@ class ExampleWriter:
             solved=bool(solved),
             done=bool(done),
             termination_reason=termination_reason,
+            value_target_schema_version=VALUE_TARGET_SCHEMA_VERSION,
+            physical_objective_schema_version=PHYSICAL_OBJECTIVE_SCHEMA_VERSION,
             visit_counts_json=json.dumps(
                 {str(k): int(v) for k, v in visit_counts.items()}
             ),

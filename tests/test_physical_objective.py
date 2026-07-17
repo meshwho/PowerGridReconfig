@@ -98,7 +98,7 @@ def test_stop_outcome_allowed_unsafe_handoff():
 
 def test_stop_outcome_rejects_unsafe_stop():
     outcome = classify_stop_outcome(assess_physical_state(_metrics(num_overloaded_branches=1, num_hard_overloaded_branches=1)), allow_handoff_with_hard_overloads=False)
-    assert outcome.termination_reason == "unsafe_stop_with_hard_overload"
+    assert outcome.termination_reason == "unsafe_stop"
 
 
 def test_missing_metric_is_rejected():

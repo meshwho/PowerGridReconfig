@@ -181,7 +181,7 @@ class GridFMReward:
 
         # If the action fully removes all overloads, give a bonus.
         assessment = assess_physical_state(after_state.metrics)
-        done = assessment.thermal_solved
+        done = assessment.physically_secure
 
         if done:
             reward += self.solved_bonus

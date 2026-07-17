@@ -63,6 +63,7 @@ from grid_topology_ai.data_adapter import (
     GridFMAdapter,
     GridFMState,
     compute_voltage_violation_metrics,
+    compute_security_metrics,
 )
 import copy
 
@@ -807,6 +808,11 @@ class GridFMPowerFlowBackend:
             "total_low_voltage_violation": total_low_voltage_violation,
             "total_high_voltage_violation": total_high_voltage_violation,
             "total_voltage_violation": total_voltage_violation,
+            **__import__('grid_topology_ai.security', fromlist=['gen_limit_metrics','angle_limit_metrics']).gen_limit_metrics(gen_res),
+            **__import__('grid_topology_ai.security', fromlist=['gen_limit_metrics','angle_limit_metrics']).angle_limit_metrics(bus_res, branch_res),
+            "power_flow_converged": True,
+            "state_finite": bool(np.all(np.isfinite(bus_res)) and np.all(np.isfinite(branch_res)) and np.all(np.isfinite(gen_res))),
+            "topology_connected": __import__('grid_topology_ai.security', fromlist=['topology_connected']).topology_connected(bus_features.shape[0], previous_state.edge_index, br_status),
             "num_outaged_branches": int(np.sum(outaged_mask)),
         }
 
@@ -875,6 +881,7 @@ class GridFMPowerFlowBackend:
             scenario_id=scenario_id,
             bus_df=bus_df,
             branch_df=branch_df,
+            gen_df=gen_df,
         )
 
     @staticmethod
@@ -882,6 +889,7 @@ class GridFMPowerFlowBackend:
         scenario_id: int,
         bus_df: pd.DataFrame,
         branch_df: pd.DataFrame,
+        gen_df: pd.DataFrame | None = None,
     ) -> GridFMState:
         """
         Build GridFMState from updated bus/branch dataframes.
@@ -923,6 +931,7 @@ class GridFMPowerFlowBackend:
             "min_vm_pu": float(bus_df["Vm"].min()),
             "max_vm_pu": float(bus_df["Vm"].max()),
             **voltage_metrics,
+            **compute_security_metrics(bus_df, branch_df, gen_df, power_flow_converged=True),
             "num_outaged_branches": int(len(outaged)),
         }
 

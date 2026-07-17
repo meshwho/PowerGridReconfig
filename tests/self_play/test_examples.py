@@ -56,4 +56,6 @@ def test_example_writer_save_preserves_csv_schema(tmp_path: Path) -> None:
         "termination_reason",
         "visit_counts_json",
         "mcts_policy_json",
+        "value_target_schema_version",
+        "physical_objective_schema_version",
     ]

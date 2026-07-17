@@ -98,7 +98,9 @@ def build_evaluation_metrics(
     requested_scenarios: int,
     task_config: dict[str, Any],
 ) -> dict[str, Any]:
-    solved = df["solved"].astype(bool)
+    if "physically_secure" in df.columns and not (df["solved"].astype(bool) == df["physically_secure"].astype(bool)).all():
+        raise ValueError("Evaluation invariant failed: solved must equal physically_secure")
+    solved = df["physically_secure"].astype(bool) if "physically_secure" in df.columns else df["solved"].astype(bool)
     termination_counts = {
         str(key): int(value)
         for key, value in df["termination_reason"]
@@ -118,7 +120,7 @@ def build_evaluation_metrics(
 
     hard_overload_free_count = int(df["hard_overload_free"].astype(bool).sum())
     voltage_feasible_count = int(df["voltage_feasible"].astype(bool).sum())
-    physically_secure_count = int(df["physically_secure"].astype(bool).sum())
+    physically_secure_count = int(solved.sum())
     safe_handoff_count = int(df["safe_handoff"].astype(bool).sum())
     unsafe_terminal_state_count = int(
         df["unsafe_terminal_state"].astype(bool).sum()
@@ -136,6 +138,7 @@ def build_evaluation_metrics(
         "physical_objective_contract": physical_objective_contract(),
         "evaluation_coverage_rate": rate(evaluated_scenarios, requested_count),
         "solve_rate_requested": rate(solve_count, requested_count),
+        "physically_secure_rate_requested": rate(physically_secure_count, requested_count),
         "failed_scenario_rate_requested": rate(
             failed_scenarios, requested_count
         ),
@@ -149,6 +152,8 @@ def build_evaluation_metrics(
         "physically_secure_rate": rate(
             physically_secure_count, evaluated_scenarios
         ),
+        "thermal_solved_count": int(df["thermal_solved"].astype(bool).sum()) if "thermal_solved" in df.columns else 0,
+        "thermal_solved_rate": rate(int(df["thermal_solved"].astype(bool).sum()), evaluated_scenarios) if "thermal_solved" in df.columns else 0.0,
         "safe_handoff_count": safe_handoff_count,
         "safe_handoff_rate": rate(safe_handoff_count, evaluated_scenarios),
         "unsafe_terminal_state_count": unsafe_terminal_state_count,

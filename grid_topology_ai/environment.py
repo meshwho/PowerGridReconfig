@@ -10,6 +10,7 @@ from grid_topology_ai.pypower_backend import (
     GridFMPowerFlowBackend,
     GridFMPowerFlowResult,
 )
+from grid_topology_ai.outcome import TerminationReason
 from grid_topology_ai.physical_objective import (
     assess_physical_state,
     classify_stop_outcome,
@@ -87,7 +88,7 @@ class TopologySwitchingEnv:
         self.done: bool = False
         self.solved: bool = False
         self.switched_branch_ids: list[int] = []
-        self.termination_reason: str | None = None
+        self.termination_reason: TerminationReason | None = None
 
     def reset(self, scenario_id: int) -> GridFMState:
         """
@@ -222,7 +223,7 @@ class TopologySwitchingEnv:
         In a multi-step environment, do_nothing is interpreted as:
 
         1. solved
-           if all overloads are removed;
+           only if the state is physically secure;
 
         2. handoff_to_redispatch
            if topology switching should stop but the grid is not fully solved.
@@ -293,7 +294,7 @@ class TopologySwitchingEnv:
         if not power_flow_result.success or power_flow_result.next_state is None:
             self.done = True
             self.solved = False
-            self.termination_reason = "power_flow_failed"
+            self.termination_reason = TerminationReason.POWER_FLOW_FAILED
 
             return TopologyStepResult(
                 next_state=None,
@@ -309,14 +310,16 @@ class TopologySwitchingEnv:
 
         self.current_state = power_flow_result.next_state
 
-        self.solved = bool(reward_breakdown.done)
+        assessment = assess_physical_state(self.current_state.metrics)
+        self.solved = bool(assessment.physically_secure)
+        assert bool(reward_breakdown.done) == self.solved
 
         if self.solved:
             self.done = True
-            self.termination_reason = "solved"
+            self.termination_reason = TerminationReason.SOLVED
         elif self.step_count >= self.max_steps:
             self.done = True
-            self.termination_reason = "max_steps_reached"
+            self.termination_reason = TerminationReason.MAX_STEPS_REACHED
         else:
             self.done = False
             self.termination_reason = None
@@ -344,7 +347,7 @@ class TopologySwitchingEnv:
             "max_steps": self.max_steps,
             "done": self.done,
             "solved": self.solved,
-            "termination_reason": self.termination_reason,
+            "termination_reason": self.termination_reason.value if self.termination_reason is not None else None,
             "switched_branch_ids": list(self.switched_branch_ids),
         }
 

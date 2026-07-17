@@ -71,6 +71,15 @@ def require_metrics_pf_alg(
         )
 
 
+
+def require_physical_objective_schema_v2(metrics: Mapping[str, object], *, source: str) -> None:
+    contract = metrics.get("physical_objective_contract")
+    if not isinstance(contract, Mapping):
+        raise ValueError(f"Physical objective schema missing for {source}; old evaluation metrics are incompatible and must be regenerated.")
+    version = contract.get("schema_version")
+    if int(version) != 2:
+        raise ValueError(f"Physical objective schema version {version!r} for {source} is incompatible; old evaluation metrics must be regenerated with schema version 2.")
+
 def accept_candidate(
     *,
     new_metrics: Mapping[str, object],
@@ -78,6 +87,9 @@ def accept_candidate(
     config: AcceptanceConfig,
 ) -> bool:
     metric = config.metric
+    if metric != "solve_rate":
+        require_physical_objective_schema_v2(new_metrics, source="candidate metrics")
+        require_physical_objective_schema_v2(best_metrics, source="best metrics")
 
     if metric not in new_metrics:
         raise KeyError(f"Metric {metric!r} not found in new_metrics.")

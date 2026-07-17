@@ -107,7 +107,7 @@ evaluation:
 
 # Candidate acceptance policy.
 acceptance:
-  metric: solve_rate
+  metric: physically_secure_rate_requested
   min_improvement: 0.0
   max_simple_solve_rate_drop: 0.05
   reject_if_failed_scenarios_above: 0

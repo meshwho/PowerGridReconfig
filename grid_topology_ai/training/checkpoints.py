@@ -1,4 +1,6 @@
 from __future__ import annotations
+from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
+from grid_topology_ai.value_targets import VALUE_TARGET_SCHEMA_VERSION
 
 import hashlib
 import subprocess
@@ -289,7 +291,9 @@ def make_checkpoint(
         "dropout": float(request.config.dropout),
         "examples_csv": str(request.examples_csv),
         "training_seed": int(request.seed),
-        "checkpoint_selection_metric": (
+        "physical_objective_schema_version": PHYSICAL_OBJECTIVE_SCHEMA_VERSION,
+            "value_target_schema_version": VALUE_TARGET_SCHEMA_VERSION,
+            "checkpoint_selection_metric": (
             "validation_loss" if validation_dataset is not None else "training_loss"
         ),
         "validation_examples_csv": (
