@@ -9,6 +9,7 @@ from grid_topology_ai.physical_objective import (
     OVERLOAD_LIMIT_PERCENT,
     assess_physical_state,
 )
+from grid_topology_ai.config.physics import PhysicsConfig
 from grid_topology_ai.data_adapter import (
     BRANCH_FEATURE_COLUMNS,
     BUS_FEATURE_COLUMNS,
@@ -70,6 +71,8 @@ class GridFMReward:
 
     def __init__(
         self,
+        *,
+        physics_config: PhysicsConfig | None = None,
         overload_limit_percent: float = OVERLOAD_LIMIT_PERCENT,
         hard_overload_limit_percent: float = HARD_OVERLOAD_LIMIT_PERCENT,
         switching_penalty: float = 1.0,
@@ -81,6 +84,13 @@ class GridFMReward:
         num_hard_overloaded_weight: float = 30.0,
         voltage_violation_weight: float = 500.0,
     ):
+        if physics_config is not None:
+            if (overload_limit_percent != OVERLOAD_LIMIT_PERCENT or
+                    hard_overload_limit_percent != HARD_OVERLOAD_LIMIT_PERCENT):
+                raise ValueError("PhysicsConfig cannot be combined with explicit overload thresholds.")
+            overload_limit_percent = physics_config.overload_limit_percent
+            hard_overload_limit_percent = physics_config.hard_overload_limit_percent
+        self.physics_config = physics_config
         self.overload_limit_percent = overload_limit_percent
         self.hard_overload_limit_percent = hard_overload_limit_percent
         self.switching_penalty = switching_penalty

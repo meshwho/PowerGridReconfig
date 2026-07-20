@@ -15,6 +15,9 @@ from grid_topology_ai.termination import TerminationReason
 
 
 class _FakeReward:
+    def __init__(self, *, physics_config=None) -> None:
+        self.physics_config = physics_config
+
     def config_dict(self) -> dict[str, object]:
         return {"reward": "fake"}
 

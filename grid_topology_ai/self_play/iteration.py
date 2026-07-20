@@ -208,6 +208,7 @@ def run_self_play_iteration(
         checkpoint=parent_checkpoint,
         output_dir=iter_dir / "raw",
         config=config.generation,
+        physics_config=config.physics,
         base_seed=config.seed,
         iteration=iteration,
     )
@@ -267,6 +268,7 @@ def run_self_play_iteration(
         eval_raw_dir=paths.eval_raw_dir,
         output_dir=iter_dir,
         config=config.evaluation,
+        physics_config=config.physics,
     )
     require_metrics_pf_alg(
         metrics,
