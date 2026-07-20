@@ -12,6 +12,7 @@ from grid_topology_ai.self_play import replay as replay_module
 from grid_topology_ai.self_play.replay import RollingReplayBuffer
 from grid_topology_ai.contracts import OUTCOME_VALUE_TARGET_CONTRACT_VERSION
 from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
+from grid_topology_ai.termination import TerminationReason
 
 
 def rows(prefix: str, count: int) -> list[dict[str, object]]:
@@ -121,6 +122,13 @@ def _valid_example_row(state_path: Path, *, state_id: str = "state-1") -> dict[s
         "outcome_value_target": 1.0,
         "physical_objective_schema_version": PHYSICAL_OBJECTIVE_SCHEMA_VERSION,
         "outcome_value_target_contract_version": OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
+        "solved": True,
+        "done": True,
+        "termination_reason": TerminationReason.SOLVED.value,
+        "outcome_class": TerminationReason.SOLVED.value,
+        "outcome_steps_to_terminal": 1,
+        "outcome_value_target_mode": "alphazero_discounted",
+        "outcome_gamma": 1.0,
     }
 
 

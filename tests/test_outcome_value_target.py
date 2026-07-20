@@ -1,7 +1,13 @@
 import math
+from copy import deepcopy
+
 import pytest
-from grid_topology_ai.value_targets import add_outcome_value_targets_to_rows
 from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
+from grid_topology_ai.termination import TerminationReason
+from grid_topology_ai.value_targets import (
+    add_outcome_value_targets_to_rows,
+    terminal_value_from_outcome,
+)
 
 
 def _current(rows):
@@ -17,23 +23,23 @@ def test_outcome_value_target_solved_episode():
         {
             "scenario_id": 1,
             "step": 0,
-            "solved": False,
-            "done": False,
-            "termination_reason": None,
+            "solved": True,
+            "done": True,
+            "termination_reason": TerminationReason.SOLVED.value,
         },
         {
             "scenario_id": 1,
             "step": 1,
-            "solved": False,
-            "done": False,
-            "termination_reason": None,
+            "solved": True,
+            "done": True,
+            "termination_reason": TerminationReason.SOLVED.value,
         },
         {
             "scenario_id": 1,
             "step": 2,
             "solved": True,
             "done": True,
-            "termination_reason": "solved",
+            "termination_reason": TerminationReason.SOLVED.value,
         },
     ]
 
@@ -51,15 +57,15 @@ def test_outcome_value_target_handoff_episode():
             "scenario_id": 2,
             "step": 0,
             "solved": False,
-            "done": False,
-            "termination_reason": None,
+            "done": True,
+            "termination_reason": TerminationReason.HANDOFF_TO_REDISPATCH_TEACHER.value,
         },
         {
             "scenario_id": 2,
             "step": 1,
             "solved": False,
             "done": True,
-            "termination_reason": "handoff_to_redispatch_teacher",
+            "termination_reason": TerminationReason.HANDOFF_TO_REDISPATCH_TEACHER.value,
         },
     ]
 
@@ -76,15 +82,15 @@ def test_outcome_value_target_max_steps_episode():
             "scenario_id": 3,
             "step": 0,
             "solved": False,
-            "done": False,
-            "termination_reason": None,
+            "done": True,
+            "termination_reason": TerminationReason.MAX_STEPS_REACHED.value,
         },
         {
             "scenario_id": 3,
             "step": 1,
             "solved": False,
             "done": True,
-            "termination_reason": "max_steps_reached",
+            "termination_reason": TerminationReason.MAX_STEPS_REACHED.value,
         },
     ]
 
@@ -101,8 +107,8 @@ def test_outcome_value_target_teacher_depth_limit_is_negative():
             "scenario_id": 4,
             "step": 0,
             "solved": False,
-            "done": False,
-            "termination_reason": "teacher_depth_limit",
+            "done": True,
+            "termination_reason": TerminationReason.TEACHER_DEPTH_LIMIT.value,
         },
     ]
 
@@ -112,9 +118,6 @@ def test_outcome_value_target_teacher_depth_limit_is_negative():
     assert rows[0]["outcome_steps_to_terminal"] == 1
     assert rows[0]["outcome_value_target_mode"] == "alphazero_discounted"
     assert rows[0]["outcome_value_target"] == pytest.approx(-0.99)
-
-from grid_topology_ai.value_targets import terminal_value_from_outcome
-
 
 def test_terminal_value_from_outcome_public_helper():
     assert terminal_value_from_outcome(
@@ -147,3 +150,105 @@ def test_unknown_reason_is_rejected():
         solved=False,
         termination_reason="max_steps_reached",
     ) == (-1.0, "max_steps_reached")
+
+
+def test_outcome_targets_reject_unfinished_episode_without_mutating_rows():
+    rows = _current(
+        [
+            {
+                "scenario_id": 5,
+                "step": 0,
+                "solved": False,
+                "done": False,
+                "termination_reason": TerminationReason.MAX_STEPS_REACHED.value,
+            }
+        ]
+    )
+
+    with pytest.raises(ValueError, match=r"group \(5,\).*not done"):
+        add_outcome_value_targets_to_rows(rows, gamma=0.95)
+
+    assert "outcome_value_target" not in rows[0]
+
+
+def test_outcome_targets_reject_mixed_episode_outcomes():
+    rows = _current(
+        [
+            {
+                "scenario_id": 6,
+                "step": 0,
+                "solved": False,
+                "done": True,
+                "termination_reason": TerminationReason.MAX_STEPS_REACHED.value,
+            },
+            {
+                "scenario_id": 6,
+                "step": 1,
+                "solved": True,
+                "done": True,
+                "termination_reason": TerminationReason.SOLVED.value,
+            },
+        ]
+    )
+
+    with pytest.raises(ValueError, match=r"group \(6,\).*differ"):
+        add_outcome_value_targets_to_rows(rows, gamma=0.95)
+
+
+@pytest.mark.parametrize("gamma", [float("nan"), float("inf"), True])
+def test_outcome_targets_reject_non_finite_or_boolean_gamma(gamma):
+    with pytest.raises(ValueError, match="finite number"):
+        add_outcome_value_targets_to_rows([], gamma=gamma)
+
+
+def test_outcome_targets_are_atomic_across_episode_groups():
+    rows = _current(
+        [
+            {
+                "scenario_id": 1,
+                "step": 0,
+                "solved": True,
+                "done": True,
+                "termination_reason": TerminationReason.SOLVED.value,
+            },
+            {
+                "scenario_id": 2,
+                "step": 0,
+                "solved": False,
+                "done": False,
+                "termination_reason": TerminationReason.MAX_STEPS_REACHED.value,
+            },
+        ]
+    )
+    before = deepcopy(rows)
+
+    with pytest.raises(ValueError, match=r"group \(2,\).*not done"):
+        add_outcome_value_targets_to_rows(rows, gamma=0.95)
+
+    assert rows == before
+    assert all("outcome_value_target" not in row for row in rows)
+
+
+def test_outcome_targets_preserve_source_outcome_fields():
+    rows = _current(
+        [
+            {
+                "scenario_id": 7,
+                "step": 0,
+                "solved": False,
+                "done": True,
+                "termination_reason": TerminationReason.MAX_STEPS_REACHED.value,
+            }
+        ]
+    )
+    source_outcome = {
+        field: rows[0][field]
+        for field in ("solved", "done", "termination_reason")
+    }
+
+    add_outcome_value_targets_to_rows(rows, gamma=0.95)
+
+    assert {
+        field: rows[0][field]
+        for field in ("solved", "done", "termination_reason")
+    } == source_outcome

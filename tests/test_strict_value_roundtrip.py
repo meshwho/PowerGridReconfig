@@ -8,6 +8,7 @@ import torch
 from grid_topology_ai.models.graph_self_play_dataset import GraphSelfPlayDataset
 from grid_topology_ai.value_targets import add_outcome_value_targets_to_rows
 from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
+from grid_topology_ai.termination import TerminationReason
 
 
 def _current(rows):
@@ -51,9 +52,9 @@ def test_outcome_value_target_roundtrip_from_generator_to_dataset(tmp_path):
             "scenario_id": 10,
             "step": 0,
             "state_id": "state_0",
-            "solved": False,
-            "done": False,
-            "termination_reason": "",
+            "solved": True,
+            "done": True,
+            "termination_reason": TerminationReason.SOLVED.value,
         },
         {
             "state_path": str(state_1),
@@ -63,11 +64,18 @@ def test_outcome_value_target_roundtrip_from_generator_to_dataset(tmp_path):
             "state_id": "state_1",
             "solved": True,
             "done": True,
-            "termination_reason": "solved",
+            "termination_reason": TerminationReason.SOLVED.value,
         },
     ]
 
     add_outcome_value_targets_to_rows(_current(rows), gamma=0.9)
+
+    assert all(row["solved"] is True for row in rows)
+    assert all(row["done"] is True for row in rows)
+    assert all(
+        row["termination_reason"] == TerminationReason.SOLVED.value for row in rows
+    )
+    assert all(row["outcome_class"] == TerminationReason.SOLVED.value for row in rows)
 
     examples_csv = tmp_path / "examples.csv"
     pd.DataFrame(rows).to_csv(examples_csv, index=False)

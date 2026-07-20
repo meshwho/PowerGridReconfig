@@ -5,6 +5,7 @@ import pandas as pd
 import pytest
 from grid_topology_ai.contracts import OUTCOME_VALUE_TARGET_CONTRACT_VERSION
 from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
+from grid_topology_ai.termination import TerminationReason
 
 from grid_topology_ai.models.graph_self_play_dataset import GraphSelfPlayDataset
 
@@ -54,6 +55,13 @@ def _write_examples_csv(
                 "outcome_value_target": outcome_value_target,
                 "physical_objective_schema_version": PHYSICAL_OBJECTIVE_SCHEMA_VERSION,
                 "outcome_value_target_contract_version": OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
+                "solved": False,
+                "done": True,
+                "termination_reason": TerminationReason.HANDOFF_TO_REDISPATCH_TEACHER.value,
+                "outcome_class": TerminationReason.HANDOFF_TO_REDISPATCH.value,
+                "outcome_steps_to_terminal": 1,
+                "outcome_value_target_mode": "alphazero_discounted",
+                "outcome_gamma": 0.95,
                 "scenario_id": 1,
                 "step": 0,
                 "state_id": "state_0",

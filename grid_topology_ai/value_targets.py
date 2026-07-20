@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import math
+from numbers import Real
+
 from grid_topology_ai.contracts import OUTCOME_VALUE_TARGET_CONTRACT_VERSION
 from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
 from grid_topology_ai.termination import (
@@ -62,13 +65,21 @@ def add_outcome_value_targets_to_rows(
     - outcome_value_target_mode
     - outcome_gamma
 
-    The target is based only on final episode outcome:
+    The target is based only on the episode outcome already recorded on every
+    row. The function rejects incomplete or inconsistent groups instead of
+    rewriting their source outcome fields:
 
         solved  -> +1.0 * gamma^k
         handoff ->  0.0 * gamma^k
         failed  -> -1.0 * gamma^k
     """
 
+    if (
+        isinstance(gamma, bool)
+        or not isinstance(gamma, Real)
+        or not math.isfinite(gamma)
+    ):
+        raise ValueError(f"gamma must be a finite number in [0, 1], got {gamma!r}")
     if gamma < 0.0 or gamma > 1.0:
         raise ValueError(f"gamma must be in [0, 1], got {gamma}")
 
@@ -88,24 +99,34 @@ def add_outcome_value_targets_to_rows(
         key = tuple(row.get(k) for k in group_keys)
         groups.setdefault(key, []).append(row)
 
-    for _, group_rows in groups.items():
-        group_rows.sort(key=lambda r: int(r.get("step", 0)))
+    planned_targets: list[tuple[list[dict], float, str]] = []
 
-        if not group_rows:
-            continue
-
-        terminal_row = group_rows[-1]
-
-        terminal_value, outcome_class = terminal_value_from_outcome(
-            solved=bool(terminal_row.get("solved", False)),
-            termination_reason=parse_termination_reason(
-                terminal_row.get("termination_reason")
-            ),
+    # Phase 1: validate and derive every update without touching input rows.
+    for group_key, group_rows in groups.items():
+        group_label = f"group {group_key!r}"
+        ordered_rows = sorted(
+            group_rows,
+            key=lambda row: _require_step(row.get("step"), group_label=group_label),
         )
 
-        n = len(group_rows)
+        if not ordered_rows:
+            raise ValueError(f"Cannot derive outcome targets for {group_label}: empty group.")
 
-        for position, row in enumerate(group_rows):
+        terminal_solved, terminal_reason = _validate_group_outcome(
+            ordered_rows,
+            group_key=group_key,
+        )
+        terminal_value, outcome_class = terminal_value_from_outcome(
+            solved=terminal_solved,
+            termination_reason=terminal_reason,
+        )
+
+        planned_targets.append((ordered_rows, terminal_value, outcome_class))
+
+    # Phase 2: all groups are valid, so applying target fields is atomic.
+    for ordered_rows, terminal_value, outcome_class in planned_targets:
+        n = len(ordered_rows)
+        for position, row in enumerate(ordered_rows):
             steps_to_terminal = n - position
 
             row["outcome_value_target"] = float(
@@ -118,3 +139,89 @@ def add_outcome_value_targets_to_rows(
             row["outcome_value_target_contract_version"] = (
                 OUTCOME_VALUE_TARGET_CONTRACT_VERSION
             )
+
+
+def _validate_group_outcome(
+    group_rows: list[dict],
+    *,
+    group_key: tuple,
+) -> tuple[bool, TerminationReason]:
+    """Return the pre-existing, consistent terminal outcome for one episode."""
+
+    group_label = f"group {group_key!r}"
+    expected: tuple[bool, bool, TerminationReason] | None = None
+
+    for row_index, row in enumerate(group_rows):
+        solved = _require_bool(
+            row.get("solved"),
+            field="solved",
+            group_label=group_label,
+            row_index=row_index,
+        )
+        done = _require_bool(
+            row.get("done"),
+            field="done",
+            group_label=group_label,
+            row_index=row_index,
+        )
+        try:
+            reason = parse_termination_reason(
+                row.get("termination_reason"),
+                allow_none=False,
+            )
+            validate_outcome_invariants(
+                solved=solved,
+                termination_reason=reason,
+            )
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"Cannot derive outcome targets for {group_label}: invalid "
+                f"episode outcome at row {row_index}: {exc}"
+            ) from exc
+
+        outcome = (solved, done, reason)
+        if expected is None:
+            expected = outcome
+        elif outcome != expected:
+            raise ValueError(
+                f"Cannot derive outcome targets for {group_label}: "
+                "episode-level outcomes differ between rows."
+            )
+
+    if expected is None:
+        raise ValueError(f"Cannot derive outcome targets for {group_label}: empty group.")
+    solved, done, reason = expected
+    if not done:
+        raise ValueError(
+            f"Cannot derive outcome targets for {group_label}: episode is not done."
+        )
+    return solved, reason
+
+
+def _require_bool(
+    value: object,
+    *,
+    field: str,
+    group_label: str,
+    row_index: int,
+) -> bool:
+    if isinstance(value, bool):
+        return value
+    raise ValueError(
+        f"Cannot derive outcome targets for {group_label}: {field} at row "
+        f"{row_index} must be a boolean, got {value!r}."
+    )
+
+
+def _require_step(value: object, *, group_label: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, Real):
+        raise ValueError(
+            f"Cannot derive outcome targets for {group_label}: step must be "
+            f"a finite integer, got {value!r}."
+        )
+    if not math.isfinite(value) or not float(value).is_integer() or value < 0:
+        raise ValueError(
+            f"Cannot derive outcome targets for {group_label}: step must be "
+            f"a finite non-negative integer, got {value!r}."
+        )
+    return int(value)

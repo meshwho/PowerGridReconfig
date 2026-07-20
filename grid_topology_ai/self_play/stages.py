@@ -39,6 +39,7 @@ from grid_topology_ai.contracts import (
 from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
 from grid_topology_ai.self_play.example_validation import (
     validate_example_contract_versions,
+    validate_example_outcome_contracts,
 )
 
 
@@ -316,6 +317,7 @@ def ensure_outcome_value_targets(
 
     if "outcome_value_target" in df.columns:
         validate_example_contract_versions(df, source_path=examples_csv)
+        validate_example_outcome_contracts(df, source_path=examples_csv)
         print(f"outcome_value_target already exists: {examples_csv}")
         return examples_csv
 

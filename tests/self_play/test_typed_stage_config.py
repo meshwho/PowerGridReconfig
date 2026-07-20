@@ -17,6 +17,7 @@ from grid_topology_ai.contracts import (
     OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
 )
 from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
+from grid_topology_ai.termination import TerminationReason
 
 
 def test_run_generate_uses_generation_request(
@@ -31,11 +32,19 @@ def test_run_generate_uses_generation_request(
         examples_csv = request.output_dir / "examples.csv"
         examples_csv.write_text(
             "scenario_id,outcome_value_target,physical_objective_schema_version,"
-            "outcome_value_target_contract_version\n"
-            f"1,0.5,{PHYSICAL_OBJECTIVE_SCHEMA_VERSION},"
-            f"{OUTCOME_VALUE_TARGET_CONTRACT_VERSION}\n"
-            f"2,0.4,{PHYSICAL_OBJECTIVE_SCHEMA_VERSION},"
-            f"{OUTCOME_VALUE_TARGET_CONTRACT_VERSION}\n",
+            "outcome_value_target_contract_version,solved,done,"
+            "termination_reason,outcome_class,outcome_steps_to_terminal,"
+            "outcome_value_target_mode,outcome_gamma\n"
+            f"1,0.0,{PHYSICAL_OBJECTIVE_SCHEMA_VERSION},"
+            f"{OUTCOME_VALUE_TARGET_CONTRACT_VERSION},False,True,"
+            f"{TerminationReason.HANDOFF_TO_REDISPATCH_TEACHER.value},"
+            f"{TerminationReason.HANDOFF_TO_REDISPATCH.value},1,"
+            "alphazero_discounted,0.91\n"
+            f"2,0.0,{PHYSICAL_OBJECTIVE_SCHEMA_VERSION},"
+            f"{OUTCOME_VALUE_TARGET_CONTRACT_VERSION},False,True,"
+            f"{TerminationReason.HANDOFF_TO_REDISPATCH_TEACHER.value},"
+            f"{TerminationReason.HANDOFF_TO_REDISPATCH.value},1,"
+            "alphazero_discounted,0.91\n",
             encoding="utf-8",
         )
         print("generated examples")

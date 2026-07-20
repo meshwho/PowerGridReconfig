@@ -86,11 +86,6 @@ def validate_examples_dataframe(examples: pd.DataFrame, *, source_path: str | Pa
         if step < 0:
             raise ValueError(f"step must be >= 0 at row {index}. File: {source}")
         _ = scenario_id
-        _validate_outcome_contract(
-            row,
-            index=index,
-            source=source,
-        )
         policy = _parse_policy(row["mcts_policy_json"], index=index, source=source)
         state_path = Path(str(row["state_path"]).strip())
         if not state_path.exists():
@@ -110,6 +105,58 @@ def validate_examples_dataframe(examples: pd.DataFrame, *, source_path: str | Pa
             # policy target, so policy-support membership is intentionally not checked.
             if selected < 0 or selected >= len(action_mask) or not bool(action_mask[selected]):
                 raise ValueError(f"selected_action_id {selected} is invalid for action_mask at row {index}. File: {source}")
+
+    validate_example_outcome_contracts(examples, source_path=source)
+
+
+def validate_example_outcome_contracts(
+    examples: pd.DataFrame,
+    *,
+    source_path: str | Path,
+) -> None:
+    """Validate strict outcome targets and episode-level outcome consistency."""
+
+    source = Path(source_path)
+    required = {
+        "scenario_id",
+        "solved",
+        "done",
+        "termination_reason",
+        "outcome_value_target",
+        "outcome_class",
+        "outcome_steps_to_terminal",
+        "outcome_value_target_mode",
+        "outcome_gamma",
+    }
+    missing = sorted(required - set(examples.columns))
+    if missing:
+        raise ValueError(
+            f"Examples CSV is missing required outcome columns: {missing}. "
+            f"File: {source}"
+        )
+
+    episode_outcomes: dict[int, tuple[bool, bool, str, str]] = {}
+    for index, row in examples.iterrows():
+        scenario_id = _require_integer(
+            row["scenario_id"],
+            column="scenario_id",
+            index=index,
+            source=source,
+        )
+        _validate_outcome_contract(row, index=index, source=source)
+
+        outcome = (
+            _require_bool(row["solved"], column="solved", index=index, source=source),
+            _require_bool(row["done"], column="done", index=index, source=source),
+            str(row["termination_reason"]).strip(),
+            str(row["outcome_class"]).strip(),
+        )
+        previous = episode_outcomes.setdefault(scenario_id, outcome)
+        if previous != outcome:
+            raise ValueError(
+                "Episode-level outcome fields differ within scenario "
+                f"{scenario_id} at row {index}. File: {source}"
+            )
 
 
 def validate_example_contract_versions(

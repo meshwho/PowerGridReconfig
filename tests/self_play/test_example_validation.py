@@ -7,7 +7,10 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from grid_topology_ai.self_play.example_validation import load_and_validate_examples_csv
+from grid_topology_ai.self_play.example_validation import (
+    load_and_validate_examples_csv,
+    validate_example_outcome_contracts,
+)
 from grid_topology_ai.contracts import OUTCOME_VALUE_TARGET_CONTRACT_VERSION
 from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
 
@@ -62,6 +65,28 @@ def test_valid_examples_csv_is_accepted(tmp_path: Path) -> None:
     csv = write_csv(tmp_path / "examples.csv", [valid_row(write_state(tmp_path / "s.npz"))])
     df = load_and_validate_examples_csv(csv)
     assert len(df) == 1
+
+
+def test_public_outcome_validator_rejects_mixed_episode_outcomes(tmp_path: Path) -> None:
+    state = write_state(tmp_path / "s.npz")
+    solved = valid_row(state)
+    unsolved = valid_row(state)
+    unsolved.update(
+        {
+            "state_id": "state-2",
+            "solved": False,
+            "termination_reason": "max_steps_reached",
+            "outcome_class": "max_steps_reached",
+            "outcome_value_target": -1.0,
+        }
+    )
+    examples = pd.DataFrame([solved, unsolved])
+
+    with pytest.raises(ValueError, match="Episode-level outcome fields differ"):
+        validate_example_outcome_contracts(
+            examples,
+            source_path=tmp_path / "examples.csv",
+        )
 
 
 def test_empty_file_is_rejected(tmp_path: Path) -> None:
