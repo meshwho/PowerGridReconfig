@@ -214,7 +214,7 @@ def main() -> None:
 
     backend = GridFMPowerFlowBackend(
         adapter=adapter,
-        pf_alg=args.pf_alg,
+        physics_config=__import__("dataclasses").replace(__import__("grid_topology_ai.config.physics", fromlist=["DEFAULT_PHYSICS_CONFIG"]).DEFAULT_PHYSICS_CONFIG, pf_alg=args.pf_alg),
         enable_cache=not args.disable_cache,
     )
 

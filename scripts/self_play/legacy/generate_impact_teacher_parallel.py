@@ -346,7 +346,7 @@ def process_one_scenario_worker(task: dict[str, Any]) -> dict[str, Any]:
 
         backend = GridFMPowerFlowBackend(
             adapter=adapter,
-            pf_alg=int(task["pf_alg"]),
+            physics_config=__import__("grid_topology_ai.config.physics", fromlist=["PhysicsConfig"]).PhysicsConfig.from_mapping(task["physics_config"]),
             enable_cache=not bool(task["disable_cache"]),
         )
 

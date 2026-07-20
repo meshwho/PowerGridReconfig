@@ -14,6 +14,8 @@ except ImportError:  # pragma: no cover
     tqdm = None
 
 from grid_topology_ai.config import EvaluationConfig
+from grid_topology_ai.config.physics import DEFAULT_PHYSICS_CONFIG, PhysicsConfig
+from grid_topology_ai.contracts import PHYSICS_CONFIG_CONTRACT_VERSION
 from grid_topology_ai.config._validation import coerce_exact_int
 from grid_topology_ai.evaluation.metrics import (
     attach_difficulty_metadata,
@@ -51,6 +53,7 @@ class EvaluationRequest:
     transitions_csv: Path
     checkpoint: Path
     config: EvaluationConfig
+    physics_config: PhysicsConfig = DEFAULT_PHYSICS_CONFIG
     output_csv: Path | None = None
     output_json: Path | None = None
     limit: int | None = None
@@ -199,9 +202,12 @@ def init_worker_context(
     checkpoint_path = Path(checkpoint_path_str)
 
     adapter = GridFMAdapter(raw_dir)
+    physics_config = PhysicsConfig.from_mapping(task_config["physics_config"])
+    if physics_config.fingerprint() != task_config["physics_config_fingerprint"]:
+        raise ValueError("Evaluation task PhysicsConfig fingerprint mismatch.")
     backend = GridFMPowerFlowBackend(
         adapter=adapter,
-        pf_alg=int(task_config["pf_alg"]),
+        physics_config=physics_config,
         enable_cache=not bool(task_config["disable_cache"]),
     )
     action_space = GridFMActionSpace(
@@ -565,7 +571,9 @@ def _make_task_config(request: EvaluationRequest) -> dict[str, Any]:
         "leaf_penalty_weight": float(request.leaf_penalty_weight),
         "stop_policy": str(request.stop_policy),
         "device": str(config.device),
-        "pf_alg": int(request.resolved_pf_alg),
+        "physics_config_contract_version": PHYSICS_CONFIG_CONTRACT_VERSION,
+        "physics_config": request.physics_config.to_dict(),
+        "physics_config_fingerprint": request.physics_config.fingerprint(),
         "disable_cache": bool(request.disable_cache),
         "use_continuation_gate": bool(config.use_continuation_gate),
         "min_hard_improvement": float(request.min_hard_improvement),

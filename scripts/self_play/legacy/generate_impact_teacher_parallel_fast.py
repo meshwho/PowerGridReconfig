@@ -128,7 +128,7 @@ def init_worker_context(
 
     backend = GridFMPowerFlowBackend(
         adapter=adapter,
-        pf_alg=int(task_config["pf_alg"]),
+        physics_config=__import__("grid_topology_ai.config.physics", fromlist=["PhysicsConfig"]).PhysicsConfig.from_mapping(task_config["physics_config"]),
         max_iter=int(task_config["pf_max_iter"]),
         enable_cache=not bool(task_config["disable_cache"]),
     )

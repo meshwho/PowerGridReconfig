@@ -10,6 +10,7 @@ import numpy as np
 import pandas as pd
 
 from grid_topology_ai.config import GenerationConfig
+from grid_topology_ai.config.physics import DEFAULT_PHYSICS_CONFIG, PhysicsConfig
 from grid_topology_ai.physical_objective import (
     HARD_OVERLOAD_LIMIT_PERCENT,
     OVERLOAD_LIMIT_PERCENT,
@@ -47,6 +48,7 @@ class GenerationRequest:
     config: GenerationConfig
     seed: int
     clear_cache_between_scenarios: bool
+    physics_config: PhysicsConfig = DEFAULT_PHYSICS_CONFIG
     scenario_ids: tuple[int, ...] | None = None
     device: str = "cpu"
     enable_cache: bool = True
@@ -407,7 +409,7 @@ def generate_self_play_examples(request: GenerationRequest) -> Path:
     adapter = GridFMAdapter(request.raw_dir)
     backend = GridFMPowerFlowBackend(
         adapter=adapter,
-        pf_alg=request.config.pf_alg,
+        physics_config=request.physics_config,
         enable_cache=request.enable_cache,
     )
     action_space = GridFMActionSpace(

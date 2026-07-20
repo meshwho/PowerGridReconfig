@@ -356,6 +356,7 @@ def run_generate(
     checkpoint: str | Path,
     output_dir: str | Path,
     config: GenerationConfig,
+    physics_config: PhysicsConfig,
     base_seed: int,
     iteration: int,
 ) -> Path:
@@ -384,6 +385,7 @@ def run_generate(
         output_dir=output_dir,
         checkpoint=Path(checkpoint),
         config=config,
+        physics_config=physics_config,
         seed=iteration_seed,
         clear_cache_between_scenarios=True,
     )
@@ -489,6 +491,7 @@ def run_evaluate(
     eval_raw_dir: str | Path,
     output_dir: str | Path,
     config: EvaluationConfig,
+    physics_config: PhysicsConfig,
 ) -> dict[str, Any]:
     """
     Evaluate candidate checkpoint on fixed eval set.
@@ -507,6 +510,7 @@ def run_evaluate(
         transitions_csv=Path(eval_csv),
         checkpoint=Path(checkpoint),
         config=config,
+        physics_config=physics_config,
         output_csv=output_csv,
         output_json=output_json,
         limit=None,

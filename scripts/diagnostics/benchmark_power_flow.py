@@ -50,7 +50,7 @@ def benchmark_algorithm(
     adapter = GridFMAdapter(raw_dir)
     backend = GridFMPowerFlowBackend(
         adapter=adapter,
-        pf_alg=pf_alg,
+        physics_config=__import__("dataclasses").replace(__import__("grid_topology_ai.config.physics", fromlist=["DEFAULT_PHYSICS_CONFIG"]).DEFAULT_PHYSICS_CONFIG, pf_alg=pf_alg),
     )
     action_space = GridFMActionSpace(require_connected_after_switch=True)
 
@@ -186,7 +186,7 @@ def main() -> None:
         result = benchmark_algorithm(
             raw_dir=raw_dir,
             scenario_id=args.scenario,
-            pf_alg=pf_alg,
+            physics_config=__import__("dataclasses").replace(__import__("grid_topology_ai.config.physics", fromlist=["DEFAULT_PHYSICS_CONFIG"]).DEFAULT_PHYSICS_CONFIG, pf_alg=pf_alg),
             top_k=args.top_k,
             repeats=args.repeats,
         )

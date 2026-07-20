@@ -34,6 +34,23 @@ checkpoint_dir: runs/self_play_v1
 best_checkpoint_path: runs/self_play_v1/checkpoints/best.pt
 best_metrics_path: runs/self_play_v1/checkpoints/best_metrics.json
 
+# Immutable AC power-flow and physical constraint contract.
+physics:
+  base_mva: 100.0
+  pf_alg: 3
+  pf_tolerance: 1.0e-8
+  max_iterations: 30
+  q_limit_policy: enforce
+  island_policy: reject
+  zero_rate_a_policy: unlimited
+  overload_limit_percent: 100.0
+  hard_overload_limit_percent: 120.0
+  thermal_tolerance_percent: 1.0e-6
+  voltage_tolerance_pu: 1.0e-6
+  generator_p_tolerance_mw: 1.0e-6
+  generator_q_tolerance_mvar: 1.0e-6
+  angle_tolerance_degrees: 1.0e-6
+
 # Replay buffer
 replay_buffer:
   max_size: 50000
