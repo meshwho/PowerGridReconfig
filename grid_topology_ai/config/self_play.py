@@ -25,6 +25,7 @@ from grid_topology_ai.config.generation import (
     GenerationConfig,
 )
 from grid_topology_ai.config.pool import PoolConfig
+from grid_topology_ai.config.physics import DEFAULT_PHYSICS_CONFIG, PhysicsConfig
 from grid_topology_ai.config.replay import ReplayBufferConfig
 from grid_topology_ai.config.training import TrainingConfig
 
@@ -96,6 +97,7 @@ class SelfPlayConfig:
     evaluation: EvaluationConfig
     acceptance: AcceptanceConfig
     metadata: MetadataConfig
+    physics: PhysicsConfig = DEFAULT_PHYSICS_CONFIG
 
     def __post_init__(self) -> None:
         if not self.run_name:
@@ -109,12 +111,11 @@ class SelfPlayConfig:
             "n_scenarios_per_iteration",
             self.n_scenarios_per_iteration,
         )
+        # Legacy sections remain validated while callers migrate to physics.
         if int(self.generation.pf_alg) != int(self.evaluation.pf_alg):
             raise ValueError(
-                "Power-flow algorithm mismatch: "
-                f"generation.pf_alg={self.generation.pf_alg}, "
-                f"evaluation.pf_alg={self.evaluation.pf_alg}. "
-                "Self-play generation and fixed evaluation must use the same PF_ALG."
+                "Power-flow algorithm mismatch: generation and evaluation "
+                "must use the same PF_ALG."
             )
 
     @classmethod
@@ -195,6 +196,7 @@ class SelfPlayConfig:
                     required=False,
                 )
             ),
+            physics=PhysicsConfig.from_mapping(data.get("physics", {})),
         )
 
     @classmethod
