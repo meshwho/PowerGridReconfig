@@ -17,16 +17,16 @@ def test_outcome_value_target_solved_episode():
         {
             "scenario_id": 1,
             "step": 0,
-            "solved": False,
-            "done": False,
-            "termination_reason": None,
+            "solved": True,
+            "done": True,
+            "termination_reason": "solved",
         },
         {
             "scenario_id": 1,
             "step": 1,
-            "solved": False,
-            "done": False,
-            "termination_reason": None,
+            "solved": True,
+            "done": True,
+            "termination_reason": "solved",
         },
         {
             "scenario_id": 1,
@@ -51,8 +51,8 @@ def test_outcome_value_target_handoff_episode():
             "scenario_id": 2,
             "step": 0,
             "solved": False,
-            "done": False,
-            "termination_reason": None,
+            "done": True,
+            "termination_reason": "handoff_to_redispatch_teacher",
         },
         {
             "scenario_id": 2,
@@ -76,8 +76,8 @@ def test_outcome_value_target_max_steps_episode():
             "scenario_id": 3,
             "step": 0,
             "solved": False,
-            "done": False,
-            "termination_reason": None,
+            "done": True,
+            "termination_reason": "max_steps_reached",
         },
         {
             "scenario_id": 3,
@@ -101,7 +101,7 @@ def test_outcome_value_target_teacher_depth_limit_is_negative():
             "scenario_id": 4,
             "step": 0,
             "solved": False,
-            "done": False,
+            "done": True,
             "termination_reason": "teacher_depth_limit",
         },
     ]
