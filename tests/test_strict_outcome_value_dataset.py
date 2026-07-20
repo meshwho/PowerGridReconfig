@@ -62,7 +62,7 @@ def test_dataset_reads_strict_outcome_value_target(tmp_path):
             {
                 "state_path": str(state_path),
                 "mcts_policy_json": json.dumps({"0": 1.0}),
-                "outcome_value_target": 0.95,
+                "outcome_value_target": 0.0,
                 "scenario_id": 1,
                 "step": 0,
                 "state_id": "state_0",
@@ -70,6 +70,11 @@ def test_dataset_reads_strict_outcome_value_target(tmp_path):
                 "outcome_value_target_contract_version": OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
                 "solved": False,
                 "termination_reason": "handoff_to_redispatch",
+                "done": True,
+                "outcome_class": "handoff_to_redispatch",
+                "outcome_steps_to_terminal": 1,
+                "outcome_value_target_mode": "alphazero_discounted",
+                "outcome_gamma": 0.95,
             }
         ]
     )
@@ -83,4 +88,4 @@ def test_dataset_reads_strict_outcome_value_target(tmp_path):
 
     sample = dataset[0]
 
-    assert float(sample["target_value"].item()) == pytest.approx(0.95)
+    assert float(sample["target_value"].item()) == pytest.approx(0.0)

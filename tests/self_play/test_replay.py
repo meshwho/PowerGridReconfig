@@ -12,6 +12,7 @@ from grid_topology_ai.self_play import replay as replay_module
 from grid_topology_ai.self_play.replay import RollingReplayBuffer
 from grid_topology_ai.contracts import OUTCOME_VALUE_TARGET_CONTRACT_VERSION
 from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
+from grid_topology_ai.termination import TerminationReason
 
 
 def rows(prefix: str, count: int) -> list[dict[str, object]]:
@@ -21,6 +22,14 @@ def rows(prefix: str, count: int) -> list[dict[str, object]]:
             "scenario_id": index,
             "physical_objective_schema_version": PHYSICAL_OBJECTIVE_SCHEMA_VERSION,
             "outcome_value_target_contract_version": OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
+            "outcome_value_target": 0.0,
+            "solved": False,
+            "done": True,
+            "termination_reason": TerminationReason.HANDOFF_TO_REDISPATCH_TEACHER.value,
+            "outcome_class": TerminationReason.HANDOFF_TO_REDISPATCH.value,
+            "outcome_steps_to_terminal": 1,
+            "outcome_value_target_mode": "alphazero_discounted",
+            "outcome_gamma": 0.95,
         }
         for index in range(count)
     ]
@@ -82,10 +91,7 @@ def test_reload_preserves_fifo_order(tmp_path: Path) -> None:
         config=config,
     )
 
-    state_ids = [
-        str(row["state_id"])
-        for row in reloaded.buffer
-    ]
+    state_ids = [str(row["state_id"]) for row in reloaded.buffer]
 
     assert state_ids == [
         "i1_1",
@@ -99,7 +105,6 @@ def test_rolling_replay_buffer_class_name_is_explicit() -> None:
     assert RollingReplayBuffer.__name__ == "RollingReplayBuffer"
 
 
-
 def _write_valid_state(path: Path) -> Path:
     np.savez(
         path,
@@ -111,7 +116,9 @@ def _write_valid_state(path: Path) -> Path:
     return path
 
 
-def _valid_example_row(state_path: Path, *, state_id: str = "state-1") -> dict[str, object]:
+def _valid_example_row(
+    state_path: Path, *, state_id: str = "state-1"
+) -> dict[str, object]:
     return {
         "state_path": str(state_path),
         "mcts_policy_json": '{"0": 0.25, "1": 0.75}',
@@ -121,6 +128,13 @@ def _valid_example_row(state_path: Path, *, state_id: str = "state-1") -> dict[s
         "outcome_value_target": 1.0,
         "physical_objective_schema_version": PHYSICAL_OBJECTIVE_SCHEMA_VERSION,
         "outcome_value_target_contract_version": OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
+        "solved": True,
+        "done": True,
+        "termination_reason": TerminationReason.SOLVED.value,
+        "outcome_class": TerminationReason.SOLVED.value,
+        "outcome_steps_to_terminal": 1,
+        "outcome_value_target_mode": "alphazero_discounted",
+        "outcome_gamma": 1.0,
     }
 
 
@@ -130,7 +144,10 @@ def _write_examples_csv(path: Path, rows: list[dict[str, object]]) -> Path:
 
 
 def _valid_csv(tmp_path: Path) -> Path:
-    return _write_examples_csv(tmp_path / "examples.csv", [_valid_example_row(_write_valid_state(tmp_path / "s.npz"))])
+    return _write_examples_csv(
+        tmp_path / "examples.csv",
+        [_valid_example_row(_write_valid_state(tmp_path / "s.npz"))],
+    )
 
 
 def _invalid_csv(tmp_path: Path, *, name: str = "invalid.csv") -> Path:
@@ -140,8 +157,13 @@ def _invalid_csv(tmp_path: Path, *, name: str = "invalid.csv") -> Path:
 
 
 def test_valid_csv_is_added_and_persisted(tmp_path: Path) -> None:
-    buffer = RollingReplayBuffer(save_dir=tmp_path / "replay", config=ReplayBufferConfig(max_size=10, min_size_to_train=1))
-    returned = buffer.add_and_save_from_csv(examples_csv=_valid_csv(tmp_path), iteration=1)
+    buffer = RollingReplayBuffer(
+        save_dir=tmp_path / "replay",
+        config=ReplayBufferConfig(max_size=10, min_size_to_train=1),
+    )
+    returned = buffer.add_and_save_from_csv(
+        examples_csv=_valid_csv(tmp_path), iteration=1
+    )
     assert len(returned) == 1
     assert len(buffer.buffer) == 1
     iter_file = tmp_path / "replay" / "buffer_iter_001.jsonl.gz"
@@ -169,7 +191,10 @@ def test_legacy_replay_manifest_is_rejected(tmp_path: Path) -> None:
 
 
 def test_invalid_csv_does_not_mutate_buffer(tmp_path: Path) -> None:
-    buffer = RollingReplayBuffer(save_dir=tmp_path / "replay", config=ReplayBufferConfig(max_size=1, min_size_to_train=1))
+    buffer = RollingReplayBuffer(
+        save_dir=tmp_path / "replay",
+        config=ReplayBufferConfig(max_size=1, min_size_to_train=1),
+    )
     buffer.add_examples(rows("old", 1), iteration=0)
     before = deepcopy(buffer.buffer)
     with pytest.raises(ValueError):
@@ -192,7 +217,8 @@ def test_invalid_csv_does_not_create_manifest(tmp_path: Path) -> None:
 
 
 def test_invalid_csv_does_not_overwrite_existing_iteration_file(tmp_path: Path) -> None:
-    save_dir = tmp_path / "replay"; save_dir.mkdir()
+    save_dir = tmp_path / "replay"
+    save_dir.mkdir()
     existing = save_dir / "buffer_iter_002.jsonl.gz"
     known = b"known bytes"
     existing.write_bytes(known)
@@ -206,7 +232,9 @@ def test_missing_state_file_does_not_mutate_replay(tmp_path: Path) -> None:
     buffer = RollingReplayBuffer(save_dir=tmp_path / "replay")
     buffer.add_examples(rows("old", 1), iteration=0)
     before = deepcopy(buffer.buffer)
-    csv = _write_examples_csv(tmp_path / "missing.csv", [_valid_example_row(tmp_path / "missing.npz")])
+    csv = _write_examples_csv(
+        tmp_path / "missing.csv", [_valid_example_row(tmp_path / "missing.npz")]
+    )
     with pytest.raises(FileNotFoundError):
         buffer.add_and_save_from_csv(examples_csv=csv, iteration=1)
     assert buffer.buffer == before
@@ -244,7 +272,9 @@ def test_json_safe_does_not_use_array_truth_value() -> None:
     assert replay_module._json_safe(value) is value
 
 
-def test_json_safe_propagates_unexpected_isna_error(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_json_safe_propagates_unexpected_isna_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     def fail(value: object) -> object:
         raise RuntimeError("unexpected isna failure")
 
@@ -252,3 +282,74 @@ def test_json_safe_propagates_unexpected_isna_error(monkeypatch: pytest.MonkeyPa
 
     with pytest.raises(RuntimeError, match="unexpected isna failure"):
         replay_module._json_safe("value")
+
+
+def semantic_invalid_handoff_row() -> dict[str, object]:
+    row = rows("semantic", 1)[0]
+    row.update(
+        termination_reason="handoff_to_redispatch",
+        outcome_class="handoff_to_redispatch",
+        outcome_steps_to_terminal=1,
+        outcome_gamma=0.95,
+        outcome_value_target=0.95,
+    )
+    return row
+
+
+def test_add_examples_rejects_semantic_invalid_outcome(tmp_path: Path) -> None:
+    buffer = RollingReplayBuffer(save_dir=tmp_path / "replay")
+    before = deepcopy(buffer.buffer)
+    with pytest.raises(ValueError, match="outcome_value_target"):
+        buffer.add_examples([semantic_invalid_handoff_row()], iteration=1)
+    assert buffer.buffer == before
+
+
+def test_add_examples_is_atomic_for_semantic_failure(tmp_path: Path) -> None:
+    buffer = RollingReplayBuffer(save_dir=tmp_path / "replay")
+    before = deepcopy(buffer.buffer)
+    with pytest.raises(ValueError):
+        buffer.add_examples(
+            [rows("good", 1)[0], semantic_invalid_handoff_row()], iteration=1
+        )
+    assert buffer.buffer == before
+
+
+def test_save_iteration_file_rejects_semantic_invalid_outcome(tmp_path: Path) -> None:
+    buffer = RollingReplayBuffer(save_dir=tmp_path / "replay")
+    with pytest.raises(ValueError):
+        buffer.save_iteration_file([semantic_invalid_handoff_row()], iteration=1)
+    assert not (tmp_path / "replay" / "buffer_iter_001.jsonl.gz").exists()
+    assert not list((tmp_path / "replay").glob("*.tmp"))
+
+
+def test_load_rejects_current_version_semantic_invalid_chunk(tmp_path: Path) -> None:
+    save_dir = tmp_path / "replay"
+    save_dir.mkdir()
+    chunk = save_dir / "buffer_iter_001.jsonl.gz"
+    with gzip.open(chunk, "wt", encoding="utf-8") as handle:
+        handle.write(json.dumps(semantic_invalid_handoff_row()) + "\n")
+    (save_dir / "buffer_manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "physical_objective_schema_version": PHYSICAL_OBJECTIVE_SCHEMA_VERSION,
+                "outcome_value_target_contract_version": OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
+                "files": [{"path": chunk.name, "n": 1, "iteration": 1}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="outcome_value_target"):
+        RollingReplayBuffer(save_dir=save_dir)
+
+
+def test_valid_semantic_replay_roundtrip(tmp_path: Path) -> None:
+    save_dir = tmp_path / "replay"
+    source = RollingReplayBuffer(save_dir=save_dir)
+    good = rows("good", 1)
+    source.add_examples(good, iteration=1)
+    source.save_iteration_file(good, iteration=1)
+    source.save_manifest()
+    loaded = RollingReplayBuffer(save_dir=save_dir)
+    assert len(loaded.buffer) == 1
+    assert loaded.buffer[0]["outcome_value_target"] == 0.0
