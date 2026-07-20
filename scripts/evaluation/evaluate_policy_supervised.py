@@ -14,6 +14,7 @@ from grid_topology_ai.data_adapter import GridFMState
 from grid_topology_ai.models.neural_evaluator import NeuralPolicyValueEvaluator
 from grid_topology_ai.self_play.example_validation import (
     validate_example_contract_versions,
+    validate_example_outcome_contracts,
 )
 
 
@@ -261,6 +262,7 @@ def main() -> None:
     if df.empty:
         raise ValueError(f"Examples CSV is empty: {examples_path}")
     validate_example_contract_versions(df, source_path=examples_path)
+    validate_example_outcome_contracts(df, source_path=examples_path)
 
     evaluator = NeuralPolicyValueEvaluator(
         checkpoint_path=checkpoint_path,

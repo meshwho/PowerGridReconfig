@@ -1,5 +1,11 @@
 from __future__ import annotations
 
+import math
+from collections.abc import Mapping
+from numbers import Integral, Real
+
+import numpy as np
+
 from grid_topology_ai.contracts import OUTCOME_VALUE_TARGET_CONTRACT_VERSION
 from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
 from grid_topology_ai.termination import (
@@ -9,112 +15,119 @@ from grid_topology_ai.termination import (
 )
 
 
+def _require_bool(value: object, *, field: str) -> bool:
+    if not isinstance(value, (bool, np.bool_)):
+        raise ValueError(f"{field} must be a boolean, got {value!r}")
+    return bool(value)
+
+
+def _require_gamma(value: object) -> float:
+    if isinstance(value, (bool, np.bool_)) or not isinstance(value, Real):
+        raise ValueError(f"gamma must be a finite real number in [0, 1], got {value!r}")
+    gamma = float(value)
+    if not math.isfinite(gamma) or not 0.0 <= gamma <= 1.0:
+        raise ValueError(f"gamma must be a finite real number in [0, 1], got {value!r}")
+    return gamma
+
+
 def terminal_value_from_outcome(
     solved: bool,
     termination_reason: TerminationReason | str | None,
 ) -> tuple[float, str]:
-    """
-    Convert terminal episode outcome into a bounded AlphaZero-style value.
-
-    Returns
-    -------
-    tuple[float, str]
-        terminal_value:
-            +1.0 for solved episodes
-             0.0 for redispatch handoff
-            -1.0 for failed / max_steps / unsafe terminal outcomes
-
-        outcome_class:
-            Normalized textual outcome class used for diagnostics.
-    """
-
+    """Return the normalized terminal value and outcome class."""
+    strict_solved = _require_bool(solved, field="solved")
     reason = validate_outcome_invariants(
-        solved=bool(solved),
+        solved=strict_solved,
         termination_reason=termination_reason,
     )
-
     if reason is TerminationReason.SOLVED:
         return 1.0, TerminationReason.SOLVED.value
-
     if reason in {
         TerminationReason.HANDOFF_TO_REDISPATCH,
         TerminationReason.HANDOFF_TO_REDISPATCH_TEACHER,
         TerminationReason.HANDOFF_TO_REDISPATCH_WITH_HARD_OVERLOAD,
     }:
         return 0.0, TerminationReason.HANDOFF_TO_REDISPATCH.value
-
     return -1.0, "unsolved_terminal" if reason is None else reason.value
 
 
+def _require_group_key(row: Mapping[str, object], key: str) -> object:
+    if key not in row:
+        raise ValueError(f"Missing required group key {key!r}")
+    value = row[key]
+    if value is None or (isinstance(value, str) and not value.strip()):
+        raise ValueError(f"Invalid group key {key!r}: {value!r}")
+    try:
+        if bool(np.asarray(pd_isna(value)).all()):
+            raise ValueError(f"Invalid group key {key!r}: {value!r}")
+    except TypeError:
+        pass
+    return value
+
+
+def pd_isna(value: object) -> object:
+    # Avoid importing pandas in this hot, generator-facing module.
+    return isinstance(value, Real) and math.isnan(float(value))
+
+
+def _require_step(row: Mapping[str, object]) -> int:
+    if "step" not in row:
+        raise ValueError("Missing required step")
+    value = row["step"]
+    if isinstance(value, (bool, np.bool_)) or not isinstance(value, Integral):
+        raise ValueError(f"step must be a non-negative integer, got {value!r}")
+    step = int(value)
+    if step < 0:
+        raise ValueError(f"step must be a non-negative integer, got {value!r}")
+    return step
+
+
 def add_outcome_value_targets_to_rows(
-    rows: list[dict],
-    gamma: float,
-    group_keys: tuple[str, ...] = ("scenario_id",),
+    rows: list[dict], gamma: float, group_keys: tuple[str, ...] = ("scenario_id",)
 ) -> None:
-    """
-    Add strict AlphaZero-like outcome value targets to generated rows.
-
-    Every row receives:
-
-    - outcome_value_target
-    - outcome_class
-    - outcome_steps_to_terminal
-    - outcome_value_target_mode
-    - outcome_gamma
-
-    The target is based only on final episode outcome:
-
-        solved  -> +1.0 * gamma^k
-        handoff ->  0.0 * gamma^k
-        failed  -> -1.0 * gamma^k
-    """
-
-    if gamma < 0.0 or gamma > 1.0:
-        raise ValueError(f"gamma must be in [0, 1], got {gamma}")
-
-    groups: dict[tuple, list[dict]] = {}
-
+    """Atomically derive strict discounted terminal targets for episode rows."""
+    normalized_gamma = _require_gamma(gamma)
+    groups: dict[tuple[object, ...], list[tuple[int, dict]]] = {}
     for row in rows:
-        physical_version = row.get("physical_objective_schema_version")
-        if physical_version != PHYSICAL_OBJECTIVE_SCHEMA_VERSION:
-            raise ValueError(
-                "Cannot derive current outcome value targets from legacy "
-                "solved labels. Regenerate episodes with "
-                "python -m scripts.self_play.generate before computing targets. "
-                f"Expected physical_objective_schema_version="
-                f"{PHYSICAL_OBJECTIVE_SCHEMA_VERSION}, observed "
-                f"{physical_version!r}."
-            )
-        key = tuple(row.get(k) for k in group_keys)
-        groups.setdefault(key, []).append(row)
+        if row.get("physical_objective_schema_version") != PHYSICAL_OBJECTIVE_SCHEMA_VERSION:
+            raise ValueError("Cannot derive current outcome value targets from legacy solved labels.")
+        key = tuple(_require_group_key(row, name) for name in group_keys)
+        groups.setdefault(key, []).append((_require_step(row), row))
 
-    for _, group_rows in groups.items():
-        group_rows.sort(key=lambda r: int(r.get("step", 0)))
+    pending_updates: list[tuple[dict, dict[str, object]]] = []
+    for key, indexed_rows in groups.items():
+        steps = [step for step, _ in indexed_rows]
+        if len(steps) != len(set(steps)):
+            raise ValueError(f"Duplicate step in episode group {key!r}")
+        indexed_rows.sort(key=lambda item: item[0])
+        expected_solved: bool | None = None
+        expected_reason: TerminationReason | None = None
+        for _, row in indexed_rows:
+            solved = _require_bool(row.get("solved"), field="solved")
+            done = _require_bool(row.get("done"), field="done")
+            if not done:
+                raise ValueError("Cannot derive outcome target from an unfinished episode.")
+            try:
+                reason = parse_termination_reason(row.get("termination_reason"), allow_none=False)
+                validate_outcome_invariants(solved=solved, termination_reason=reason)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"Invalid terminal outcome in episode group {key!r}: {exc}") from exc
+            if expected_solved is None:
+                expected_solved, expected_reason = solved, reason
+            elif solved != expected_solved or reason != expected_reason:
+                raise ValueError(f"Cannot derive targets from mixed episode outcomes in group {key!r}")
 
-        if not group_rows:
-            continue
-
-        terminal_row = group_rows[-1]
-
-        terminal_value, outcome_class = terminal_value_from_outcome(
-            solved=bool(terminal_row.get("solved", False)),
-            termination_reason=parse_termination_reason(
-                terminal_row.get("termination_reason")
-            ),
-        )
-
-        n = len(group_rows)
-
-        for position, row in enumerate(group_rows):
-            steps_to_terminal = n - position
-
-            row["outcome_value_target"] = float(
-                terminal_value * (float(gamma) ** steps_to_terminal)
-            )
-            row["outcome_class"] = outcome_class
-            row["outcome_steps_to_terminal"] = int(steps_to_terminal)
-            row["outcome_value_target_mode"] = "alphazero_discounted"
-            row["outcome_gamma"] = float(gamma)
-            row["outcome_value_target_contract_version"] = (
-                OUTCOME_VALUE_TARGET_CONTRACT_VERSION
-            )
+        assert expected_solved is not None and expected_reason is not None
+        terminal_value, outcome_class = terminal_value_from_outcome(expected_solved, expected_reason)
+        total = len(indexed_rows)
+        for position, (_, row) in enumerate(indexed_rows):
+            pending_updates.append((row, {
+                "outcome_value_target": terminal_value * normalized_gamma ** (total - position),
+                "outcome_class": outcome_class,
+                "outcome_steps_to_terminal": total - position,
+                "outcome_value_target_mode": "alphazero_discounted",
+                "outcome_gamma": normalized_gamma,
+                "outcome_value_target_contract_version": OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
+            }))
+    for row, updates in pending_updates:
+        row.update(updates)

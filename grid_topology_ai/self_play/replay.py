@@ -6,7 +6,10 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 from grid_topology_ai.config import ReplayBufferConfig
-from grid_topology_ai.self_play.example_validation import load_and_validate_examples_csv
+from grid_topology_ai.self_play.example_validation import (
+    load_and_validate_examples_csv,
+    validate_example_outcome_contracts,
+)
 from grid_topology_ai.contracts import (
     OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
     REPLAY_BUFFER_SCHEMA_VERSION,
@@ -117,6 +120,7 @@ def _require_replay_row_contracts(row: dict[str, Any], *, source: str) -> None:
         source=source,
         regeneration_command="python -m scripts.self_play.generate ...",
     )
+    validate_example_outcome_contracts(pd.DataFrame([row]), source_path=source)
 
 
 def _save_manifest(

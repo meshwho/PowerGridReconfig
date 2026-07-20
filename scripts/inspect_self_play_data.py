@@ -9,6 +9,7 @@ import pandas as pd
 
 from grid_topology_ai.self_play.example_validation import (
     validate_example_contract_versions,
+    validate_example_outcome_contracts,
 )
 
 
@@ -48,6 +49,7 @@ def main() -> None:
 
     if not df.empty:
         validate_example_contract_versions(df, source_path=examples_path)
+        validate_example_outcome_contracts(df, source_path=examples_path)
 
     print("=" * 100)
     print("Inspecting self-play replay buffer")
