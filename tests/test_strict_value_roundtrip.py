@@ -51,9 +51,9 @@ def test_outcome_value_target_roundtrip_from_generator_to_dataset(tmp_path):
             "scenario_id": 10,
             "step": 0,
             "state_id": "state_0",
-            "solved": False,
-            "done": False,
-            "termination_reason": "",
+            "solved": True,
+            "done": True,
+            "termination_reason": "solved",
         },
         {
             "state_path": str(state_1),

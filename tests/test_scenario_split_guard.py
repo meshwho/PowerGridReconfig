@@ -34,6 +34,13 @@ def _write_examples_csv(path, state_path, scenario_ids):
                 "scenario_id": scenario_id,
                 "step": i,
                 "state_id": f"state_{i}",
+                "solved": False,
+                "done": True,
+                "termination_reason": "handoff_to_redispatch",
+                "outcome_class": "handoff_to_redispatch",
+                "outcome_steps_to_terminal": 1,
+                "outcome_value_target_mode": "alphazero_discounted",
+                "outcome_gamma": 0.95,
             }
         )
 
