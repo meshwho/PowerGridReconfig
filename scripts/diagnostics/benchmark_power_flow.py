@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 import argparse
 import time
 from pathlib import Path
@@ -8,6 +10,7 @@ import pandas as pd
 
 from grid_topology_ai.action_space import GridFMActionSpace
 from grid_topology_ai.data_adapter import BRANCH_FEATURE_COLUMNS, GridFMAdapter
+from grid_topology_ai.config.physics import DEFAULT_PHYSICS_CONFIG, PhysicsConfig
 from grid_topology_ai.pypower_backend import (
     GridFMPowerFlowBackend,
     pf_algorithm_name,
@@ -43,14 +46,14 @@ def select_candidate_actions(
 def benchmark_algorithm(
     raw_dir: Path,
     scenario_id: int,
-    pf_alg: int,
+    physics_config: PhysicsConfig,
     top_k: int,
     repeats: int,
 ) -> dict:
     adapter = GridFMAdapter(raw_dir)
     backend = GridFMPowerFlowBackend(
         adapter=adapter,
-        pf_alg=pf_alg,
+        physics_config=physics_config,
     )
     action_space = GridFMActionSpace(require_connected_after_switch=True)
 
@@ -103,8 +106,8 @@ def benchmark_algorithm(
     success_rate = float(df["success"].mean()) if len(df) else 0.0
 
     return {
-        "pf_alg": pf_alg,
-        "pf_alg_name": pf_algorithm_name(pf_alg),
+        "pf_alg": physics_config.pf_alg,
+        "pf_alg_name": pf_algorithm_name(physics_config.pf_alg),
         "scenario_id": int(scenario_id),
         "top_k": int(top_k),
         "repeats": int(repeats),
@@ -186,7 +189,7 @@ def main() -> None:
         result = benchmark_algorithm(
             raw_dir=raw_dir,
             scenario_id=args.scenario,
-            pf_alg=pf_alg,
+            physics_config=replace(DEFAULT_PHYSICS_CONFIG, pf_alg=pf_alg),
             top_k=args.top_k,
             repeats=args.repeats,
         )

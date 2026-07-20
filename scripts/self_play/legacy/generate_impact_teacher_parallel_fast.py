@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 import argparse
 import json
 import traceback
@@ -20,6 +22,8 @@ except ImportError:  # pragma: no cover
 from grid_topology_ai.action_space import GridFMActionSpace
 from grid_topology_ai.data_adapter import GridFMAdapter
 from grid_topology_ai.environment import TopologySwitchingEnv
+from grid_topology_ai.config.physics import DEFAULT_PHYSICS_CONFIG, PhysicsConfig
+from grid_topology_ai.contracts import PHYSICS_CONFIG_CONTRACT_VERSION
 from grid_topology_ai.pypower_backend import GridFMPowerFlowBackend
 from grid_topology_ai.reward import GridFMReward
 from grid_topology_ai.search.continuation_gate import make_do_nothing_action
@@ -126,10 +130,14 @@ def init_worker_context(
 
     adapter = GridFMAdapter(raw_dir)
 
+    if task_config.get("physics_config_contract_version") != PHYSICS_CONFIG_CONTRACT_VERSION:
+        raise ValueError("Unsupported physics config contract in worker payload.")
+    physics_config = PhysicsConfig.from_mapping(task_config["physics_config"])
+    if physics_config.fingerprint() != task_config.get("physics_config_fingerprint"):
+        raise ValueError("PhysicsConfig fingerprint mismatch in worker payload.")
     backend = GridFMPowerFlowBackend(
         adapter=adapter,
-        pf_alg=int(task_config["pf_alg"]),
-        max_iter=int(task_config["pf_max_iter"]),
+        physics_config=physics_config,
         enable_cache=not bool(task_config["disable_cache"]),
     )
 
@@ -929,6 +937,11 @@ def print_failure(result: dict[str, Any]) -> None:
 
 
 def make_task_config(args: argparse.Namespace) -> dict[str, Any]:
+    physics_config = replace(
+        DEFAULT_PHYSICS_CONFIG,
+        pf_alg=int(args.pf_alg),
+        max_iterations=int(args.pf_max_iter),
+    )
     return {
         "depth": int(args.depth),
         "beam_width": int(args.beam_width),
@@ -936,7 +949,10 @@ def make_task_config(args: argparse.Namespace) -> dict[str, Any]:
         "top_k": int(args.top_k),
         "gamma": float(args.gamma),
         "pf_alg": int(args.pf_alg),
-        "pf_max_iter": int(args.pf_max_iter),
+        "pf_max_iter": physics_config.max_iterations,
+        "physics_config_contract_version": PHYSICS_CONFIG_CONTRACT_VERSION,
+        "physics_config": physics_config.to_dict(),
+        "physics_config_fingerprint": physics_config.fingerprint(),
         "max_steps": int(args.max_steps),
         "max_teacher_steps": int(args.max_teacher_steps),
         "soft_policy_temperature": float(args.soft_policy_temperature),

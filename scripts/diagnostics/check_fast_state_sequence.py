@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 import argparse
 from pathlib import Path
 
@@ -13,6 +15,7 @@ from grid_topology_ai.data_adapter import (
     GridFMAdapter,
 )
 from grid_topology_ai.models.neural_evaluator import NeuralPolicyValueEvaluator
+from grid_topology_ai.config.physics import DEFAULT_PHYSICS_CONFIG
 from grid_topology_ai.pypower_backend import GridFMPowerFlowBackend
 
 
@@ -74,7 +77,6 @@ def run_one_step_old_and_fast(
     previous_old_state,
     previous_fast_state,
     branch_id: int,
-    pf_alg: int,
 ):
     """
     Run one identical topology action from old_state and fast_state.
@@ -82,12 +84,7 @@ def run_one_step_old_and_fast(
     This checks whether small differences accumulate across a sequence.
     """
 
-    ppopt = ppoption(
-        VERBOSE=0,
-        OUT_ALL=0,
-        PF_ALG=pf_alg,
-        PF_MAX_IT=backend.max_iter,
-    )
+    ppopt = backend._build_pp_options()
 
     old_ppc, old_frames = backend._build_ppc_from_state(
         state=previous_old_state,
@@ -174,7 +171,7 @@ def main() -> None:
 
     backend = GridFMPowerFlowBackend(
         adapter=adapter,
-        pf_alg=args.pf_alg,
+        physics_config=replace(DEFAULT_PHYSICS_CONFIG, pf_alg=args.pf_alg),
         enable_cache=False,
         store_raw_result=True,
     )
@@ -203,7 +200,6 @@ def main() -> None:
             previous_old_state=old_state,
             previous_fast_state=fast_state,
             branch_id=int(branch_id),
-            pf_alg=args.pf_alg,
         )
 
         print(f"Old outaged:  {old_state.outaged_branch_ids}")

@@ -25,6 +25,7 @@ from grid_topology_ai.config.generation import (
     GenerationConfig,
 )
 from grid_topology_ai.config.pool import PoolConfig
+from grid_topology_ai.config.physics import DEFAULT_PHYSICS_CONFIG, PhysicsConfig
 from grid_topology_ai.config.replay import ReplayBufferConfig
 from grid_topology_ai.config.training import TrainingConfig
 
@@ -96,6 +97,7 @@ class SelfPlayConfig:
     evaluation: EvaluationConfig
     acceptance: AcceptanceConfig
     metadata: MetadataConfig
+    physics: PhysicsConfig = DEFAULT_PHYSICS_CONFIG
 
     def __post_init__(self) -> None:
         if not self.run_name:
@@ -109,12 +111,16 @@ class SelfPlayConfig:
             "n_scenarios_per_iteration",
             self.n_scenarios_per_iteration,
         )
-        if int(self.generation.pf_alg) != int(self.evaluation.pf_alg):
+        values = (
+            int(self.generation.pf_alg),
+            int(self.evaluation.pf_alg),
+            self.physics.pf_alg,
+        )
+        if len(set(values)) != 1:
             raise ValueError(
-                "Power-flow algorithm mismatch: "
-                f"generation.pf_alg={self.generation.pf_alg}, "
-                f"evaluation.pf_alg={self.evaluation.pf_alg}. "
-                "Self-play generation and fixed evaluation must use the same PF_ALG."
+                "Power-flow algorithm mismatch: generation.pf_alg="
+                f"{values[0]}, evaluation.pf_alg={values[1]}, "
+                f"physics.pf_alg={values[2]}."
             )
 
     @classmethod
@@ -193,6 +199,15 @@ class SelfPlayConfig:
                     data,
                     "metadata",
                     required=False,
+                )
+            ),
+            physics=(
+                PhysicsConfig.from_mapping(data["physics"])
+                if "physics" in data
+                else PhysicsConfig(
+                    pf_alg=GenerationConfig.from_mapping(
+                        get_section(data, "generation")
+                    ).pf_alg
                 )
             ),
         )
