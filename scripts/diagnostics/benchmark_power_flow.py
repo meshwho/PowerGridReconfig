@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 import argparse
 import time
 from pathlib import Path
@@ -8,6 +10,7 @@ import pandas as pd
 
 from grid_topology_ai.action_space import GridFMActionSpace
 from grid_topology_ai.data_adapter import BRANCH_FEATURE_COLUMNS, GridFMAdapter
+from grid_topology_ai.config.physics import DEFAULT_PHYSICS_CONFIG
 from grid_topology_ai.pypower_backend import (
     GridFMPowerFlowBackend,
     pf_algorithm_name,
@@ -50,7 +53,7 @@ def benchmark_algorithm(
     adapter = GridFMAdapter(raw_dir)
     backend = GridFMPowerFlowBackend(
         adapter=adapter,
-        pf_alg=pf_alg,
+        physics_config=replace(DEFAULT_PHYSICS_CONFIG, pf_alg=pf_alg),
     )
     action_space = GridFMActionSpace(require_connected_after_switch=True)
 
@@ -186,7 +189,7 @@ def main() -> None:
         result = benchmark_algorithm(
             raw_dir=raw_dir,
             scenario_id=args.scenario,
-            pf_alg=pf_alg,
+            physics_config=replace(DEFAULT_PHYSICS_CONFIG, pf_alg=pf_alg),
             top_k=args.top_k,
             repeats=args.repeats,
         )

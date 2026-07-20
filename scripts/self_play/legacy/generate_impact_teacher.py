@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 import argparse
 from pathlib import Path
 
@@ -14,6 +16,7 @@ except ImportError:  # pragma: no cover
 from grid_topology_ai.action_space import GridFMActionSpace
 from grid_topology_ai.data_adapter import GridFMAdapter
 from grid_topology_ai.environment import TopologySwitchingEnv
+from grid_topology_ai.config.physics import DEFAULT_PHYSICS_CONFIG
 from grid_topology_ai.pypower_backend import GridFMPowerFlowBackend
 from grid_topology_ai.reward import GridFMReward
 from grid_topology_ai.search.impact_beam_search import (
@@ -222,7 +225,7 @@ def main() -> None:
 
     backend = GridFMPowerFlowBackend(
         adapter=adapter,
-        pf_alg=args.pf_alg,
+        physics_config=replace(DEFAULT_PHYSICS_CONFIG, pf_alg=args.pf_alg),
         enable_cache=not args.disable_cache,
     )
 

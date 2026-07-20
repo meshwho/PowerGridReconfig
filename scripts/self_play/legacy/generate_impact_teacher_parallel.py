@@ -18,6 +18,7 @@ except ImportError:  # pragma: no cover
 from grid_topology_ai.action_space import GridFMActionSpace
 from grid_topology_ai.data_adapter import GridFMAdapter
 from grid_topology_ai.environment import TopologySwitchingEnv
+from grid_topology_ai.config.physics import PhysicsConfig
 from grid_topology_ai.pypower_backend import GridFMPowerFlowBackend
 from grid_topology_ai.reward import GridFMReward
 from grid_topology_ai.search.continuation_gate import make_do_nothing_action
@@ -346,7 +347,7 @@ def process_one_scenario_worker(task: dict[str, Any]) -> dict[str, Any]:
 
         backend = GridFMPowerFlowBackend(
             adapter=adapter,
-            pf_alg=int(task["pf_alg"]),
+            physics_config=PhysicsConfig.from_mapping(task["physics_config"]),
             enable_cache=not bool(task["disable_cache"]),
         )
 

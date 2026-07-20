@@ -9,7 +9,7 @@ from typing import Mapping
 from grid_topology_ai.termination import TerminationReason
 
 
-PHYSICAL_OBJECTIVE_SCHEMA_VERSION = 2
+PHYSICAL_OBJECTIVE_SCHEMA_VERSION = 3
 OVERLOAD_LIMIT_PERCENT = 100.0
 HARD_OVERLOAD_LIMIT_PERCENT = 120.0
 THERMAL_LIMIT_TOLERANCE_PERCENT = 1e-6
@@ -255,16 +255,24 @@ def classify_stop_outcome(
     return StopOutcome(False, TerminationReason.UNSAFE_STOP_WITH_HARD_OVERLOAD)
 
 
-def physical_objective_contract() -> dict[str, object]:
+def physical_objective_contract(physics_config=None) -> dict[str, object]:
+    """Describe the actual physics contract used to produce an artifact."""
+    from grid_topology_ai.config.physics import DEFAULT_PHYSICS_CONFIG
+    from grid_topology_ai.contracts import PHYSICS_CONFIG_CONTRACT_VERSION
+
+    config = physics_config or DEFAULT_PHYSICS_CONFIG
     return {
         "schema_version": PHYSICAL_OBJECTIVE_SCHEMA_VERSION,
-        "overload_limit_percent": OVERLOAD_LIMIT_PERCENT,
-        "hard_overload_limit_percent": HARD_OVERLOAD_LIMIT_PERCENT,
-        "thermal_limit_tolerance_percent": THERMAL_LIMIT_TOLERANCE_PERCENT,
-        "voltage_limit_tolerance_pu": VOLTAGE_LIMIT_TOLERANCE_PU,
-        "generator_limit_tolerance_mw": GENERATOR_LIMIT_TOLERANCE_MW,
-        "generator_limit_tolerance_mvar": GENERATOR_LIMIT_TOLERANCE_MVAR,
-        "angle_limit_tolerance_degrees": ANGLE_LIMIT_TOLERANCE_DEGREES,
+        "physics_config_contract_version": PHYSICS_CONFIG_CONTRACT_VERSION,
+        "physics_config": config.to_dict(),
+        "physics_config_fingerprint": config.fingerprint(),
+        "overload_limit_percent": config.overload_limit_percent,
+        "hard_overload_limit_percent": config.hard_overload_limit_percent,
+        "thermal_limit_tolerance_percent": config.thermal_tolerance_percent,
+        "voltage_limit_tolerance_pu": config.voltage_tolerance_pu,
+        "generator_limit_tolerance_mw": config.generator_p_tolerance_mw,
+        "generator_limit_tolerance_mvar": config.generator_q_tolerance_mvar,
+        "angle_limit_tolerance_degrees": config.angle_tolerance_degrees,
         "solved_definition": "assessment.physically_secure",
         "thermal_solved_definition": (
             "Diagnostic only: no active rated branch exceeds RATE_A."
