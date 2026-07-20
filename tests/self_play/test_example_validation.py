@@ -36,9 +36,7 @@ def valid_row(state_path: Path) -> dict[str, object]:
         "step": 0,
         "state_id": "state-1",
         "outcome_value_target": 1.0,
-        "physical_objective_schema_version": (
-            PHYSICAL_OBJECTIVE_SCHEMA_VERSION
-        ),
+        "physical_objective_schema_version": (PHYSICAL_OBJECTIVE_SCHEMA_VERSION),
         "outcome_value_target_contract_version": (
             OUTCOME_VALUE_TARGET_CONTRACT_VERSION
         ),
@@ -63,7 +61,9 @@ def assert_rejected(path: Path, match: str = "") -> None:
 
 
 def test_valid_examples_csv_is_accepted(tmp_path: Path) -> None:
-    csv = write_csv(tmp_path / "examples.csv", [valid_row(write_state(tmp_path / "s.npz"))])
+    csv = write_csv(
+        tmp_path / "examples.csv", [valid_row(write_state(tmp_path / "s.npz"))]
+    )
     df = load_and_validate_examples_csv(csv)
     assert len(df) == 1
 
@@ -108,6 +108,7 @@ def test_positive_target_for_unsolved_episode_is_rejected(
         "contradicts the terminal outcome",
     )
 
+
 def test_zero_target_for_handoff_is_accepted(
     tmp_path: Path,
 ) -> None:
@@ -127,6 +128,7 @@ def test_zero_target_for_handoff_is_accepted(
     csv = write_csv(tmp_path / "examples.csv", [row])
 
     assert len(load_and_validate_examples_csv(csv)) == 1
+
 
 def test_missing_required_columns_are_rejected(tmp_path: Path) -> None:
     csv = write_csv(tmp_path / "examples.csv", [{"state_path": "x"}])
@@ -153,104 +155,138 @@ def test_unknown_termination_reason_is_rejected(tmp_path: Path) -> None:
 
 
 def test_null_required_value_is_rejected(tmp_path: Path) -> None:
-    row = valid_row(write_state(tmp_path / "s.npz")); row["state_id"] = ""
-    assert_rejected(write_csv(tmp_path / "examples.csv", [row]), "Missing required value")
+    row = valid_row(write_state(tmp_path / "s.npz"))
+    row["state_id"] = ""
+    assert_rejected(
+        write_csv(tmp_path / "examples.csv", [row]), "Missing required value"
+    )
 
 
 def test_duplicate_state_id_is_rejected(tmp_path: Path) -> None:
     s = write_state(tmp_path / "s.npz")
-    r1 = valid_row(s); r2 = valid_row(s)
-    assert_rejected(write_csv(tmp_path / "examples.csv", [r1, r2]), "Duplicate state_id")
+    r1 = valid_row(s)
+    r2 = valid_row(s)
+    assert_rejected(
+        write_csv(tmp_path / "examples.csv", [r1, r2]), "Duplicate state_id"
+    )
 
 
 def test_fractional_scenario_id_is_rejected(tmp_path: Path) -> None:
-    row = valid_row(write_state(tmp_path / "s.npz")); row["scenario_id"] = 1.5
+    row = valid_row(write_state(tmp_path / "s.npz"))
+    row["scenario_id"] = 1.5
     assert_rejected(write_csv(tmp_path / "examples.csv", [row]), "scenario_id")
 
 
 def test_negative_step_is_rejected(tmp_path: Path) -> None:
-    row = valid_row(write_state(tmp_path / "s.npz")); row["step"] = -1
+    row = valid_row(write_state(tmp_path / "s.npz"))
+    row["step"] = -1
     assert_rejected(write_csv(tmp_path / "examples.csv", [row]), "step")
 
 
 def test_fractional_step_is_rejected(tmp_path: Path) -> None:
-    row = valid_row(write_state(tmp_path / "s.npz")); row["step"] = 1.5
+    row = valid_row(write_state(tmp_path / "s.npz"))
+    row["step"] = 1.5
     assert_rejected(write_csv(tmp_path / "examples.csv", [row]), "step")
 
 
 def test_non_finite_outcome_value_is_rejected(tmp_path: Path) -> None:
-    row = valid_row(write_state(tmp_path / "s.npz")); row["outcome_value_target"] = float("inf")
+    row = valid_row(write_state(tmp_path / "s.npz"))
+    row["outcome_value_target"] = float("inf")
     assert_rejected(write_csv(tmp_path / "examples.csv", [row]), "outcome_value_target")
 
 
 def test_outcome_value_outside_range_is_rejected(tmp_path: Path) -> None:
-    row = valid_row(write_state(tmp_path / "s.npz")); row["outcome_value_target"] = 1.1
+    row = valid_row(write_state(tmp_path / "s.npz"))
+    row["outcome_value_target"] = 1.1
     assert_rejected(write_csv(tmp_path / "examples.csv", [row]), "outside")
 
 
 def test_invalid_policy_json_is_rejected(tmp_path: Path) -> None:
-    row = valid_row(write_state(tmp_path / "s.npz")); row["mcts_policy_json"] = "{"
-    assert_rejected(write_csv(tmp_path / "examples.csv", [row]), "Invalid mcts_policy_json")
+    row = valid_row(write_state(tmp_path / "s.npz"))
+    row["mcts_policy_json"] = "{"
+    assert_rejected(
+        write_csv(tmp_path / "examples.csv", [row]), "Invalid mcts_policy_json"
+    )
 
 
 def test_policy_json_must_be_object(tmp_path: Path) -> None:
-    row = valid_row(write_state(tmp_path / "s.npz")); row["mcts_policy_json"] = "[1]"
+    row = valid_row(write_state(tmp_path / "s.npz"))
+    row["mcts_policy_json"] = "[1]"
     assert_rejected(write_csv(tmp_path / "examples.csv", [row]), "object")
 
 
 def test_empty_policy_is_rejected(tmp_path: Path) -> None:
-    row = valid_row(write_state(tmp_path / "s.npz")); row["mcts_policy_json"] = "{}"
+    row = valid_row(write_state(tmp_path / "s.npz"))
+    row["mcts_policy_json"] = "{}"
     assert_rejected(write_csv(tmp_path / "examples.csv", [row]), "empty")
 
 
 def test_negative_policy_probability_is_rejected(tmp_path: Path) -> None:
-    row = valid_row(write_state(tmp_path / "s.npz")); row["mcts_policy_json"] = '{"0": -0.1}'
+    row = valid_row(write_state(tmp_path / "s.npz"))
+    row["mcts_policy_json"] = '{"0": -0.1}'
     assert_rejected(write_csv(tmp_path / "examples.csv", [row]), ">= 0")
 
 
 def test_non_finite_policy_probability_is_rejected(tmp_path: Path) -> None:
-    row = valid_row(write_state(tmp_path / "s.npz")); row["mcts_policy_json"] = '{"0": NaN}'
+    row = valid_row(write_state(tmp_path / "s.npz"))
+    row["mcts_policy_json"] = '{"0": NaN}'
     assert_rejected(write_csv(tmp_path / "examples.csv", [row]), "finite")
 
 
 def test_zero_policy_mass_is_rejected(tmp_path: Path) -> None:
-    row = valid_row(write_state(tmp_path / "s.npz")); row["mcts_policy_json"] = '{"0": 0.0}'
+    row = valid_row(write_state(tmp_path / "s.npz"))
+    row["mcts_policy_json"] = '{"0": 0.0}'
     assert_rejected(write_csv(tmp_path / "examples.csv", [row]), "mass")
 
 
 def test_out_of_range_policy_action_is_rejected(tmp_path: Path) -> None:
-    row = valid_row(write_state(tmp_path / "s.npz")); row["mcts_policy_json"] = '{"2": 1.0}'
+    row = valid_row(write_state(tmp_path / "s.npz"))
+    row["mcts_policy_json"] = '{"2": 1.0}'
     assert_rejected(write_csv(tmp_path / "examples.csv", [row]), "out of range")
 
 
 def test_masked_policy_action_is_rejected(tmp_path: Path) -> None:
     s = write_state(tmp_path / "s.npz", action_mask=np.array([True, False]))
-    row = valid_row(s); row["mcts_policy_json"] = '{"1": 1.0}'
+    row = valid_row(s)
+    row["mcts_policy_json"] = '{"1": 1.0}'
     assert_rejected(write_csv(tmp_path / "examples.csv", [row]), "masked")
 
 
 def test_missing_state_file_is_rejected(tmp_path: Path) -> None:
-    assert_rejected(write_csv(tmp_path / "examples.csv", [valid_row(tmp_path / "missing.npz")]), "State file")
+    assert_rejected(
+        write_csv(tmp_path / "examples.csv", [valid_row(tmp_path / "missing.npz")]),
+        "State file",
+    )
 
 
 def test_corrupt_npz_is_rejected(tmp_path: Path) -> None:
-    s = tmp_path / "s.npz"; s.write_bytes(b"bad")
-    assert_rejected(write_csv(tmp_path / "examples.csv", [valid_row(s)]), "Could not read")
+    s = tmp_path / "s.npz"
+    s.write_bytes(b"bad")
+    assert_rejected(
+        write_csv(tmp_path / "examples.csv", [valid_row(s)]), "Could not read"
+    )
 
 
 def test_npz_missing_required_array_is_rejected(tmp_path: Path) -> None:
-    s = tmp_path / "s.npz"; np.savez(s, bus_features=np.zeros((2, 3)))
-    assert_rejected(write_csv(tmp_path / "examples.csv", [valid_row(s)]), "missing required arrays")
+    s = tmp_path / "s.npz"
+    np.savez(s, bus_features=np.zeros((2, 3)))
+    assert_rejected(
+        write_csv(tmp_path / "examples.csv", [valid_row(s)]), "missing required arrays"
+    )
 
 
 def test_invalid_bus_feature_shape_is_rejected(tmp_path: Path) -> None:
     s = write_state(tmp_path / "s.npz", bus_features=np.zeros((2,)))
-    assert_rejected(write_csv(tmp_path / "examples.csv", [valid_row(s)]), "bus_features")
+    assert_rejected(
+        write_csv(tmp_path / "examples.csv", [valid_row(s)]), "bus_features"
+    )
 
 
 def test_invalid_branch_feature_shape_is_rejected(tmp_path: Path) -> None:
     s = write_state(tmp_path / "s.npz", branch_features=np.zeros((1,)))
-    assert_rejected(write_csv(tmp_path / "examples.csv", [valid_row(s)]), "branch_features")
+    assert_rejected(
+        write_csv(tmp_path / "examples.csv", [valid_row(s)]), "branch_features"
+    )
 
 
 def test_invalid_edge_index_shape_is_rejected(tmp_path: Path) -> None:
@@ -265,29 +301,39 @@ def test_invalid_action_mask_shape_is_rejected(tmp_path: Path) -> None:
 
 def test_action_mask_requires_valid_action(tmp_path: Path) -> None:
     s = write_state(tmp_path / "s.npz", action_mask=np.array([False, False]))
-    assert_rejected(write_csv(tmp_path / "examples.csv", [valid_row(s)]), "valid action")
+    assert_rejected(
+        write_csv(tmp_path / "examples.csv", [valid_row(s)]), "valid action"
+    )
 
 
 def test_non_finite_graph_features_are_rejected(tmp_path: Path) -> None:
-    bus = np.zeros((2, 3), dtype=np.float32); bus[0, 0] = np.nan
+    bus = np.zeros((2, 3), dtype=np.float32)
+    bus[0, 0] = np.nan
     s = write_state(tmp_path / "s.npz", bus_features=bus)
     assert_rejected(write_csv(tmp_path / "examples.csv", [valid_row(s)]), "finite")
 
 
 def test_edge_index_out_of_bounds_is_rejected(tmp_path: Path) -> None:
     s = write_state(tmp_path / "s.npz", edge_index=np.array([[0], [2]], dtype=np.int64))
-    assert_rejected(write_csv(tmp_path / "examples.csv", [valid_row(s)]), "out of bounds")
+    assert_rejected(
+        write_csv(tmp_path / "examples.csv", [valid_row(s)]), "out of bounds"
+    )
 
 
 def test_inconsistent_graph_dimensions_are_rejected(tmp_path: Path) -> None:
     s1 = write_state(tmp_path / "s1.npz")
     s2 = write_state(tmp_path / "s2.npz", bus_features=np.zeros((3, 3)))
-    r1 = valid_row(s1); r2 = valid_row(s2); r2["state_id"] = "state-2"
-    assert_rejected(write_csv(tmp_path / "examples.csv", [r1, r2]), "dimensions mismatch")
+    r1 = valid_row(s1)
+    r2 = valid_row(s2)
+    r2["state_id"] = "state-2"
+    assert_rejected(
+        write_csv(tmp_path / "examples.csv", [r1, r2]), "dimensions mismatch"
+    )
 
 
 def test_optional_selected_action_must_be_valid(tmp_path: Path) -> None:
-    row = valid_row(write_state(tmp_path / "s.npz")); row["selected_action_id"] = 2
+    row = valid_row(write_state(tmp_path / "s.npz"))
+    row["selected_action_id"] = 2
     assert_rejected(write_csv(tmp_path / "examples.csv", [row]), "selected_action_id")
 
 
@@ -336,9 +382,83 @@ def test_public_outcome_validator_accepts_independent_scenario_iterations() -> N
     solved = valid_row(Path("unused-a.npz"))
     solved["replay_iteration"] = 1
     handoff = valid_row(Path("unused-b.npz"))
-    handoff.update({
-        "state_id": "state-2", "replay_iteration": 2, "solved": False,
-        "termination_reason": "handoff_to_redispatch", "outcome_class": "handoff_to_redispatch",
-        "outcome_value_target": 0.0, "outcome_gamma": 0.95,
-    })
-    validate_example_outcome_contracts(pd.DataFrame([solved, handoff]), source_path="unit")
+    handoff.update(
+        {
+            "state_id": "state-2",
+            "replay_iteration": 2,
+            "solved": False,
+            "termination_reason": "handoff_to_redispatch",
+            "outcome_class": "handoff_to_redispatch",
+            "outcome_value_target": 0.0,
+            "outcome_gamma": 0.95,
+        }
+    )
+    validate_example_outcome_contracts(
+        pd.DataFrame([solved, handoff]), source_path="unit"
+    )
+
+
+from grid_topology_ai.self_play.example_validation import (
+    validate_example_contract_versions,
+)
+
+
+def test_contract_version_validator_rejects_legacy_outcome_version(
+    tmp_path: Path,
+) -> None:
+    row = valid_row(write_state(tmp_path / "state.npz"))
+    row["outcome_value_target_contract_version"] = 1
+    with pytest.raises(ValueError, match="outcome/value-target contract"):
+        validate_example_contract_versions(
+            pd.DataFrame([row]), source_path="source.csv"
+        )
+
+
+def test_outcome_validator_rejects_legacy_outcome_version(tmp_path: Path) -> None:
+    row = valid_row(write_state(tmp_path / "state.npz"))
+    row["outcome_value_target_contract_version"] = 1
+    with pytest.raises(ValueError, match="outcome/value-target contract"):
+        validate_example_outcome_contracts(
+            pd.DataFrame([row]), source_path="source.csv"
+        )
+
+
+def test_outcome_validator_reports_unknown_reason_with_context(tmp_path: Path) -> None:
+    row = valid_row(write_state(tmp_path / "state.npz"))
+    row.update(solved=False, termination_reason="unknown")
+    with pytest.raises(
+        ValueError,
+        match=r"Invalid termination_reason at row 0.*source.csv.*Unknown termination_reason",
+    ):
+        validate_example_outcome_contracts(
+            pd.DataFrame([row]), source_path="source.csv"
+        )
+
+
+def test_outcome_validator_reports_contradiction_with_context(tmp_path: Path) -> None:
+    row = valid_row(write_state(tmp_path / "state.npz"))
+    row.update(solved=False, termination_reason="solved")
+    with pytest.raises(ValueError, match=r"row 0.*source.csv.*Contradictory outcome"):
+        validate_example_outcome_contracts(
+            pd.DataFrame([row]), source_path="source.csv"
+        )
+
+
+@pytest.mark.parametrize(
+    "column, value", [("solved", "False"), ("solved", 1), ("done", "True"), ("done", 1)]
+)
+def test_outcome_validator_requires_strict_booleans(
+    tmp_path: Path, column: str, value: object
+) -> None:
+    row = valid_row(write_state(tmp_path / "state.npz"))
+    row[column] = value
+    with pytest.raises(ValueError, match=column):
+        validate_example_outcome_contracts(
+            pd.DataFrame([row]), source_path="source.csv"
+        )
+
+
+def test_outcome_validator_accepts_current_version_standalone(tmp_path: Path) -> None:
+    row = valid_row(write_state(tmp_path / "state.npz"))
+    validate_example_contract_versions(pd.DataFrame([row]), source_path="source.csv")
+    validate_example_outcome_contracts(pd.DataFrame([row]), source_path="source.csv")

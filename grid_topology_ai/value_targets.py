@@ -68,9 +68,7 @@ def _require_group_key(row: Mapping[str, object], key: str) -> object:
     missing = pd.isna(value)
     if not isinstance(missing, (bool, np.bool_)):
         raise ValueError(f"Group key {key!r} must be a hashable scalar, got {value!r}")
-    if bool(missing) or (
-        isinstance(value, Real) and not math.isfinite(float(value))
-    ):
+    if bool(missing) or (isinstance(value, Real) and not math.isfinite(float(value))):
         raise ValueError(f"Invalid group key {key!r}: {value!r}")
     try:
         hash(value)
@@ -111,12 +109,15 @@ def add_outcome_value_targets_to_rows(
         or len(set(group_keys)) != len(group_keys)
     ):
         raise ValueError("group_keys must be a non-empty tuple of unique field names")
-    groups: dict[
-        tuple[object, ...], list[tuple[int, dict[str, object]]]
-    ] = {}
+    groups: dict[tuple[object, ...], list[tuple[int, dict[str, object]]]] = {}
     for row in rows:
-        if row.get("physical_objective_schema_version") != PHYSICAL_OBJECTIVE_SCHEMA_VERSION:
-            raise ValueError("Cannot derive current outcome value targets from legacy solved labels.")
+        if (
+            row.get("physical_objective_schema_version")
+            != PHYSICAL_OBJECTIVE_SCHEMA_VERSION
+        ):
+            raise ValueError(
+                "Cannot derive current outcome value targets from legacy solved labels."
+            )
         key = tuple(_require_group_key(row, name) for name in group_keys)
         groups.setdefault(key, []).append((_require_step(row), row))
 
@@ -132,20 +133,24 @@ def add_outcome_value_targets_to_rows(
             solved = _require_bool(row.get("solved"), field="solved")
             done = _require_bool(row.get("done"), field="done")
             if not done:
-                raise ValueError("Cannot derive outcome target from an unfinished episode.")
+                raise ValueError(
+                    "done must be True; cannot derive outcome target from an unfinished episode."
+                )
             try:
                 reason = parse_termination_reason(
                     row.get("termination_reason"), allow_none=False
                 )
-                validate_outcome_invariants(
-                    solved=solved, termination_reason=reason
-                )
+                validate_outcome_invariants(solved=solved, termination_reason=reason)
             except (TypeError, ValueError) as exc:
-                raise ValueError(f"Invalid terminal outcome in episode group {key!r}: {exc}") from exc
+                raise ValueError(
+                    f"Invalid terminal outcome in episode group {key!r}: {exc}"
+                ) from exc
             if expected_solved is None:
                 expected_solved, expected_reason = solved, reason
             elif solved != expected_solved or reason != expected_reason:
-                raise ValueError(f"Cannot derive targets from mixed episode outcomes in group {key!r}")
+                raise ValueError(
+                    f"Cannot derive targets from mixed episode outcomes in group {key!r}"
+                )
 
         if expected_solved is None or expected_reason is None:
             raise RuntimeError(f"Episode group {key!r} unexpectedly has no rows")
