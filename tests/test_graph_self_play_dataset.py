@@ -9,6 +9,7 @@ import torch
 from grid_topology_ai.models.graph_self_play_dataset import GraphSelfPlayDataset
 from grid_topology_ai.contracts import OUTCOME_VALUE_TARGET_CONTRACT_VERSION
 from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
+from grid_topology_ai.termination import TerminationReason
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -163,7 +164,12 @@ def test_graph_dataset_uses_mcts_policy_not_selected_action(tmp_path: Path):
             "physical_objective_schema_version": PHYSICAL_OBJECTIVE_SCHEMA_VERSION,
             "outcome_value_target_contract_version": OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
             "solved": True,
-            "termination_reason": "solved",
+            "done": True,
+            "termination_reason": TerminationReason.SOLVED.value,
+            "outcome_class": TerminationReason.SOLVED.value,
+            "outcome_steps_to_terminal": 1,
+            "outcome_value_target_mode": "alphazero_discounted",
+            "outcome_gamma": 1.0,
         }
     ]).to_csv(csv_path, index=False)
 
@@ -192,7 +198,12 @@ def test_normalization_state_dict_returns_copies(tmp_path: Path):
         "physical_objective_schema_version": PHYSICAL_OBJECTIVE_SCHEMA_VERSION,
         "outcome_value_target_contract_version": OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
         "solved": False,
-        "termination_reason": "handoff_to_redispatch",
+        "done": True,
+        "termination_reason": TerminationReason.HANDOFF_TO_REDISPATCH_TEACHER.value,
+        "outcome_class": TerminationReason.HANDOFF_TO_REDISPATCH.value,
+        "outcome_steps_to_terminal": 1,
+        "outcome_value_target_mode": "alphazero_discounted",
+        "outcome_gamma": 0.95,
     }]).to_csv(csv_path, index=False)
     dataset = GraphSelfPlayDataset(csv_path, normalize_features=True)
     stats = dataset.normalization_state_dict()
