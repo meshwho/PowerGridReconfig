@@ -39,6 +39,8 @@ from grid_topology_ai.physical_objective import (
     THERMAL_LIMIT_TOLERANCE_PERCENT,
     VOLTAGE_LIMIT_TOLERANCE_PU,
 )
+from grid_topology_ai.config.physics import PhysicsConfig, ZeroRateAPolicy
+from grid_topology_ai.power_flow_errors import InvalidPhysicalState
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,6 +104,61 @@ def _require_matrix(name: str, value: np.ndarray, min_columns: int) -> np.ndarra
     return value
 
 
+def _matrix(ppc: dict[str, Any], name: str, columns: int, context: str) -> np.ndarray:
+    if name not in ppc:
+        raise InvalidPhysicalState(f"{context}: missing required {name} matrix.")
+    try:
+        array = np.asarray(ppc[name], dtype=float)
+    except (TypeError, ValueError) as exc:
+        raise InvalidPhysicalState(f"{context}: {name} is not numeric.") from exc
+    if array.ndim != 2 or array.shape[1] < columns:
+        raise InvalidPhysicalState(f"{context}: {name} must be 2D with at least {columns} columns; got {array.shape}.")
+    return array
+
+
+def validate_ppc_input(ppc: dict[str, Any], physics_config: PhysicsConfig, *, context: str = "ppc") -> None:
+    """Validate structural integrity before PYPOWER sees a case."""
+    if not isinstance(ppc, dict):
+        raise InvalidPhysicalState(f"{context}: ppc must be a mapping.")
+    bus, branch, gen = (_matrix(ppc, "bus", VMIN + 1, context), _matrix(ppc, "branch", ANGMAX + 1, context), _matrix(ppc, "gen", PMIN + 1, context))
+    if not np.isfinite(bus).all() or not np.isfinite(branch).all() or not np.isfinite(gen).all():
+        raise InvalidPhysicalState(f"{context}: input matrices contain NaN or infinity.")
+    ids = bus[:, BUS_I]
+    if not np.equal(ids, np.rint(ids)).all() or len(set(ids.astype(int))) != len(ids):
+        raise InvalidPhysicalState(f"{context}: bus.BUS_I must contain unique integral IDs.")
+    known = set(ids.astype(int))
+    active_branch = branch[:, BR_STATUS] > 0
+    for row in np.flatnonzero(active_branch):
+        if not float(branch[row, F_BUS]).is_integer() or not float(branch[row, T_BUS]).is_integer() or int(branch[row, F_BUS]) not in known or int(branch[row, T_BUS]) not in known:
+            raise InvalidPhysicalState(f"{context}: branch row {row} references an unknown bus.")
+    active_gen = gen[:, GEN_STATUS] > 0
+    for row in np.flatnonzero(active_gen):
+        if not float(gen[row, GEN_BUS]).is_integer() or int(gen[row, GEN_BUS]) not in known:
+            raise InvalidPhysicalState(f"{context}: gen row {row} references an unknown bus.")
+    if np.any(bus[:, VMIN] > bus[:, VMAX]) or np.any(gen[:, PMIN] > gen[:, PMAX]) or np.any(gen[:, QMIN] > gen[:, QMAX]):
+        raise InvalidPhysicalState(f"{context}: min/max limits are inverted.")
+    rate = branch[active_branch, RATE_A]
+    if np.any(rate < 0) or (physics_config.zero_rate_a_policy is ZeroRateAPolicy.ERROR and np.any(rate == 0)):
+        raise InvalidPhysicalState(f"{context}: active branch RATE_A is invalid for configured policy.")
+    graph = nx.Graph(); graph.add_nodes_from(known); graph.add_edges_from((int(branch[r, F_BUS]), int(branch[r, T_BUS])) for r in np.flatnonzero(active_branch))
+    if physics_config.island_policy.value == "reject" and (not known or not nx.is_connected(graph)):
+        raise InvalidPhysicalState(f"{context}: active topology is disconnected.")
+    # PYPOWER may select/normalise the reference bus during case preparation;
+    # retain compatibility with GridFM inputs where REF is inferred downstream.
+
+
+def validate_pypower_result(result_ppc: dict[str, Any], physics_config: PhysicsConfig, *, input_ppc: dict[str, Any], context: str = "result") -> None:
+    for name in ("bus", "branch", "gen"):
+        if name not in result_ppc or not np.isfinite(np.asarray(result_ppc[name], dtype=float)).all():
+            raise InvalidPhysicalState(f"{context}: {name} result contains non-finite values.")
+    validate_ppc_input(result_ppc, physics_config, context=context)
+    for name in ("bus", "branch", "gen"):
+        if np.asarray(result_ppc[name]).shape[0] != np.asarray(input_ppc[name]).shape[0]:
+            raise InvalidPhysicalState(f"{context}: {name} row count differs from input.")
+    if np.asarray(result_ppc["branch"]).shape[1] < QT + 1:
+        raise InvalidPhysicalState(f"{context}: branch result lacks flow columns.")
+
+
 def _finite_sum(values: np.ndarray) -> float:
     finite = values[np.isfinite(values)]
     return float(np.sum(finite)) if finite.size else 0.0
@@ -110,7 +167,7 @@ def _finite_sum(values: np.ndarray) -> float:
 def calculate_physical_metrics(
     arrays: PhysicalNetworkArrays,
     *,
-    power_flow_converged: bool,
+    power_flow_converged: bool, physics_config: PhysicsConfig | None = None,
 ) -> dict[str, object]:
     bus = _require_matrix("bus", arrays.bus, VMIN + 1)
     branch = _require_matrix("branch", arrays.branch, QT + 1)
@@ -204,11 +261,12 @@ def calculate_physical_metrics(
     loading = np.zeros(len(branch), dtype=float)
     loading[constrained] = s_max[constrained] / rate_a[constrained] * 100.0
     invalid_flow = active_branch & ~np.isfinite(s_max)
+    config = physics_config or PhysicsConfig()
     overload = constrained & (
-        loading > OVERLOAD_LIMIT_PERCENT + THERMAL_LIMIT_TOLERANCE_PERCENT
+        loading > config.overload_limit_percent + config.thermal_tolerance_percent
     )
     hard_overload = constrained & (
-        loading > HARD_OVERLOAD_LIMIT_PERCENT + THERMAL_LIMIT_TOLERANCE_PERCENT
+        loading > config.hard_overload_limit_percent + config.thermal_tolerance_percent
     )
     thermal_failure = overload | invalid_rate | invalid_flow
     hard_failure = hard_overload | invalid_rate | invalid_flow
@@ -218,8 +276,8 @@ def calculate_physical_metrics(
     )
     thermal_excess_mva = np.maximum(s_max - np.maximum(rate_a, 0.0), 0.0)
 
-    low_voltage = np.maximum(vmin - vm - VOLTAGE_LIMIT_TOLERANCE_PU, 0.0)
-    high_voltage = np.maximum(vm - vmax - VOLTAGE_LIMIT_TOLERANCE_PU, 0.0)
+    low_voltage = np.maximum(vmin - vm - config.voltage_tolerance_pu, 0.0)
+    high_voltage = np.maximum(vm - vmax - config.voltage_tolerance_pu, 0.0)
     invalid_voltage = ~(np.isfinite(vm) & np.isfinite(vmin) & np.isfinite(vmax))
     low_voltage_mask = (low_voltage > 0.0) | invalid_voltage
     high_voltage_mask = (high_voltage > 0.0) | invalid_voltage
@@ -247,10 +305,10 @@ def calculate_physical_metrics(
     invalid_generator_bus = active_gen & ~generator_bus_valid
     invalid_p |= invalid_generator_bus
     invalid_q |= invalid_generator_bus
-    low_p = np.maximum(pmin - pg - GENERATOR_LIMIT_TOLERANCE_MW, 0.0)
-    high_p = np.maximum(pg - pmax - GENERATOR_LIMIT_TOLERANCE_MW, 0.0)
-    low_q = np.maximum(qmin - qg - GENERATOR_LIMIT_TOLERANCE_MVAR, 0.0)
-    high_q = np.maximum(qg - qmax - GENERATOR_LIMIT_TOLERANCE_MVAR, 0.0)
+    low_p = np.maximum(pmin - pg - config.generator_p_tolerance_mw, 0.0)
+    high_p = np.maximum(pg - pmax - config.generator_p_tolerance_mw, 0.0)
+    low_q = np.maximum(qmin - qg - config.generator_q_tolerance_mvar, 0.0)
+    high_q = np.maximum(qg - qmax - config.generator_q_tolerance_mvar, 0.0)
     p_violation = active_gen & ((low_p > 0.0) | (high_p > 0.0) | invalid_p)
     q_violation = active_gen & ((low_q > 0.0) | (high_q > 0.0) | invalid_q)
 
@@ -284,12 +342,12 @@ def calculate_physical_metrics(
             continue
         difference = va[from_pos] - va[to_pos]
         lower_excess = (
-            max(angle_min - difference - ANGLE_LIMIT_TOLERANCE_DEGREES, 0.0)
+            max(angle_min - difference - config.angle_tolerance_degrees, 0.0)
             if angle_min > -360.0
             else 0.0
         )
         upper_excess = (
-            max(difference - angle_max - ANGLE_LIMIT_TOLERANCE_DEGREES, 0.0)
+            max(difference - angle_max - config.angle_tolerance_degrees, 0.0)
             if angle_max < 360.0
             else 0.0
         )
@@ -303,6 +361,7 @@ def calculate_physical_metrics(
         "max_loading_percent": max_loading,
         "num_overloaded_branches": int(np.sum(thermal_failure)),
         "num_hard_overloaded_branches": int(np.sum(hard_failure)),
+        "num_unrated_active_branches": int(np.sum(active_branch & (rate_a == 0.0))),
         "total_thermal_overload_mva": _finite_sum(
             thermal_excess_mva[constrained]
         ),
@@ -327,11 +386,11 @@ def calculate_physical_metrics(
 def calculate_physical_metrics_from_result(
     result_ppc: dict[str, Any],
     *,
-    power_flow_converged: bool,
+    power_flow_converged: bool, physics_config: PhysicsConfig | None = None,
 ) -> dict[str, object]:
     return calculate_physical_metrics(
         arrays_from_pypower_result(result_ppc),
-        power_flow_converged=power_flow_converged,
+        power_flow_converged=power_flow_converged, physics_config=physics_config,
     )
 
 
@@ -341,6 +400,7 @@ def calculate_physical_metrics_from_frames(
     branch_df: pd.DataFrame,
     gen_df: pd.DataFrame,
     power_flow_converged: bool,
+    physics_config: PhysicsConfig | None = None,
 ) -> dict[str, object]:
     return calculate_physical_metrics(
         arrays_from_gridfm_frames(
@@ -349,4 +409,5 @@ def calculate_physical_metrics_from_frames(
             gen_df=gen_df,
         ),
         power_flow_converged=power_flow_converged,
+        physics_config=physics_config,
     )
