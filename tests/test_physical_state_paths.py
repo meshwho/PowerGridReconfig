@@ -10,6 +10,7 @@ from grid_topology_ai.data_adapter import (
 )
 from grid_topology_ai.physical_objective import assess_physical_state
 from grid_topology_ai.pypower_backend import GridFMPowerFlowBackend
+from grid_topology_ai.power_flow_errors import InvalidPhysicalState
 
 import copy
 
@@ -124,6 +125,25 @@ def test_slow_fast_and_cache_paths_preserve_identical_assessment() -> None:
     assert assess_physical_state(cached.next_state.metrics) == assess_physical_state(
         fast.metrics
     )
+
+
+def test_fast_builder_rejects_float32_overflow_in_active_branch_features() -> None:
+    backend = GridFMPowerFlowBackend(adapter=_adapter())
+    ppc, frames = backend._build_ppc(1, None)
+    result = _completed_result(ppc)
+    # Finite float64 flow cannot be represented in the float32 feature tensor.
+    result["branch"][0, PF] = 1e39
+    result["branch"][0, PT] = -1e39
+    previous = backend._build_state_from_pypower_result(
+        scenario_id=1, result_ppc=_completed_result(ppc), original_frames=frames
+    )
+    with np.testing.assert_raises(InvalidPhysicalState):
+        backend._build_state_from_pypower_result_fast(
+            scenario_id=1,
+            result_ppc=result,
+            previous_state=previous,
+            original_frames=frames,
+        )
 
 
 def test_initial_power_flow_rejects_non_finite_result(

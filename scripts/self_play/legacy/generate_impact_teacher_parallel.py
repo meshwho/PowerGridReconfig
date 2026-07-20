@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import traceback
+from dataclasses import replace
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
@@ -18,6 +19,8 @@ except ImportError:  # pragma: no cover
 from grid_topology_ai.action_space import GridFMActionSpace
 from grid_topology_ai.data_adapter import GridFMAdapter
 from grid_topology_ai.environment import TopologySwitchingEnv
+from grid_topology_ai.config.physics import DEFAULT_PHYSICS_CONFIG, PhysicsConfig
+from grid_topology_ai.contracts import PHYSICS_CONFIG_CONTRACT_VERSION
 from grid_topology_ai.pypower_backend import GridFMPowerFlowBackend
 from grid_topology_ai.reward import GridFMReward
 from grid_topology_ai.search.continuation_gate import make_do_nothing_action
@@ -344,9 +347,14 @@ def process_one_scenario_worker(task: dict[str, Any]) -> dict[str, Any]:
     try:
         adapter = GridFMAdapter(raw_dir)
 
+        if task.get("physics_config_contract_version") != PHYSICS_CONFIG_CONTRACT_VERSION:
+            raise ValueError("Unsupported physics config contract in worker task.")
+        physics_config = PhysicsConfig.from_mapping(task["physics_config"])
+        if physics_config.fingerprint() != task.get("physics_config_fingerprint"):
+            raise ValueError("PhysicsConfig fingerprint mismatch in worker task.")
         backend = GridFMPowerFlowBackend(
             adapter=adapter,
-            pf_alg=int(task["pf_alg"]),
+            physics_config=physics_config,
             enable_cache=not bool(task["disable_cache"]),
         )
 
@@ -779,6 +787,7 @@ def build_tasks(
     Build serializable worker tasks.
     """
 
+    physics_config = replace(DEFAULT_PHYSICS_CONFIG, pf_alg=int(args.pf_alg))
     tasks: list[dict[str, Any]] = []
 
     for scenario_id in scenario_ids:
@@ -792,7 +801,10 @@ def build_tasks(
                 "candidate_pool": int(args.candidate_pool),
                 "top_k": int(args.top_k),
                 "gamma": float(args.gamma),
-                "pf_alg": int(args.pf_alg),
+                "pf_alg": physics_config.pf_alg,
+                "physics_config_contract_version": PHYSICS_CONFIG_CONTRACT_VERSION,
+                "physics_config": physics_config.to_dict(),
+                "physics_config_fingerprint": physics_config.fingerprint(),
                 "max_steps": int(args.max_steps),
                 "max_teacher_steps": int(args.max_teacher_steps),
                 "soft_policy_temperature": float(args.soft_policy_temperature),

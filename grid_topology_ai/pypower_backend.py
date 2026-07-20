@@ -66,13 +66,18 @@ from grid_topology_ai.data_adapter import (
 )
 from grid_topology_ai.physical_constraints import (
     calculate_physical_metrics_from_result,
+    validate_ppc_input,
+    validate_pypower_result,
+)
+from grid_topology_ai.config.physics import DEFAULT_PHYSICS_CONFIG, PhysicsConfig, QLimitPolicy
+from grid_topology_ai.power_flow_errors import (
+    InvalidPhysicalState, PowerFlowFailureKind, PowerFlowNotConverged,
 )
 from grid_topology_ai.physical_objective import (
     HARD_OVERLOAD_LIMIT_PERCENT,
     OVERLOAD_LIMIT_PERCENT,
     assess_physical_state,
 )
-import copy
 
 def pf_algorithm_name(pf_alg: int) -> str:
     names = {
@@ -96,6 +101,7 @@ class GridFMPowerFlowResult:
     next_state: GridFMState | None
     raw_result: dict[str, Any] | None
     message: str
+    failure_kind: PowerFlowFailureKind | None = None
 
 
 class GridFMPowerFlowBackend:
@@ -117,16 +123,14 @@ class GridFMPowerFlowBackend:
     def __init__(
             self,
             adapter: GridFMAdapter,
-            base_mva: float = 100.0,
-            max_iter: int = 30,
-            pf_alg: int = 1,
+            physics_config: PhysicsConfig = DEFAULT_PHYSICS_CONFIG,
             enable_cache: bool = True,
             store_raw_result: bool = False,
     ):
         self.adapter = adapter
-        self.base_mva = float(base_mva)
-        self.max_iter = int(max_iter)
-        self.pf_alg = int(pf_alg)
+        if not isinstance(physics_config, PhysicsConfig):
+            raise TypeError("physics_config must be a PhysicsConfig.")
+        self.physics_config = physics_config
 
         self.enable_cache = bool(enable_cache)
         self.store_raw_result = bool(store_raw_result)
@@ -136,6 +140,34 @@ class GridFMPowerFlowBackend:
 
         self.cache_hits = 0
         self.cache_misses = 0
+
+    @property
+    def base_mva(self) -> float:
+        return self.physics_config.base_mva
+
+    @property
+    def max_iter(self) -> int:
+        return self.physics_config.max_iterations
+
+    @property
+    def pf_alg(self) -> int:
+        return self.physics_config.pf_alg
+
+    def _build_pp_options(self) -> dict[str, object]:
+        config = self.physics_config
+        return ppoption(VERBOSE=0, OUT_ALL=0, PF_DC=False, PF_ALG=config.pf_alg,
+                        PF_TOL=config.pf_tolerance, PF_MAX_IT=config.max_iterations,
+                        PF_MAX_IT_FD=config.max_iterations, PF_MAX_IT_GS=config.max_iterations,
+                        ENFORCE_Q_LIMS=1 if config.q_limit_policy is QLimitPolicy.ENFORCE else 0)
+
+    def _solve_ppc(self, ppc: dict[str, Any], *, context: str) -> tuple[dict[str, Any], dict[str, object]]:
+        validate_ppc_input(ppc, self.physics_config, context=context)
+        result_ppc, success = runpf(ppc, self._build_pp_options())
+        if not bool(success):
+            raise PowerFlowNotConverged(f"PYPOWER power flow did not converge ({context}).")
+        validate_pypower_result(result_ppc, self.physics_config, input_ppc=ppc, context=context)
+        metrics = calculate_physical_metrics_from_result(result_ppc, power_flow_converged=True, physics_config=self.physics_config)
+        return result_ppc, metrics
 
     def clear_cache(self) -> None:
         """
@@ -176,7 +208,7 @@ class GridFMPowerFlowBackend:
         assessment = assess_physical_state(state.metrics)
 
         if not assessment.all_values_finite:
-            raise ValueError(
+            raise InvalidPhysicalState(
                 "Power-flow result contains non-finite mandatory physical values."
             )
 
@@ -192,7 +224,7 @@ class GridFMPowerFlowBackend:
             array = np.asarray(values)
 
             if not np.isfinite(array).all():
-                raise ValueError(
+                raise InvalidPhysicalState(
                     f"Power-flow result contains NaN or infinity in {name}."
                 )
 
@@ -221,8 +253,7 @@ class GridFMPowerFlowBackend:
 
         return (
             int(state.scenario_id),
-            int(self.pf_alg),
-            round(float(self.base_mva), 6),
+            self.physics_config.fingerprint(),
             tuple(sorted(outaged)),
         )
 
@@ -254,44 +285,16 @@ class GridFMPowerFlowBackend:
                 switched_off_branch_id=switched_off_branch_id,
             )
 
-            ppopt = ppoption(
-                VERBOSE=0,
-                OUT_ALL=0,
-                PF_ALG=self.pf_alg,
-                PF_MAX_IT=self.max_iter,
-            )
-
-            result_ppc, success = runpf(ppc, ppopt)
-
-            success = bool(success)
-
-            if not success:
-                return GridFMPowerFlowResult(
-                    success=False,
-                    scenario_id=scenario_id,
-                    switched_off_branch_id=switched_off_branch_id,
-                    next_state=None,
-                    raw_result=result_ppc,
-                    message="PYPOWER power flow did not converge.",
-                )
+            result_ppc, metrics = self._solve_ppc(ppc, context=f"scenario={scenario_id}")
 
             next_state = self._build_state_from_pypower_result(
                 scenario_id=scenario_id,
                 result_ppc=result_ppc,
                 original_frames=frames,
+                physical_metrics=metrics,
             )
 
-            try:
-                self._require_usable_next_state(next_state)
-            except ValueError as exc:
-                return GridFMPowerFlowResult(
-                    success=False,
-                    scenario_id=scenario_id,
-                    switched_off_branch_id=switched_off_branch_id,
-                    next_state=None,
-                    raw_result=result_ppc,
-                    message=f"Power flow returned an unusable state: {exc}",
-                )
+            self._require_usable_next_state(next_state)
 
             return GridFMPowerFlowResult(
                 success=True,
@@ -302,14 +305,20 @@ class GridFMPowerFlowBackend:
                 message="Power flow converged.",
             )
 
-        except Exception as exc:
+        except PowerFlowNotConverged as exc:
             return GridFMPowerFlowResult(
                 success=False,
                 scenario_id=scenario_id,
                 switched_off_branch_id=switched_off_branch_id,
                 next_state=None,
                 raw_result=None,
-                message=f"Power flow backend failed: {exc}",
+                message=str(exc), failure_kind=PowerFlowFailureKind.NOT_CONVERGED,
+            )
+        except InvalidPhysicalState as exc:
+            return GridFMPowerFlowResult(
+                success=False, scenario_id=scenario_id, switched_off_branch_id=switched_off_branch_id,
+                next_state=None, raw_result=None, message=str(exc),
+                failure_kind=PowerFlowFailureKind.INVALID_PHYSICAL_STATE,
             )
 
     def _build_ppc(
@@ -528,7 +537,7 @@ class GridFMPowerFlowBackend:
 
             try:
                 self._require_usable_next_state(cached_next_state)
-            except ValueError:
+            except InvalidPhysicalState:
                 # Invalid cached states must never re-enter MCTS.
                 del self._cache[cache_key]
             else:
@@ -552,36 +561,21 @@ class GridFMPowerFlowBackend:
                 switched_off_branch_id=switched_off_branch_id,
             )
 
-            ppopt = ppoption(
-                VERBOSE=0,
-                OUT_ALL=0,
-                PF_ALG=self.pf_alg,
-                PF_MAX_IT=self.max_iter,
+            result_ppc, metrics = self._solve_ppc(
+                ppc, context=f"scenario={state.scenario_id} from_state"
             )
-
-            result_ppc, success = runpf(ppc, ppopt)
-            success = bool(success)
-
-            if not success:
-                return GridFMPowerFlowResult(
-                    success=False,
-                    scenario_id=int(state.scenario_id),
-                    switched_off_branch_id=switched_off_branch_id,
-                    next_state=None,
-                    raw_result=result_ppc,
-                    message="PYPOWER power flow did not converge.",
-                )
 
             next_state = self._build_state_from_pypower_result_fast(
                 scenario_id=int(state.scenario_id),
                 result_ppc=result_ppc,
                 previous_state=state,
                 original_frames=frames,
+                physical_metrics=metrics,
             )
 
             try:
                 self._require_usable_next_state(next_state)
-            except ValueError as exc:
+            except InvalidPhysicalState as exc:
                 return GridFMPowerFlowResult(
                     success=False,
                     scenario_id=int(state.scenario_id),
@@ -591,6 +585,7 @@ class GridFMPowerFlowBackend:
                         result_ppc if self.store_raw_result else None
                     ),
                     message=f"Power flow returned an unusable state: {exc}",
+                    failure_kind=PowerFlowFailureKind.INVALID_PHYSICAL_STATE,
                 )
 
             result = GridFMPowerFlowResult(
@@ -607,14 +602,19 @@ class GridFMPowerFlowBackend:
 
             return result
 
-        except Exception as exc:
+        except PowerFlowNotConverged as exc:
             return GridFMPowerFlowResult(
-                success=False,
-                scenario_id=int(state.scenario_id),
-                switched_off_branch_id=switched_off_branch_id,
-                next_state=None,
-                raw_result=None,
-                message=f"Power flow backend failed: {exc}",
+                success=False, scenario_id=int(state.scenario_id),
+                switched_off_branch_id=switched_off_branch_id, next_state=None,
+                raw_result=None, message=str(exc),
+                failure_kind=PowerFlowFailureKind.NOT_CONVERGED,
+            )
+        except InvalidPhysicalState as exc:
+            return GridFMPowerFlowResult(
+                success=False, scenario_id=int(state.scenario_id),
+                switched_off_branch_id=switched_off_branch_id, next_state=None,
+                raw_result=None, message=str(exc),
+                failure_kind=PowerFlowFailureKind.INVALID_PHYSICAL_STATE,
             )
 
     def _build_bus_matrix(self, bus_df: pd.DataFrame) -> np.ndarray:
@@ -733,6 +733,7 @@ class GridFMPowerFlowBackend:
             result_ppc: dict[str, Any],
             previous_state: GridFMState,
             original_frames: dict[str, pd.DataFrame],
+            physical_metrics: dict[str, object] | None = None,
     ) -> GridFMState:
         """
         Fast conversion from PYPOWER result to GridFMState.
@@ -750,10 +751,11 @@ class GridFMPowerFlowBackend:
         bus_res = result_ppc["bus"]
         branch_res = result_ppc["branch"]
         gen_res = result_ppc["gen"]
-        physical_metrics = calculate_physical_metrics_from_result(
-            result_ppc,
-            power_flow_converged=True,
-        )
+        if physical_metrics is None:
+            physical_metrics = calculate_physical_metrics_from_result(
+                result_ppc, power_flow_converged=True,
+                physics_config=self.physics_config,
+            )
 
         bus_features = previous_state.bus_features.copy()
         branch_features = previous_state.branch_features.copy()
@@ -801,32 +803,51 @@ class GridFMPowerFlowBackend:
         # Branch dynamic features
         # ------------------------------------------------------------------
 
-        pf = branch_res[:, PF].astype(np.float32)
-        qf = branch_res[:, QF].astype(np.float32)
-        pt = branch_res[:, PT].astype(np.float32)
-        qt = branch_res[:, QT].astype(np.float32)
+        # Calculate electrical magnitudes in float64.  float32 squaring can
+        # overflow finite PYPOWER flows and must never be sanitised to zero.
+        pf64 = np.asarray(branch_res[:, PF], dtype=np.float64)
+        qf64 = np.asarray(branch_res[:, QF], dtype=np.float64)
+        pt64 = np.asarray(branch_res[:, PT], dtype=np.float64)
+        qt64 = np.asarray(branch_res[:, QT], dtype=np.float64)
+        if not all(
+            np.isfinite(values).all()
+            for values in (pf64, qf64, pt64, qt64)
+        ):
+            raise InvalidPhysicalState("Branch flow result contains non-finite values.")
+        float32_max = np.finfo(np.float32).max
+        if any(
+            np.any(np.abs(values) > float32_max)
+            for values in (pf64, qf64, pt64, qt64)
+        ):
+            raise InvalidPhysicalState("Branch flow cannot be represented in feature precision.")
+        pf = pf64.astype(np.float32)
+        qf = qf64.astype(np.float32)
+        pt = pt64.astype(np.float32)
+        qt = qt64.astype(np.float32)
         br_status = branch_res[:, BR_STATUS].astype(np.float32)
 
-        s_from = np.sqrt(pf * pf + qf * qf).astype(np.float32)
-        s_to = np.sqrt(pt * pt + qt * qt).astype(np.float32)
-        s_max = np.maximum(s_from, s_to).astype(np.float32)
+        s_from64 = np.hypot(pf64, qf64)
+        s_to64 = np.hypot(pt64, qt64)
+        s_max64 = np.maximum(s_from64, s_to64)
 
-        rate_a = branch_features[:, branch_col["rate_a"]].astype(np.float32)
-
-        loading = np.divide(
-            s_max,
-            rate_a,
-            out=np.zeros_like(s_max, dtype=np.float32),
-            where=rate_a > 0.0,
-        ).astype(np.float32) * 100.0
-
-        loading[br_status <= 0.0] = 0.0
-        loading = np.nan_to_num(
-            loading,
-            nan=0.0,
-            posinf=0.0,
-            neginf=0.0,
-        ).astype(np.float32)
+        rate_a64 = np.asarray(branch_res[:, RATE_A], dtype=np.float64)
+        active = br_status > 0.0
+        rated = active & (rate_a64 > 0.0)
+        unlimited = active & (rate_a64 == 0.0)
+        if not np.isfinite(s_from64[active]).all() or not np.isfinite(s_to64[active]).all():
+            raise InvalidPhysicalState("Active branch flow magnitude is non-finite.")
+        if self.physics_config.zero_rate_a_policy.value == "error" and unlimited.any():
+            raise InvalidPhysicalState("Active branch RATE_A=0 is forbidden by policy.")
+        loading64 = np.zeros_like(s_max64)
+        loading64[rated] = s_max64[rated] / rate_a64[rated] * 100.0
+        if not np.isfinite(loading64[rated]).all():
+            raise InvalidPhysicalState("Active rated branch loading is non-finite.")
+        s_from = s_from64.astype(np.float32)
+        s_to = s_to64.astype(np.float32)
+        s_max = s_max64.astype(np.float32)
+        loading = loading64.astype(np.float32)
+        if not np.isfinite(s_from[active]).all() or not np.isfinite(s_to[active]).all() or not np.isfinite(s_max[active]).all() or not np.isfinite(loading[rated]).all():
+            raise InvalidPhysicalState("Branch features cannot be represented finitely.")
 
         branch_features[:, branch_col["pf"]] = pf
         branch_features[:, branch_col["qf"]] = qf
@@ -842,7 +863,6 @@ class GridFMPowerFlowBackend:
         # Metrics
         # ------------------------------------------------------------------
 
-        active = br_status > 0.0
         active_loading = loading[active]
 
         if active_loading.size > 0:
@@ -897,7 +917,8 @@ class GridFMPowerFlowBackend:
         self,
         scenario_id: int,
         result_ppc: dict[str, Any],
-        original_frames: dict[str, pd.DataFrame],
+            original_frames: dict[str, pd.DataFrame],
+            physical_metrics: dict[str, object] | None = None,
     ) -> GridFMState:
         """
         Convert PYPOWER result back to GridFMState.
@@ -910,10 +931,11 @@ class GridFMPowerFlowBackend:
         bus_res = result_ppc["bus"]
         branch_res = result_ppc["branch"]
         gen_res = result_ppc["gen"]
-        physical_metrics = calculate_physical_metrics_from_result(
-            result_ppc,
-            power_flow_converged=True,
-        )
+        if physical_metrics is None:
+            physical_metrics = calculate_physical_metrics_from_result(
+                result_ppc, power_flow_converged=True,
+                physics_config=self.physics_config,
+            )
 
         bus_df["Vm"] = bus_res[:, VM]
         bus_df["Va"] = bus_res[:, VA]

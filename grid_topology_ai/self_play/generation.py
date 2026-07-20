@@ -10,6 +10,8 @@ import numpy as np
 import pandas as pd
 
 from grid_topology_ai.config import GenerationConfig
+from grid_topology_ai.config.physics import PhysicsConfig, resolve_physics_config
+from grid_topology_ai.contracts import PHYSICS_CONFIG_CONTRACT_VERSION
 from grid_topology_ai.physical_objective import (
     HARD_OVERLOAD_LIMIT_PERCENT,
     OVERLOAD_LIMIT_PERCENT,
@@ -47,6 +49,7 @@ class GenerationRequest:
     config: GenerationConfig
     seed: int
     clear_cache_between_scenarios: bool
+    physics_config: PhysicsConfig | None = None
     scenario_ids: tuple[int, ...] | None = None
     device: str = "cpu"
     enable_cache: bool = True
@@ -56,6 +59,10 @@ class GenerationRequest:
     min_soft_improvement: float = 15.0
     min_gate_visits: int = 5
     min_gate_visit_fraction: float = 0.01
+
+    @property
+    def resolved_physics_config(self) -> PhysicsConfig:
+        return resolve_physics_config(self.physics_config, self.config.pf_alg)
 
 
 def _ensure_runtime_dependencies() -> None:
@@ -384,7 +391,7 @@ def generate_self_play_examples(request: GenerationRequest) -> Path:
     print(f"Root epsilon:   {request.root_exploration_fraction}")
     print(f"Temperature:    {request.config.selection_temperature}")
     print(f"Seed:           {request.seed}")
-    print(f"PF algorithm:   {request.config.pf_alg}")
+    print(f"PF algorithm:   {request.resolved_physics_config.pf_alg}")
     print(f"Cache enabled:  {request.enable_cache}")
     print(
         "Clear cache between scenarios: "
@@ -407,14 +414,14 @@ def generate_self_play_examples(request: GenerationRequest) -> Path:
     adapter = GridFMAdapter(request.raw_dir)
     backend = GridFMPowerFlowBackend(
         adapter=adapter,
-        pf_alg=request.config.pf_alg,
+        physics_config=request.resolved_physics_config,
         enable_cache=request.enable_cache,
     )
     action_space = GridFMActionSpace(
         require_connected_after_switch=True,
         enable_cache=request.enable_cache,
     )
-    reward_fn = GridFMReward()
+    reward_fn = GridFMReward(physics_config=request.resolved_physics_config)
 
     mcts_config = MCTSConfig(
         num_simulations=request.config.simulations,
@@ -640,7 +647,10 @@ def generate_self_play_examples(request: GenerationRequest) -> Path:
                     "mcts_simulations": int(request.config.simulations),
                     "mcts_depth": int(request.config.depth),
                     "mcts_top_k": int(request.config.top_k),
-                    "pf_alg": int(request.config.pf_alg),
+                    "pf_alg": request.resolved_physics_config.pf_alg,
+                    "physics_config_contract_version": PHYSICS_CONFIG_CONTRACT_VERSION,
+                    "physics_config": request.resolved_physics_config.to_dict(),
+                    "physics_config_fingerprint": request.resolved_physics_config.fingerprint(),
                     "use_continuation_gate": bool(
                         request.config.use_continuation_gate
                     ),
