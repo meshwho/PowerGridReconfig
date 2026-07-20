@@ -13,17 +13,14 @@ from grid_topology_ai.contracts import (
     require_exact_contract_version,
 )
 from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
-from grid_topology_ai.termination import validate_outcome_invariants
+from grid_topology_ai.termination import (
+    parse_termination_reason,
+    validate_outcome_invariants,
+)
 from grid_topology_ai.value_targets import terminal_value_from_outcome
 
-REQUIRED_EXAMPLE_COLUMNS: tuple[str, ...] = (
-    "state_path",
-    "mcts_policy_json",
-    "scenario_id",
-    "step",
-    "state_id",
+REQUIRED_OUTCOME_COLUMNS: tuple[str, ...] = (
     "outcome_value_target",
-    "physical_objective_schema_version",
     "outcome_value_target_contract_version",
     "solved",
     "done",
@@ -33,6 +30,15 @@ REQUIRED_EXAMPLE_COLUMNS: tuple[str, ...] = (
     "outcome_value_target_mode",
     "outcome_gamma",
 )
+
+REQUIRED_EXAMPLE_COLUMNS: tuple[str, ...] = (
+    "state_path",
+    "mcts_policy_json",
+    "scenario_id",
+    "step",
+    "state_id",
+    "physical_objective_schema_version",
+) + REQUIRED_OUTCOME_COLUMNS
 
 _REQUIRED_STATE_ARRAYS = ("bus_features", "branch_features", "edge_index", "action_mask")
 
@@ -74,6 +80,10 @@ def validate_examples_dataframe(examples: pd.DataFrame, *, source_path: str | Pa
             if _is_missing_required_value(value):
                 raise ValueError(f"Missing required value in column '{column}' at row {index}. File: {source}")
 
+    # Outcome validation is deliberately independent per training row: a
+    # scenario can legitimately appear in multiple replay iterations.
+    validate_example_outcome_contracts(examples, source_path=source)
+
     state_ids = examples["state_id"].map(lambda value: str(value).strip())
     duplicated = state_ids[state_ids.duplicated()]
     if not duplicated.empty:
@@ -86,11 +96,6 @@ def validate_examples_dataframe(examples: pd.DataFrame, *, source_path: str | Pa
         if step < 0:
             raise ValueError(f"step must be >= 0 at row {index}. File: {source}")
         _ = scenario_id
-        _validate_outcome_contract(
-            row,
-            index=index,
-            source=source,
-        )
         policy = _parse_policy(row["mcts_policy_json"], index=index, source=source)
         state_path = Path(str(row["state_path"]).strip())
         if not state_path.exists():
@@ -128,6 +133,26 @@ def validate_example_contract_versions(
                 "python -m scripts" ".self_play.generate ..."
             ),
         )
+
+
+def validate_example_outcome_contracts(
+    examples: pd.DataFrame, *, source_path: str | Path
+) -> None:
+    """Validate the strict, terminal outcome contract of each training row."""
+    source = Path(source_path)
+    missing = sorted(set(REQUIRED_OUTCOME_COLUMNS) - set(examples.columns))
+    if missing:
+        raise ValueError(
+            f"Examples CSV is missing required outcome columns: {missing}. File: {source}"
+        )
+    for index, row in examples.iterrows():
+        for column in REQUIRED_OUTCOME_COLUMNS:
+            if _is_missing_required_value(row[column]):
+                raise ValueError(
+                    f"Missing required outcome value in column '{column}' "
+                    f"at row {index}. File: {source}"
+                )
+        _validate_outcome_contract(row, index=index, source=source)
         require_exact_contract_version(
             row.get("outcome_value_target_contract_version"),
             expected=OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
@@ -151,6 +176,8 @@ def _is_missing_required_value(value: Any) -> bool:
 
 
 def _require_integer(value: Any, *, column: str, index: Any, source: Path) -> int:
+    if isinstance(value, (bool, np.bool_)):
+        raise ValueError(f"{column} must be finite integer-valued at row {index}. File: {source}")
     number = pd.to_numeric(pd.Series([value]), errors="coerce").iloc[0]
     if pd.isna(number) or not math.isfinite(float(number)) or not float(number).is_integer():
         raise ValueError(f"{column} must be finite integer-valued at row {index}. File: {source}")
@@ -175,6 +202,10 @@ def _require_finite_number(
     index: Any,
     source: Path,
 ) -> float:
+    if isinstance(value, (bool, np.bool_)):
+        raise ValueError(
+            f"{column} must be finite numeric at row {index}. File: {source}"
+        )
     number = pd.to_numeric(
         pd.Series([value]),
         errors="coerce",
@@ -213,9 +244,13 @@ def _validate_outcome_contract(
             f"at row {index}. File: {source}"
         )
 
-    reason = validate_outcome_invariants(
+    reason = parse_termination_reason(
+        row["termination_reason"],
+        allow_none=False,
+    )
+    validate_outcome_invariants(
         solved=solved,
-        termination_reason=row["termination_reason"],
+        termination_reason=reason,
     )
 
     steps_to_terminal = _require_integer(

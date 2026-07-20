@@ -88,6 +88,9 @@ def add_outcome_value_targets_to_rows(
         key = tuple(row.get(k) for k in group_keys)
         groups.setdefault(key, []).append(row)
 
+    # Derive every update before mutating any source row.  A bad later episode
+    # must not leave earlier episodes partially rewritten.
+    pending_updates: list[tuple[dict, dict[str, object]]] = []
     for _, group_rows in groups.items():
         group_rows.sort(key=lambda r: int(r.get("step", 0)))
 
@@ -96,10 +99,26 @@ def add_outcome_value_targets_to_rows(
 
         terminal_row = group_rows[-1]
 
+        if terminal_row.get("done") is not True:
+            raise ValueError("Cannot derive outcome target from an unfinished episode.")
+
+        # A generated episode has exactly one terminal classification.  Earlier
+        # transition rows may be unfinished or may carry the propagated final
+        # outcome, but may not claim a different one.
+        terminal_reason = terminal_row.get("termination_reason")
+        for row in group_rows[:-1]:
+            reason = row.get("termination_reason")
+            if row.get("done") is True or reason not in (None, ""):
+                if row.get("done") is not True or (
+                    bool(row.get("solved", False)) != bool(terminal_row.get("solved", False))
+                    or parse_termination_reason(reason) != parse_termination_reason(terminal_reason)
+                ):
+                    raise ValueError("Cannot derive targets from mixed episode outcomes.")
+
         terminal_value, outcome_class = terminal_value_from_outcome(
             solved=bool(terminal_row.get("solved", False)),
             termination_reason=parse_termination_reason(
-                terminal_row.get("termination_reason")
+                terminal_reason,
             ),
         )
 
@@ -107,14 +126,18 @@ def add_outcome_value_targets_to_rows(
 
         for position, row in enumerate(group_rows):
             steps_to_terminal = n - position
+            pending_updates.append((row, {
+                "outcome_value_target": float(
+                    terminal_value * (float(gamma) ** steps_to_terminal)
+                ),
+                "outcome_class": outcome_class,
+                "outcome_steps_to_terminal": int(steps_to_terminal),
+                "outcome_value_target_mode": "alphazero_discounted",
+                "outcome_gamma": float(gamma),
+                "outcome_value_target_contract_version": (
+                    OUTCOME_VALUE_TARGET_CONTRACT_VERSION
+                ),
+            }))
 
-            row["outcome_value_target"] = float(
-                terminal_value * (float(gamma) ** steps_to_terminal)
-            )
-            row["outcome_class"] = outcome_class
-            row["outcome_steps_to_terminal"] = int(steps_to_terminal)
-            row["outcome_value_target_mode"] = "alphazero_discounted"
-            row["outcome_gamma"] = float(gamma)
-            row["outcome_value_target_contract_version"] = (
-                OUTCOME_VALUE_TARGET_CONTRACT_VERSION
-            )
+    for row, updates in pending_updates:
+        row.update(updates)

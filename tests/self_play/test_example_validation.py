@@ -7,7 +7,11 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from grid_topology_ai.self_play.example_validation import load_and_validate_examples_csv
+from grid_topology_ai.self_play.example_validation import (
+    REQUIRED_OUTCOME_COLUMNS,
+    load_and_validate_examples_csv,
+    validate_example_outcome_contracts,
+)
 from grid_topology_ai.contracts import OUTCOME_VALUE_TARGET_CONTRACT_VERSION
 from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
 
@@ -301,3 +305,40 @@ def test_selected_action_may_be_absent_from_mcts_policy_support(tmp_path: Path) 
     df = load_and_validate_examples_csv(write_csv(tmp_path / "examples.csv", [row]))
 
     assert len(df) == 1
+
+
+@pytest.mark.parametrize(
+    ("column", "value"),
+    [
+        ("outcome_value_target", True),
+        ("outcome_gamma", np.bool_(True)),
+        ("outcome_steps_to_terminal", True),
+    ],
+)
+def test_public_outcome_validator_rejects_boolean_numbers(
+    tmp_path: Path, column: str, value: object
+) -> None:
+    row = valid_row(write_state(tmp_path / "s.npz"))
+    row[column] = value
+    with pytest.raises(ValueError, match=column):
+        validate_example_outcome_contracts(pd.DataFrame([row]), source_path="unit")
+
+
+@pytest.mark.parametrize("column", REQUIRED_OUTCOME_COLUMNS)
+def test_public_outcome_validator_requires_every_outcome_column(column: str) -> None:
+    row = valid_row(Path("unused.npz"))
+    row.pop(column)
+    with pytest.raises(ValueError, match=column):
+        validate_example_outcome_contracts(pd.DataFrame([row]), source_path="unit")
+
+
+def test_public_outcome_validator_accepts_independent_scenario_iterations() -> None:
+    solved = valid_row(Path("unused-a.npz"))
+    solved["replay_iteration"] = 1
+    handoff = valid_row(Path("unused-b.npz"))
+    handoff.update({
+        "state_id": "state-2", "replay_iteration": 2, "solved": False,
+        "termination_reason": "handoff_to_redispatch", "outcome_class": "handoff_to_redispatch",
+        "outcome_value_target": 0.0, "outcome_gamma": 0.95,
+    })
+    validate_example_outcome_contracts(pd.DataFrame([solved, handoff]), source_path="unit")

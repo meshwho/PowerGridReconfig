@@ -12,6 +12,7 @@ from torch.utils.data import Dataset
 from grid_topology_ai.self_play.example_validation import (
     REQUIRED_EXAMPLE_COLUMNS,
     validate_example_contract_versions,
+    validate_example_outcome_contracts,
 )
 
 
@@ -63,6 +64,10 @@ class GraphSelfPlayDataset(Dataset):
             )
 
         validate_example_contract_versions(
+            self.examples,
+            source_path=self.examples_csv,
+        )
+        validate_example_outcome_contracts(
             self.examples,
             source_path=self.examples_csv,
         )

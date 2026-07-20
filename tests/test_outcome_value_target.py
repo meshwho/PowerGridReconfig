@@ -101,7 +101,7 @@ def test_outcome_value_target_teacher_depth_limit_is_negative():
             "scenario_id": 4,
             "step": 0,
             "solved": False,
-            "done": False,
+            "done": True,
             "termination_reason": "teacher_depth_limit",
         },
     ]
