@@ -13,11 +13,34 @@ from grid_topology_ai.self_play.example_validation import (
 )
 
 
-def load_json_dict(value: str) -> dict:
-    if pd.isna(value):
+def load_json_dict(value: object) -> dict:
+    if value is None or pd.isna(value):
         return {}
+    parsed = json.loads(str(value))
+    return parsed if isinstance(parsed, dict) else {}
 
-    return json.loads(str(value))
+
+def legacy_value(row: pd.Series, key: str) -> str:
+    """Return optional legacy diagnostics without requiring legacy columns."""
+    value = row.get(key)
+    if value is None or pd.isna(value):
+        return "n/a"
+    try:
+        return f"{float(value):.3f}"
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def format_sample_row(row: pd.Series) -> str:
+    return (
+        f"Scenario {int(row['scenario_id']):>3} | step={int(row['step']):>2} | "
+        f"state={row['state_id']} | selected_action={row.get('selected_action_id', 'n/a')} | "
+        f"selected_branch={row.get('selected_branch_id', 'n/a')} | "
+        f"step_reward={legacy_value(row, 'step_reward')} | "
+        f"return_from_step={legacy_value(row, 'discounted_return_from_step')} | "
+        f"final_return={legacy_value(row, 'final_return')} | solved={row['solved']} | "
+        f"reason={row['termination_reason']}"
+    )
 
 
 def main() -> None:
@@ -118,7 +141,7 @@ def main() -> None:
 
     for _, row in df.sort_values(["scenario_id", "step"]).iterrows():
         policy = load_json_dict(row["mcts_policy_json"])
-        visit_counts = load_json_dict(row["visit_counts_json"])
+        visit_counts = load_json_dict(row.get("visit_counts_json"))
 
         policy_items = sorted(
             policy.items(),
@@ -130,18 +153,7 @@ def main() -> None:
 
         state_path = Path(str(row["state_path"]))
 
-        print(
-            f"Scenario {int(row['scenario_id']):>3} | "
-            f"step={int(row['step']):>2} | "
-            f"state={row['state_id']} | "
-            f"selected_action={int(row['selected_action_id'])} | "
-            f"selected_branch={row['selected_branch_id']} | "
-            f"step_reward={float(row['step_reward']):>9.3f} | "
-            f"return_from_step={float(row['discounted_return_from_step']):>9.3f} | "
-            f"final_return={float(row['final_return']):>9.3f} | "
-            f"solved={row['solved']} | "
-            f"reason={row['termination_reason']}"
-        )
+        print(format_sample_row(row))
 
         print(f"  state_file_exists={state_path.exists()}")
 
