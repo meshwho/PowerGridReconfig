@@ -32,12 +32,19 @@ def valid_row(state_path: Path) -> dict[str, object]:
         "step": 0,
         "state_id": "state-1",
         "outcome_value_target": 1.0,
-        "physical_objective_schema_version": PHYSICAL_OBJECTIVE_SCHEMA_VERSION,
+        "physical_objective_schema_version": (
+            PHYSICAL_OBJECTIVE_SCHEMA_VERSION
+        ),
         "outcome_value_target_contract_version": (
             OUTCOME_VALUE_TARGET_CONTRACT_VERSION
         ),
         "solved": True,
+        "done": True,
         "termination_reason": "solved",
+        "outcome_class": "solved",
+        "outcome_steps_to_terminal": 1,
+        "outcome_value_target_mode": "alphazero_discounted",
+        "outcome_gamma": 1.0,
     }
 
 
@@ -68,11 +75,54 @@ def test_header_only_csv_is_rejected(tmp_path: Path) -> None:
     csv.write_text(
         "state_path,mcts_policy_json,scenario_id,step,state_id,"
         "outcome_value_target,physical_objective_schema_version,"
-        "outcome_value_target_contract_version,solved,termination_reason\n",
+        "outcome_value_target_contract_version,solved,done,"
+        "termination_reason,outcome_class,outcome_steps_to_terminal,"
+        "outcome_value_target_mode,outcome_gamma\n",
         encoding="utf-8",
     )
     assert_rejected(csv, "empty")
 
+
+def test_positive_target_for_unsolved_episode_is_rejected(
+    tmp_path: Path,
+) -> None:
+    row = valid_row(write_state(tmp_path / "s.npz"))
+    row.update(
+        {
+            "solved": False,
+            "done": True,
+            "termination_reason": "max_steps_reached",
+            "outcome_class": "max_steps_reached",
+            "outcome_value_target": 1.0,
+            "outcome_gamma": 1.0,
+            "outcome_steps_to_terminal": 1,
+        }
+    )
+
+    assert_rejected(
+        write_csv(tmp_path / "examples.csv", [row]),
+        "contradicts the terminal outcome",
+    )
+
+def test_zero_target_for_handoff_is_accepted(
+    tmp_path: Path,
+) -> None:
+    row = valid_row(write_state(tmp_path / "s.npz"))
+    row.update(
+        {
+            "solved": False,
+            "done": True,
+            "termination_reason": "handoff_to_redispatch",
+            "outcome_class": "handoff_to_redispatch",
+            "outcome_value_target": 0.0,
+            "outcome_gamma": 0.95,
+            "outcome_steps_to_terminal": 3,
+        }
+    )
+
+    csv = write_csv(tmp_path / "examples.csv", [row])
+
+    assert len(load_and_validate_examples_csv(csv)) == 1
 
 def test_missing_required_columns_are_rejected(tmp_path: Path) -> None:
     csv = write_csv(tmp_path / "examples.csv", [{"state_path": "x"}])

@@ -37,6 +37,7 @@ from grid_topology_ai.termination import (
     TerminationReason,
     parse_termination_reason,
     termination_reason_value,
+    validate_outcome_invariants,
 )
 from grid_topology_ai.value_targets import add_outcome_value_targets_to_rows
 from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
@@ -1255,9 +1256,38 @@ def process_one_scenario_fast(scenario_id: int) -> dict[str, Any]:
             final_num_hard = int(final_state.metrics["num_hard_overloaded_branches"])
             final_num_overloaded = int(final_state.metrics["num_overloaded_branches"])
 
+        if handoff_added:
+            episode_done = True
+            episode_solved = False
+            episode_reason = (
+                TerminationReason.HANDOFF_TO_REDISPATCH_TEACHER
+            )
+        elif replay_env.done:
+            episode_done = True
+            episode_solved = bool(replay_env.solved)
+            episode_reason = parse_termination_reason(
+                replay_env.termination_reason,
+                allow_none=False,
+            )
+        else:
+            # The teacher rollout ended because its configured search depth
+            # was exhausted. It is terminal for this generated episode.
+            episode_done = True
+            episode_solved = False
+            episode_reason = TerminationReason.TEACHER_DEPTH_LIMIT
+
+        validate_outcome_invariants(
+            solved=episode_solved,
+            termination_reason=episode_reason,
+        )
+
         rows: list[dict[str, Any]] = []
 
-        final_return = float(returns[0]) if returns else float(total_safety_improvement)
+        final_return = (
+            float(returns[0])
+            if returns
+            else float(total_safety_improvement)
+        )
 
         for item, return_from_step in zip(step_items, returns):
             step_idx = int(item["step"])
@@ -1287,6 +1317,24 @@ def process_one_scenario_fast(scenario_id: int) -> dict[str, Any]:
                     "teacher_decision_reason": item.get("teacher_decision_reason"),
                     "handoff_added": bool(handoff_added),
                     "handoff_reason": handoff_reason,
+                    "episode_done": bool(episode_done),
+                    "episode_solved": bool(episode_solved),
+                    "episode_termination_reason": (
+                        termination_reason_value(episode_reason)
+                    ),
+                    "step_done": bool(
+                        item.get("done_after_step", False)
+                    ),
+                    "step_solved": bool(
+                        item.get("solved_after_step", False)
+                    ),
+                    "step_termination_reason": (
+                        termination_reason_value(
+                            parse_termination_reason(
+                                item.get("termination_reason_after_step")
+                            )
+                        )
+                    ),
                     "best_sequence_action_ids": [int(x) for x in best.action_ids],
                     "best_sequence_branch_ids": [
                         None if x is None else int(x)
@@ -1324,20 +1372,22 @@ def process_one_scenario_fast(scenario_id: int) -> dict[str, Any]:
                     "step_reward": float(item["step_reward"]),
                     "final_return": float(final_return),
                     "discounted_return_from_step": float(return_from_step),
-                    "solved": bool(item.get("solved_after_step", replay_env.solved)),
-                    "done": bool(item.get("done_after_step", replay_env.done)),
-                    "termination_reason": termination_reason_value(
-                        parse_termination_reason(
-                            item.get("termination_reason_after_step")
-                            or (
-                                TerminationReason.HANDOFF_TO_REDISPATCH_TEACHER
-                                if handoff_added
-                                else (
-                                    replay_env.termination_reason
-                                    or TerminationReason.TEACHER_DEPTH_LIMIT
-                                )
-                            ),
-                            allow_none=False,
+                    "solved": bool(episode_solved),
+                    "done": bool(episode_done),
+                    "termination_reason": (
+                        termination_reason_value(episode_reason)
+                    ),
+                    "step_solved": bool(
+                        item.get("solved_after_step", False)
+                    ),
+                    "step_done": bool(
+                        item.get("done_after_step", False)
+                    ),
+                    "step_termination_reason": (
+                        termination_reason_value(
+                            parse_termination_reason(
+                                item.get("termination_reason_after_step")
+                            )
                         )
                     ),
                     "physical_objective_schema_version": (

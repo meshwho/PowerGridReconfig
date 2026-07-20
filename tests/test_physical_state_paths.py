@@ -11,6 +11,11 @@ from grid_topology_ai.data_adapter import (
 from grid_topology_ai.physical_objective import assess_physical_state
 from grid_topology_ai.pypower_backend import GridFMPowerFlowBackend
 
+import copy
+
+from pypower.idx_bus import VM
+
+import grid_topology_ai.pypower_backend as backend_module
 
 def _adapter() -> SimpleNamespace:
     buses = []
@@ -67,6 +72,19 @@ def _adapter() -> SimpleNamespace:
         gen_df=pd.DataFrame([gen]),
     )
 
+def _completed_result(ppc: dict) -> dict:
+    result = copy.deepcopy(ppc)
+    result["branch"] = np.pad(
+        result["branch"],
+        ((0, 0), (0, 4)),
+    )
+    result["branch"][0, PF] = 50.0
+    result["branch"][0, QF] = 0.0
+    result["branch"][0, PT] = -50.0
+    result["branch"][0, QT] = 0.0
+    return result
+
+
 
 def test_slow_fast_and_cache_paths_preserve_identical_assessment() -> None:
     backend = GridFMPowerFlowBackend(
@@ -106,3 +124,66 @@ def test_slow_fast_and_cache_paths_preserve_identical_assessment() -> None:
     assert assess_physical_state(cached.next_state.metrics) == assess_physical_state(
         fast.metrics
     )
+
+
+def test_initial_power_flow_rejects_non_finite_result(
+    monkeypatch,
+) -> None:
+    backend = GridFMPowerFlowBackend(
+        adapter=_adapter(),
+        enable_cache=True,
+    )
+
+    def fake_runpf(ppc, _options):
+        result = _completed_result(ppc)
+        result["bus"][0, VM] = np.nan
+        return result, True
+
+    monkeypatch.setattr(
+        backend_module,
+        "runpf",
+        fake_runpf,
+    )
+
+    result = backend.run_power_flow(1, None)
+
+    assert result.success is False
+    assert result.next_state is None
+    assert "non-finite" in result.message
+
+def test_state_power_flow_rejects_non_finite_result(
+    monkeypatch,
+) -> None:
+    backend = GridFMPowerFlowBackend(
+        adapter=_adapter(),
+        enable_cache=True,
+    )
+
+    ppc, frames = backend._build_ppc(1, None)
+    valid_result = _completed_result(ppc)
+
+    state = backend._build_state_from_pypower_result(
+        scenario_id=1,
+        result_ppc=valid_result,
+        original_frames=frames,
+    )
+
+    def fake_runpf(next_ppc, _options):
+        result = _completed_result(next_ppc)
+        result["branch"][0, PF] = np.nan
+        return result, True
+
+    monkeypatch.setattr(
+        backend_module,
+        "runpf",
+        fake_runpf,
+    )
+
+    result = backend.run_power_flow_from_state(
+        state,
+        switched_off_branch_id=None,
+    )
+
+    assert result.success is False
+    assert result.next_state is None
+    assert backend.cache_info()["size"] == 0

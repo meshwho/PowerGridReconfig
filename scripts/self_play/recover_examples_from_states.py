@@ -11,7 +11,10 @@ import pandas as pd
 
 from grid_topology_ai.contracts import require_exact_contract_version
 from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
-from grid_topology_ai.termination import TerminationReason
+from grid_topology_ai.termination import (
+    parse_termination_reason,
+    validate_outcome_invariants,
+)
 from grid_topology_ai.value_targets import add_outcome_value_targets_to_rows
 
 
@@ -32,6 +35,20 @@ def make_policy_json(action_id: int) -> str:
 def make_visit_counts_json(action_id: int) -> str:
     return json.dumps({str(int(action_id)): 1})
 
+def require_metadata_bool(
+    metadata: dict[str, Any],
+    key: str,
+    *,
+    source: Path,
+) -> bool:
+    value = metadata.get(key)
+
+    if not isinstance(value, bool):
+        raise ValueError(
+            f"{source} metadata field {key!r} must be a boolean."
+        )
+
+    return value
 
 def recover_examples(states_dir: Path, gamma: float) -> pd.DataFrame:
     rows: list[dict[str, Any]] = []
@@ -74,25 +91,50 @@ def recover_examples(states_dir: Path, gamma: float) -> pd.DataFrame:
 
         teacher_reason = str(meta.get("teacher_decision_reason", ""))
 
-        # This is approximate for recovered CSV.
-        # Training mainly needs state_path, selected_action_id, policy json and returns.
-        if selected_action_id == 0:
-            termination_reason = (
-                TerminationReason.HANDOFF_TO_REDISPATCH_TEACHER.value
-            )
-            solved = False
-            done = True
-        else:
-            handoff_added = bool(meta.get("handoff_added", False))
-            if handoff_added:
-                termination_reason = (
-                    TerminationReason.HANDOFF_TO_REDISPATCH_TEACHER.value
-                )
-            else:
-                termination_reason = TerminationReason.MAX_STEPS_REACHED.value
+        required_outcome_fields = {
+            "episode_done",
+            "episode_solved",
+            "episode_termination_reason",
+        }
 
-            solved = False
-            done = False
+        missing_outcome_fields = (
+            required_outcome_fields - set(meta)
+        )
+
+        if missing_outcome_fields:
+            raise ValueError(
+                f"{path} does not contain exact terminal outcome metadata: "
+                f"{sorted(missing_outcome_fields)}. Regenerate the episode; "
+                f"approximate recovery cannot produce current-contract "
+                f"value targets."
+            )
+
+        done = require_metadata_bool(
+            meta,
+            "episode_done",
+            source=path,
+        )
+
+        solved = require_metadata_bool(
+            meta,
+            "episode_solved",
+            source=path,
+        )
+
+        termination_reason = parse_termination_reason(
+            meta["episode_termination_reason"],
+            allow_none=False,
+        )
+
+        if not done:
+            raise ValueError(
+                f"{path} does not contain a terminal episode outcome."
+            )
+
+        validate_outcome_invariants(
+            solved=solved,
+            termination_reason=termination_reason,
+        )
 
         rows.append(
             {
@@ -107,7 +149,7 @@ def recover_examples(states_dir: Path, gamma: float) -> pd.DataFrame:
                 "discounted_return_from_step": 0.0,
                 "solved": bool(solved),
                 "done": bool(done),
-                "termination_reason": termination_reason,
+                "termination_reason": termination_reason.value,
                 "physical_objective_schema_version": (
                     PHYSICAL_OBJECTIVE_SCHEMA_VERSION
                 ),
@@ -128,6 +170,16 @@ def recover_examples(states_dir: Path, gamma: float) -> pd.DataFrame:
 
     for _, group in df.groupby("scenario_id", sort=False):
         group = group.sort_values("step").copy()
+
+        episode_outcomes = group[
+            ["solved", "done", "termination_reason"]
+        ].drop_duplicates()
+
+        if len(episode_outcomes) != 1:
+            raise ValueError(
+                "Recovered state files for one scenario contain "
+                "contradictory terminal outcomes."
+            )
 
         rewards = group["step_reward"].astype(float).tolist()
         returns = [0.0 for _ in rewards]

@@ -70,6 +70,7 @@ from grid_topology_ai.physical_constraints import (
 from grid_topology_ai.physical_objective import (
     HARD_OVERLOAD_LIMIT_PERCENT,
     OVERLOAD_LIMIT_PERCENT,
+    assess_physical_state,
 )
 import copy
 
@@ -162,6 +163,39 @@ class GridFMPowerFlowBackend:
             "hit_rate": hit_rate,
         }
 
+    @staticmethod
+    def _require_usable_next_state(state: GridFMState) -> None:
+        """
+        Reject a PF result that cannot safely enter search, replay, or a model.
+
+        Physical metrics are calculated from the raw PYPOWER result. Feature
+        tensors are checked separately because MCTS and neural evaluators consume
+        them directly.
+        """
+
+        assessment = assess_physical_state(state.metrics)
+
+        if not assessment.all_values_finite:
+            raise ValueError(
+                "Power-flow result contains non-finite mandatory physical values."
+            )
+
+        arrays = {
+            "bus_features": state.bus_features,
+            "branch_features": state.branch_features,
+            "edge_index": state.edge_index,
+            "branch_ids": state.branch_ids,
+            "branch_status": state.branch_status,
+        }
+
+        for name, values in arrays.items():
+            array = np.asarray(values)
+
+            if not np.isfinite(array).all():
+                raise ValueError(
+                    f"Power-flow result contains NaN or infinity in {name}."
+                )
+
     def _make_cache_key_from_state(
             self,
             state: GridFMState,
@@ -246,6 +280,18 @@ class GridFMPowerFlowBackend:
                 result_ppc=result_ppc,
                 original_frames=frames,
             )
+
+            try:
+                self._require_usable_next_state(next_state)
+            except ValueError as exc:
+                return GridFMPowerFlowResult(
+                    success=False,
+                    scenario_id=scenario_id,
+                    switched_off_branch_id=switched_off_branch_id,
+                    next_state=None,
+                    raw_result=result_ppc,
+                    message=f"Power flow returned an unusable state: {exc}",
+                )
 
             return GridFMPowerFlowResult(
                 success=True,
@@ -478,18 +524,24 @@ class GridFMPowerFlowBackend:
         )
 
         if self.enable_cache and cache_key in self._cache:
-            self.cache_hits += 1
-
             cached_next_state = self._cache[cache_key]
 
-            return GridFMPowerFlowResult(
-                success=True,
-                scenario_id=int(state.scenario_id),
-                switched_off_branch_id=switched_off_branch_id,
-                next_state=cached_next_state,
-                raw_result=None,
-                message="Power flow converged. [cache hit]",
-            )
+            try:
+                self._require_usable_next_state(cached_next_state)
+            except ValueError:
+                # Invalid cached states must never re-enter MCTS.
+                del self._cache[cache_key]
+            else:
+                self.cache_hits += 1
+
+                return GridFMPowerFlowResult(
+                    success=True,
+                    scenario_id=int(state.scenario_id),
+                    switched_off_branch_id=switched_off_branch_id,
+                    next_state=cached_next_state,
+                    raw_result=None,
+                    message="Power flow converged. [cache hit]",
+                )
 
         if self.enable_cache:
             self.cache_misses += 1
@@ -526,6 +578,20 @@ class GridFMPowerFlowBackend:
                 previous_state=state,
                 original_frames=frames,
             )
+
+            try:
+                self._require_usable_next_state(next_state)
+            except ValueError as exc:
+                return GridFMPowerFlowResult(
+                    success=False,
+                    scenario_id=int(state.scenario_id),
+                    switched_off_branch_id=switched_off_branch_id,
+                    next_state=None,
+                    raw_result=(
+                        result_ppc if self.store_raw_result else None
+                    ),
+                    message=f"Power flow returned an unusable state: {exc}",
+                )
 
             result = GridFMPowerFlowResult(
                 success=True,

@@ -14,6 +14,7 @@ from grid_topology_ai.contracts import (
 )
 from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
 from grid_topology_ai.termination import validate_outcome_invariants
+from grid_topology_ai.value_targets import terminal_value_from_outcome
 
 REQUIRED_EXAMPLE_COLUMNS: tuple[str, ...] = (
     "state_path",
@@ -24,6 +25,13 @@ REQUIRED_EXAMPLE_COLUMNS: tuple[str, ...] = (
     "outcome_value_target",
     "physical_objective_schema_version",
     "outcome_value_target_contract_version",
+    "solved",
+    "done",
+    "termination_reason",
+    "outcome_class",
+    "outcome_steps_to_terminal",
+    "outcome_value_target_mode",
+    "outcome_gamma",
 )
 
 _REQUIRED_STATE_ARRAYS = ("bus_features", "branch_features", "edge_index", "action_mask")
@@ -78,20 +86,11 @@ def validate_examples_dataframe(examples: pd.DataFrame, *, source_path: str | Pa
         if step < 0:
             raise ValueError(f"step must be >= 0 at row {index}. File: {source}")
         _ = scenario_id
-        if "solved" in examples.columns and "termination_reason" in examples.columns:
-            solved = _require_bool(
-                row["solved"], column="solved", index=index, source=source
-            )
-            reason_value = (
-                None
-                if _is_missing_required_value(row["termination_reason"])
-                else row["termination_reason"]
-            )
-            validate_outcome_invariants(
-                solved=solved,
-                termination_reason=reason_value,
-            )
-        _validate_outcome(row["outcome_value_target"], index=index, source=source)
+        _validate_outcome_contract(
+            row,
+            index=index,
+            source=source,
+        )
         policy = _parse_policy(row["mcts_policy_json"], index=index, source=source)
         state_path = Path(str(row["state_path"]).strip())
         if not state_path.exists():
@@ -169,6 +168,132 @@ def _require_bool(value: Any, *, column: str, index: Any, source: Path) -> bool:
         f"{column} must be boolean at row {index}. File: {source}"
     )
 
+def _require_finite_number(
+    value: Any,
+    *,
+    column: str,
+    index: Any,
+    source: Path,
+) -> float:
+    number = pd.to_numeric(
+        pd.Series([value]),
+        errors="coerce",
+    ).iloc[0]
+
+    if pd.isna(number) or not math.isfinite(float(number)):
+        raise ValueError(
+            f"{column} must be finite numeric at row {index}. File: {source}"
+        )
+
+    return float(number)
+
+def _validate_outcome_contract(
+    row: pd.Series,
+    *,
+    index: Any,
+    source: Path,
+) -> None:
+    solved = _require_bool(
+        row["solved"],
+        column="solved",
+        index=index,
+        source=source,
+    )
+
+    done = _require_bool(
+        row["done"],
+        column="done",
+        index=index,
+        source=source,
+    )
+
+    if not done:
+        raise ValueError(
+            f"Training example must carry a terminal episode outcome "
+            f"at row {index}. File: {source}"
+        )
+
+    reason = validate_outcome_invariants(
+        solved=solved,
+        termination_reason=row["termination_reason"],
+    )
+
+    steps_to_terminal = _require_integer(
+        row["outcome_steps_to_terminal"],
+        column="outcome_steps_to_terminal",
+        index=index,
+        source=source,
+    )
+
+    if steps_to_terminal <= 0:
+        raise ValueError(
+            f"outcome_steps_to_terminal must be > 0 at row {index}. "
+            f"File: {source}"
+        )
+
+    gamma = _require_finite_number(
+        row["outcome_gamma"],
+        column="outcome_gamma",
+        index=index,
+        source=source,
+    )
+
+    if gamma < 0.0 or gamma > 1.0:
+        raise ValueError(
+            f"outcome_gamma must be in [0, 1] at row {index}. "
+            f"File: {source}"
+        )
+
+    actual_target = _require_finite_number(
+        row["outcome_value_target"],
+        column="outcome_value_target",
+        index=index,
+        source=source,
+    )
+
+    if abs(actual_target) > 1.0 + 1e-6:
+        raise ValueError(
+            f"outcome_value_target outside [-1, 1] at row {index}. "
+            f"File: {source}"
+        )
+
+    terminal_value, expected_class = terminal_value_from_outcome(
+        solved=solved,
+        termination_reason=reason,
+    )
+
+    expected_target = float(
+        terminal_value * gamma**steps_to_terminal
+    )
+
+    if not math.isclose(
+        actual_target,
+        expected_target,
+        rel_tol=1e-7,
+        abs_tol=1e-7,
+    ):
+        raise ValueError(
+            f"outcome_value_target contradicts the terminal outcome at "
+            f"row {index}: expected {expected_target}, "
+            f"observed {actual_target}. File: {source}"
+        )
+
+    actual_class = str(row["outcome_class"]).strip()
+
+    if actual_class != expected_class:
+        raise ValueError(
+            f"outcome_class contradicts the terminal outcome at row {index}: "
+            f"expected {expected_class!r}, observed {actual_class!r}. "
+            f"File: {source}"
+        )
+
+    mode = str(row["outcome_value_target_mode"]).strip()
+
+    if mode != "alphazero_discounted":
+        raise ValueError(
+            f"Unsupported outcome_value_target_mode {mode!r} at row {index}. "
+            f"File: {source}"
+        )
 
 def _validate_outcome(value: Any, *, index: Any, source: Path) -> None:
     number = pd.to_numeric(pd.Series([value]), errors="coerce").iloc[0]
