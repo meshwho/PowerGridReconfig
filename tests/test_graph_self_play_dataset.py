@@ -163,7 +163,12 @@ def test_graph_dataset_uses_mcts_policy_not_selected_action(tmp_path: Path):
             "physical_objective_schema_version": PHYSICAL_OBJECTIVE_SCHEMA_VERSION,
             "outcome_value_target_contract_version": OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
             "solved": True,
+            "done": True,
             "termination_reason": "solved",
+            "outcome_class": "solved",
+            "outcome_steps_to_terminal": 1,
+            "outcome_value_target_mode": "alphazero_discounted",
+            "outcome_gamma": 1.0,
         }
     ]).to_csv(csv_path, index=False)
 
@@ -192,7 +197,12 @@ def test_normalization_state_dict_returns_copies(tmp_path: Path):
         "physical_objective_schema_version": PHYSICAL_OBJECTIVE_SCHEMA_VERSION,
         "outcome_value_target_contract_version": OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
         "solved": False,
+        "done": True,
         "termination_reason": "handoff_to_redispatch",
+        "outcome_class": "handoff_to_redispatch",
+        "outcome_steps_to_terminal": 1,
+        "outcome_value_target_mode": "alphazero_discounted",
+        "outcome_gamma": 0.95,
     }]).to_csv(csv_path, index=False)
     dataset = GraphSelfPlayDataset(csv_path, normalize_features=True)
     stats = dataset.normalization_state_dict()

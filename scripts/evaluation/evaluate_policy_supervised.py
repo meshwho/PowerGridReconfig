@@ -14,6 +14,7 @@ from grid_topology_ai.data_adapter import GridFMState
 from grid_topology_ai.models.neural_evaluator import NeuralPolicyValueEvaluator
 from grid_topology_ai.self_play.example_validation import (
     validate_example_contract_versions,
+    validate_example_outcome_contracts,
 )
 
 
@@ -90,6 +91,11 @@ class Metrics:
             ),
             "mae_value": self.value_abs_error_sum / self.total,
         }
+
+
+def get_target_value(row: pd.Series) -> float:
+    """Return the strict outcome target used by the current value head."""
+    return float(row["outcome_value_target"])
 
 
 def load_state_from_npz(state_path: Path) -> tuple[GridFMState, np.ndarray]:
@@ -261,6 +267,7 @@ def main() -> None:
     if df.empty:
         raise ValueError(f"Examples CSV is empty: {examples_path}")
     validate_example_contract_versions(df, source_path=examples_path)
+    validate_example_outcome_contracts(df, source_path=examples_path)
 
     evaluator = NeuralPolicyValueEvaluator(
         checkpoint_path=checkpoint_path,
@@ -330,8 +337,7 @@ def main() -> None:
             for x in np.argsort(policy)[::-1][:10]
         ]
 
-        raw_value = float(row["discounted_return_from_step"])
-        target_value = float(np.clip(raw_value / args.value_scale, -1.0, 1.0))
+        target_value = get_target_value(row)
 
         step = int(row["step"])
         scenario_id = int(row["scenario_id"])
