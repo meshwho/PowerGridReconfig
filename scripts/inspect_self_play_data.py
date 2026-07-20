@@ -9,6 +9,7 @@ import pandas as pd
 
 from grid_topology_ai.self_play.example_validation import (
     validate_example_contract_versions,
+    validate_example_outcome_contracts,
 )
 
 
@@ -48,6 +49,7 @@ def main() -> None:
 
     if not df.empty:
         validate_example_contract_versions(df, source_path=examples_path)
+        validate_example_outcome_contracts(df, source_path=examples_path)
 
     print("=" * 100)
     print("Inspecting self-play replay buffer")
@@ -73,7 +75,18 @@ def main() -> None:
     print("\nSolved:")
     print(df["solved"].value_counts(dropna=False).to_string())
 
-    print("\nReturn statistics:")
+    print("\nOutcome value target statistics:")
+    print(
+        df[
+            [
+                "outcome_value_target",
+                "outcome_steps_to_terminal",
+                "outcome_gamma",
+            ]
+        ].describe()
+    )
+
+    print("\nLegacy reward diagnostics:")
     print(df[["final_return", "discounted_return_from_step", "step_reward"]].describe())
 
     missing_states = []
