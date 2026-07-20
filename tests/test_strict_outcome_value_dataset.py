@@ -7,6 +7,7 @@ import pytest
 from grid_topology_ai.models.graph_self_play_dataset import GraphSelfPlayDataset
 from grid_topology_ai.contracts import OUTCOME_VALUE_TARGET_CONTRACT_VERSION
 from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
+from grid_topology_ai.termination import TerminationReason
 
 
 def _write_fake_state(path):
@@ -68,8 +69,13 @@ def test_dataset_reads_strict_outcome_value_target(tmp_path):
                 "state_id": "state_0",
                 "physical_objective_schema_version": PHYSICAL_OBJECTIVE_SCHEMA_VERSION,
                 "outcome_value_target_contract_version": OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
-                "solved": False,
-                "termination_reason": "handoff_to_redispatch",
+                "solved": True,
+                "done": True,
+                "termination_reason": TerminationReason.SOLVED.value,
+                "outcome_class": TerminationReason.SOLVED.value,
+                "outcome_steps_to_terminal": 1,
+                "outcome_value_target_mode": "alphazero_discounted",
+                "outcome_gamma": 0.95,
             }
         ]
     )

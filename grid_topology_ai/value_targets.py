@@ -96,11 +96,13 @@ def add_outcome_value_targets_to_rows(
 
         terminal_row = group_rows[-1]
 
+        terminal_solved = bool(terminal_row.get("solved", False))
+        terminal_reason = parse_termination_reason(
+            terminal_row.get("termination_reason")
+        )
         terminal_value, outcome_class = terminal_value_from_outcome(
-            solved=bool(terminal_row.get("solved", False)),
-            termination_reason=parse_termination_reason(
-                terminal_row.get("termination_reason")
-            ),
+            solved=terminal_solved,
+            termination_reason=terminal_reason,
         )
 
         n = len(group_rows)
@@ -110,6 +112,13 @@ def add_outcome_value_targets_to_rows(
 
             row["outcome_value_target"] = float(
                 terminal_value * (float(gamma) ** steps_to_terminal)
+            )
+            # These are episode-level outcome fields, not step-local state.
+            # Every training row must describe the same terminal outcome.
+            row["solved"] = terminal_solved
+            row["done"] = True
+            row["termination_reason"] = (
+                None if terminal_reason is None else terminal_reason.value
             )
             row["outcome_class"] = outcome_class
             row["outcome_steps_to_terminal"] = int(steps_to_terminal)

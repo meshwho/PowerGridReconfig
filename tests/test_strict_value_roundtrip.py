@@ -69,6 +69,11 @@ def test_outcome_value_target_roundtrip_from_generator_to_dataset(tmp_path):
 
     add_outcome_value_targets_to_rows(_current(rows), gamma=0.9)
 
+    assert all(row["solved"] is True for row in rows)
+    assert all(row["done"] is True for row in rows)
+    assert all(row["termination_reason"] == "solved" for row in rows)
+    assert all(row["outcome_class"] == "solved" for row in rows)
+
     examples_csv = tmp_path / "examples.csv"
     pd.DataFrame(rows).to_csv(examples_csv, index=False)
 
