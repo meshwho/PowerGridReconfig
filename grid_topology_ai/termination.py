@@ -12,6 +12,7 @@ class TerminationReason(StrEnum):
     UNSAFE_STOP_WITH_HARD_OVERLOAD = "unsafe_stop_with_hard_overload"
     POWER_FLOW_FAILED = "power_flow_failed"
     MAX_STEPS_REACHED = "max_steps_reached"
+    CONSTRAINT_EXHAUSTED = "constraint_exhausted"
     HANDOFF_TO_REDISPATCH_TEACHER = "handoff_to_redispatch_teacher"
     TEACHER_DEPTH_LIMIT = "teacher_depth_limit"
 

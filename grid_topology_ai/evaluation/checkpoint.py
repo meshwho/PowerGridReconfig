@@ -14,41 +14,31 @@ except ImportError:  # pragma: no cover
     tqdm = None
 
 from grid_topology_ai.config import EvaluationConfig
-from grid_topology_ai.config.physics import (
-    PhysicsConfig,
-    resolve_physics_config,
-)
-from grid_topology_ai.contracts import (
-    physics_provenance,
-    require_physics_provenance,
+from grid_topology_ai.config.physics import PhysicsConfig, resolve_physics_config
+from grid_topology_ai.contracts import physics_provenance, require_physics_provenance
+from grid_topology_ai.evaluation.episode_result import (
+    EvaluationEpisodeTrace,
+    build_evaluation_episode_row,
 )
 from grid_topology_ai.evaluation.metrics import (
     attach_difficulty_metadata,
-    build_evaluation_metrics,
-    compute_safety_score,
     print_row,
     print_summary,
 )
-from grid_topology_ai.physical_objective import assess_physical_state
-from grid_topology_ai.self_play.artifacts import save_json
-from grid_topology_ai.termination import (
-    TerminationReason,
-    termination_reason_value,
-    validate_outcome_invariants,
+from grid_topology_ai.evaluation.policy_comparison import (
+    PolicyMode,
+    build_policy_comparison_metrics,
+    evaluation_policy_modes,
+    print_policy_comparison_summary,
+    select_evaluation_root_policy,
 )
+from grid_topology_ai.self_play.artifacts import save_json
 
-GridFMActionSpace = None
-GridFMAdapter = None
-GridFMPowerFlowBackend = None
-GridFMReward = None
-MCTSConfig = None
-MCTSPlanner = None
-NeuralPolicyValueEvaluator = None
-TopologySwitchingEnv = None
-analyze_root_branches = None
-make_do_nothing_action = None
+GridFMActionSpace = GridFMAdapter = GridFMPowerFlowBackend = None
+GridFMReward = MCTSConfig = MCTSPlanner = None
+NeuralPolicyValueEvaluator = TopologySwitchingEnv = None
+analyze_root_branches = make_do_nothing_action = None
 _RUNTIME_DEPENDENCIES_LOADED = False
-
 _WORKER_CONTEXT: dict[str, Any] | None = None
 
 
@@ -95,7 +85,7 @@ class EvaluationRequest:
             raise ValueError("limit must be None or > 0")
         if self.resolved_pf_alg not in {1, 2, 3, 4}:
             raise ValueError("resolved pf_alg must be one of 1, 2, 3, or 4")
-        if float(self.leaf_penalty_weight) < 0.0:
+        if float(self.leaf_penalty_weight) < 0:
             raise ValueError("leaf_penalty_weight must be >= 0")
         if self.stop_policy not in {
             "never",
@@ -104,97 +94,85 @@ class EvaluationRequest:
             "always",
         }:
             raise ValueError("Unsupported stop_policy")
-        if float(self.min_hard_improvement) < 0.0:
-            raise ValueError("min_hard_improvement must be >= 0")
-        if float(self.min_soft_improvement) < 0.0:
-            raise ValueError("min_soft_improvement must be >= 0")
+        if min(
+            float(self.min_hard_improvement),
+            float(self.min_soft_improvement),
+        ) < 0:
+            raise ValueError("continuation improvement thresholds must be >= 0")
         if int(self.min_gate_visits) < 0:
             raise ValueError("min_gate_visits must be >= 0")
-        if not 0.0 <= float(self.min_gate_visit_fraction) <= 1.0:
+        if not 0 <= float(self.min_gate_visit_fraction) <= 1:
             raise ValueError("min_gate_visit_fraction must be in [0, 1]")
         if int(self.clear_caches_every) < 0:
             raise ValueError("clear_caches_every must be >= 0")
         if int(self.dc_top_k) <= 0:
             raise ValueError("dc_top_k must be > 0")
-        if int(self.dc_keep_policy_actions) < 0:
-            raise ValueError("dc_keep_policy_actions must be >= 0")
-        if int(self.dc_keep_loading_actions) < 0:
-            raise ValueError("dc_keep_loading_actions must be >= 0")
-        if float(self.dc_policy_weight) < 0.0:
-            raise ValueError("dc_policy_weight must be >= 0")
-        if float(self.dc_failure_penalty) < 0.0:
-            raise ValueError("dc_failure_penalty must be >= 0")
+        if min(
+            int(self.dc_keep_policy_actions),
+            int(self.dc_keep_loading_actions),
+        ) < 0:
+            raise ValueError("DC keep counts must be >= 0")
+        if min(
+            float(self.dc_policy_weight),
+            float(self.dc_failure_penalty),
+        ) < 0:
+            raise ValueError("DC weights and penalties must be >= 0")
         if int(self.dc_max_depth) < -1:
             raise ValueError("dc_max_depth must be >= -1")
 
 
 def _ensure_runtime_dependencies() -> None:
-    global GridFMActionSpace
-    global GridFMAdapter
-    global GridFMPowerFlowBackend
-    global GridFMReward
-    global MCTSConfig
-    global MCTSPlanner
-    global NeuralPolicyValueEvaluator
-    global TopologySwitchingEnv
-    global analyze_root_branches
-    global make_do_nothing_action
+    global GridFMActionSpace, GridFMAdapter, GridFMPowerFlowBackend, GridFMReward
+    global MCTSConfig, MCTSPlanner, NeuralPolicyValueEvaluator, TopologySwitchingEnv
+    global analyze_root_branches, make_do_nothing_action
     global _RUNTIME_DEPENDENCIES_LOADED
 
     if _RUNTIME_DEPENDENCIES_LOADED:
         return
 
-    from grid_topology_ai.action_space import GridFMActionSpace as _ActionSpace
-    from grid_topology_ai.data_adapter import GridFMAdapter as _Adapter
-    from grid_topology_ai.environment import TopologySwitchingEnv as _Env
+    from grid_topology_ai.action_space import GridFMActionSpace as ActionSpace
+    from grid_topology_ai.data_adapter import GridFMAdapter as Adapter
+    from grid_topology_ai.environment import TopologySwitchingEnv as Env
     from grid_topology_ai.models.neural_evaluator import (
-        NeuralPolicyValueEvaluator as _Evaluator,
+        NeuralPolicyValueEvaluator as Evaluator,
     )
-    from grid_topology_ai.pypower_backend import GridFMPowerFlowBackend as _Backend
-    from grid_topology_ai.reward import GridFMReward as _Reward
+    from grid_topology_ai.pypower_backend import GridFMPowerFlowBackend as Backend
+    from grid_topology_ai.reward import GridFMReward as Reward
     from grid_topology_ai.search.continuation_gate import (
-        analyze_root_branches as _analyze_root_branches,
+        analyze_root_branches as analyze,
+        make_do_nothing_action as stop_action,
     )
-    from grid_topology_ai.search.continuation_gate import (
-        make_do_nothing_action as _make_do_nothing_action,
+    from grid_topology_ai.search.mcts import (
+        MCTSConfig as SearchConfig,
+        MCTSPlanner as Planner,
     )
-    from grid_topology_ai.search.mcts import MCTSConfig as _MCTSConfig
-    from grid_topology_ai.search.mcts import MCTSPlanner as _MCTSPlanner
 
-    GridFMActionSpace = _ActionSpace
-    GridFMAdapter = _Adapter
-    GridFMPowerFlowBackend = _Backend
-    GridFMReward = _Reward
-    MCTSConfig = _MCTSConfig
-    MCTSPlanner = _MCTSPlanner
-    NeuralPolicyValueEvaluator = _Evaluator
-    TopologySwitchingEnv = _Env
-    analyze_root_branches = _analyze_root_branches
-    make_do_nothing_action = _make_do_nothing_action
+    GridFMActionSpace, GridFMAdapter = ActionSpace, Adapter
+    GridFMPowerFlowBackend, GridFMReward = Backend, Reward
+    MCTSConfig, MCTSPlanner = SearchConfig, Planner
+    NeuralPolicyValueEvaluator, TopologySwitchingEnv = Evaluator, Env
+    analyze_root_branches, make_do_nothing_action = analyze, stop_action
     _RUNTIME_DEPENDENCIES_LOADED = True
+
+
+def _clear_context_caches(context: dict[str, Any] | None) -> None:
+    if context is None:
+        return
+    for name in ("backend", "action_space", "evaluator"):
+        clear = getattr(context.get(name), "clear_cache", None)
+        if clear is not None:
+            clear()
 
 
 def _release_worker_context() -> None:
     global _WORKER_CONTEXT
+    context, _WORKER_CONTEXT = _WORKER_CONTEXT, None
+    _clear_context_caches(context)
 
-    context = _WORKER_CONTEXT
-    _WORKER_CONTEXT = None
-
-    if context is None:
-        return
-
-    for name in ("backend", "action_space", "evaluator"):
-        cached_object = context.get(name)
-        clear_cache = getattr(cached_object, "clear_cache", None)
-        if clear_cache is not None:
-            clear_cache()
 
 def _require_worker_context() -> dict[str, Any]:
     if _WORKER_CONTEXT is None:
-        raise RuntimeError(
-            "Worker context is not initialized. "
-            "This should not happen when ProcessPoolExecutor initializer is used."
-        )
+        raise RuntimeError("Worker context is not initialized.")
     return _WORKER_CONTEXT
 
 
@@ -204,36 +182,31 @@ def init_worker_context(
     task_config: dict[str, Any],
 ) -> None:
     global _WORKER_CONTEXT
-
     _ensure_runtime_dependencies()
-    raw_dir = Path(raw_dir_str)
-    checkpoint_path = Path(checkpoint_path_str)
 
-    physics_config = require_physics_provenance(
+    physics = require_physics_provenance(
         task_config,
         source="evaluation task",
     )
-    adapter = GridFMAdapter(
-        raw_dir,
-        physics_config=physics_config,
-    )
+    adapter = GridFMAdapter(Path(raw_dir_str), physics_config=physics)
+    cache = not bool(task_config["disable_cache"])
     backend = GridFMPowerFlowBackend(
         adapter=adapter,
-        physics_config=physics_config,
-        enable_cache=not bool(task_config["disable_cache"]),
+        physics_config=physics,
+        enable_cache=cache,
     )
     action_space = GridFMActionSpace(
         require_connected_after_switch=True,
-        enable_cache=not bool(task_config["disable_cache"]),
+        enable_cache=cache,
     )
-    reward_fn = GridFMReward(physics_config=physics_config)
+    reward_fn = GridFMReward(physics_config=physics)
     evaluator = NeuralPolicyValueEvaluator(
-        checkpoint_path=checkpoint_path,
+        checkpoint_path=Path(checkpoint_path_str),
         device=str(task_config["device"]),
-        enable_cache=not bool(task_config["disable_cache"]),
-        physics_config=physics_config,
+        enable_cache=cache,
+        physics_config=physics,
     )
-    mcts_config = MCTSConfig(
+    search_config = MCTSConfig(
         num_simulations=int(task_config["simulations"]),
         max_depth=int(task_config["depth"]),
         top_k_actions=int(task_config["top_k"]),
@@ -253,48 +226,31 @@ def init_worker_context(
         dc_failure_penalty=float(task_config["dc_failure_penalty"]),
         dc_max_depth=int(task_config["dc_max_depth"]),
     )
-    planner = MCTSPlanner(
-        config=mcts_config,
-        evaluator=evaluator,
-        physics_config=physics_config,
-    )
-
     _WORKER_CONTEXT = {
         "adapter": adapter,
         "backend": backend,
         "action_space": action_space,
         "reward_fn": reward_fn,
         "evaluator": evaluator,
-        "planner": planner,
-        "physics_config": physics_config,
+        "planner": MCTSPlanner(
+            config=search_config,
+            evaluator=evaluator,
+            physics_config=physics,
+        ),
+        "physics_config": physics,
         "task_config": task_config,
         "processed_in_worker": 0,
     }
 
 
 def clear_worker_caches_if_needed() -> None:
-    ctx = _require_worker_context()
-    task = ctx["task_config"]
-    every = int(task["clear_caches_every"])
-
+    context = _require_worker_context()
+    every = int(context["task_config"]["clear_caches_every"])
     if every <= 0:
         return
-
-    ctx["processed_in_worker"] = int(ctx.get("processed_in_worker", 0)) + 1
-
-    if ctx["processed_in_worker"] % every != 0:
-        return
-
-    backend = ctx["backend"]
-    action_space = ctx["action_space"]
-    evaluator = ctx["evaluator"]
-
-    if hasattr(backend, "clear_cache"):
-        backend.clear_cache()
-    if hasattr(action_space, "clear_cache"):
-        action_space.clear_cache()
-    if hasattr(evaluator, "clear_cache"):
-        evaluator.clear_cache()
+    context["processed_in_worker"] = int(context["processed_in_worker"]) + 1
+    if context["processed_in_worker"] % every == 0:
+        _clear_context_caches(context)
 
 
 def run_episode(
@@ -313,39 +269,38 @@ def run_episode(
     min_gate_visit_fraction: float,
     allow_handoff_with_hard_overloads: bool = False,
     physics_config: PhysicsConfig | None = None,
+    policy_mode: PolicyMode | str | None = None,
 ) -> dict[str, Any]:
     _ensure_runtime_dependencies()
+    mode = PolicyMode(policy_mode) if policy_mode is not None else (
+        PolicyMode.CONSTRAINED
+        if use_continuation_gate
+        else PolicyMode.UNGATED
+    )
     env = TopologySwitchingEnv(
         adapter=adapter,
         backend=backend,
         action_space=action_space,
         reward_fn=reward_fn,
         max_steps=max_steps,
-        allow_handoff_with_hard_overloads=allow_handoff_with_hard_overloads,
+        allow_handoff_with_hard_overloads=(
+            allow_handoff_with_hard_overloads
+        ),
     )
     env.reset(scenario_id)
-
-    total_reward = 0.0
-    discounted_return = 0.0
+    trace = EvaluationEpisodeTrace()
     discount = 1.0
-    actions: list[int] = []
-    branches: list[int | None] = []
-    rewards: list[float] = []
 
     for _ in range(max_steps):
         if env.done:
             break
-
         result = planner.search_from_env(env)
-
         if result.best_action_id is None:
             break
 
-        raw_action_id = int(result.best_action_id)
-        raw_branch_id = result.best_branch_id
-
-        if use_continuation_gate:
-            gate_decision = analyze_root_branches(
+        analysis = None
+        if mode is PolicyMode.CONSTRAINED:
+            analysis = analyze_root_branches(
                 result=result,
                 min_hard_improvement=min_hard_improvement,
                 min_soft_improvement=min_soft_improvement,
@@ -353,239 +308,140 @@ def run_episode(
                 min_visit_fraction=min_gate_visit_fraction,
                 physics_config=physics_config,
             )
-            action_id = int(gate_decision.selected_action_id)
-            branch_id = gate_decision.selected_branch_id
-        else:
-            action_id = raw_action_id
-            branch_id = raw_branch_id
+        decision = select_evaluation_root_policy(
+            search_result=result,
+            mode=mode,
+            continuation_analysis=analysis,
+        )
+        trace.raw_policies.append(decision.raw_policy)
+        trace.executed_policies.append(decision.policy)
+        trace.allowed_action_ids.append(list(decision.allowed_action_ids))
+        trace.constraint_changed_policy_steps += int(
+            decision.constraint_changed_policy
+        )
+        if decision.empty_constrained_support:
+            trace.empty_constrained_support_count += 1
+            break
 
-        if action_id == 0:
-            action_to_execute = make_do_nothing_action()
-        else:
-            action_to_execute = result.root.actions_by_id.get(action_id)
-            if action_to_execute is None:
-                action_to_execute = env.action_by_id(action_id)
-
-        step_result = env.step(action_to_execute)
+        assert decision.action_id is not None
+        action_id = int(decision.action_id)
+        action = (
+            make_do_nothing_action()
+            if action_id == 0
+            else result.root.actions_by_id[action_id]
+        )
+        step_result = env.step(action)
         reward = float(step_result.reward)
-        actions.append(action_id)
-        branches.append(branch_id)
-        rewards.append(reward)
-        total_reward += reward
-        discounted_return += discount * reward
+        trace.actions.append(action_id)
+        trace.branches.append(decision.branch_id)
+        trace.rewards.append(reward)
+        trace.total_reward += reward
+        trace.discounted_return += discount * reward
         discount *= gamma
-
         if step_result.done:
             break
 
-    final_state = env.current_state
-
-    if final_state is None:
-        final_max_loading = float("nan")
-        final_overloaded = -1
-        final_hard = -1
-        final_outaged = -1
-        thermal_solved = False
-        thermal_feasible = False
-        power_flow_converged = False
-        all_values_finite = False
-        topology_connected = False
-        hard_overload_free = False
-        voltage_feasible = False
-        generator_p_feasible = False
-        generator_q_feasible = False
-        angle_difference_feasible = False
-        physically_secure = False
-        num_generator_p_violations = -1
-        num_generator_q_violations = -1
-        num_angle_difference_violations = -1
-        total_generator_p_violation_mw = float("nan")
-        total_generator_q_violation_mvar = float("nan")
-        total_angle_difference_violation_degrees = float("nan")
-        total_voltage_violation = float("nan")
-        num_low_voltage_buses = -1
-        num_high_voltage_buses = -1
-        total_thermal_overload_mva = float("nan")
-        safe_handoff = False
-        unsafe_terminal_state = bool(env.done)
-    else:
-        assessment = assess_physical_state(final_state.metrics)
-        validate_outcome_invariants(
-            solved=bool(env.solved),
-            termination_reason=env.termination_reason,
-            physically_secure=assessment.physically_secure,
-        )
-        final_max_loading = float(final_state.metrics["max_loading_percent"])
-        final_overloaded = int(final_state.metrics["num_overloaded_branches"])
-        final_hard = int(final_state.metrics["num_hard_overloaded_branches"])
-        final_outaged = int(final_state.metrics["num_outaged_branches"])
-        thermal_solved = assessment.thermal_solved
-        thermal_feasible = assessment.thermal_feasible
-        power_flow_converged = assessment.power_flow_converged
-        all_values_finite = assessment.all_values_finite
-        topology_connected = assessment.topology_connected
-        hard_overload_free = assessment.hard_overload_free
-        voltage_feasible = assessment.voltage_feasible
-        generator_p_feasible = assessment.generator_p_feasible
-        generator_q_feasible = assessment.generator_q_feasible
-        angle_difference_feasible = assessment.angle_difference_feasible
-        physically_secure = assessment.physically_secure
-        num_generator_p_violations = assessment.num_generator_p_violations
-        num_generator_q_violations = assessment.num_generator_q_violations
-        num_angle_difference_violations = (
-            assessment.num_angle_difference_violations
-        )
-        total_generator_p_violation_mw = (
-            assessment.total_generator_p_violation_mw
-        )
-        total_generator_q_violation_mvar = (
-            assessment.total_generator_q_violation_mvar
-        )
-        total_angle_difference_violation_degrees = (
-            assessment.total_angle_difference_violation_degrees
-        )
-        total_voltage_violation = assessment.total_voltage_violation
-        num_low_voltage_buses = assessment.num_low_voltage_buses
-        num_high_voltage_buses = assessment.num_high_voltage_buses
-        total_thermal_overload_mva = assessment.total_thermal_overload_mva
-        safe_handoff = (
-            env.termination_reason is TerminationReason.HANDOFF_TO_REDISPATCH
-            and assessment.hard_overload_free
-            and not assessment.physically_secure
-        )
-        unsafe_terminal_state = bool(
-            env.done and not assessment.physically_secure and not safe_handoff
-        )
-
-    row = {
-        "scenario_id": int(scenario_id),
-        "steps": len(actions),
-        "use_continuation_gate": bool(use_continuation_gate),
-        "actions": str(actions),
-        "branches": str(branches),
-        "rewards": str([round(x, 4) for x in rewards]),
-        "total_reward": float(total_reward),
-        "discounted_return": float(discounted_return),
-        "done": bool(env.done),
-        "solved": bool(env.solved),
-        "termination_reason": termination_reason_value(env.termination_reason),
-        "final_max_loading_percent": final_max_loading,
-        "final_num_overloaded_branches": final_overloaded,
-        "final_num_hard_overloaded_branches": final_hard,
-        "final_num_outaged_branches": final_outaged,
-        "thermal_solved": thermal_solved,
-        "thermal_feasible": thermal_feasible,
-        "power_flow_converged": power_flow_converged,
-        "all_values_finite": all_values_finite,
-        "topology_connected": topology_connected,
-        "hard_overload_free": hard_overload_free,
-        "voltage_feasible": voltage_feasible,
-        "generator_p_feasible": generator_p_feasible,
-        "generator_q_feasible": generator_q_feasible,
-        "angle_difference_feasible": angle_difference_feasible,
-        "physically_secure": physically_secure,
-        "num_generator_p_violations": num_generator_p_violations,
-        "num_generator_q_violations": num_generator_q_violations,
-        "num_angle_difference_violations": num_angle_difference_violations,
-        "total_generator_p_violation_mw": total_generator_p_violation_mw,
-        "total_generator_q_violation_mvar": total_generator_q_violation_mvar,
-        "total_angle_difference_violation_degrees": (
-            total_angle_difference_violation_degrees
-        ),
-        "total_voltage_violation": total_voltage_violation,
-        "num_low_voltage_buses": num_low_voltage_buses,
-        "num_high_voltage_buses": num_high_voltage_buses,
-        "total_thermal_overload_mva": total_thermal_overload_mva,
-        "safe_handoff": safe_handoff,
-        "unsafe_terminal_state": unsafe_terminal_state,
-    }
-    row["safety_score"] = compute_safety_score(
-        row,
+    return build_evaluation_episode_row(
+        scenario_id=scenario_id,
+        policy_mode=mode.value,
+        env=env,
+        trace=trace,
         physics_config=physics_config,
     )
-    return row
 
 
-def run_episode_from_worker_context(scenario_id: int) -> dict[str, Any]:
-    ctx = _require_worker_context()
-    task = ctx["task_config"]
-
+def run_episode_from_worker_context(
+    scenario_id: int,
+    policy_mode: PolicyMode | str | None = None,
+) -> dict[str, Any]:
+    context = _require_worker_context()
+    task = context["task_config"]
+    mode = PolicyMode(
+        policy_mode
+        or task.get("primary_policy_mode", PolicyMode.UNGATED.value)
+    )
     try:
         row = run_episode(
             scenario_id=int(scenario_id),
-            adapter=ctx["adapter"],
-            backend=ctx["backend"],
-            action_space=ctx["action_space"],
-            reward_fn=ctx["reward_fn"],
-            planner=ctx["planner"],
+            adapter=context["adapter"],
+            backend=context["backend"],
+            action_space=context["action_space"],
+            reward_fn=context["reward_fn"],
+            planner=context["planner"],
             max_steps=int(task["max_steps"]),
             gamma=float(task["gamma"]),
-            use_continuation_gate=bool(task["use_continuation_gate"]),
+            use_continuation_gate=mode is PolicyMode.CONSTRAINED,
             min_hard_improvement=float(task["min_hard_improvement"]),
             min_soft_improvement=float(task["min_soft_improvement"]),
             min_gate_visits=int(task["min_gate_visits"]),
-            min_gate_visit_fraction=float(task["min_gate_visit_fraction"]),
+            min_gate_visit_fraction=float(
+                task["min_gate_visit_fraction"]
+            ),
             allow_handoff_with_hard_overloads=bool(
                 task["allow_handoff_with_hard_overloads"]
             ),
-            physics_config=ctx["physics_config"],
+            physics_config=context["physics_config"],
+            policy_mode=mode,
         )
-        clear_worker_caches_if_needed()
         return {
             "ok": True,
             "scenario_id": int(scenario_id),
+            "policy_mode": mode.value,
             "row": row,
             "traceback": None,
         }
-    # Intentional process-worker boundary:
-    # serialize one scenario failure with its traceback instead of
-    # terminating the entire evaluation pool.
-    except Exception:
-        clear_worker_caches_if_needed()
+    except Exception:  # process-worker isolation boundary
         return {
             "ok": False,
             "scenario_id": int(scenario_id),
+            "policy_mode": mode.value,
             "row": None,
             "traceback": traceback.format_exc(),
         }
 
 
 def run_scenario_batch(scenario_ids: list[int]) -> list[dict[str, Any]]:
+    task = _require_worker_context()["task_config"]
+    modes = tuple(PolicyMode(mode) for mode in task["evaluation_modes"])
     results: list[dict[str, Any]] = []
     for scenario_id in scenario_ids:
-        results.append(run_episode_from_worker_context(int(scenario_id)))
+        results.extend(
+            run_episode_from_worker_context(int(scenario_id), mode)
+            for mode in modes
+        )
+        clear_worker_caches_if_needed()
     return results
 
 
-def load_scenario_ids(transitions_path: Path, limit: int | None) -> list[int]:
+def load_scenario_ids(
+    transitions_path: Path,
+    limit: int | None,
+) -> list[int]:
     transitions = pd.read_csv(transitions_path)
-
     if "scenario_id" not in transitions.columns:
         raise ValueError(
-            f"Transitions CSV must contain scenario_id column: {transitions_path}"
+            f"Transitions CSV must contain scenario_id column: "
+            f"{transitions_path}"
         )
-
-    scenario_ids = sorted(int(x) for x in transitions["scenario_id"].unique())
-
-    if limit is not None:
-        scenario_ids = scenario_ids[: int(limit)]
-
-    return scenario_ids
+    scenario_ids = sorted(
+        int(value) for value in transitions["scenario_id"].unique()
+    )
+    return scenario_ids if limit is None else scenario_ids[: int(limit)]
 
 
 def chunk_list(values: list[int], batch_size: int) -> list[list[int]]:
-    batch_size = max(int(batch_size), 1)
-    return [values[i : i + batch_size] for i in range(0, len(values), batch_size)]
+    size = max(int(batch_size), 1)
+    return [
+        values[index : index + size]
+        for index in range(0, len(values), size)
+    ]
 
 
 def _make_task_config(request: EvaluationRequest) -> dict[str, Any]:
     if GridFMReward is None:
         _ensure_runtime_dependencies()
-
-    reward_config = GridFMReward(
-        physics_config=request.resolved_physics_config
-    ).config_dict()
     config = request.config
+    modes = evaluation_policy_modes(config.use_continuation_gate)
     return {
         "simulations": int(config.simulations),
         "depth": int(config.depth),
@@ -601,10 +457,14 @@ def _make_task_config(request: EvaluationRequest) -> dict[str, Any]:
         **physics_provenance(request.resolved_physics_config),
         "disable_cache": bool(request.disable_cache),
         "use_continuation_gate": bool(config.use_continuation_gate),
+        "evaluation_modes": [mode.value for mode in modes],
+        "primary_policy_mode": modes[-1].value,
         "min_hard_improvement": float(request.min_hard_improvement),
         "min_soft_improvement": float(request.min_soft_improvement),
         "min_gate_visits": int(request.min_gate_visits),
-        "min_gate_visit_fraction": float(request.min_gate_visit_fraction),
+        "min_gate_visit_fraction": float(
+            request.min_gate_visit_fraction
+        ),
         "allow_handoff_with_hard_overloads": bool(
             config.allow_handoff_with_hard_overloads
         ),
@@ -617,8 +477,31 @@ def _make_task_config(request: EvaluationRequest) -> dict[str, Any]:
         "dc_policy_weight": float(request.dc_policy_weight),
         "dc_failure_penalty": float(request.dc_failure_penalty),
         "dc_max_depth": int(request.dc_max_depth),
-        "reward_config": reward_config,
+        "reward_config": GridFMReward(
+            physics_config=request.resolved_physics_config
+        ).config_dict(),
     }
+
+
+def _record_batch_results(
+    batch_results: list[dict[str, Any]],
+    *,
+    rows: list[dict[str, Any]],
+    failed: list[dict[str, Any]],
+    quiet: bool,
+) -> None:
+    for result in batch_results:
+        if result["ok"]:
+            rows.append(result["row"])
+            if not quiet:
+                print_row(result["row"])
+        else:
+            failed.append(result)
+            print(
+                f"Scenario {result['scenario_id']} "
+                f"[{result['policy_mode']}]: failed"
+            )
+            print(result["traceback"])
 
 
 def run_sequential(
@@ -628,36 +511,26 @@ def run_sequential(
     task_config: dict[str, Any],
     quiet: bool,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    init_worker_context(
-        raw_dir_str=str(raw_dir),
-        checkpoint_path_str=str(checkpoint_path),
-        task_config=task_config,
-    )
+    init_worker_context(str(raw_dir), str(checkpoint_path), task_config)
     rows: list[dict[str, Any]] = []
     failed: list[dict[str, Any]] = []
-    iterator = scenario_batches
-
-    if tqdm is not None:
-        iterator = tqdm(
+    iterator = (
+        tqdm(
             scenario_batches,
             desc="Evaluating batches",
             unit="batch",
             dynamic_ncols=True,
         )
-
+        if tqdm is not None
+        else scenario_batches
+    )
     for batch in iterator:
-        batch_results = run_scenario_batch(batch)
-        for result in batch_results:
-            if result["ok"]:
-                row = result["row"]
-                rows.append(row)
-                if not quiet:
-                    print_row(row)
-            else:
-                failed.append(result)
-                print(f"Scenario {result['scenario_id']}: failed")
-                print(result["traceback"])
-
+        _record_batch_results(
+            run_scenario_batch(batch),
+            rows=rows,
+            failed=failed,
+            quiet=quiet,
+        )
     return rows, failed
 
 
@@ -671,15 +544,16 @@ def run_parallel(
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     rows: list[dict[str, Any]] = []
     failed: list[dict[str, Any]] = []
-
     with ProcessPoolExecutor(
         max_workers=int(num_workers),
         initializer=init_worker_context,
         initargs=(str(raw_dir), str(checkpoint_path), task_config),
     ) as executor:
-        futures = [executor.submit(run_scenario_batch, batch) for batch in scenario_batches]
+        futures = [
+            executor.submit(run_scenario_batch, batch)
+            for batch in scenario_batches
+        ]
         iterator = as_completed(futures)
-
         if tqdm is not None:
             iterator = tqdm(
                 iterator,
@@ -688,150 +562,142 @@ def run_parallel(
                 unit="batch",
                 dynamic_ncols=True,
             )
-
         for future in iterator:
-            batch_results = future.result()
-            for result in batch_results:
-                if result["ok"]:
-                    row = result["row"]
-                    rows.append(row)
-                    if not quiet:
-                        print_row(row)
-                else:
-                    failed.append(result)
-                    print(f"Scenario {result['scenario_id']}: failed")
-                    print(result["traceback"])
-
+            _record_batch_results(
+                future.result(),
+                rows=rows,
+                failed=failed,
+                quiet=quiet,
+            )
     return rows, failed
 
 
+def _print_mode_summaries(
+    df: pd.DataFrame,
+    failures: list[dict[str, Any]],
+    modes: list[str],
+) -> None:
+    for mode in modes:
+        print(f"\nPolicy mode: {mode}")
+        subset = df[df["policy_mode"] == mode]
+        mode_failures = [
+            item
+            for item in failures
+            if item.get("policy_mode", mode) == mode
+        ]
+        if subset.empty:
+            print(f"No successful rows. Failed rows: {len(mode_failures)}")
+        else:
+            print_summary(df=subset, failed_results=mode_failures)
+
+
+def _prepare_results_frame(
+    rows: list[dict[str, Any]],
+    transitions_path: Path,
+) -> pd.DataFrame:
+    df = pd.DataFrame(rows)
+    defaults = {
+        "policy_mode": PolicyMode.UNGATED.value,
+        "constraint_changed_policy": False,
+        "constraint_changed_policy_steps": 0,
+        "constraint_exhausted": False,
+        "empty_constrained_support_count": 0,
+    }
+    for column, default in defaults.items():
+        if column not in df.columns:
+            df[column] = default
+    df = df.sort_values(
+        ["scenario_id", "policy_mode"]
+    ).reset_index(drop=True)
+    return attach_difficulty_metadata(
+        df=df,
+        transitions_path=transitions_path,
+    )
+
+
 def evaluate_checkpoint(request: EvaluationRequest) -> dict[str, Any]:
-    sequential_mode = int(request.config.num_workers) <= 1
-
+    sequential = int(request.config.num_workers) <= 1
     try:
-        raw_dir = request.raw_dir
-        transitions_path = request.transitions_csv
-        checkpoint_path = request.checkpoint
-
-        if not raw_dir.exists():
-            raise FileNotFoundError(f"Raw directory not found: {raw_dir}")
-        if not transitions_path.exists():
-            raise FileNotFoundError(f"Transitions CSV not found: {transitions_path}")
-        if not checkpoint_path.exists():
-            raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
+        for label, path in (
+            ("Raw directory", request.raw_dir),
+            ("Transitions CSV", request.transitions_csv),
+            ("Checkpoint", request.checkpoint),
+        ):
+            if not path.exists():
+                raise FileNotFoundError(f"{label} not found: {path}")
 
         scenario_ids = load_scenario_ids(
-            transitions_path=transitions_path,
-            limit=request.limit,
+            request.transitions_csv,
+            request.limit,
         )
-        scenario_batches = chunk_list(
-            values=scenario_ids,
-            batch_size=int(request.config.batch_size),
+        batches = chunk_list(
+            scenario_ids,
+            request.config.batch_size,
         )
-        task_config = _make_task_config(request)
-
+        task = _make_task_config(request)
         print("=" * 100)
         print("Evaluating checkpoint")
         print("=" * 100)
-        print(f"Raw directory:       {raw_dir.resolve()}")
-        print(f"Transitions:         {transitions_path.resolve()}")
-        print(f"Checkpoint:          {checkpoint_path.resolve()}")
-        print(f"Use continuation gate: {request.config.use_continuation_gate}")
+        print(f"Policy modes: {', '.join(task['evaluation_modes'])}")
         print(
-            "Allow hard handoff:  "
-            f"{request.config.allow_handoff_with_hard_overloads}"
+            f"Scenarios: {len(scenario_ids)} | "
+            f"workers: {request.config.num_workers}"
         )
-        print(f"Scenarios:           {len(scenario_ids)}")
-        print(f"Batches:             {len(scenario_batches)}")
-        print(f"Batch size:          {request.config.batch_size}")
-        print(f"Num workers:         {request.config.num_workers}")
-        print(f"Device:              {request.config.device}")
-        print(f"Quiet:               {request.quiet}")
-        print(f"Use DC screening:   {request.use_dc_screening}")
 
-        if request.use_dc_screening:
-            print(f"  dc max depth:      {request.dc_max_depth}")
-            print(f"  dc top k:          {request.dc_top_k}")
-            print(f"  dc candidate pool: {request.dc_candidate_pool}")
-            print(f"  dc keep policy:    {request.dc_keep_policy_actions}")
-            print(f"  dc keep loading:   {request.dc_keep_loading_actions}")
-            print(f"  dc policy weight:  {request.dc_policy_weight}")
-
-        if request.config.use_continuation_gate:
-            print(f"  min hard improvement: {request.min_hard_improvement}")
-            print(f"  min soft improvement: {request.min_soft_improvement}")
-            print(f"  min gate visits:      {request.min_gate_visits}")
-            print(f"  min gate visit frac:  {request.min_gate_visit_fraction}")
-
-        if (
-            str(request.config.device).lower().startswith("cuda")
-            and int(request.config.num_workers) > 1
-        ):
-            print(
-                "\nWARNING: CUDA + multiple worker processes means each worker loads "
-                "its own model copy on GPU. Start with --num-workers 2. "
-                "If CUDA memory grows too much, use --num-workers 1 or --device cpu.\n"
-            )
-
-        if sequential_mode:
-            rows, failed_results = run_sequential(
-                scenario_batches=scenario_batches,
-                raw_dir=raw_dir,
-                checkpoint_path=checkpoint_path,
-                task_config=task_config,
-                quiet=bool(request.quiet),
-            )
-        else:
-            rows, failed_results = run_parallel(
-                scenario_batches=scenario_batches,
-                raw_dir=raw_dir,
-                checkpoint_path=checkpoint_path,
-                task_config=task_config,
-                num_workers=int(request.config.num_workers),
-                quiet=bool(request.quiet),
-            )
-
+        runner = run_sequential if sequential else run_parallel
+        kwargs: dict[str, Any] = {
+            "scenario_batches": batches,
+            "raw_dir": request.raw_dir,
+            "checkpoint_path": request.checkpoint,
+            "task_config": task,
+            "quiet": bool(request.quiet),
+        }
+        if not sequential:
+            kwargs["num_workers"] = int(request.config.num_workers)
+        rows, failures = runner(**kwargs)
         if not rows:
             raise RuntimeError("No scenarios were successfully evaluated.")
 
-        df = pd.DataFrame(rows)
-        df = df.sort_values("scenario_id", ascending=True).reset_index(drop=True)
-        df = attach_difficulty_metadata(df=df, transitions_path=transitions_path)
-        metrics = build_evaluation_metrics(
+        df = _prepare_results_frame(rows, request.transitions_csv)
+        metrics = build_policy_comparison_metrics(
             df=df,
-            failed_results=failed_results,
+            failed_results=failures,
             requested_scenarios=len(scenario_ids),
-            task_config=task_config,
+            task_config=task,
         )
-
         if request.output_csv is not None:
-            request.output_csv.parent.mkdir(parents=True, exist_ok=True)
+            request.output_csv.parent.mkdir(
+                parents=True,
+                exist_ok=True,
+            )
             df.to_csv(request.output_csv, index=False)
             print(f"\nSaved evaluation CSV: {request.output_csv}")
-
         if request.output_json is not None:
-            save_json(payload=metrics, path=request.output_json)
+            save_json(
+                payload=metrics,
+                path=request.output_json,
+            )
             print(f"\nSaved evaluation JSON: {request.output_json}")
 
-        print_summary(df=df, failed_results=failed_results)
-
-        if sequential_mode:
-            ctx = _require_worker_context()
-            print("\nPower flow cache:")
-            print(ctx["backend"].cache_info())
-            print("\nAction space cache:")
-            print(ctx["action_space"].cache_info())
-            print("\nNeural evaluator cache:")
-            print(ctx["evaluator"].cache_info())
+        _print_mode_summaries(
+            df,
+            failures,
+            list(task["evaluation_modes"]),
+        )
+        print_policy_comparison_summary(metrics)
+        if sequential:
+            context = _require_worker_context()
+            for label, name in (
+                ("Power flow", "backend"),
+                ("Action space", "action_space"),
+                ("Neural evaluator", "evaluator"),
+            ):
+                print(f"\n{label} cache:")
+                print(context[name].cache_info())
         else:
-            print("\nCache info:")
-            print(
-                "Parallel mode uses separate per-process caches. "
-                "Global cache statistics are not aggregated."
-            )
-
+            print("\nParallel mode uses separate per-process caches.")
         print("\nDone.")
         return metrics
     finally:
-        if sequential_mode:
+        if sequential:
             _release_worker_context()

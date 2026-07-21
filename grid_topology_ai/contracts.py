@@ -12,7 +12,8 @@ if TYPE_CHECKING:
 # Version 3 binds the stored policy target to the behavior policy that actually
 # produced selected_action_id. Version 2 artifacts may contain gate overrides.
 OUTCOME_VALUE_TARGET_CONTRACT_VERSION = 3
-EVALUATION_METRICS_CONTRACT_VERSION = 3
+# Version 4 adds paired ungated/constrained mode metrics and comparison deltas.
+EVALUATION_METRICS_CONTRACT_VERSION = 4
 CHECKPOINT_CONTRACT_VERSION = 4
 REPLAY_BUFFER_SCHEMA_VERSION = 3
 PHYSICS_CONFIG_CONTRACT_VERSION = 1

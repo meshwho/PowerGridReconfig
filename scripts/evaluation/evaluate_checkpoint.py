@@ -12,7 +12,10 @@ from grid_topology_ai.evaluation.checkpoint import (
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Evaluate a neural policy-value checkpoint with deterministic MCTS."
+        description=(
+            "Evaluate a neural policy-value checkpoint with deterministic MCTS, "
+            "optionally comparing ungated and constrained root policies."
+        )
     )
     parser.add_argument(
         "raw_dir",
@@ -34,7 +37,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--use-continuation-gate",
         action="store_true",
-        help="Use lookahead continuation gate for evaluation action selection.",
+        help=(
+            "Evaluate both ungated MCTS and a constrained MCTS policy formed by "
+            "filtering root visits with continuation analysis."
+        ),
     )
     parser.add_argument(
         "--min-hard-improvement",
