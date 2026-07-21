@@ -190,17 +190,24 @@ def main() -> None:
         print(f"  min gate visits:      {args.min_gate_visits}")
         print(f"  min gate visit frac:  {args.min_gate_visit_fraction}")
 
-    adapter = GridFMAdapter(raw_dir)
+    physics_config = replace(
+        DEFAULT_PHYSICS_CONFIG,
+        pf_alg=args.pf_alg,
+    )
+    adapter = GridFMAdapter(
+        raw_dir,
+        physics_config=physics_config,
+    )
     backend = GridFMPowerFlowBackend(
         adapter=adapter,
-        physics_config=replace(DEFAULT_PHYSICS_CONFIG, pf_alg=args.pf_alg),
+        physics_config=physics_config,
         enable_cache=not args.disable_cache,
     )
     action_space = GridFMActionSpace(
         require_connected_after_switch=True,
         enable_cache=not args.disable_cache,
     )
-    reward_fn = GridFMReward()
+    reward_fn = GridFMReward(physics_config=physics_config)
 
     env = TopologySwitchingEnv(
         adapter=adapter,
@@ -237,6 +244,7 @@ def main() -> None:
     planner = MCTSPlanner(
         config=config,
         evaluator=evaluator,
+        physics_config=physics_config,
     )
 
     env.reset(args.scenario)
@@ -277,6 +285,7 @@ def main() -> None:
                 min_soft_improvement=args.min_soft_improvement,
                 min_visits=args.min_gate_visits,
                 min_visit_fraction=args.min_gate_visit_fraction,
+                physics_config=physics_config,
             )
 
             best_action_id = int(gate_decision.selected_action_id)

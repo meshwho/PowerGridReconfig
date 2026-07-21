@@ -8,6 +8,7 @@ if TYPE_CHECKING:
 import numpy as np
 
 from grid_topology_ai.action_space import GridFMAction
+from grid_topology_ai.config.physics import DEFAULT_PHYSICS_CONFIG, PhysicsConfig
 from grid_topology_ai.data_adapter import BRANCH_FEATURE_COLUMNS, GridFMState
 from grid_topology_ai.physical_objective import (
     assess_physical_state,
@@ -179,9 +180,11 @@ class MCTSPlanner:
             self,
             config: MCTSConfig,
             evaluator: "NeuralPolicyValueEvaluator | None" = None,
+            physics_config: PhysicsConfig | None = None,
     ):
         self.config = config
         self.evaluator = evaluator
+        self.physics_config = physics_config or DEFAULT_PHYSICS_CONFIG
 
         self.loading_idx = BRANCH_FEATURE_COLUMNS.index("loading_percent")
         self.status_idx = BRANCH_FEATURE_COLUMNS.index("br_status")
@@ -197,6 +200,7 @@ class MCTSPlanner:
                 policy_weight=self.config.dc_policy_weight,
                 failure_penalty=self.config.dc_failure_penalty,
                 enable_cache=True,
+                physics_config=self.physics_config,
             )
 
     def search(
@@ -803,8 +807,38 @@ class MCTSPlanner:
 
         active_loading = self._active_loadings(state)
 
-        total_overload = float(np.sum(np.maximum(active_loading - 100.0, 0.0)))
-        hard_overload = float(np.sum(np.maximum(active_loading - 120.0, 0.0)))
+        overload_threshold = (
+            self.physics_config.overload_limit_percent
+            + self.physics_config.thermal_tolerance_percent
+        )
+        hard_overload_threshold = (
+            self.physics_config.hard_overload_limit_percent
+            + self.physics_config.thermal_tolerance_percent
+        )
+        total_overload = float(
+            np.sum(
+                np.where(
+                    active_loading > overload_threshold,
+                    (
+                        active_loading
+                        - self.physics_config.overload_limit_percent
+                    ),
+                    0.0,
+                )
+            )
+        )
+        hard_overload = float(
+            np.sum(
+                np.where(
+                    active_loading > hard_overload_threshold,
+                    (
+                        active_loading
+                        - self.physics_config.hard_overload_limit_percent
+                    ),
+                    0.0,
+                )
+            )
+        )
 
         num_overloaded = int(state.metrics["num_overloaded_branches"])
         num_hard_overloaded = int(state.metrics["num_hard_overloaded_branches"])

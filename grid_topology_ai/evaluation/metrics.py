@@ -7,10 +7,7 @@ import pandas as pd
 
 from grid_topology_ai.contracts import EVALUATION_METRICS_CONTRACT_VERSION
 from grid_topology_ai.config.physics import DEFAULT_PHYSICS_CONFIG, PhysicsConfig
-from grid_topology_ai.physical_objective import (
-    OVERLOAD_LIMIT_PERCENT,
-    physical_objective_contract,
-)
+from grid_topology_ai.physical_objective import physical_objective_contract
 from grid_topology_ai.termination import (
     TerminationReason,
     parse_termination_reason,
@@ -18,7 +15,11 @@ from grid_topology_ai.termination import (
 )
 
 
-def compute_safety_score(row: dict[str, Any]) -> float:
+def compute_safety_score(
+    row: dict[str, Any],
+    physics_config: PhysicsConfig | None = None,
+) -> float:
+    config = physics_config or DEFAULT_PHYSICS_CONFIG
     score = 0.0
     reason = parse_termination_reason(row.get("termination_reason"))
     solved = bool(row.get("solved", False))
@@ -47,8 +48,14 @@ def compute_safety_score(row: dict[str, Any]) -> float:
     score -= 300.0 * hard
     score -= 50.0 * overloaded
 
-    if final_loading > OVERLOAD_LIMIT_PERCENT:
-        score -= 5.0 * (final_loading - OVERLOAD_LIMIT_PERCENT)
+    overload_threshold = (
+        config.overload_limit_percent
+        + config.thermal_tolerance_percent
+    )
+    if final_loading > overload_threshold:
+        score -= 5.0 * (
+            final_loading - config.overload_limit_percent
+        )
 
     score += 0.05 * discounted_return
     return float(score)

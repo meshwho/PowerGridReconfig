@@ -9,6 +9,7 @@ from pypower.api import ppoption, rundcpf
 from pypower.idx_brch import BR_STATUS, PF, PT, RATE_A
 
 from grid_topology_ai.action_space import GridFMAction
+from grid_topology_ai.config.physics import DEFAULT_PHYSICS_CONFIG, PhysicsConfig
 from grid_topology_ai.data_adapter import GridFMState
 from grid_topology_ai.pypower_backend import GridFMPowerFlowBackend
 
@@ -52,12 +53,14 @@ class DCActionScreener:
         policy_weight: float = 0.0,
         failure_penalty: float = 1_000_000_000.0,
         enable_cache: bool = True,
+        physics_config: PhysicsConfig | None = None,
     ):
         self.top_k = int(top_k)
         self.candidate_pool = int(candidate_pool)
         self.policy_weight = float(policy_weight)
         self.failure_penalty = float(failure_penalty)
         self.enable_cache = bool(enable_cache)
+        self.physics_config = physics_config or DEFAULT_PHYSICS_CONFIG
 
         self._cache: dict[tuple, DCActionScore] = {}
         self.cache_hits = 0
@@ -229,14 +232,37 @@ class DCActionScreener:
         active_loading = loading[active_mask]
 
         max_loading = float(np.max(active_loading))
-        overload_vector = np.maximum(active_loading - 100.0, 0.0)
-        hard_vector = np.maximum(active_loading - 120.0, 0.0)
+        overload_threshold = (
+            self.physics_config.overload_limit_percent
+            + self.physics_config.thermal_tolerance_percent
+        )
+        hard_overload_threshold = (
+            self.physics_config.hard_overload_limit_percent
+            + self.physics_config.thermal_tolerance_percent
+        )
+        overload_vector = np.where(
+            active_loading > overload_threshold,
+            active_loading - self.physics_config.overload_limit_percent,
+            0.0,
+        )
+        hard_vector = np.where(
+            active_loading > hard_overload_threshold,
+            active_loading - self.physics_config.hard_overload_limit_percent,
+            0.0,
+        )
 
         total_overload = float(np.sum(overload_vector))
         hard_overload = float(np.sum(hard_vector))
 
-        num_overloaded = int(np.sum(active_loading > 100.0))
-        num_hard_overloaded = int(np.sum(active_loading > 120.0))
+        num_overloaded = int(np.sum(active_loading > overload_threshold))
+        num_hard_overloaded = int(
+            np.sum(active_loading > hard_overload_threshold)
+        )
+        max_overload_excess = (
+            max_loading - self.physics_config.overload_limit_percent
+            if max_loading > overload_threshold
+            else 0.0
+        )
 
         # Similar idea to MCTS state penalty, but without voltage terms
         # because DC PF does not model voltage magnitudes/reactive power.
@@ -245,7 +271,7 @@ class DCActionScreener:
             + 5.0 * hard_overload
             + 10.0 * num_overloaded
             + 30.0 * num_hard_overloaded
-            + 0.10 * max(max_loading - 100.0, 0.0)
+            + 0.10 * max_overload_excess
         )
 
         if self.policy_weight > 0.0 and policy_prior > 0.0:

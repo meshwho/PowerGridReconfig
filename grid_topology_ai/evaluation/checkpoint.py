@@ -204,10 +204,18 @@ def init_worker_context(
     raw_dir = Path(raw_dir_str)
     checkpoint_path = Path(checkpoint_path_str)
 
-    adapter = GridFMAdapter(raw_dir)
+    if (
+        task_config.get("physics_config_contract_version")
+        != PHYSICS_CONFIG_CONTRACT_VERSION
+    ):
+        raise ValueError("Unsupported physics config contract in evaluation task.")
     physics_config = PhysicsConfig.from_mapping(task_config["physics_config"])
     if physics_config.fingerprint() != task_config["physics_config_fingerprint"]:
         raise ValueError("Evaluation task PhysicsConfig fingerprint mismatch.")
+    adapter = GridFMAdapter(
+        raw_dir,
+        physics_config=physics_config,
+    )
     backend = GridFMPowerFlowBackend(
         adapter=adapter,
         physics_config=physics_config,
@@ -243,7 +251,11 @@ def init_worker_context(
         dc_failure_penalty=float(task_config["dc_failure_penalty"]),
         dc_max_depth=int(task_config["dc_max_depth"]),
     )
-    planner = MCTSPlanner(config=mcts_config, evaluator=evaluator)
+    planner = MCTSPlanner(
+        config=mcts_config,
+        evaluator=evaluator,
+        physics_config=physics_config,
+    )
 
     _WORKER_CONTEXT = {
         "adapter": adapter,
@@ -252,6 +264,7 @@ def init_worker_context(
         "reward_fn": reward_fn,
         "evaluator": evaluator,
         "planner": planner,
+        "physics_config": physics_config,
         "task_config": task_config,
         "processed_in_worker": 0,
     }
@@ -297,6 +310,7 @@ def run_episode(
     min_gate_visits: int,
     min_gate_visit_fraction: float,
     allow_handoff_with_hard_overloads: bool = False,
+    physics_config: PhysicsConfig | None = None,
 ) -> dict[str, Any]:
     _ensure_runtime_dependencies()
     env = TopologySwitchingEnv(
@@ -335,6 +349,7 @@ def run_episode(
                 min_soft_improvement=min_soft_improvement,
                 min_visits=min_gate_visits,
                 min_visit_fraction=min_gate_visit_fraction,
+                physics_config=physics_config,
             )
             action_id = int(gate_decision.selected_action_id)
             branch_id = gate_decision.selected_branch_id
@@ -482,7 +497,10 @@ def run_episode(
         "safe_handoff": safe_handoff,
         "unsafe_terminal_state": unsafe_terminal_state,
     }
-    row["safety_score"] = compute_safety_score(row)
+    row["safety_score"] = compute_safety_score(
+        row,
+        physics_config=physics_config,
+    )
     return row
 
 
@@ -508,6 +526,7 @@ def run_episode_from_worker_context(scenario_id: int) -> dict[str, Any]:
             allow_handoff_with_hard_overloads=bool(
                 task["allow_handoff_with_hard_overloads"]
             ),
+            physics_config=ctx["physics_config"],
         )
         clear_worker_caches_if_needed()
         return {

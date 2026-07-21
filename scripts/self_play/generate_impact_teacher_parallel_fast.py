@@ -300,15 +300,19 @@ def init_worker_context(
         flush=True,
     )
 
-    adapter = GridFMAdapter(
-        raw_dir=raw_dir,
-        scenario_ids=normalized_scenario_ids,
-    )
-    if task_config.get("physics_config_contract_version") != PHYSICS_CONFIG_CONTRACT_VERSION:
+    if (
+        task_config.get("physics_config_contract_version")
+        != PHYSICS_CONFIG_CONTRACT_VERSION
+    ):
         raise ValueError("Unsupported physics config contract in worker payload.")
     physics_config = PhysicsConfig.from_mapping(task_config["physics_config"])
     if physics_config.fingerprint() != task_config.get("physics_config_fingerprint"):
         raise ValueError("PhysicsConfig fingerprint mismatch in worker payload.")
+    adapter = GridFMAdapter(
+        raw_dir=raw_dir,
+        scenario_ids=normalized_scenario_ids,
+        physics_config=physics_config,
+    )
     backend = GridFMPowerFlowBackend(
         adapter=adapter,
         physics_config=physics_config,
@@ -320,7 +324,7 @@ def init_worker_context(
         enable_cache=not bool(task_config["disable_cache"]),
     )
 
-    reward_fn = GridFMReward()
+    reward_fn = GridFMReward(physics_config=physics_config)
     state_store = GridFMStateStore(states_dir)
 
     _WORKER_CONTEXT = {
@@ -328,6 +332,7 @@ def init_worker_context(
         "backend": backend,
         "action_space": action_space,
         "reward_fn": reward_fn,
+        "physics_config": physics_config,
         "state_store": state_store,
         "task_config": task_config,
         "processed_in_worker": 0,
@@ -732,8 +737,9 @@ class LODFScreenedImpactBeamSearchPlanner(ImpactBeamSearchPlanner):
         config: ImpactBeamSearchConfig,
         lodf_screen_top_k: int,
         lodf_min_candidate_count: int = 1,
+        physics_config: PhysicsConfig | None = None,
     ):
-        super().__init__(config)
+        super().__init__(config, physics_config=physics_config)
 
         self.lodf_screen_top_k = int(lodf_screen_top_k)
         self.lodf_min_candidate_count = int(lodf_min_candidate_count)
@@ -774,6 +780,7 @@ class LODFScreenedImpactBeamSearchPlanner(ImpactBeamSearchPlanner):
             ranked_switch_actions = rank_actions_by_lodf_screening(
                 state=state,
                 actions=switch_actions,
+                physics_config=self.physics_config,
             )
         except Exception:
             # LODF must never break teacher generation.
@@ -788,6 +795,7 @@ class LODFScreenedImpactBeamSearchPlanner(ImpactBeamSearchPlanner):
 def rank_actions_by_lodf_screening(
     state,
     actions: list[GridFMAction],
+    physics_config: PhysicsConfig | None = None,
 ) -> list[GridFMAction]:
     """
     Rank switch-off actions by approximate post-contingency DC/LODF safety.
@@ -917,7 +925,10 @@ def rank_actions_by_lodf_screening(
             neginf=1e9,
         )
 
-        score = lodf_loading_safety_score(loading_after)
+        score = lodf_loading_safety_score(
+            loading_after,
+            physics_config=physics_config,
+        )
 
         # Small tie-breaker: prefer currently loaded lines if LODF score is equal.
         current_loading = float(branch_features[branch_pos, loading_idx])
@@ -930,7 +941,10 @@ def rank_actions_by_lodf_screening(
     return [action for _, action in scored]
 
 
-def lodf_loading_safety_score(loading_percent: np.ndarray) -> float:
+def lodf_loading_safety_score(
+    loading_percent: np.ndarray,
+    physics_config: PhysicsConfig | None = None,
+) -> float:
     """
     Approximate safety score based only on predicted DC loading.
 
@@ -938,13 +952,30 @@ def lodf_loading_safety_score(loading_percent: np.ndarray) -> float:
     and reactive power terms. It is intentionally conservative.
     """
 
+    config = physics_config or DEFAULT_PHYSICS_CONFIG
     loading = np.asarray(loading_percent, dtype=np.float64)
 
-    overload = np.maximum(loading - 100.0, 0.0)
-    hard = np.maximum(loading - 120.0, 0.0)
+    overload_threshold = (
+        config.overload_limit_percent
+        + config.thermal_tolerance_percent
+    )
+    hard_overload_threshold = (
+        config.hard_overload_limit_percent
+        + config.thermal_tolerance_percent
+    )
+    overload = np.where(
+        loading > overload_threshold,
+        loading - config.overload_limit_percent,
+        0.0,
+    )
+    hard = np.where(
+        loading > hard_overload_threshold,
+        loading - config.hard_overload_limit_percent,
+        0.0,
+    )
 
-    num_overloaded = float(np.sum(loading > 100.0))
-    num_hard = float(np.sum(loading > 120.0))
+    num_overloaded = float(np.sum(loading > overload_threshold))
+    num_hard = float(np.sum(loading > hard_overload_threshold))
 
     hard_sq = float(np.sum(hard * hard))
     hard_sum = float(np.sum(hard))
@@ -982,6 +1013,7 @@ def process_one_scenario_fast(scenario_id: int) -> dict[str, Any]:
     backend = ctx["backend"]
     action_space = ctx["action_space"]
     reward_fn = ctx["reward_fn"]
+    physics_config = ctx["physics_config"]
     state_store = ctx["state_store"]
     task = ctx["task_config"]
 
@@ -997,7 +1029,10 @@ def process_one_scenario_fast(scenario_id: int) -> dict[str, Any]:
         )
 
         initial_state = search_env.reset(scenario_id)
-        initial_safety = safety_score(initial_state)
+        initial_safety = safety_score(
+            initial_state,
+            physics_config=physics_config,
+        )
 
         planner_config = ImpactBeamSearchConfig(
             max_depth=int(task["depth"]),
@@ -1016,9 +1051,13 @@ def process_one_scenario_fast(scenario_id: int) -> dict[str, Any]:
                 config=planner_config,
                 lodf_screen_top_k=int(task["lodf_screen_top_k"]),
                 lodf_min_candidate_count=int(task["lodf_min_candidate_count"]),
+                physics_config=physics_config,
             )
         else:
-            planner = ImpactBeamSearchPlanner(planner_config)
+            planner = ImpactBeamSearchPlanner(
+                planner_config,
+                physics_config=physics_config,
+            )
 
         result = planner.search(
             env=search_env,
@@ -1105,7 +1144,10 @@ def process_one_scenario_fast(scenario_id: int) -> dict[str, Any]:
 
             if not _action_is_valid(action_mask, selected_action_id):
                 if bool(task["add_handoff_example"]):
-                    safety_before = safety_score(state_before)
+                    safety_before = safety_score(
+                        state_before,
+                        physics_config=physics_config,
+                    )
 
                     step_items.append(
                         make_handoff_step_item(
@@ -1123,7 +1165,10 @@ def process_one_scenario_fast(scenario_id: int) -> dict[str, Any]:
 
                 break
 
-            safety_before = safety_score(state_before)
+            safety_before = safety_score(
+                state_before,
+                physics_config=physics_config,
+            )
 
             candidate_env = replay_env.clone()
 
@@ -1138,7 +1183,10 @@ def process_one_scenario_fast(scenario_id: int) -> dict[str, Any]:
             if next_state is None:
                 safety_after = safety_before + float(task["power_flow_failure_penalty"])
             else:
-                safety_after = safety_score(next_state)
+                safety_after = safety_score(
+                    next_state,
+                    physics_config=physics_config,
+                )
 
             continue_action, continue_reason, step_improvement = (
                 should_continue_teacher_action(
@@ -1218,7 +1266,10 @@ def process_one_scenario_fast(scenario_id: int) -> dict[str, Any]:
 
             if final_teacher_state is not None:
                 final_action_mask = replay_env.valid_action_mask()
-                final_safety_before = safety_score(final_teacher_state)
+                final_safety_before = safety_score(
+                    final_teacher_state,
+                    physics_config=physics_config,
+                )
 
                 final_stop_step = len(step_items)
 
@@ -1259,7 +1310,10 @@ def process_one_scenario_fast(scenario_id: int) -> dict[str, Any]:
             final_num_hard = 10**9
             final_num_overloaded = 10**9
         else:
-            final_safety = safety_score(final_state)
+            final_safety = safety_score(
+                final_state,
+                physics_config=physics_config,
+            )
             final_max_loading = float(final_state.metrics["max_loading_percent"])
             final_num_hard = int(final_state.metrics["num_hard_overloaded_branches"])
             final_num_overloaded = int(final_state.metrics["num_overloaded_branches"])

@@ -14,7 +14,7 @@ from grid_topology_ai.data_adapter import (
     GridFMState,
 )
 from grid_topology_ai.environment import TopologySwitchingEnv
-from grid_topology_ai.config.physics import DEFAULT_PHYSICS_CONFIG
+from grid_topology_ai.config.physics import DEFAULT_PHYSICS_CONFIG, PhysicsConfig
 from grid_topology_ai.pypower_backend import GridFMPowerFlowBackend
 from grid_topology_ai.reward import GridFMReward
 from grid_topology_ai.search.impact_beam_search import (
@@ -39,6 +39,7 @@ def print_state_snapshot(
     title: str,
     state: GridFMState,
     top_n: int = 15,
+    physics_config: PhysicsConfig | None = None,
 ) -> None:
     print("\n" + "=" * 100)
     print(title)
@@ -57,7 +58,10 @@ def print_state_snapshot(
     print(f"  total_voltage_violation:      {metrics.get('total_voltage_violation', float('nan')):.6f}")
     print(f"  num_outaged_branches:         {metrics.get('num_outaged_branches', 'n/a')}")
     print(f"  outaged_branch_ids:           {state.outaged_branch_ids}")
-    print(f"  safety_score:                 {safety_score(state):.4f}")
+    print(
+        "  safety_score:                 "
+        f"{safety_score(state, physics_config=physics_config):.4f}"
+    )
     branch_features = state.branch_features
 
     idx_col = _column_index("idx")
@@ -213,11 +217,18 @@ def main() -> None:
     print(f"Cache enabled:     {not args.disable_cache}")
     print(f"Progress bar:      {not args.no_progress}")
 
-    adapter = GridFMAdapter(raw_dir)
+    physics_config = replace(
+        DEFAULT_PHYSICS_CONFIG,
+        pf_alg=args.pf_alg,
+    )
+    adapter = GridFMAdapter(
+        raw_dir,
+        physics_config=physics_config,
+    )
 
     backend = GridFMPowerFlowBackend(
         adapter=adapter,
-        physics_config=replace(DEFAULT_PHYSICS_CONFIG, pf_alg=args.pf_alg),
+        physics_config=physics_config,
         enable_cache=not args.disable_cache,
     )
 
@@ -226,7 +237,7 @@ def main() -> None:
         enable_cache=not args.disable_cache,
     )
 
-    reward_fn = GridFMReward()
+    reward_fn = GridFMReward(physics_config=physics_config)
 
     env = TopologySwitchingEnv(
         adapter=adapter,
@@ -242,6 +253,7 @@ def main() -> None:
         title="Initial state before impact beam search",
         state=initial_state,
         top_n=args.show_initial_top_n,
+        physics_config=physics_config,
     )
 
     config = ImpactBeamSearchConfig(
@@ -256,7 +268,10 @@ def main() -> None:
         progress_update_every=1,
     )
 
-    planner = ImpactBeamSearchPlanner(config)
+    planner = ImpactBeamSearchPlanner(
+        config,
+        physics_config=physics_config,
+    )
 
     result = planner.search(
         env=env,

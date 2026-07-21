@@ -491,7 +491,11 @@ def generate_self_play_examples(request: GenerationRequest) -> Path:
         print("\nNeural evaluator loaded.")
 
     rng = np.random.default_rng(request.seed)
-    planner = MCTSPlanner(config=mcts_config, evaluator=evaluator)
+    planner = MCTSPlanner(
+        config=mcts_config,
+        evaluator=evaluator,
+        physics_config=request.resolved_physics_config,
+    )
     example_writer = ExampleWriter(request.output_dir)
 
     total_examples = 0
