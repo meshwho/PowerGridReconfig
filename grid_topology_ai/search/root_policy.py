@@ -1,8 +1,10 @@
 """Utilities for normalized root policies and action sampling."""
+
 from __future__ import annotations
 
 import math
 from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
 from numbers import Integral, Real
 
 import numpy as np
@@ -10,12 +12,20 @@ import numpy as np
 _TEMPERATURE_EPS = 1e-8
 
 
+@dataclass(frozen=True, slots=True)
+class PolicySelection:
+    """Behavior policy and the action sampled from exactly that policy."""
+
+    policy: dict[int, float]
+    action_id: int
+
+
 def normalize_policy(
     policy: Mapping[int, Real],
     *,
     context: str = "policy",
 ) -> dict[int, float]:
-    """Validate and normalize positive policy mass."""
+    """Validate a policy and normalize its positive probability mass."""
     if not policy:
         raise ValueError(f"{context} must not be empty.")
 
@@ -86,6 +96,62 @@ def constrain_policy(
     return normalize_policy(constrained, context=f"constrained {context}")
 
 
+def policy_at_temperature(
+    policy: Mapping[int, Real],
+    temperature: float,
+    *,
+    context: str = "policy",
+) -> dict[int, float]:
+    """Return the exact behavior policy induced by ``temperature``."""
+    normalized = normalize_policy(policy, context=context)
+    temperature = _validated_temperature(temperature)
+
+    if temperature <= _TEMPERATURE_EPS:
+        best_action_id = max(normalized, key=normalized.__getitem__)
+        return {best_action_id: 1.0}
+
+    action_ids = tuple(normalized)
+    probabilities = np.fromiter(normalized.values(), dtype=np.float64)
+    log_weights = np.log(probabilities) / temperature
+    weights = np.exp(log_weights - np.max(log_weights))
+    weights /= np.sum(weights)
+
+    return {
+        action_id: float(weight)
+        for action_id, weight in zip(action_ids, weights, strict=True)
+    }
+
+
+def select_policy_action(
+    policy: Mapping[int, Real],
+    temperature: float,
+    rng: np.random.Generator,
+    *,
+    context: str = "policy",
+) -> PolicySelection:
+    """Build the behavior policy and sample one action from its support."""
+    behavior_policy = policy_at_temperature(
+        policy,
+        temperature,
+        context=context,
+    )
+
+    if len(behavior_policy) == 1:
+        action_id = next(iter(behavior_policy))
+    else:
+        action_ids = np.fromiter(behavior_policy, dtype=np.int64)
+        probabilities = np.fromiter(
+            behavior_policy.values(),
+            dtype=np.float64,
+        )
+        action_id = int(rng.choice(action_ids, p=probabilities))
+
+    return PolicySelection(
+        policy=behavior_policy,
+        action_id=int(action_id),
+    )
+
+
 def select_action_from_policy(
     policy: Mapping[int, Real],
     temperature: float,
@@ -93,19 +159,13 @@ def select_action_from_policy(
     *,
     context: str = "policy",
 ) -> int:
-    """Select exactly one action from the normalized policy support."""
-    normalized = normalize_policy(policy, context=context)
-    temperature = _validated_temperature(temperature)
-
-    if temperature <= _TEMPERATURE_EPS:
-        return max(normalized, key=normalized.__getitem__)
-
-    action_ids = np.fromiter(normalized, dtype=np.int64)
-    probabilities = np.fromiter(normalized.values(), dtype=np.float64)
-    log_weights = np.log(probabilities) / temperature
-    weights = np.exp(log_weights - np.max(log_weights))
-    weights /= np.sum(weights)
-    return int(rng.choice(action_ids, p=weights))
+    """Select one action from the temperature-adjusted behavior policy."""
+    return select_policy_action(
+        policy,
+        temperature,
+        rng,
+        context=context,
+    ).action_id
 
 
 def require_action_in_policy_support(

@@ -9,7 +9,9 @@ if TYPE_CHECKING:
     from grid_topology_ai.config.physics import PhysicsConfig
 
 
-OUTCOME_VALUE_TARGET_CONTRACT_VERSION = 2
+# Version 3 binds the stored policy target to the behavior policy that actually
+# produced selected_action_id. Version 2 artifacts may contain gate overrides.
+OUTCOME_VALUE_TARGET_CONTRACT_VERSION = 3
 EVALUATION_METRICS_CONTRACT_VERSION = 3
 CHECKPOINT_CONTRACT_VERSION = 4
 REPLAY_BUFFER_SCHEMA_VERSION = 3
@@ -40,7 +42,7 @@ def require_exact_contract_version(
         rendered = "missing" if value is None else repr(value)
         raise ValueError(
             f"Incompatible {name} for {source}: expected version {expected}, "
-            f"observed {rendered}. The solved/outcome semantics changed and "
+            f"observed {rendered}. The artifact semantics changed and "
             f"legacy artifacts cannot be upgraded safely. Regenerate them with: "
             f"{regeneration_command}"
         )
@@ -98,7 +100,6 @@ def require_physics_provenance(
             raise ValueError(
                 f"Invalid physics_config JSON for {source}."
             ) from exc
-
     if not isinstance(raw_config, Mapping):
         raise ValueError(
             f"Missing or invalid physics_config for {source}: expected an object."

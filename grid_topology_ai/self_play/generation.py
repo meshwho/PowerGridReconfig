@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import math
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,6 +17,11 @@ from grid_topology_ai.config.physics import (
 from grid_topology_ai.data_adapter import (
     BRANCH_FEATURE_COLUMNS,
     GridFMState,
+)
+from grid_topology_ai.search.root_policy import (
+    require_action_in_policy_support,
+    select_action_from_policy,
+    select_policy_action,
 )
 from grid_topology_ai.termination import (
     TerminationReason,
@@ -62,6 +66,14 @@ class GenerationRequest:
     @property
     def resolved_physics_config(self) -> PhysicsConfig:
         return resolve_physics_config(self.physics_config, self.config.pf_alg)
+
+
+@dataclass(frozen=True, slots=True)
+class _GenerationActionDecision:
+    selected_action_id: int
+    selected_branch_id: int | None
+    policy_target: dict[int, float]
+    continuation_analysis: Any | None
 
 
 def _ensure_runtime_dependencies() -> None:
@@ -128,93 +140,6 @@ def discounted_returns(rewards: list[float], gamma: float) -> list[float]:
     return returns
 
 
-def select_action_from_policy(
-    policy: dict[int, float],
-    temperature: float,
-    rng: np.random.Generator,
-) -> int:
-    if not policy:
-        raise ValueError("Cannot select action from empty policy.")
-
-    action_ids = np.array(list(policy.keys()), dtype=np.int64)
-    probabilities = np.array(
-        [float(policy[int(action_id)]) for action_id in action_ids],
-        dtype=np.float64,
-    )
-
-    total = float(probabilities.sum())
-
-    if total <= 0:
-        probabilities = np.ones_like(probabilities) / len(probabilities)
-    else:
-        probabilities = probabilities / total
-
-    if temperature <= 1e-8:
-        return int(action_ids[int(np.argmax(probabilities))])
-
-    adjusted = probabilities ** (1.0 / float(temperature))
-    adjusted_sum = float(adjusted.sum())
-
-    if adjusted_sum <= 0:
-        adjusted = np.ones_like(adjusted) / len(adjusted)
-    else:
-        adjusted = adjusted / adjusted_sum
-
-    return int(rng.choice(action_ids, p=adjusted))
-
-
-
-@dataclass(frozen=True, slots=True)
-class _GenerationActionDecision:
-    selected_action_id: int
-    selected_branch_id: int | None
-    raw_selected_action_id: int
-    raw_selected_branch_id: int | None
-    policy_target: dict[int, float]
-    gate_decision: Any | None
-
-
-def _validate_policy_target(
-    policy_target: dict[int, float],
-    *,
-    scenario_id: int | None,
-    step: int | None,
-) -> None:
-    context = f"scenario_id={scenario_id}, step={step}"
-    if not policy_target:
-        raise ValueError(f"Invalid MCTS policy target: empty policy ({context}).")
-
-    total = 0.0
-    for action_id, probability in policy_target.items():
-        if not isinstance(action_id, int) or action_id < 0:
-            raise ValueError(
-                f"Invalid MCTS policy target action ID {action_id!r} "
-                f"({context})."
-            )
-        if not math.isfinite(float(probability)):
-            raise ValueError(
-                f"Invalid MCTS policy target probability for action "
-                f"{action_id} ({context}): non-finite."
-            )
-        if float(probability) < 0.0:
-            raise ValueError(
-                f"Invalid MCTS policy target probability for action "
-                f"{action_id} ({context}): negative."
-            )
-        total += float(probability)
-
-    if total <= 0.0:
-        raise ValueError(
-            f"Invalid MCTS policy target: probability mass must be > 0 "
-            f"({context})."
-        )
-    if not math.isclose(total, 1.0, rel_tol=1e-9, abs_tol=1e-9):
-        raise ValueError(
-            f"Invalid MCTS policy target: probability mass must sum to 1.0; "
-            f"observed {total:.17g} ({context})."
-        )
-
-
 def _select_generation_action(
     *,
     search_result: Any,
@@ -229,27 +154,41 @@ def _select_generation_action(
     scenario_id: int | None = None,
     step: int | None = None,
 ) -> _GenerationActionDecision:
-    policy_target = {
-        int(action_id): float(probability)
-        for action_id, probability in search_result.policy.items()
-    }
-    _validate_policy_target(
+    context = (
+        "self-play behavior policy "
+        f"(scenario_id={scenario_id}, step={step})"
+    )
+    selection = select_policy_action(
+        search_result.policy,
+        temperature,
+        rng,
+        context=context,
+    )
+    selected_action_id = int(selection.action_id)
+    policy_target = dict(selection.policy)
+
+    require_action_in_policy_support(
+        selected_action_id,
         policy_target,
-        scenario_id=scenario_id,
-        step=step,
+        context=context,
     )
 
-    raw_selected_action_id = select_action_from_policy(
-        policy=search_result.policy,
-        temperature=temperature,
-        rng=rng,
-    )
-    raw_selected_action = search_result.root.actions_by_id[raw_selected_action_id]
-    raw_selected_branch_id = raw_selected_action.branch_id
-    gate_decision = None
+    if selected_action_id == 0:
+        selected_branch_id = None
+    else:
+        selected_action = search_result.root.actions_by_id.get(
+            selected_action_id
+        )
+        if selected_action is None:
+            raise RuntimeError(
+                f"Action {selected_action_id} is present in {context} but "
+                "missing from root.actions_by_id."
+            )
+        selected_branch_id = selected_action.branch_id
 
+    continuation_analysis = None
     if use_continuation_gate:
-        gate_decision = analyze_root_branches(
+        continuation_analysis = analyze_root_branches(
             result=search_result,
             min_hard_improvement=min_hard_improvement,
             min_soft_improvement=min_soft_improvement,
@@ -257,20 +196,14 @@ def _select_generation_action(
             min_visit_fraction=min_gate_visit_fraction,
             physics_config=physics_config,
         )
-        selected_action_id = int(gate_decision.selected_action_id)
-        selected_branch_id = gate_decision.selected_branch_id
-    else:
-        selected_action_id = int(raw_selected_action_id)
-        selected_branch_id = raw_selected_branch_id
 
     return _GenerationActionDecision(
         selected_action_id=selected_action_id,
         selected_branch_id=selected_branch_id,
-        raw_selected_action_id=int(raw_selected_action_id),
-        raw_selected_branch_id=raw_selected_branch_id,
         policy_target=policy_target,
-        gate_decision=gate_decision,
+        continuation_analysis=continuation_analysis,
     )
+
 
 def state_security_penalty(
     state: GridFMState,
@@ -386,6 +319,58 @@ def _scenario_ids_from_request(request: GenerationRequest) -> list[int]:
     return sorted(int(x) for x in transitions["scenario_id"].unique())
 
 
+def _continuation_metadata(
+    analysis: Any | None,
+    selected_action_id: int,
+) -> dict[str, Any]:
+    if analysis is None:
+        return {
+            "continuation_allowed_action_ids": None,
+            "continuation_recommended_action_id": None,
+            "continuation_recommended_branch_id": None,
+            "continuation_recommendation_reason": None,
+            "selected_action_allowed_by_continuation": None,
+        }
+
+    allowed_action_ids = tuple(
+        int(action_id)
+        for action_id in getattr(analysis, "allowed_action_ids", ())
+    )
+    recommended_action_id = getattr(
+        analysis,
+        "recommended_action_id",
+        getattr(analysis, "selected_action_id", None),
+    )
+    recommended_branch_id = getattr(
+        analysis,
+        "recommended_branch_id",
+        getattr(analysis, "selected_branch_id", None),
+    )
+    recommendation_reason = getattr(
+        analysis,
+        "recommendation_reason",
+        getattr(analysis, "selected_reason", None),
+    )
+
+    return {
+        "continuation_allowed_action_ids": list(allowed_action_ids),
+        "continuation_recommended_action_id": (
+            None
+            if recommended_action_id is None
+            else int(recommended_action_id)
+        ),
+        "continuation_recommended_branch_id": (
+            None
+            if recommended_branch_id is None
+            else int(recommended_branch_id)
+        ),
+        "continuation_recommendation_reason": recommendation_reason,
+        "selected_action_allowed_by_continuation": (
+            int(selected_action_id) in set(allowed_action_ids)
+        ),
+    }
+
+
 def generate_self_play_examples(request: GenerationRequest) -> Path:
     scenario_ids = _scenario_ids_from_request(request)
     _ensure_runtime_dependencies()
@@ -437,8 +422,11 @@ def generate_self_play_examples(request: GenerationRequest) -> Path:
     if request.config.selection_temperature <= 1e-8:
         print("Action selection: deterministic argmax")
     else:
-        print("Action selection: sampling from MCTS policy")
-    print(f"Continuation gate: {request.config.use_continuation_gate}")
+        print("Action selection: sampling from behavior policy")
+    print(
+        "Continuation analysis: "
+        f"{request.config.use_continuation_gate}"
+    )
 
     if request.config.use_continuation_gate:
         print(f"  min hard improvement: {request.min_hard_improvement}")
@@ -557,24 +545,32 @@ def generate_self_play_examples(request: GenerationRequest) -> Path:
             )
             selected_action_id = action_decision.selected_action_id
             selected_branch_id = action_decision.selected_branch_id
-            raw_selected_action_id = action_decision.raw_selected_action_id
-            raw_selected_branch_id = action_decision.raw_selected_branch_id
             policy_target = action_decision.policy_target
-            gate_decision = action_decision.gate_decision
+            continuation_analysis = action_decision.continuation_analysis
+
+            require_action_in_policy_support(
+                selected_action_id,
+                policy_target,
+                context=(
+                    "self-play policy target "
+                    f"(scenario_id={scenario_id}, step={step})"
+                ),
+            )
 
             if selected_action_id == 0:
                 selected_action = make_do_nothing_action()
             else:
-                selected_action = search_result.root.actions_by_id.get(
+                selected_action = search_result.root.actions_by_id[
                     selected_action_id
-                )
-
-                if selected_action is None:
-                    selected_action = env.action_by_id(selected_action_id)
+                ]
 
             step_result = env.step(selected_action)
             rewards.append(float(step_result.reward))
             state_id = f"scenario_{scenario_id:06d}_step_{step:03d}"
+            continuation_metadata = _continuation_metadata(
+                continuation_analysis,
+                selected_action_id,
+            )
 
             pending_examples.append(
                 {
@@ -593,24 +589,10 @@ def generate_self_play_examples(request: GenerationRequest) -> Path:
                     "termination_reason": step_result.info[
                         "termination_reason"
                     ],
-                    "raw_selected_action_id": raw_selected_action_id,
-                    "raw_selected_branch_id": raw_selected_branch_id,
-                    "gate_used": bool(request.config.use_continuation_gate),
-                    "gate_reason": (
-                        None
-                        if gate_decision is None
-                        else gate_decision.selected_reason
+                    "policy_target_source": (
+                        "temperature_adjusted_mcts_visit_distribution"
                     ),
-                    "policy_target_source": "mcts_visit_distribution",
-                    "execution_action_source": (
-                        "continuation_gate"
-                        if request.config.use_continuation_gate
-                        else "mcts_policy_selection"
-                    ),
-                    "gate_overrode_mcts_selection": bool(
-                        request.config.use_continuation_gate
-                        and selected_action_id != raw_selected_action_id
-                    ),
+                    "execution_action_source": "policy_target_sampling",
                     "mcts_best_action_id": (
                         None
                         if search_result.best_action_id is None
@@ -621,30 +603,22 @@ def generate_self_play_examples(request: GenerationRequest) -> Path:
                         if getattr(search_result, "best_branch_id", None) is None
                         else int(search_result.best_branch_id)
                     ),
+                    **continuation_metadata,
                 }
             )
 
-            if gate_decision is None:
-                print(
-                    f"Step {step:02d}: "
-                    f"action={selected_action_id}, "
-                    f"branch={selected_branch_id}, "
-                    f"reward={step_result.reward:.4f}, "
-                    f"done={step_result.done}, "
-                    f"solved={step_result.solved}"
-                )
-            else:
-                print(
-                    f"Step {step:02d}: "
-                    f"raw_action={raw_selected_action_id}, "
-                    f"raw_branch={raw_selected_branch_id}, "
-                    f"gate_action={selected_action_id}, "
-                    f"gate_branch={selected_branch_id}, "
-                    f"gate_reason={gate_decision.selected_reason}, "
-                    f"reward={step_result.reward:.4f}, "
-                    f"done={step_result.done}, "
-                    f"solved={step_result.solved}"
-                )
+            print(
+                f"Step {step:02d}: "
+                f"action={selected_action_id}, "
+                f"branch={selected_branch_id}, "
+                f"continuation_recommendation="
+                f"{continuation_metadata['continuation_recommended_action_id']}, "
+                f"continuation_reason="
+                f"{continuation_metadata['continuation_recommendation_reason']}, "
+                f"reward={step_result.reward:.4f}, "
+                f"done={step_result.done}, "
+                f"solved={step_result.solved}"
+            )
 
             if step_result.done:
                 break
@@ -701,19 +675,24 @@ def generate_self_play_examples(request: GenerationRequest) -> Path:
                     "use_continuation_gate": bool(
                         request.config.use_continuation_gate
                     ),
-                    "raw_selected_action_id": int(
-                        item["raw_selected_action_id"]
-                    ),
-                    "raw_selected_branch_id": (
-                        None
-                        if item["raw_selected_branch_id"] is None
-                        else int(item["raw_selected_branch_id"])
-                    ),
-                    "gate_reason": item["gate_reason"],
                     "policy_target_source": item["policy_target_source"],
-                    "execution_action_source": item["execution_action_source"],
-                    "gate_overrode_mcts_selection": item[
-                        "gate_overrode_mcts_selection"
+                    "execution_action_source": item[
+                        "execution_action_source"
+                    ],
+                    "continuation_allowed_action_ids": item[
+                        "continuation_allowed_action_ids"
+                    ],
+                    "continuation_recommended_action_id": item[
+                        "continuation_recommended_action_id"
+                    ],
+                    "continuation_recommended_branch_id": item[
+                        "continuation_recommended_branch_id"
+                    ],
+                    "continuation_recommendation_reason": item[
+                        "continuation_recommendation_reason"
+                    ],
+                    "selected_action_allowed_by_continuation": item[
+                        "selected_action_allowed_by_continuation"
                     ],
                     "mcts_best_action_id": item["mcts_best_action_id"],
                     "mcts_best_branch_id": item["mcts_best_branch_id"],

@@ -6,8 +6,10 @@ import pytest
 from grid_topology_ai.search.root_policy import (
     constrain_policy,
     normalize_policy,
+    policy_at_temperature,
     require_action_in_policy_support,
     select_action_from_policy,
+    select_policy_action,
 )
 
 
@@ -48,16 +50,36 @@ def test_constrain_policy_returns_empty_when_support_is_removed() -> None:
     assert constrain_policy({1: 0.7, 2: 0.3}, {0}) == {}
 
 
-def test_zero_temperature_selects_policy_argmax() -> None:
-    selected = select_action_from_policy(
+def test_zero_temperature_produces_one_hot_behavior_policy() -> None:
+    assert policy_at_temperature(
         {1: 0.25, 2: 0.75},
+        temperature=0.0,
+    ) == {2: 1.0}
+
+
+def test_unit_temperature_preserves_normalized_visit_distribution() -> None:
+    assert policy_at_temperature(
+        {1: 7.0, 2: 3.0},
+        temperature=1.0,
+    ) == pytest.approx({1: 0.7, 2: 0.3})
+
+
+def test_policy_selection_returns_target_and_action_from_same_policy() -> None:
+    selection = select_policy_action(
+        {1: 0.7, 2: 0.3},
         temperature=0.0,
         rng=np.random.default_rng(1),
     )
-    assert selected == 2
+
+    assert selection.policy == {1: 1.0}
+    assert selection.action_id == 1
+    require_action_in_policy_support(
+        selection.action_id,
+        selection.policy,
+    )
 
 
-def test_sampling_never_leaves_positive_policy_support() -> None:
+def test_sampling_never_leaves_behavior_policy_support() -> None:
     rng = np.random.default_rng(2)
     selected = {
         select_action_from_policy(
@@ -79,7 +101,9 @@ def test_require_action_in_policy_support_rejects_external_action() -> None:
 
 
 @pytest.mark.parametrize("temperature", [-1.0, float("nan"), float("inf")])
-def test_action_selection_rejects_invalid_temperature(temperature: float) -> None:
+def test_action_selection_rejects_invalid_temperature(
+    temperature: float,
+) -> None:
     with pytest.raises(ValueError):
         select_action_from_policy(
             {1: 1.0},

@@ -18,7 +18,10 @@ def _search_result(policy: dict[int, float]) -> SimpleNamespace:
         policy=policy,
         best_action_id=1,
         best_branch_id=11,
-        visit_counts={action_id: int(prob * 10) for action_id, prob in policy.items()},
+        visit_counts={
+            action_id: int(probability * 10)
+            for action_id, probability in policy.items()
+        },
         root=SimpleNamespace(
             actions_by_id={
                 1: _Action(11),
@@ -28,20 +31,31 @@ def _search_result(policy: dict[int, float]) -> SimpleNamespace:
     )
 
 
-def _gate(action_id: int = 0, branch_id: int | None = None) -> SimpleNamespace:
+def _analysis(
+    *,
+    allowed_action_ids: tuple[int, ...] = (2,),
+    recommended_action_id: int | None = 2,
+    recommended_branch_id: int | None = 22,
+) -> SimpleNamespace:
     return SimpleNamespace(
-        selected_action_id=action_id,
-        selected_branch_id=branch_id,
-        selected_reason="fake_gate",
+        allowed_action_ids=allowed_action_ids,
+        recommended_action_id=recommended_action_id,
+        recommended_branch_id=recommended_branch_id,
+        recommendation_reason="fake_analysis",
     )
 
 
-def test_gate_preserves_mcts_visit_policy(monkeypatch: pytest.MonkeyPatch) -> None:
-    search_result = _search_result({1: 0.7, 2: 0.3})
-    monkeypatch.setattr(generation, "analyze_root_branches", lambda **kwargs: _gate())
+def test_continuation_analysis_cannot_override_behavior_action(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        generation,
+        "analyze_root_branches",
+        lambda **kwargs: _analysis(),
+    )
 
     decision = generation._select_generation_action(
-        search_result=search_result,
+        search_result=_search_result({1: 0.7, 2: 0.3}),
         temperature=0.0,
         rng=np.random.default_rng(1),
         use_continuation_gate=True,
@@ -51,35 +65,33 @@ def test_gate_preserves_mcts_visit_policy(monkeypatch: pytest.MonkeyPatch) -> No
         min_gate_visit_fraction=0.01,
     )
 
-    assert decision.selected_action_id == 0
-    assert decision.raw_selected_action_id == 1
-    assert decision.policy_target == {1: 0.7, 2: 0.3}
-    assert decision.policy_target != {0: 1.0}
-    assert search_result.policy == {1: 0.7, 2: 0.3}
+    assert decision.selected_action_id == 1
+    assert decision.selected_branch_id == 11
+    assert decision.policy_target == {1: 1.0}
+    assert decision.continuation_analysis.recommended_action_id == 2
 
 
-def test_gate_can_select_action_outside_policy_support(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(generation, "analyze_root_branches", lambda **kwargs: _gate(0, None))
-
+def test_selected_action_is_always_in_saved_policy_support() -> None:
     decision = generation._select_generation_action(
         search_result=_search_result({1: 0.7, 2: 0.3}),
-        temperature=0.0,
+        temperature=1.0,
         rng=np.random.default_rng(2),
-        use_continuation_gate=True,
+        use_continuation_gate=False,
         min_hard_improvement=50.0,
         min_soft_improvement=15.0,
         min_gate_visits=5,
         min_gate_visit_fraction=0.01,
     )
 
-    assert decision.selected_action_id == 0
-    assert 0 not in decision.policy_target
+    assert decision.policy_target == pytest.approx({1: 0.7, 2: 0.3})
+    assert decision.selected_action_id in decision.policy_target
+    assert decision.policy_target[decision.selected_action_id] > 0.0
 
 
-def test_no_gate_preserves_mcts_visit_policy() -> None:
+def test_non_normalized_visit_distribution_is_normalized_once() -> None:
     decision = generation._select_generation_action(
-        search_result=_search_result({1: 0.7, 2: 0.3}),
-        temperature=0.0,
+        search_result=_search_result({1: 7.0, 2: 2.0}),
+        temperature=1.0,
         rng=np.random.default_rng(3),
         use_continuation_gate=False,
         min_hard_improvement=50.0,
@@ -88,16 +100,16 @@ def test_no_gate_preserves_mcts_visit_policy() -> None:
         min_gate_visit_fraction=0.01,
     )
 
-    assert decision.selected_action_id == decision.raw_selected_action_id == 1
-    assert decision.selected_branch_id == decision.raw_selected_branch_id == 11
-    assert decision.policy_target == {1: 0.7, 2: 0.3}
+    assert decision.policy_target == pytest.approx(
+        {1: 7.0 / 9.0, 2: 2.0 / 9.0}
+    )
 
 
 def test_policy_target_is_an_independent_copy() -> None:
     search_result = _search_result({1: 0.7, 2: 0.3})
     decision = generation._select_generation_action(
         search_result=search_result,
-        temperature=0.0,
+        temperature=1.0,
         rng=np.random.default_rng(4),
         use_continuation_gate=False,
         min_hard_improvement=50.0,
@@ -111,10 +123,10 @@ def test_policy_target_is_an_independent_copy() -> None:
     assert search_result.policy == {1: 0.7, 2: 0.3}
 
 
-def test_invalid_non_normalized_mcts_policy_is_rejected() -> None:
-    with pytest.raises(ValueError, match="sum to 1.0"):
+def test_empty_mcts_policy_is_rejected() -> None:
+    with pytest.raises(ValueError, match="must not be empty"):
         generation._select_generation_action(
-            search_result=_search_result({1: 0.7, 2: 0.2}),
+            search_result=_search_result({}),
             temperature=0.0,
             rng=np.random.default_rng(5),
             use_continuation_gate=False,
@@ -122,15 +134,16 @@ def test_invalid_non_normalized_mcts_policy_is_rejected() -> None:
             min_soft_improvement=15.0,
             min_gate_visits=5,
             min_gate_visit_fraction=0.01,
-            scenario_id=123,
-            step=4,
         )
 
 
-def test_empty_mcts_policy_is_rejected() -> None:
-    with pytest.raises(ValueError, match="empty policy"):
+def test_policy_action_missing_from_root_is_rejected() -> None:
+    result = _search_result({1: 1.0})
+    result.root.actions_by_id = {}
+
+    with pytest.raises(RuntimeError, match="missing from root.actions_by_id"):
         generation._select_generation_action(
-            search_result=_search_result({}),
+            search_result=result,
             temperature=0.0,
             rng=np.random.default_rng(6),
             use_continuation_gate=False,
@@ -141,8 +154,12 @@ def test_empty_mcts_policy_is_rejected() -> None:
         )
 
 
-def test_gate_override_metadata_values(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+def test_generation_records_analysis_without_override(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
     captured: list[dict[str, object]] = []
+    executed: list[_Action] = []
 
     class _Writer:
         states_dir = tmp_path / "states"
@@ -168,21 +185,43 @@ def test_gate_override_metadata_values(monkeypatch: pytest.MonkeyPatch, tmp_path
         solved = False
         termination_reason = "solved"
         current_state = object()
-        def __init__(self, **kwargs): pass
-        def reset(self, scenario_id): pass
-        def valid_action_mask(self): return [True, True, True]
+
+        def __init__(self, **kwargs):
+            pass
+
+        def reset(self, scenario_id):
+            pass
+
+        def valid_action_mask(self):
+            return [True, True, True]
+
         def step(self, action):
-            self.done = True; self.solved = True
-            return SimpleNamespace(reward=0.0, done=True, solved=True, info={"termination_reason": "solved"})
+            executed.append(action)
+            self.done = True
+            self.solved = True
+            return SimpleNamespace(
+                reward=0.0,
+                done=True,
+                solved=True,
+                info={"termination_reason": "solved"},
+            )
 
     class _Planner:
-        def __init__(self, **kwargs): pass
-        def search_from_env(self, env): return _search_result({1: 0.7, 2: 0.3})
+        def __init__(self, **kwargs):
+            pass
+
+        def search_from_env(self, env):
+            return _search_result({1: 0.7, 2: 0.3})
 
     class _Noop:
-        def __init__(self, *args, **kwargs): pass
-        def cache_info(self): return {}
-        def clear_cache(self): pass
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def cache_info(self):
+            return {}
+
+        def clear_cache(self):
+            pass
 
     transitions = tmp_path / "transitions.csv"
     transitions.write_text("scenario_id\n1\n", encoding="utf-8")
@@ -195,22 +234,43 @@ def test_gate_override_metadata_values(monkeypatch: pytest.MonkeyPatch, tmp_path
     monkeypatch.setattr(generation, "MCTSPlanner", _Planner)
     monkeypatch.setattr(generation, "TopologySwitchingEnv", _Env)
     monkeypatch.setattr(generation, "ExampleWriter", _Writer)
-    monkeypatch.setattr(generation, "make_do_nothing_action", lambda: object())
-    monkeypatch.setattr(generation, "analyze_root_branches", lambda **kwargs: _gate(0, None))
+    monkeypatch.setattr(
+        generation,
+        "make_do_nothing_action",
+        lambda: _Action(None),
+    )
+    monkeypatch.setattr(
+        generation,
+        "analyze_root_branches",
+        lambda **kwargs: _analysis(),
+    )
 
-    generate_self_play_examples(GenerationRequest(
-        raw_dir=tmp_path / "raw",
-        transitions_csv=transitions,
-        output_dir=tmp_path / "out",
-        checkpoint=None,
-        config=GenerationConfig(max_steps=1, use_continuation_gate=True),
-        seed=7,
-        clear_cache_between_scenarios=False,
-    ))
+    generate_self_play_examples(
+        GenerationRequest(
+            raw_dir=tmp_path / "raw",
+            transitions_csv=transitions,
+            output_dir=tmp_path / "out",
+            checkpoint=None,
+            config=GenerationConfig(
+                max_steps=1,
+                use_continuation_gate=True,
+                selection_temperature=0.0,
+            ),
+            seed=7,
+            clear_cache_between_scenarios=False,
+        )
+    )
 
-    assert captured[0]["mcts_policy"] == {1: 0.7, 2: 0.3}
-    assert captured[0]["selected_action_id"] == 0
+    assert executed[0].branch_id == 11
+    assert captured[0]["mcts_policy"] == {1: 1.0}
+    assert captured[0]["selected_action_id"] == 1
+
     metadata = captured[0]["extra_metadata"]
-    assert metadata["policy_target_source"] == "mcts_visit_distribution"
-    assert metadata["execution_action_source"] == "continuation_gate"
-    assert metadata["gate_overrode_mcts_selection"] is True
+    assert metadata["policy_target_source"] == (
+        "temperature_adjusted_mcts_visit_distribution"
+    )
+    assert metadata["execution_action_source"] == "policy_target_sampling"
+    assert metadata["continuation_recommended_action_id"] == 2
+    assert metadata["selected_action_allowed_by_continuation"] is False
+    assert "raw_selected_action_id" not in metadata
+    assert "gate_overrode_mcts_selection" not in metadata
