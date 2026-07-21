@@ -30,15 +30,6 @@ from pypower.idx_gen import (
     QMIN,
 )
 
-from grid_topology_ai.physical_objective import (
-    ANGLE_LIMIT_TOLERANCE_DEGREES,
-    GENERATOR_LIMIT_TOLERANCE_MVAR,
-    GENERATOR_LIMIT_TOLERANCE_MW,
-    HARD_OVERLOAD_LIMIT_PERCENT,
-    OVERLOAD_LIMIT_PERCENT,
-    THERMAL_LIMIT_TOLERANCE_PERCENT,
-    VOLTAGE_LIMIT_TOLERANCE_PU,
-)
 from grid_topology_ai.config.physics import PhysicsConfig, ZeroRateAPolicy
 from grid_topology_ai.power_flow_errors import InvalidPhysicalState
 
@@ -156,7 +147,12 @@ def validate_ppc_input(ppc: dict[str, Any], physics_config: PhysicsConfig, *, co
     rate = branch[active_branch, RATE_A]
     if np.any(rate < 0) or (physics_config.zero_rate_a_policy is ZeroRateAPolicy.ERROR and np.any(rate == 0)):
         raise InvalidPhysicalState(f"{context}: active branch RATE_A is invalid for configured policy.")
-    graph = nx.Graph(); graph.add_nodes_from(known); graph.add_edges_from((int(branch[r, F_BUS]), int(branch[r, T_BUS])) for r in np.flatnonzero(active_branch))
+    graph = nx.Graph()
+    graph.add_nodes_from(known)
+    graph.add_edges_from(
+        (int(branch[row, F_BUS]), int(branch[row, T_BUS]))
+        for row in np.flatnonzero(active_branch)
+    )
     if physics_config.island_policy.value == "reject" and (not known or not nx.is_connected(graph)):
         raise InvalidPhysicalState(f"{context}: active topology is disconnected.")
     # PYPOWER may select/normalise the reference bus during case preparation;
@@ -164,9 +160,21 @@ def validate_ppc_input(ppc: dict[str, Any], physics_config: PhysicsConfig, *, co
 
 
 def validate_pypower_result(result_ppc: dict[str, Any], physics_config: PhysicsConfig, *, input_ppc: dict[str, Any], context: str = "result") -> None:
+    if not isinstance(result_ppc, dict):
+        raise InvalidPhysicalState(f"{context}: result must be a mapping.")
     for name in ("bus", "branch", "gen"):
-        if name not in result_ppc or not np.isfinite(np.asarray(result_ppc[name], dtype=float)).all():
+        if name not in result_ppc:
             raise InvalidPhysicalState(f"{context}: {name} result contains non-finite values.")
+        try:
+            values = np.asarray(result_ppc[name], dtype=float)
+        except (TypeError, ValueError) as exc:
+            raise InvalidPhysicalState(
+                f"{context}: {name} result is not numeric."
+            ) from exc
+        if not np.isfinite(values).all():
+            raise InvalidPhysicalState(
+                f"{context}: {name} result contains non-finite values."
+            )
     validate_ppc_input(result_ppc, physics_config, context=context)
     for name in ("bus", "branch", "gen"):
         if np.asarray(result_ppc[name]).shape[0] != np.asarray(input_ppc[name]).shape[0]:
@@ -303,8 +311,14 @@ def calculate_physical_metrics(
     )
     thermal_excess_mva = np.maximum(s_max - np.maximum(rate_a, 0.0), 0.0)
 
-    low_voltage = np.maximum(vmin - vm - config.voltage_tolerance_pu, 0.0)
-    high_voltage = np.maximum(vm - vmax - config.voltage_tolerance_pu, 0.0)
+    low_voltage = np.maximum(
+        (vmin - config.voltage_tolerance_pu) - vm,
+        0.0,
+    )
+    high_voltage = np.maximum(
+        vm - (vmax + config.voltage_tolerance_pu),
+        0.0,
+    )
     invalid_voltage = ~(np.isfinite(vm) & np.isfinite(vmin) & np.isfinite(vmax))
     low_voltage_mask = (low_voltage > 0.0) | invalid_voltage
     high_voltage_mask = (high_voltage > 0.0) | invalid_voltage
@@ -332,10 +346,22 @@ def calculate_physical_metrics(
     invalid_generator_bus = active_gen & ~generator_bus_valid
     invalid_p |= invalid_generator_bus
     invalid_q |= invalid_generator_bus
-    low_p = np.maximum(pmin - pg - config.generator_p_tolerance_mw, 0.0)
-    high_p = np.maximum(pg - pmax - config.generator_p_tolerance_mw, 0.0)
-    low_q = np.maximum(qmin - qg - config.generator_q_tolerance_mvar, 0.0)
-    high_q = np.maximum(qg - qmax - config.generator_q_tolerance_mvar, 0.0)
+    low_p = np.maximum(
+        (pmin - config.generator_p_tolerance_mw) - pg,
+        0.0,
+    )
+    high_p = np.maximum(
+        pg - (pmax + config.generator_p_tolerance_mw),
+        0.0,
+    )
+    low_q = np.maximum(
+        (qmin - config.generator_q_tolerance_mvar) - qg,
+        0.0,
+    )
+    high_q = np.maximum(
+        qg - (qmax + config.generator_q_tolerance_mvar),
+        0.0,
+    )
     p_violation = active_gen & ((low_p > 0.0) | (high_p > 0.0) | invalid_p)
     q_violation = active_gen & ((low_q > 0.0) | (high_q > 0.0) | invalid_q)
 
@@ -369,12 +395,18 @@ def calculate_physical_metrics(
             continue
         difference = va[from_pos] - va[to_pos]
         lower_excess = (
-            max(angle_min - difference - config.angle_tolerance_degrees, 0.0)
+            max(
+                (angle_min - config.angle_tolerance_degrees) - difference,
+                0.0,
+            )
             if angle_min > -360.0
             else 0.0
         )
         upper_excess = (
-            max(difference - angle_max - config.angle_tolerance_degrees, 0.0)
+            max(
+                difference - (angle_max + config.angle_tolerance_degrees),
+                0.0,
+            )
             if angle_max < 360.0
             else 0.0
         )
