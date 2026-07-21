@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import replace
 from typing import Any
 
-import numpy as np
 import pandas as pd
 from pypower.api import runpf
 
@@ -11,17 +9,18 @@ from grid_topology_ai._pypower_backend_core import *  # noqa: F401,F403
 from grid_topology_ai._pypower_backend_core import (
     GridFMPowerFlowBackend as _CoreGridFMPowerFlowBackend,
 )
-from grid_topology_ai.data_adapter import (
-    BRANCH_FEATURE_COLUMNS,
-    GridFMState,
-    UNRATED_LOADING_PERCENT,
+from grid_topology_ai.config.physics import (
+    DEFAULT_PHYSICS_CONFIG,
+    PhysicsConfig,
 )
+from grid_topology_ai.data_adapter import GridFMAdapter, GridFMState
 from grid_topology_ai.physical_constraints import (
     calculate_physical_metrics_from_result,
     validate_ppc_input,
     validate_pypower_result,
 )
 from grid_topology_ai.power_flow_errors import PowerFlowNotConverged
+from grid_topology_ai.power_flow_state_builder import PowerFlowStateBuilder
 
 
 # Preserve the public module path used by pickled results and type displays.
@@ -29,7 +28,22 @@ GridFMPowerFlowResult.__module__ = __name__
 
 
 class GridFMPowerFlowBackend(_CoreGridFMPowerFlowBackend):
-    """PYPOWER backend with explicit active-unrated branch features."""
+    """PYPOWER backend with one canonical builder for every solved state."""
+
+    def __init__(
+        self,
+        adapter: GridFMAdapter,
+        physics_config: PhysicsConfig = DEFAULT_PHYSICS_CONFIG,
+        enable_cache: bool = True,
+        store_raw_result: bool = False,
+    ) -> None:
+        super().__init__(
+            adapter=adapter,
+            physics_config=physics_config,
+            enable_cache=enable_cache,
+            store_raw_result=store_raw_result,
+        )
+        self._state_builder = PowerFlowStateBuilder(self.physics_config)
 
     def _solve_ppc(
         self,
@@ -63,6 +77,20 @@ class GridFMPowerFlowBackend(_CoreGridFMPowerFlowBackend):
         )
         return result_ppc, metrics
 
+    def _build_state_from_pypower_result(
+        self,
+        scenario_id: int,
+        result_ppc: dict[str, Any],
+        original_frames: dict[str, pd.DataFrame],
+        physical_metrics: dict[str, object] | None = None,
+    ) -> GridFMState:
+        return self._build_canonical_state(
+            scenario_id=scenario_id,
+            result_ppc=result_ppc,
+            original_frames=original_frames,
+            physical_metrics=physical_metrics,
+        )
+
     def _build_state_from_pypower_result_fast(
         self,
         scenario_id: int,
@@ -71,76 +99,27 @@ class GridFMPowerFlowBackend(_CoreGridFMPowerFlowBackend):
         original_frames: dict[str, pd.DataFrame],
         physical_metrics: dict[str, object] | None = None,
     ) -> GridFMState:
-        """
-        Preserve the optimized builder while correcting active-unrated features.
-
-        The core builder validates all flows and policies. This finalization
-        step only replaces its ambiguous zero-percent encoding for active
-        ``RATE_A == 0`` branches and recomputes the rated-only mean.
-        """
-
-        state = super()._build_state_from_pypower_result_fast(
+        # Kept as a compatibility entry point; representation is intentionally
+        # identical to the initial-state path.
+        del previous_state
+        return self._build_canonical_state(
             scenario_id=scenario_id,
             result_ppc=result_ppc,
-            previous_state=previous_state,
             original_frames=original_frames,
             physical_metrics=physical_metrics,
         )
 
-        branch_col = {
-            name: index
-            for index, name in enumerate(BRANCH_FEATURE_COLUMNS)
-        }
-        features = state.branch_features.copy()
-        rate_a = features[:, branch_col["rate_a"]]
-        status = features[:, branch_col["br_status"]]
-        active = status > 0.0
-        rated = active & (rate_a > 0.0)
-        unrated = active & (rate_a == 0.0)
-
-        features[unrated, branch_col["loading_percent"]] = (
-            UNRATED_LOADING_PERCENT
-        )
-
-        rated_loading = features[rated, branch_col["loading_percent"]]
-        mean_loading = (
-            float(np.mean(rated_loading))
-            if rated_loading.size
-            else 0.0
-        )
-
-        metrics = dict(state.metrics)
-        metrics["mean_loading_percent"] = mean_loading
-        return replace(
-            state,
-            branch_features=features.astype(np.float32),
-            metrics=metrics,
-        )
-
-    @staticmethod
-    def _build_state_from_frames(
+    def _build_canonical_state(
+        self,
+        *,
         scenario_id: int,
-        bus_df: pd.DataFrame,
-        branch_df: pd.DataFrame,
-        physical_metrics: dict[str, object],
+        result_ppc: dict[str, Any],
+        original_frames: dict[str, pd.DataFrame],
+        physical_metrics: dict[str, object] | None,
     ) -> GridFMState:
-        """Build a slow-path state with a rated-only loading aggregate."""
-
-        state = _CoreGridFMPowerFlowBackend._build_state_from_frames(
+        return self._state_builder.build(
             scenario_id=scenario_id,
-            bus_df=bus_df,
-            branch_df=branch_df,
+            result_ppc=result_ppc,
+            original_frames=original_frames,
             physical_metrics=physical_metrics,
         )
-        rated = branch_df[
-            (branch_df["br_status"] > 0.0)
-            & (branch_df["rate_a"] > 0.0)
-        ]
-        mean_loading = (
-            float(rated["loading_percent"].mean())
-            if len(rated)
-            else 0.0
-        )
-        metrics = dict(state.metrics)
-        metrics["mean_loading_percent"] = mean_loading
-        return replace(state, metrics=metrics)
