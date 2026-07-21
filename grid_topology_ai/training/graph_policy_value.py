@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 import random
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +11,8 @@ from torch import nn
 from torch.utils.data import DataLoader
 
 from grid_topology_ai.config import TrainingConfig
+from grid_topology_ai.config.physics import PhysicsConfig
+from grid_topology_ai.contracts import require_physics_provenance
 from grid_topology_ai.models.graph_policy_value_net import GraphPolicyValueNet
 from grid_topology_ai.models.graph_policy_value_net_v2 import GraphPolicyValueNetV2
 from grid_topology_ai.models.graph_self_play_dataset import GraphSelfPlayDataset
@@ -50,6 +52,7 @@ class TrainingRequest:
     run_name: str | None = None
     metrics_csv: Path | None = None
     seed: int = 42
+    physics_config: PhysicsConfig | None = None
 
 
 def resolve_device(device_arg: str) -> torch.device:
@@ -569,6 +572,7 @@ def train_graph_policy_value_model(
         init_checkpoint_payload = load_checkpoint_payload(
             request.init_checkpoint,
             map_location="cpu",
+            expected_physics_config=request.physics_config,
         )
         checkpoint_normalization_stats = extract_normalization_stats(
             init_checkpoint_payload,
@@ -579,7 +583,14 @@ def train_graph_policy_value_model(
         examples_csv=request.examples_csv,
         normalize_features=request.normalize_features,
         normalization_stats=checkpoint_normalization_stats,
+        physics_config=request.physics_config,
     )
+    if init_checkpoint_payload is not None:
+        require_physics_provenance(
+            init_checkpoint_payload,
+            source=str(request.init_checkpoint),
+            expected_physics_config=dataset.physics_config,
+        )
     effective_normalization_stats = dataset.normalization_state_dict()
 
     if checkpoint_normalization_stats is not None:
@@ -600,6 +611,7 @@ def train_graph_policy_value_model(
             examples_csv=request.validation_examples_csv,
             normalize_features=request.normalize_features,
             normalization_stats=effective_normalization_stats,
+            physics_config=dataset.physics_config,
         )
 
     validate_no_scenario_overlap(train_dataset=dataset, val_dataset=val_dataset)

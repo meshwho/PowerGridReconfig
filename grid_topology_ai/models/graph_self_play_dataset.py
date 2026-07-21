@@ -9,10 +9,12 @@ import pandas as pd
 import torch
 from torch.utils.data import Dataset
 
+from grid_topology_ai.config.physics import PhysicsConfig
 from grid_topology_ai.self_play.example_validation import (
     REQUIRED_EXAMPLE_COLUMNS,
     validate_example_contract_versions,
     validate_example_outcome_contracts,
+    validate_state_physics_provenance,
 )
 
 
@@ -42,6 +44,7 @@ class GraphSelfPlayDataset(Dataset):
         examples_csv: str | Path,
         normalize_features: bool = True,
         normalization_stats: dict[str, np.ndarray] | None = None,
+        physics_config: PhysicsConfig | None = None,
     ):
         self.examples_csv = Path(examples_csv)
         self.normalize_features = bool(normalize_features)
@@ -63,9 +66,10 @@ class GraphSelfPlayDataset(Dataset):
                 f"Examples CSV is missing required columns: {sorted(missing)}"
             )
 
-        validate_example_contract_versions(
+        self.physics_config = validate_example_contract_versions(
             self.examples,
             source_path=self.examples_csv,
+            expected_physics_config=physics_config,
         )
         validate_example_outcome_contracts(
             self.examples,
@@ -234,6 +238,10 @@ class GraphSelfPlayDataset(Dataset):
 
             if not state_path.exists():
                 raise FileNotFoundError(f"State file not found: {state_path}")
+            validate_state_physics_provenance(
+                state_path,
+                expected_physics_config=self.physics_config,
+            )
 
     def _load_npz_by_index(self, idx: int):
         row = self.examples.iloc[idx]

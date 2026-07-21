@@ -40,8 +40,12 @@ def test_power_flow_algorithm_static_boundaries(tmp_path: Path, monkeypatch) -> 
         config=EvaluationConfig(pf_alg=3),
         pf_alg=None,
     )
+
     class FakeReward:
-        def config_dict(self):
+        def __init__(self, *, physics_config=None) -> None:
+            self.physics_config = physics_config
+
+        def config_dict(self) -> dict[str, object]:
             return {}
 
     monkeypatch.setattr(evaluation_checkpoint, "GridFMReward", FakeReward)

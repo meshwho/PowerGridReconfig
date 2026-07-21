@@ -26,6 +26,7 @@ from pypower.idx_gen import (
     QMIN,
 )
 
+from grid_topology_ai.config.physics import PhysicsConfig
 from grid_topology_ai.physical_constraints import (
     PhysicalNetworkArrays,
     calculate_physical_metrics,
@@ -69,11 +70,13 @@ def _assessment(
     arrays: PhysicalNetworkArrays | None = None,
     *,
     converged: bool = True,
+    physics_config: PhysicsConfig | None = None,
 ):
     return assess_physical_state(
         calculate_physical_metrics(
             _arrays() if arrays is None else arrays,
             power_flow_converged=converged,
+            physics_config=physics_config,
         )
     )
 
@@ -200,3 +203,116 @@ def test_active_generator_with_unknown_bus_fails_closed() -> None:
     assert assessment.generator_p_feasible is False
     assert assessment.generator_q_feasible is False
     assert assessment.physically_secure is False
+
+
+def test_custom_thermal_limits_and_tolerance_define_exact_boundaries() -> None:
+    config = PhysicsConfig(
+        overload_limit_percent=115.0,
+        hard_overload_limit_percent=135.0,
+        thermal_tolerance_percent=0.5,
+    )
+    arrays = _arrays()
+
+    arrays.branch[0, PF] = 115.5
+    metrics = calculate_physical_metrics(
+        arrays,
+        power_flow_converged=True,
+        physics_config=config,
+    )
+    assert metrics["num_overloaded_branches"] == 0
+    assert metrics["num_hard_overloaded_branches"] == 0
+
+    arrays.branch[0, PF] = 115.5001
+    metrics = calculate_physical_metrics(
+        arrays,
+        power_flow_converged=True,
+        physics_config=config,
+    )
+    assert metrics["num_overloaded_branches"] == 1
+    assert metrics["num_hard_overloaded_branches"] == 0
+
+    arrays.branch[0, PF] = 135.5
+    metrics = calculate_physical_metrics(
+        arrays,
+        power_flow_converged=True,
+        physics_config=config,
+    )
+    assert metrics["num_hard_overloaded_branches"] == 0
+
+    arrays.branch[0, PF] = 135.5001
+    metrics = calculate_physical_metrics(
+        arrays,
+        power_flow_converged=True,
+        physics_config=config,
+    )
+    assert metrics["num_overloaded_branches"] == 1
+    assert metrics["num_hard_overloaded_branches"] == 1
+
+
+def test_voltage_tolerance_is_inclusive_and_configurable() -> None:
+    config = PhysicsConfig(voltage_tolerance_pu=0.01)
+    arrays = _arrays()
+
+    arrays.bus[0, VM] = arrays.bus[0, VMAX] + 0.01
+    assert _assessment(
+        arrays,
+        physics_config=config,
+    ).voltage_feasible is True
+
+    arrays.bus[0, VM] = arrays.bus[0, VMAX] + 0.0101
+    assert _assessment(
+        arrays,
+        physics_config=config,
+    ).voltage_feasible is False
+
+
+def test_generator_p_tolerance_is_inclusive_and_configurable() -> None:
+    config = PhysicsConfig(generator_p_tolerance_mw=0.5)
+    arrays = _arrays()
+
+    arrays.gen[0, PG] = arrays.gen[0, PMAX] + 0.5
+    assert _assessment(
+        arrays,
+        physics_config=config,
+    ).generator_p_feasible is True
+
+    arrays.gen[0, PG] = arrays.gen[0, PMAX] + 0.5001
+    assert _assessment(
+        arrays,
+        physics_config=config,
+    ).generator_p_feasible is False
+
+
+def test_generator_q_tolerance_is_inclusive_and_configurable() -> None:
+    config = PhysicsConfig(generator_q_tolerance_mvar=0.5)
+    arrays = _arrays()
+
+    arrays.gen[0, QG] = arrays.gen[0, QMIN] - 0.5
+    assert _assessment(
+        arrays,
+        physics_config=config,
+    ).generator_q_feasible is True
+
+    arrays.gen[0, QG] = arrays.gen[0, QMIN] - 0.5001
+    assert _assessment(
+        arrays,
+        physics_config=config,
+    ).generator_q_feasible is False
+
+
+def test_angle_tolerance_is_inclusive_and_configurable() -> None:
+    config = PhysicsConfig(angle_tolerance_degrees=0.5)
+    arrays = _arrays()
+    arrays.bus[1, VA] = 0.0
+
+    arrays.bus[0, VA] = arrays.branch[0, ANGMAX] + 0.5
+    assert _assessment(
+        arrays,
+        physics_config=config,
+    ).angle_difference_feasible is True
+
+    arrays.bus[0, VA] = arrays.branch[0, ANGMAX] + 0.5001
+    assert _assessment(
+        arrays,
+        physics_config=config,
+    ).angle_difference_feasible is False

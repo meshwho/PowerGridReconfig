@@ -5,22 +5,24 @@ import json
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
-from grid_topology_ai.config import ReplayBufferConfig
-from grid_topology_ai.self_play.example_validation import (
-    load_and_validate_examples_csv,
-    validate_example_outcome_contracts,
-)
-from grid_topology_ai.contracts import (
-    OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
-    REPLAY_BUFFER_SCHEMA_VERSION,
-    require_exact_contract_version,
-)
-from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
 
 import numpy as np
 import pandas as pd
 
-
+from grid_topology_ai.config import ReplayBufferConfig
+from grid_topology_ai.config.physics import DEFAULT_PHYSICS_CONFIG, PhysicsConfig
+from grid_topology_ai.contracts import (
+    OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
+    REPLAY_BUFFER_SCHEMA_VERSION,
+    physics_provenance,
+    require_exact_contract_version,
+    require_physics_provenance,
+)
+from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
+from grid_topology_ai.self_play.example_validation import (
+    load_and_validate_examples_csv,
+    validate_example_outcome_contracts,
+)
 
 
 def _json_safe(value: Any) -> Any:
@@ -105,7 +107,12 @@ def _load_examples_csv(path: str | Path) -> list[dict[str, Any]]:
     ]
 
 
-def _require_replay_row_contracts(row: dict[str, Any], *, source: str) -> None:
+def _require_replay_row_contracts(
+    row: dict[str, Any],
+    *,
+    source: str,
+    expected_physics_config: PhysicsConfig,
+) -> None:
     require_exact_contract_version(
         row.get("physical_objective_schema_version"),
         expected=PHYSICAL_OBJECTIVE_SCHEMA_VERSION,
@@ -119,6 +126,11 @@ def _require_replay_row_contracts(row: dict[str, Any], *, source: str) -> None:
         name="outcome/value-target contract",
         source=source,
         regeneration_command="python -m scripts.self_play.generate ...",
+    )
+    require_physics_provenance(
+        row,
+        source=source,
+        expected_physics_config=expected_physics_config,
     )
     validate_example_outcome_contracts(pd.DataFrame([row]), source_path=source)
 
@@ -160,9 +172,11 @@ class RollingReplayBuffer:
         self,
         save_dir: str | Path,
         config: ReplayBufferConfig | None = None,
+        physics_config: PhysicsConfig | None = None,
     ):
         self.save_dir = Path(save_dir)
         self.config = config or ReplayBufferConfig()
+        self.physics_config = physics_config or DEFAULT_PHYSICS_CONFIG
 
         self.save_dir.mkdir(parents=True, exist_ok=True)
 
@@ -212,6 +226,11 @@ class RollingReplayBuffer:
             source=str(self.manifest_path),
             regeneration_command="python -m scripts.self_play.generate ...",
         )
+        require_physics_provenance(
+            manifest,
+            source=str(self.manifest_path),
+            expected_physics_config=self.physics_config,
+        )
 
         files = manifest.get("files", [])
 
@@ -239,6 +258,7 @@ class RollingReplayBuffer:
                 _require_replay_row_contracts(
                     row,
                     source=f"{relative_path} row {row_index}",
+                    expected_physics_config=self.physics_config,
                 )
             selected_chunks.append(rows)
             selected_count += len(rows)
@@ -290,6 +310,7 @@ class RollingReplayBuffer:
             _require_replay_row_contracts(
                 item,
                 source=f"replay iteration {iteration}",
+                expected_physics_config=self.physics_config,
             )
             item["replay_iteration"] = int(iteration)
             normalized.append(item)
@@ -344,6 +365,7 @@ class RollingReplayBuffer:
             _require_replay_row_contracts(
                 item,
                 source=f"replay iteration {iteration}",
+                expected_physics_config=self.physics_config,
             )
             item["replay_iteration"] = iteration
             rows.append(item)
@@ -393,6 +415,7 @@ class RollingReplayBuffer:
             "outcome_value_target_contract_version": (
                 OUTCOME_VALUE_TARGET_CONTRACT_VERSION
             ),
+            **physics_provenance(self.physics_config),
             "config": asdict(self.config),
             "total_examples_on_disk": total_on_disk,
             "total_examples_loaded": int(len(self.buffer)),
@@ -549,6 +572,7 @@ class RollingReplayBuffer:
         df.to_csv(output_path, index=False)
 
         metadata = {
+            **physics_provenance(self.physics_config),
             "path": str(output_path),
             "n_examples": int(len(df)),
             "n_fresh": int(n_fresh),

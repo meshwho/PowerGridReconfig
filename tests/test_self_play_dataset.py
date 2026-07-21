@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import pytest
 
-from grid_topology_ai.contracts import OUTCOME_VALUE_TARGET_CONTRACT_VERSION
+from grid_topology_ai.config.physics import DEFAULT_PHYSICS_CONFIG
+from grid_topology_ai.contracts import (
+    OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
+    physics_provenance,
+)
 from grid_topology_ai.models.self_play_dataset import SelfPlayDataset
 from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
 
@@ -18,11 +23,15 @@ def state(path: Path) -> Path:
         branch_features=np.zeros((1, 4), np.float32),
         edge_index=np.array([[0], [1]]),
         action_mask=np.array([True, True]),
+        metadata_json=np.array(
+            json.dumps(physics_provenance(DEFAULT_PHYSICS_CONFIG))
+        ),
     )
     return path
 
 
 def row(path: Path) -> dict[str, object]:
+    provenance = physics_provenance(DEFAULT_PHYSICS_CONFIG)
     return {
         "state_path": str(path),
         "mcts_policy_json": '{"0": 1.0}',
@@ -31,6 +40,17 @@ def row(path: Path) -> dict[str, object]:
         "state_id": "row-1",
         "physical_objective_schema_version": PHYSICAL_OBJECTIVE_SCHEMA_VERSION,
         "outcome_value_target_contract_version": OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
+        "physics_config_contract_version": provenance[
+            "physics_config_contract_version"
+        ],
+        "physics_config": json.dumps(
+            provenance["physics_config"],
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
+        "physics_config_fingerprint": provenance[
+            "physics_config_fingerprint"
+        ],
         "solved": False,
         "done": True,
         "termination_reason": "handoff_to_redispatch",

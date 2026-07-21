@@ -12,6 +12,7 @@ from grid_topology_ai.config import SelfPlayConfig
 from grid_topology_ai.self_play.acceptance import (
     accept_candidate,
     require_metrics_pf_alg,
+    require_metrics_physics_config,
 )
 from grid_topology_ai.self_play.artifacts import save_json, sha256_file
 from grid_topology_ai.self_play.checkpoint_state import promote_candidate
@@ -208,6 +209,7 @@ def run_self_play_iteration(
         checkpoint=parent_checkpoint,
         output_dir=iter_dir / "raw",
         config=config.generation,
+        physics_config=config.physics,
         base_seed=config.seed,
         iteration=iteration,
     )
@@ -256,6 +258,7 @@ def run_self_play_iteration(
         init_checkpoint=parent_checkpoint,
         output_dir=iter_dir,
         config=config.training,
+        physics_config=config.physics,
         iteration=iteration,
         seed=iteration_seed,
     )
@@ -267,15 +270,26 @@ def run_self_play_iteration(
         eval_raw_dir=paths.eval_raw_dir,
         output_dir=iter_dir,
         config=config.evaluation,
+        physics_config=config.physics,
     )
     require_metrics_pf_alg(
         metrics,
         expected_pf_alg=config.evaluation.pf_alg,
         source=str(iter_dir / config.evaluation.output_json_name),
     )
+    require_metrics_physics_config(
+        metrics,
+        expected_physics_config=config.physics,
+        source=str(iter_dir / config.evaluation.output_json_name),
+    )
     require_metrics_pf_alg(
         parent_metrics,
         expected_pf_alg=config.evaluation.pf_alg,
+        source="parent/best metrics",
+    )
+    require_metrics_physics_config(
+        parent_metrics,
+        expected_physics_config=config.physics,
         source="parent/best metrics",
     )
 

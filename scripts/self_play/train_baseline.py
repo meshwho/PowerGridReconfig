@@ -7,8 +7,14 @@ import torch
 from torch import nn
 from torch.utils.data import DataLoader
 
+from grid_topology_ai.contracts import (
+    CHECKPOINT_CONTRACT_VERSION,
+    OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
+    physics_provenance,
+)
 from grid_topology_ai.models.self_play_dataset import SelfPlayDataset
 from grid_topology_ai.models.simple_policy_value_net import SimplePolicyValueNet
+from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
 
 
 def resolve_device(device_arg: str) -> torch.device:
@@ -285,6 +291,14 @@ def main() -> None:
 
     torch.save(
         {
+            "checkpoint_contract_version": CHECKPOINT_CONTRACT_VERSION,
+            "physical_objective_schema_version": (
+                PHYSICAL_OBJECTIVE_SCHEMA_VERSION
+            ),
+            "outcome_value_target_contract_version": (
+                OUTCOME_VALUE_TARGET_CONTRACT_VERSION
+            ),
+            **physics_provenance(dataset.physics_config),
             "model_state_dict": model_state_dict_cpu,
             "input_dim": input_dim,
             "num_actions": num_actions,

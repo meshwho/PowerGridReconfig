@@ -7,21 +7,27 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from grid_topology_ai.config.physics import DEFAULT_PHYSICS_CONFIG, PhysicsConfig
+from grid_topology_ai.contracts import (
+    OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
+    physics_provenance,
+)
+from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
 from grid_topology_ai.self_play.example_validation import (
     REQUIRED_OUTCOME_COLUMNS,
     load_and_validate_examples_csv,
     validate_example_outcome_contracts,
 )
-from grid_topology_ai.contracts import OUTCOME_VALUE_TARGET_CONTRACT_VERSION
-from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
 
 
 def write_state(path: Path, **overrides: object) -> Path:
+    provenance = physics_provenance(DEFAULT_PHYSICS_CONFIG)
     arrays = {
         "bus_features": np.zeros((2, 3), dtype=np.float32),
         "branch_features": np.zeros((1, 4), dtype=np.float32),
         "edge_index": np.array([[0], [1]], dtype=np.int64),
         "action_mask": np.array([True, True], dtype=bool),
+        "metadata_json": np.array(json.dumps(provenance)),
     }
     arrays.update(overrides)
     np.savez(path, **arrays)
@@ -29,6 +35,7 @@ def write_state(path: Path, **overrides: object) -> Path:
 
 
 def valid_row(state_path: Path) -> dict[str, object]:
+    provenance = physics_provenance(DEFAULT_PHYSICS_CONFIG)
     return {
         "state_path": str(state_path),
         "mcts_policy_json": '{"0": 0.25, "1": 0.75}',
@@ -40,6 +47,17 @@ def valid_row(state_path: Path) -> dict[str, object]:
         "outcome_value_target_contract_version": (
             OUTCOME_VALUE_TARGET_CONTRACT_VERSION
         ),
+        "physics_config_contract_version": provenance[
+            "physics_config_contract_version"
+        ],
+        "physics_config": json.dumps(
+            provenance["physics_config"],
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
+        "physics_config_fingerprint": provenance[
+            "physics_config_fingerprint"
+        ],
         "solved": True,
         "done": True,
         "termination_reason": "solved",
@@ -68,6 +86,61 @@ def test_valid_examples_csv_is_accepted(tmp_path: Path) -> None:
     assert len(df) == 1
 
 
+def test_row_physics_fingerprint_mismatch_is_rejected(tmp_path: Path) -> None:
+    row = valid_row(write_state(tmp_path / "s.npz"))
+    row["physics_config_fingerprint"] = "0" * 64
+
+    assert_rejected(
+        write_csv(tmp_path / "examples.csv", [row]),
+        "fingerprint mismatch",
+    )
+
+
+def test_state_physics_config_mismatch_is_rejected(tmp_path: Path) -> None:
+    other = PhysicsConfig(
+        overload_limit_percent=115.0,
+        hard_overload_limit_percent=135.0,
+    )
+    state_path = write_state(
+        tmp_path / "s.npz",
+        metadata_json=np.array(json.dumps(physics_provenance(other))),
+    )
+
+    assert_rejected(
+        write_csv(tmp_path / "examples.csv", [valid_row(state_path)]),
+        "PhysicsConfig mismatch",
+    )
+
+
+def test_mixed_row_physics_configs_are_rejected(tmp_path: Path) -> None:
+    first = valid_row(write_state(tmp_path / "first.npz"))
+    second = valid_row(write_state(tmp_path / "second.npz"))
+    second["state_id"] = "state-2"
+    other = PhysicsConfig(
+        overload_limit_percent=115.0,
+        hard_overload_limit_percent=135.0,
+    )
+    other_provenance = physics_provenance(other)
+    second.update(
+        physics_config_contract_version=other_provenance[
+            "physics_config_contract_version"
+        ],
+        physics_config=json.dumps(
+            other_provenance["physics_config"],
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
+        physics_config_fingerprint=other_provenance[
+            "physics_config_fingerprint"
+        ],
+    )
+
+    assert_rejected(
+        write_csv(tmp_path / "examples.csv", [first, second]),
+        "PhysicsConfig mismatch",
+    )
+
+
 def test_empty_file_is_rejected(tmp_path: Path) -> None:
     csv = tmp_path / "examples.csv"
     csv.write_text("", encoding="utf-8")
@@ -79,7 +152,9 @@ def test_header_only_csv_is_rejected(tmp_path: Path) -> None:
     csv.write_text(
         "state_path,mcts_policy_json,scenario_id,step,state_id,"
         "outcome_value_target,physical_objective_schema_version,"
-        "outcome_value_target_contract_version,solved,done,"
+        "outcome_value_target_contract_version,"
+        "physics_config_contract_version,physics_config,"
+        "physics_config_fingerprint,solved,done,"
         "termination_reason,outcome_class,outcome_steps_to_terminal,"
         "outcome_value_target_mode,outcome_gamma\n",
         encoding="utf-8",

@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
-from pypower.api import ppoption, runpf
+from pypower.api import runpf
 
 from grid_topology_ai.action_space import GridFMActionSpace
+from grid_topology_ai.config.physics import DEFAULT_PHYSICS_CONFIG
 from grid_topology_ai.data_adapter import (
     BRANCH_FEATURE_COLUMNS,
     BUS_FEATURE_COLUMNS,
@@ -74,7 +76,6 @@ def run_one_step_old_and_fast(
     previous_old_state,
     previous_fast_state,
     branch_id: int,
-    pf_alg: int,
 ):
     """
     Run one identical topology action from old_state and fast_state.
@@ -82,12 +83,7 @@ def run_one_step_old_and_fast(
     This checks whether small differences accumulate across a sequence.
     """
 
-    ppopt = ppoption(
-        VERBOSE=0,
-        OUT_ALL=0,
-        PF_ALG=pf_alg,
-        PF_MAX_IT=backend.max_iter,
-    )
+    ppopt = backend._build_pp_options()
 
     old_ppc, old_frames = backend._build_ppc_from_state(
         state=previous_old_state,
@@ -169,12 +165,13 @@ def main() -> None:
     print("=" * 100)
 
     raw_dir = Path(args.raw_dir)
+    physics_config = replace(DEFAULT_PHYSICS_CONFIG, pf_alg=args.pf_alg)
 
-    adapter = GridFMAdapter(raw_dir)
+    adapter = GridFMAdapter(raw_dir, physics_config=physics_config)
 
     backend = GridFMPowerFlowBackend(
         adapter=adapter,
-        pf_alg=args.pf_alg,
+        physics_config=physics_config,
         enable_cache=False,
         store_raw_result=True,
     )
@@ -186,7 +183,10 @@ def main() -> None:
     action_space = None
 
     if args.checkpoint is not None:
-        evaluator = NeuralPolicyValueEvaluator(args.checkpoint)
+        evaluator = NeuralPolicyValueEvaluator(
+            args.checkpoint,
+            physics_config=physics_config,
+        )
         action_space = GridFMActionSpace(require_connected_after_switch=True)
 
     print(f"Scenario: {args.scenario}")
@@ -203,7 +203,6 @@ def main() -> None:
             previous_old_state=old_state,
             previous_fast_state=fast_state,
             branch_id=int(branch_id),
-            pf_alg=args.pf_alg,
         )
 
         print(f"Old outaged:  {old_state.outaged_branch_ids}")

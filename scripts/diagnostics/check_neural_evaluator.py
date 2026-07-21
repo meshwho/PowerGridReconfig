@@ -4,6 +4,7 @@ import argparse
 from pathlib import Path
 
 from grid_topology_ai.action_space import GridFMActionSpace
+from grid_topology_ai.config.physics import DEFAULT_PHYSICS_CONFIG
 from grid_topology_ai.data_adapter import GridFMAdapter
 from grid_topology_ai.models.neural_evaluator import NeuralPolicyValueEvaluator
 
@@ -53,9 +54,15 @@ def main() -> None:
     print(f"Checkpoint:    {checkpoint.resolve()}")
     print(f"Scenario:      {args.scenario}")
 
-    adapter = GridFMAdapter(raw_dir)
+    adapter = GridFMAdapter(
+        raw_dir,
+        physics_config=DEFAULT_PHYSICS_CONFIG,
+    )
     action_space = GridFMActionSpace(require_connected_after_switch=True)
-    evaluator = NeuralPolicyValueEvaluator(checkpoint)
+    evaluator = NeuralPolicyValueEvaluator(
+        checkpoint,
+        physics_config=DEFAULT_PHYSICS_CONFIG,
+    )
 
     state = adapter.build_state(args.scenario)
     action_mask = action_space.valid_action_mask(state)

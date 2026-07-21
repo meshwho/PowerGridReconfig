@@ -14,7 +14,14 @@ except ImportError:  # pragma: no cover
     tqdm = None
 
 from grid_topology_ai.config import EvaluationConfig
-from grid_topology_ai.config._validation import coerce_exact_int
+from grid_topology_ai.config.physics import (
+    PhysicsConfig,
+    resolve_physics_config,
+)
+from grid_topology_ai.contracts import (
+    physics_provenance,
+    require_physics_provenance,
+)
 from grid_topology_ai.evaluation.metrics import (
     attach_difficulty_metadata,
     build_evaluation_metrics,
@@ -51,6 +58,7 @@ class EvaluationRequest:
     transitions_csv: Path
     checkpoint: Path
     config: EvaluationConfig
+    physics_config: PhysicsConfig | None = None
     output_csv: Path | None = None
     output_json: Path | None = None
     limit: int | None = None
@@ -75,11 +83,12 @@ class EvaluationRequest:
 
     @property
     def resolved_pf_alg(self) -> int:
-        value = self.config.pf_alg if self.pf_alg is None else self.pf_alg
-        return coerce_exact_int(
-            "evaluation request pf_alg",
-            value,
-        )
+        return self.resolved_physics_config.pf_alg
+
+    @property
+    def resolved_physics_config(self) -> PhysicsConfig:
+        legacy = self.config.pf_alg if self.pf_alg is None else self.pf_alg
+        return resolve_physics_config(self.physics_config, legacy)
 
     def __post_init__(self) -> None:
         if self.limit is not None and int(self.limit) <= 0:
@@ -145,6 +154,8 @@ def _ensure_runtime_dependencies() -> None:
     from grid_topology_ai.reward import GridFMReward as _Reward
     from grid_topology_ai.search.continuation_gate import (
         analyze_root_branches as _analyze_root_branches,
+    )
+    from grid_topology_ai.search.continuation_gate import (
         make_do_nothing_action as _make_do_nothing_action,
     )
     from grid_topology_ai.search.mcts import MCTSConfig as _MCTSConfig
@@ -198,21 +209,29 @@ def init_worker_context(
     raw_dir = Path(raw_dir_str)
     checkpoint_path = Path(checkpoint_path_str)
 
-    adapter = GridFMAdapter(raw_dir)
+    physics_config = require_physics_provenance(
+        task_config,
+        source="evaluation task",
+    )
+    adapter = GridFMAdapter(
+        raw_dir,
+        physics_config=physics_config,
+    )
     backend = GridFMPowerFlowBackend(
         adapter=adapter,
-        pf_alg=int(task_config["pf_alg"]),
+        physics_config=physics_config,
         enable_cache=not bool(task_config["disable_cache"]),
     )
     action_space = GridFMActionSpace(
         require_connected_after_switch=True,
         enable_cache=not bool(task_config["disable_cache"]),
     )
-    reward_fn = GridFMReward()
+    reward_fn = GridFMReward(physics_config=physics_config)
     evaluator = NeuralPolicyValueEvaluator(
         checkpoint_path=checkpoint_path,
         device=str(task_config["device"]),
         enable_cache=not bool(task_config["disable_cache"]),
+        physics_config=physics_config,
     )
     mcts_config = MCTSConfig(
         num_simulations=int(task_config["simulations"]),
@@ -234,7 +253,11 @@ def init_worker_context(
         dc_failure_penalty=float(task_config["dc_failure_penalty"]),
         dc_max_depth=int(task_config["dc_max_depth"]),
     )
-    planner = MCTSPlanner(config=mcts_config, evaluator=evaluator)
+    planner = MCTSPlanner(
+        config=mcts_config,
+        evaluator=evaluator,
+        physics_config=physics_config,
+    )
 
     _WORKER_CONTEXT = {
         "adapter": adapter,
@@ -243,6 +266,7 @@ def init_worker_context(
         "reward_fn": reward_fn,
         "evaluator": evaluator,
         "planner": planner,
+        "physics_config": physics_config,
         "task_config": task_config,
         "processed_in_worker": 0,
     }
@@ -288,6 +312,7 @@ def run_episode(
     min_gate_visits: int,
     min_gate_visit_fraction: float,
     allow_handoff_with_hard_overloads: bool = False,
+    physics_config: PhysicsConfig | None = None,
 ) -> dict[str, Any]:
     _ensure_runtime_dependencies()
     env = TopologySwitchingEnv(
@@ -326,6 +351,7 @@ def run_episode(
                 min_soft_improvement=min_soft_improvement,
                 min_visits=min_gate_visits,
                 min_visit_fraction=min_gate_visit_fraction,
+                physics_config=physics_config,
             )
             action_id = int(gate_decision.selected_action_id)
             branch_id = gate_decision.selected_branch_id
@@ -473,7 +499,10 @@ def run_episode(
         "safe_handoff": safe_handoff,
         "unsafe_terminal_state": unsafe_terminal_state,
     }
-    row["safety_score"] = compute_safety_score(row)
+    row["safety_score"] = compute_safety_score(
+        row,
+        physics_config=physics_config,
+    )
     return row
 
 
@@ -499,6 +528,7 @@ def run_episode_from_worker_context(scenario_id: int) -> dict[str, Any]:
             allow_handoff_with_hard_overloads=bool(
                 task["allow_handoff_with_hard_overloads"]
             ),
+            physics_config=ctx["physics_config"],
         )
         clear_worker_caches_if_needed()
         return {
@@ -552,7 +582,9 @@ def _make_task_config(request: EvaluationRequest) -> dict[str, Any]:
     if GridFMReward is None:
         _ensure_runtime_dependencies()
 
-    reward_config = GridFMReward().config_dict()
+    reward_config = GridFMReward(
+        physics_config=request.resolved_physics_config
+    ).config_dict()
     config = request.config
     return {
         "simulations": int(config.simulations),
@@ -565,7 +597,8 @@ def _make_task_config(request: EvaluationRequest) -> dict[str, Any]:
         "leaf_penalty_weight": float(request.leaf_penalty_weight),
         "stop_policy": str(request.stop_policy),
         "device": str(config.device),
-        "pf_alg": int(request.resolved_pf_alg),
+        "pf_alg": request.resolved_physics_config.pf_alg,
+        **physics_provenance(request.resolved_physics_config),
         "disable_cache": bool(request.disable_cache),
         "use_continuation_gate": bool(config.use_continuation_gate),
         "min_hard_improvement": float(request.min_hard_improvement),

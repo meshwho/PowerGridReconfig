@@ -4,9 +4,11 @@ from collections.abc import Mapping
 
 from grid_topology_ai.config import AcceptanceConfig
 from grid_topology_ai.config._validation import coerce_exact_int
+from grid_topology_ai.config.physics import PhysicsConfig
 from grid_topology_ai.contracts import (
     EVALUATION_METRICS_CONTRACT_VERSION,
     require_exact_contract_version,
+    require_physics_provenance,
 )
 from grid_topology_ai.physical_objective import (
     PHYSICAL_OBJECTIVE_SCHEMA_VERSION,
@@ -79,6 +81,20 @@ def require_metrics_pf_alg(
         )
 
 
+def require_metrics_physics_config(
+    metrics: Mapping[str, object],
+    *,
+    expected_physics_config: PhysicsConfig,
+    source: str,
+) -> None:
+    require_metrics_semantic_versions(metrics, source=source)
+    require_physics_provenance(
+        metrics,
+        source=source,
+        expected_physics_config=expected_physics_config,
+    )
+
+
 def require_metrics_semantic_versions(
     metrics: Mapping[str, object],
     *,
@@ -90,6 +106,10 @@ def require_metrics_semantic_versions(
         name="evaluation-metrics contract",
         source=source,
         regeneration_command="python -m scripts.evaluation.evaluate_checkpoint ...",
+    )
+    metrics_physics_config = require_physics_provenance(
+        metrics,
+        source=source,
     )
     physical_contract = metrics.get("physical_objective_contract")
     physical_version = (
@@ -104,6 +124,13 @@ def require_metrics_semantic_versions(
         source=source,
         regeneration_command="python -m scripts.evaluation.evaluate_checkpoint ...",
     )
+    if isinstance(physical_contract, Mapping):
+        require_physics_provenance(
+            physical_contract,
+            source=f"{source} physical-objective contract",
+            expected_physics_config=metrics_physics_config,
+        )
+
 
 def accept_candidate(
     *,
@@ -113,6 +140,15 @@ def accept_candidate(
 ) -> bool:
     require_metrics_semantic_versions(new_metrics, source="candidate metrics")
     require_metrics_semantic_versions(best_metrics, source="best metrics")
+    new_physics = require_physics_provenance(
+        new_metrics,
+        source="candidate metrics",
+    )
+    require_physics_provenance(
+        best_metrics,
+        source="best metrics",
+        expected_physics_config=new_physics,
+    )
     metric = config.metric
 
     if metric not in new_metrics:

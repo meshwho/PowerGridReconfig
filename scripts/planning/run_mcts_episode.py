@@ -1,21 +1,23 @@
 from __future__ import annotations
 
 import argparse
+import time
+from dataclasses import replace
 from pathlib import Path
 
 from grid_topology_ai.action_space import GridFMActionSpace
+from grid_topology_ai.config.physics import DEFAULT_PHYSICS_CONFIG
 from grid_topology_ai.data_adapter import GridFMAdapter
 from grid_topology_ai.environment import TopologySwitchingEnv
+from grid_topology_ai.models.neural_evaluator import NeuralPolicyValueEvaluator
 from grid_topology_ai.pypower_backend import GridFMPowerFlowBackend
 from grid_topology_ai.reward import GridFMReward
-from grid_topology_ai.search.mcts import MCTSConfig, MCTSPlanner
-
-from grid_topology_ai.models.neural_evaluator import NeuralPolicyValueEvaluator
-import time
 from grid_topology_ai.search.continuation_gate import (
     analyze_root_branches,
     make_do_nothing_action,
 )
+from grid_topology_ai.search.mcts import MCTSConfig, MCTSPlanner
+
 
 def print_state_metrics(prefix: str, env: TopologySwitchingEnv) -> None:
     state = env.current_state
@@ -187,17 +189,24 @@ def main() -> None:
         print(f"  min gate visits:      {args.min_gate_visits}")
         print(f"  min gate visit frac:  {args.min_gate_visit_fraction}")
 
-    adapter = GridFMAdapter(raw_dir)
+    physics_config = replace(
+        DEFAULT_PHYSICS_CONFIG,
+        pf_alg=args.pf_alg,
+    )
+    adapter = GridFMAdapter(
+        raw_dir,
+        physics_config=physics_config,
+    )
     backend = GridFMPowerFlowBackend(
         adapter=adapter,
-        pf_alg=args.pf_alg,
+        physics_config=physics_config,
         enable_cache=not args.disable_cache,
     )
     action_space = GridFMActionSpace(
         require_connected_after_switch=True,
         enable_cache=not args.disable_cache,
     )
-    reward_fn = GridFMReward()
+    reward_fn = GridFMReward(physics_config=physics_config)
 
     env = TopologySwitchingEnv(
         adapter=adapter,
@@ -227,6 +236,7 @@ def main() -> None:
             checkpoint_path=args.checkpoint,
             device=args.device,
             enable_cache=not args.disable_cache,
+            physics_config=physics_config,
         )
 
         print("\nNeural evaluator loaded.")
@@ -234,6 +244,7 @@ def main() -> None:
     planner = MCTSPlanner(
         config=config,
         evaluator=evaluator,
+        physics_config=physics_config,
     )
 
     env.reset(args.scenario)
@@ -274,6 +285,7 @@ def main() -> None:
                 min_soft_improvement=args.min_soft_improvement,
                 min_visits=args.min_gate_visits,
                 min_visit_fraction=args.min_gate_visit_fraction,
+                physics_config=physics_config,
             )
 
             best_action_id = int(gate_decision.selected_action_id)

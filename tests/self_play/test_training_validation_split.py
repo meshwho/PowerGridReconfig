@@ -1,22 +1,51 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pandas as pd
 import pytest
 
+from grid_topology_ai.config.physics import DEFAULT_PHYSICS_CONFIG
+from grid_topology_ai.contracts import (
+    OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
+    physics_provenance,
+)
+from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
 from grid_topology_ai.self_play.stages import split_examples_by_scenario
+
+
+def _example_row(**values: object) -> dict[str, object]:
+    provenance = physics_provenance(DEFAULT_PHYSICS_CONFIG)
+    return {
+        "physical_objective_schema_version": PHYSICAL_OBJECTIVE_SCHEMA_VERSION,
+        "outcome_value_target_contract_version": (
+            OUTCOME_VALUE_TARGET_CONTRACT_VERSION
+        ),
+        "physics_config_contract_version": provenance[
+            "physics_config_contract_version"
+        ],
+        "physics_config": json.dumps(
+            provenance["physics_config"],
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
+        "physics_config_fingerprint": provenance[
+            "physics_config_fingerprint"
+        ],
+        **values,
+    }
 
 
 def _write_examples(path: Path) -> None:
     pd.DataFrame(
         [
-            {"scenario_id": 1, "state_id": "s1a", "step": 0},
-            {"scenario_id": 1, "state_id": "s1b", "step": 1},
-            {"scenario_id": 2, "state_id": "s2a", "step": 0},
-            {"scenario_id": 3, "state_id": "s3a", "step": 0},
-            {"scenario_id": 3, "state_id": "s3b", "step": 1},
-            {"scenario_id": 4, "state_id": "s4a", "step": 0},
+            _example_row(scenario_id=1, state_id="s1a", step=0),
+            _example_row(scenario_id=1, state_id="s1b", step=1),
+            _example_row(scenario_id=2, state_id="s2a", step=0),
+            _example_row(scenario_id=3, state_id="s3a", step=0),
+            _example_row(scenario_id=3, state_id="s3b", step=1),
+            _example_row(scenario_id=4, state_id="s4a", step=0),
         ]
     ).to_csv(path, index=False)
 
@@ -89,14 +118,16 @@ def test_minimum_validation_scenario_count_is_respected(tmp_path: Path) -> None:
 
 def test_single_scenario_is_rejected(tmp_path: Path) -> None:
     source = tmp_path / "one.csv"
-    pd.DataFrame([{"scenario_id": 1}]).to_csv(source, index=False)
+    pd.DataFrame([_example_row(scenario_id=1)]).to_csv(source, index=False)
     with pytest.raises(ValueError, match="at least two"):
         split_examples_by_scenario(examples_csv=source, train_output_csv=tmp_path/"t.csv", validation_output_csv=tmp_path/"v.csv", metadata_output_json=tmp_path/"m.json", validation_fraction=0.2, min_validation_scenarios=1, seed=1)
 
 
 def test_impossible_minimum_is_rejected(tmp_path: Path) -> None:
     source = tmp_path / "two.csv"
-    pd.DataFrame([{"scenario_id": 1}, {"scenario_id": 2}]).to_csv(source, index=False)
+    pd.DataFrame(
+        [_example_row(scenario_id=1), _example_row(scenario_id=2)]
+    ).to_csv(source, index=False)
     with pytest.raises(ValueError, match="leaves no training"):
         split_examples_by_scenario(examples_csv=source, train_output_csv=tmp_path/"t.csv", validation_output_csv=tmp_path/"v.csv", metadata_output_json=tmp_path/"m.json", validation_fraction=0.2, min_validation_scenarios=2, seed=1)
 
@@ -110,7 +141,9 @@ def test_missing_scenario_id_column_is_rejected(tmp_path: Path) -> None:
 
 def test_fractional_scenario_id_is_rejected(tmp_path: Path) -> None:
     source = tmp_path / "fraction.csv"
-    pd.DataFrame([{"scenario_id": 1.5}, {"scenario_id": 2.0}]).to_csv(source, index=False)
+    pd.DataFrame(
+        [_example_row(scenario_id=1.5), _example_row(scenario_id=2.0)]
+    ).to_csv(source, index=False)
     with pytest.raises(ValueError, match="integer-valued"):
         split_examples_by_scenario(examples_csv=source, train_output_csv=tmp_path/"t.csv", validation_output_csv=tmp_path/"v.csv", metadata_output_json=tmp_path/"m.json", validation_fraction=0.2, min_validation_scenarios=1, seed=1)
 

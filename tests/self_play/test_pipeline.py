@@ -6,12 +6,20 @@ from pathlib import Path
 import pytest
 
 from grid_topology_ai.config import SelfPlayConfig
-from grid_topology_ai.contracts import EVALUATION_METRICS_CONTRACT_VERSION
-from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
+from grid_topology_ai.config.physics import DEFAULT_PHYSICS_CONFIG
+from grid_topology_ai.contracts import (
+    EVALUATION_METRICS_CONTRACT_VERSION,
+    physics_provenance,
+)
+from grid_topology_ai.physical_objective import physical_objective_contract
 from grid_topology_ai.self_play import pipeline as pipeline_module
 from grid_topology_ai.self_play.iteration import IterationResult
 from grid_topology_ai.self_play.paths import SelfPlayPaths
-from grid_topology_ai.self_play.pipeline import PipelineRequest, _format_metric, run_self_play_pipeline
+from grid_topology_ai.self_play.pipeline import (
+    PipelineRequest,
+    _format_metric,
+    run_self_play_pipeline,
+)
 
 
 def _raw_config(n_iterations: int = 2) -> dict[str, object]:
@@ -56,9 +64,16 @@ class _BestState:
 
 
 class _RollingReplayBuffer:
-    def __init__(self, *, save_dir: Path, config: object) -> None:
+    def __init__(
+        self,
+        *,
+        save_dir: Path,
+        config: object,
+        physics_config: object,
+    ) -> None:
         self.save_dir = save_dir
         self.config = config
+        self.physics_config = physics_config
 
     def __len__(self) -> int:
         return 0
@@ -70,9 +85,8 @@ def _metrics(solve_rate: float) -> dict[str, object]:
         "pf_alg": 3,
         "task_config": {"pf_alg": 3},
         "evaluation_metrics_contract_version": EVALUATION_METRICS_CONTRACT_VERSION,
-        "physical_objective_contract": {
-            "schema_version": PHYSICAL_OBJECTIVE_SCHEMA_VERSION
-        },
+        **physics_provenance(DEFAULT_PHYSICS_CONFIG),
+        "physical_objective_contract": physical_objective_contract(),
     }
 
 

@@ -7,10 +7,14 @@ from typing import Any
 
 import pandas as pd
 
-from grid_topology_ai.contracts import OUTCOME_VALUE_TARGET_CONTRACT_VERSION
+from grid_topology_ai.config.physics import PhysicsConfig
+from grid_topology_ai.contracts import (
+    OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
+    physics_provenance,
+)
+from grid_topology_ai.data_adapter import GridFMState
 from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
 from grid_topology_ai.state_store import GridFMStateStore
-from grid_topology_ai.data_adapter import GridFMState
 from grid_topology_ai.termination import (
     TerminationReason,
     termination_reason_value,
@@ -55,6 +59,9 @@ class SelfPlayExample:
     termination_reason: str | None
     physical_objective_schema_version: int
     outcome_value_target_contract_version: int
+    physics_config_contract_version: int
+    physics_config: str
+    physics_config_fingerprint: str
 
     visit_counts_json: str
     mcts_policy_json: str
@@ -69,8 +76,14 @@ class ExampleWriter:
         - examples.csv with MCTS policy and returns.
     """
 
-    def __init__(self, output_dir: str | Path):
+    def __init__(
+        self,
+        output_dir: str | Path,
+        *,
+        physics_config: PhysicsConfig,
+    ):
         self.output_dir = Path(output_dir)
+        self.physics_config = physics_config
         self.states_dir = self.output_dir / "states"
         self.examples_path = self.output_dir / "examples.csv"
 
@@ -103,11 +116,15 @@ class ExampleWriter:
         Save one self-play example.
         """
 
+        provenance = physics_provenance(self.physics_config)
+        state_metadata = dict(extra_metadata or {})
+        state_metadata.update(provenance)
+
         state_path = self.state_store.save_state(
             state=state,
             state_id=state_id,
             action_mask=action_mask,
-            extra_metadata=extra_metadata,
+            extra_metadata=state_metadata,
         )
 
         parsed_reason = validate_outcome_invariants(
@@ -134,6 +151,18 @@ class ExampleWriter:
             ),
             outcome_value_target_contract_version=(
                 OUTCOME_VALUE_TARGET_CONTRACT_VERSION
+            ),
+            physics_config_contract_version=int(
+                provenance["physics_config_contract_version"]
+            ),
+            physics_config=json.dumps(
+                provenance["physics_config"],
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            ),
+            physics_config_fingerprint=str(
+                provenance["physics_config_fingerprint"]
             ),
             visit_counts_json=json.dumps(
                 {str(k): int(v) for k, v in visit_counts.items()}

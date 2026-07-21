@@ -1,13 +1,18 @@
+import json
 import os
-import numpy as np
-import pandas as pd
 from pathlib import Path
 
+import numpy as np
+import pandas as pd
 import pytest
 import torch
 
+from grid_topology_ai.config.physics import DEFAULT_PHYSICS_CONFIG
+from grid_topology_ai.contracts import (
+    OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
+    physics_provenance,
+)
 from grid_topology_ai.models.graph_self_play_dataset import GraphSelfPlayDataset
-from grid_topology_ai.contracts import OUTCOME_VALUE_TARGET_CONTRACT_VERSION
 from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -23,6 +28,22 @@ MIXED_TRAIN_CSV = (
 )
 
 RUN_LOCAL_GRAPH_DATA_TESTS = os.environ.get("RUN_LOCAL_GRAPH_DATA_TESTS") == "1"
+
+
+def _csv_provenance() -> dict[str, object]:
+    provenance = physics_provenance(DEFAULT_PHYSICS_CONFIG)
+    return {
+        **provenance,
+        "physics_config": json.dumps(
+            provenance["physics_config"],
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
+    }
+
+
+def _state_metadata() -> np.ndarray:
+    return np.array(json.dumps(physics_provenance(DEFAULT_PHYSICS_CONFIG)))
 
 
 @pytest.mark.skipif(
@@ -148,6 +169,7 @@ def test_graph_dataset_uses_mcts_policy_not_selected_action(tmp_path: Path):
         branch_features=np.zeros((2, 4), dtype=np.float32),
         edge_index=np.array([[0, 1], [1, 0]], dtype=np.int64),
         action_mask=np.array([True, True, True], dtype=bool),
+        metadata_json=_state_metadata(),
     )
     csv_path = tmp_path / "examples.csv"
     pd.DataFrame(
@@ -162,6 +184,7 @@ def test_graph_dataset_uses_mcts_policy_not_selected_action(tmp_path: Path):
                 "outcome_value_target": 1.0,
                 "physical_objective_schema_version": PHYSICAL_OBJECTIVE_SCHEMA_VERSION,
                 "outcome_value_target_contract_version": OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
+                **_csv_provenance(),
                 "solved": True,
                 "done": True,
                 "termination_reason": "solved",
@@ -189,6 +212,7 @@ def test_normalization_state_dict_returns_copies(tmp_path: Path):
         branch_features=np.array([[1, 2, 3, 4], [5, 6, 7, 8]], dtype=np.float32),
         edge_index=np.array([[0, 1], [1, 0]], dtype=np.int64),
         action_mask=np.array([True, True, True], dtype=bool),
+        metadata_json=_state_metadata(),
     )
     csv_path = tmp_path / "examples.csv"
     pd.DataFrame(
@@ -203,6 +227,7 @@ def test_normalization_state_dict_returns_copies(tmp_path: Path):
                 "outcome_value_target": 0.0,
                 "physical_objective_schema_version": PHYSICAL_OBJECTIVE_SCHEMA_VERSION,
                 "outcome_value_target_contract_version": OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
+                **_csv_provenance(),
                 "solved": False,
                 "done": True,
                 "termination_reason": "handoff_to_redispatch",
@@ -234,6 +259,7 @@ def test_graph_dataset_rejects_semantic_invalid_handoff_before_state_io(
                 "state_id": "semantic-invalid",
                 "physical_objective_schema_version": PHYSICAL_OBJECTIVE_SCHEMA_VERSION,
                 "outcome_value_target_contract_version": OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
+                **_csv_provenance(),
                 "solved": False,
                 "done": True,
                 "termination_reason": "handoff_to_redispatch",

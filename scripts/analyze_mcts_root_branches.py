@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import replace
 from pathlib import Path
 
 from grid_topology_ai.action_space import GridFMActionSpace
+from grid_topology_ai.config.physics import DEFAULT_PHYSICS_CONFIG
 from grid_topology_ai.data_adapter import GridFMAdapter
 from grid_topology_ai.environment import TopologySwitchingEnv
 from grid_topology_ai.models.neural_evaluator import NeuralPolicyValueEvaluator
@@ -74,11 +76,18 @@ def main() -> None:
 
     raw_dir = Path(args.raw_dir)
 
-    adapter = GridFMAdapter(raw_dir)
+    physics_config = replace(
+        DEFAULT_PHYSICS_CONFIG,
+        pf_alg=args.pf_alg,
+    )
+    adapter = GridFMAdapter(
+        raw_dir,
+        physics_config=physics_config,
+    )
 
     backend = GridFMPowerFlowBackend(
         adapter=adapter,
-        pf_alg=args.pf_alg,
+        physics_config=physics_config,
         enable_cache=True,
     )
 
@@ -87,7 +96,7 @@ def main() -> None:
         enable_cache=True,
     )
 
-    reward_fn = GridFMReward()
+    reward_fn = GridFMReward(physics_config=physics_config)
 
     env = TopologySwitchingEnv(
         adapter=adapter,
@@ -139,6 +148,7 @@ def main() -> None:
         checkpoint_path=args.checkpoint,
         device=args.device,
         enable_cache=True,
+        physics_config=physics_config,
     )
 
     config = MCTSConfig(
@@ -155,6 +165,7 @@ def main() -> None:
     planner = MCTSPlanner(
         config=config,
         evaluator=evaluator,
+        physics_config=physics_config,
     )
 
     result = planner.search_from_env(env)
@@ -165,6 +176,7 @@ def main() -> None:
         min_soft_improvement=args.min_soft_improvement,
         min_visits=args.min_visits,
         min_visit_fraction=args.min_visit_fraction,
+        physics_config=physics_config,
     )
 
     print("\n" + "=" * 100)

@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pandas as pd
 
-from grid_topology_ai.contracts import OUTCOME_VALUE_TARGET_CONTRACT_VERSION
+from grid_topology_ai.config.physics import DEFAULT_PHYSICS_CONFIG
+from grid_topology_ai.contracts import (
+    OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
+    physics_provenance,
+)
 from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
 from grid_topology_ai.self_play.examples import ExampleWriter, SelfPlayExample
 
@@ -14,14 +19,21 @@ def test_example_writer_class_name_is_explicit() -> None:
 
 
 def test_example_writer_uses_expected_artifact_names(tmp_path: Path) -> None:
-    writer = ExampleWriter(tmp_path)
+    writer = ExampleWriter(
+        tmp_path,
+        physics_config=DEFAULT_PHYSICS_CONFIG,
+    )
 
     assert writer.states_dir == tmp_path / "states"
     assert writer.examples_path == tmp_path / "examples.csv"
 
 
 def test_example_writer_save_preserves_csv_schema(tmp_path: Path) -> None:
-    writer = ExampleWriter(tmp_path)
+    writer = ExampleWriter(
+        tmp_path,
+        physics_config=DEFAULT_PHYSICS_CONFIG,
+    )
+    provenance = physics_provenance(DEFAULT_PHYSICS_CONFIG)
     writer.examples.append(
         SelfPlayExample(
             state_id="state-1",
@@ -39,6 +51,17 @@ def test_example_writer_save_preserves_csv_schema(tmp_path: Path) -> None:
             physical_objective_schema_version=PHYSICAL_OBJECTIVE_SCHEMA_VERSION,
             outcome_value_target_contract_version=(
                 OUTCOME_VALUE_TARGET_CONTRACT_VERSION
+            ),
+            physics_config_contract_version=int(
+                provenance["physics_config_contract_version"]
+            ),
+            physics_config=json.dumps(
+                provenance["physics_config"],
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+            physics_config_fingerprint=str(
+                provenance["physics_config_fingerprint"]
             ),
             visit_counts_json='{"2": 4}',
             mcts_policy_json='{"2": 1.0}',
@@ -62,6 +85,9 @@ def test_example_writer_save_preserves_csv_schema(tmp_path: Path) -> None:
         "termination_reason",
         "physical_objective_schema_version",
         "outcome_value_target_contract_version",
+        "physics_config_contract_version",
+        "physics_config",
+        "physics_config_fingerprint",
         "visit_counts_json",
         "mcts_policy_json",
     ]

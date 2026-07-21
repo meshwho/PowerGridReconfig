@@ -5,12 +5,13 @@ from pathlib import Path
 import numpy as np
 import torch
 
+from grid_topology_ai.config.physics import PhysicsConfig
 from grid_topology_ai.contracts import require_checkpoint_contracts
 from grid_topology_ai.data_adapter import GridFMState
 from grid_topology_ai.models.graph_policy_value_net import GraphPolicyValueNet
+from grid_topology_ai.models.graph_policy_value_net_v2 import GraphPolicyValueNetV2
 from grid_topology_ai.models.self_play_dataset import SelfPlayDataset
 from grid_topology_ai.models.simple_policy_value_net import SimplePolicyValueNet
-from grid_topology_ai.models.graph_policy_value_net_v2 import GraphPolicyValueNetV2
 
 
 class NeuralPolicyValueEvaluator:
@@ -34,6 +35,7 @@ class NeuralPolicyValueEvaluator:
         checkpoint_path: str | Path,
         device: str = "cpu",
         enable_cache: bool = True,
+        physics_config: PhysicsConfig | None = None,
     ):
         self.checkpoint_path = Path(checkpoint_path)
         self.device = torch.device(device)
@@ -55,9 +57,10 @@ class NeuralPolicyValueEvaluator:
             raise ValueError(
                 f"Checkpoint payload must be a mapping: {self.checkpoint_path}"
             )
-        require_checkpoint_contracts(
+        self.physics_config = require_checkpoint_contracts(
             self.checkpoint,
             source=str(self.checkpoint_path),
+            expected_physics_config=physics_config,
         )
 
         self.model_type = str(

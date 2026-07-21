@@ -10,17 +10,18 @@ import numpy as np
 import pandas as pd
 
 from grid_topology_ai.config import GenerationConfig
-from grid_topology_ai.physical_objective import (
-    HARD_OVERLOAD_LIMIT_PERCENT,
-    OVERLOAD_LIMIT_PERCENT,
-)
-from grid_topology_ai.termination import (
-    TerminationReason,
-    validate_outcome_invariants,
+from grid_topology_ai.config.physics import (
+    DEFAULT_PHYSICS_CONFIG,
+    PhysicsConfig,
+    resolve_physics_config,
 )
 from grid_topology_ai.data_adapter import (
     BRANCH_FEATURE_COLUMNS,
     GridFMState,
+)
+from grid_topology_ai.termination import (
+    TerminationReason,
+    validate_outcome_invariants,
 )
 
 _RUNTIME_DEPENDENCIES_LOADED = False
@@ -47,6 +48,7 @@ class GenerationRequest:
     config: GenerationConfig
     seed: int
     clear_cache_between_scenarios: bool
+    physics_config: PhysicsConfig | None = None
     scenario_ids: tuple[int, ...] | None = None
     device: str = "cpu"
     enable_cache: bool = True
@@ -56,6 +58,10 @@ class GenerationRequest:
     min_soft_improvement: float = 15.0
     min_gate_visits: int = 5
     min_gate_visit_fraction: float = 0.01
+
+    @property
+    def resolved_physics_config(self) -> PhysicsConfig:
+        return resolve_physics_config(self.physics_config, self.config.pf_alg)
 
 
 def _ensure_runtime_dependencies() -> None:
@@ -219,6 +225,7 @@ def _select_generation_action(
     min_soft_improvement: float,
     min_gate_visits: int,
     min_gate_visit_fraction: float,
+    physics_config: PhysicsConfig | None = None,
     scenario_id: int | None = None,
     step: int | None = None,
 ) -> _GenerationActionDecision:
@@ -248,6 +255,7 @@ def _select_generation_action(
             min_soft_improvement=min_soft_improvement,
             min_visits=min_gate_visits,
             min_visit_fraction=min_gate_visit_fraction,
+            physics_config=physics_config,
         )
         selected_action_id = int(gate_decision.selected_action_id)
         selected_branch_id = gate_decision.selected_branch_id
@@ -264,32 +272,64 @@ def _select_generation_action(
         gate_decision=gate_decision,
     )
 
-def state_security_penalty(state: GridFMState) -> float:
+def state_security_penalty(
+    state: GridFMState,
+    physics_config: PhysicsConfig | None = None,
+) -> float:
+    config = physics_config or DEFAULT_PHYSICS_CONFIG
+
     loading_idx = BRANCH_FEATURE_COLUMNS.index("loading_percent")
     status_idx = BRANCH_FEATURE_COLUMNS.index("br_status")
 
     loading = state.branch_features[:, loading_idx]
     status = state.branch_features[:, status_idx]
-
     active_loading = loading[status > 0]
 
-    total_overload = float(np.sum(np.maximum(active_loading - OVERLOAD_LIMIT_PERCENT, 0.0)))
-    hard_overload = float(np.sum(np.maximum(active_loading - HARD_OVERLOAD_LIMIT_PERCENT, 0.0)))
+    overload_threshold = (
+        config.overload_limit_percent
+        + config.thermal_tolerance_percent
+    )
+    hard_overload_threshold = (
+        config.hard_overload_limit_percent
+        + config.thermal_tolerance_percent
+    )
 
-    num_overloaded = int(state.metrics["num_overloaded_branches"])
-    num_hard_overloaded = int(state.metrics["num_hard_overloaded_branches"])
+    total_overload = float(
+        np.sum(
+            np.where(
+                active_loading > overload_threshold,
+                active_loading - config.overload_limit_percent,
+                0.0,
+            )
+        )
+    )
+    hard_overload = float(
+        np.sum(
+            np.where(
+                active_loading > hard_overload_threshold,
+                active_loading - config.hard_overload_limit_percent,
+                0.0,
+            )
+        )
+    )
 
-    voltage_penalty = float(state.metrics.get("total_voltage_violation", 0.0))
+    num_overloaded = int(
+        state.metrics["num_overloaded_branches"]
+    )
+    num_hard_overloaded = int(
+        state.metrics["num_hard_overloaded_branches"]
+    )
+    voltage_penalty = float(
+        state.metrics.get("total_voltage_violation", 0.0)
+    )
 
-    penalty = (
+    return float(
         2.0 * total_overload
         + 5.0 * hard_overload
         + 10.0 * num_overloaded
         + 30.0 * num_hard_overloaded
         + 500.0 * voltage_penalty
     )
-
-    return float(penalty)
 
 
 def terminal_outcome_reward(
@@ -300,6 +340,7 @@ def terminal_outcome_reward(
     terminal_handoff_penalty: float,
     terminal_failure_penalty: float,
     terminal_penalty_weight: float,
+    physics_config: PhysicsConfig | None = None,
 ) -> float:
     reason = validate_outcome_invariants(
         solved=bool(solved),
@@ -311,7 +352,10 @@ def terminal_outcome_reward(
     if state is None:
         return -float(terminal_failure_penalty)
 
-    penalty = state_security_penalty(state)
+    penalty = state_security_penalty(
+        state,
+        physics_config=physics_config,
+    )
 
     if reason is TerminationReason.HANDOFF_TO_REDISPATCH:
         return -float(terminal_handoff_penalty) - (
@@ -384,7 +428,7 @@ def generate_self_play_examples(request: GenerationRequest) -> Path:
     print(f"Root epsilon:   {request.root_exploration_fraction}")
     print(f"Temperature:    {request.config.selection_temperature}")
     print(f"Seed:           {request.seed}")
-    print(f"PF algorithm:   {request.config.pf_alg}")
+    print(f"PF algorithm:   {request.resolved_physics_config.pf_alg}")
     print(f"Cache enabled:  {request.enable_cache}")
     print(
         "Clear cache between scenarios: "
@@ -404,17 +448,20 @@ def generate_self_play_examples(request: GenerationRequest) -> Path:
 
     print(f"\nScenario IDs: {scenario_ids}")
 
-    adapter = GridFMAdapter(request.raw_dir)
+    adapter = GridFMAdapter(
+        request.raw_dir,
+        physics_config=request.resolved_physics_config,
+    )
     backend = GridFMPowerFlowBackend(
         adapter=adapter,
-        pf_alg=request.config.pf_alg,
+        physics_config=request.resolved_physics_config,
         enable_cache=request.enable_cache,
     )
     action_space = GridFMActionSpace(
         require_connected_after_switch=True,
         enable_cache=request.enable_cache,
     )
-    reward_fn = GridFMReward()
+    reward_fn = GridFMReward(physics_config=request.resolved_physics_config)
 
     mcts_config = MCTSConfig(
         num_simulations=request.config.simulations,
@@ -439,12 +486,20 @@ def generate_self_play_examples(request: GenerationRequest) -> Path:
             checkpoint_path=request.checkpoint,
             device=request.device,
             enable_cache=request.enable_cache,
+            physics_config=request.resolved_physics_config,
         )
         print("\nNeural evaluator loaded.")
 
     rng = np.random.default_rng(request.seed)
-    planner = MCTSPlanner(config=mcts_config, evaluator=evaluator)
-    example_writer = ExampleWriter(request.output_dir)
+    planner = MCTSPlanner(
+        config=mcts_config,
+        evaluator=evaluator,
+        physics_config=request.resolved_physics_config,
+    )
+    example_writer = ExampleWriter(
+        request.output_dir,
+        physics_config=request.resolved_physics_config,
+    )
 
     total_examples = 0
     start_time = time.perf_counter()
@@ -498,6 +553,7 @@ def generate_self_play_examples(request: GenerationRequest) -> Path:
                 min_gate_visit_fraction=request.min_gate_visit_fraction,
                 scenario_id=int(scenario_id),
                 step=int(step),
+                physics_config=request.resolved_physics_config,
             )
             selected_action_id = action_decision.selected_action_id
             selected_branch_id = action_decision.selected_branch_id
@@ -606,6 +662,7 @@ def generate_self_play_examples(request: GenerationRequest) -> Path:
             terminal_handoff_penalty=request.config.terminal_handoff_penalty,
             terminal_failure_penalty=request.config.terminal_failure_penalty,
             terminal_penalty_weight=request.config.terminal_penalty_weight,
+            physics_config=request.resolved_physics_config,
         )
 
         rewards_with_terminal = [*rewards, terminal_reward]
@@ -640,7 +697,7 @@ def generate_self_play_examples(request: GenerationRequest) -> Path:
                     "mcts_simulations": int(request.config.simulations),
                     "mcts_depth": int(request.config.depth),
                     "mcts_top_k": int(request.config.top_k),
-                    "pf_alg": int(request.config.pf_alg),
+                    "pf_alg": request.resolved_physics_config.pf_alg,
                     "use_continuation_gate": bool(
                         request.config.use_continuation_gate
                     ),

@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from grid_topology_ai.action_space import GridFMAction
+from grid_topology_ai.config.physics import DEFAULT_PHYSICS_CONFIG, PhysicsConfig
 from grid_topology_ai.data_adapter import BRANCH_FEATURE_COLUMNS, GridFMState
 from grid_topology_ai.environment import TopologyStepResult, TopologySwitchingEnv
 from grid_topology_ai.termination import TerminationReason
@@ -29,7 +30,11 @@ def _active_loadings(state: GridFMState) -> np.ndarray:
     return loading[status > 0.0]
 
 
-def total_overload(state: GridFMState, limit: float = 100.0) -> float:
+def total_overload(
+    state: GridFMState,
+    limit: float | None = None,
+    physics_config: PhysicsConfig | None = None,
+) -> float:
     """
     Sum of overload above the normal limit.
 
@@ -38,24 +43,52 @@ def total_overload(state: GridFMState, limit: float = 100.0) -> float:
         total_overload = 0 + 5 + 30 = 35
     """
 
+    config = physics_config or DEFAULT_PHYSICS_CONFIG
+    effective_limit = (
+        config.overload_limit_percent
+        if limit is None
+        else float(limit)
+    )
     loading = _active_loadings(state)
-    overload = np.maximum(loading - float(limit), 0.0)
+    overload = np.where(
+        loading > effective_limit + config.thermal_tolerance_percent,
+        loading - effective_limit,
+        0.0,
+    )
 
     return float(np.sum(overload))
 
 
-def total_hard_overload(state: GridFMState, hard_limit: float = 120.0) -> float:
+def total_hard_overload(
+    state: GridFMState,
+    hard_limit: float | None = None,
+    physics_config: PhysicsConfig | None = None,
+) -> float:
     """
     Sum of overload above the hard emergency limit.
     """
 
+    config = physics_config or DEFAULT_PHYSICS_CONFIG
+    effective_limit = (
+        config.hard_overload_limit_percent
+        if hard_limit is None
+        else float(hard_limit)
+    )
     loading = _active_loadings(state)
-    hard = np.maximum(loading - float(hard_limit), 0.0)
+    hard = np.where(
+        loading > effective_limit + config.thermal_tolerance_percent,
+        loading - effective_limit,
+        0.0,
+    )
 
     return float(np.sum(hard))
 
 
-def squared_hard_overload(state: GridFMState, hard_limit: float = 120.0) -> float:
+def squared_hard_overload(
+    state: GridFMState,
+    hard_limit: float | None = None,
+    physics_config: PhysicsConfig | None = None,
+) -> float:
     """
     Squared hard overload.
 
@@ -71,33 +104,70 @@ def squared_hard_overload(state: GridFMState, hard_limit: float = 120.0) -> floa
             squared = 1600
     """
 
+    config = physics_config or DEFAULT_PHYSICS_CONFIG
+    effective_limit = (
+        config.hard_overload_limit_percent
+        if hard_limit is None
+        else float(hard_limit)
+    )
     loading = _active_loadings(state)
-    hard = np.maximum(loading - float(hard_limit), 0.0)
+    hard = np.where(
+        loading > effective_limit + config.thermal_tolerance_percent,
+        loading - effective_limit,
+        0.0,
+    )
 
     return float(np.sum(hard * hard))
 
 
-def max_hard_excess(state: GridFMState, hard_limit: float = 120.0) -> float:
+def max_hard_excess(
+    state: GridFMState,
+    hard_limit: float | None = None,
+    physics_config: PhysicsConfig | None = None,
+) -> float:
     """
     Maximum excess above hard limit.
     """
 
+    config = physics_config or DEFAULT_PHYSICS_CONFIG
+    effective_limit = (
+        config.hard_overload_limit_percent
+        if hard_limit is None
+        else float(hard_limit)
+    )
     max_loading = float(state.metrics["max_loading_percent"])
 
-    return float(max(max_loading - float(hard_limit), 0.0))
+    if max_loading <= effective_limit + config.thermal_tolerance_percent:
+        return 0.0
+    return float(max_loading - effective_limit)
 
 
-def max_overload_excess(state: GridFMState, limit: float = 100.0) -> float:
+def max_overload_excess(
+    state: GridFMState,
+    limit: float | None = None,
+    physics_config: PhysicsConfig | None = None,
+) -> float:
     """
     Maximum excess above normal loading limit.
     """
 
+    config = physics_config or DEFAULT_PHYSICS_CONFIG
+    effective_limit = (
+        config.overload_limit_percent
+        if limit is None
+        else float(limit)
+    )
     max_loading = float(state.metrics["max_loading_percent"])
 
-    return float(max(max_loading - float(limit), 0.0))
+    if max_loading <= effective_limit + config.thermal_tolerance_percent:
+        return 0.0
+    return float(max_loading - effective_limit)
 
 
-def safety_score(state: GridFMState) -> float:
+def safety_score(
+    state: GridFMState,
+    physics_config: PhysicsConfig | None = None,
+) -> float:
     """
     Emergency-oriented safety score.
 
@@ -119,15 +189,16 @@ def safety_score(state: GridFMState) -> float:
     - voltage violations: keeps voltage safety in the score.
     """
 
+    config = physics_config or DEFAULT_PHYSICS_CONFIG
     num_overloaded = int(state.metrics["num_overloaded_branches"])
     num_hard = int(state.metrics["num_hard_overloaded_branches"])
 
-    hard_sq = squared_hard_overload(state)
-    hard_sum = total_hard_overload(state)
-    over_sum = total_overload(state)
+    hard_sq = squared_hard_overload(state, physics_config=config)
+    hard_sum = total_hard_overload(state, physics_config=config)
+    over_sum = total_overload(state, physics_config=config)
 
-    max_hard = max_hard_excess(state)
-    max_over = max_overload_excess(state)
+    max_hard = max_hard_excess(state, physics_config=config)
+    max_over = max_overload_excess(state, physics_config=config)
 
     voltage_violation = float(state.metrics.get("total_voltage_violation", 0.0))
 
@@ -291,8 +362,13 @@ class ImpactBeamSearchPlanner:
         number of hard-overloaded branches whenever possible.
     """
 
-    def __init__(self, config: ImpactBeamSearchConfig):
+    def __init__(
+        self,
+        config: ImpactBeamSearchConfig,
+        physics_config: PhysicsConfig | None = None,
+    ):
         self.config = config
+        self.physics_config = physics_config or DEFAULT_PHYSICS_CONFIG
 
         self.loading_idx = BRANCH_FEATURE_COLUMNS.index("loading_percent")
         self.status_idx = BRANCH_FEATURE_COLUMNS.index("br_status")
@@ -525,13 +601,25 @@ class ImpactBeamSearchPlanner:
             impact_scores=impact_scores,
             cumulative_score=float(cumulative_score),
             discounted_score=float(discounted_score),
-            safety_score=safety_score(state),
+            safety_score=safety_score(
+                state,
+                physics_config=self.physics_config,
+            ),
             max_loading_percent=float(state.metrics["max_loading_percent"]),
             num_overloaded=int(state.metrics["num_overloaded_branches"]),
             num_hard_overloaded=int(state.metrics["num_hard_overloaded_branches"]),
-            total_overload=total_overload(state),
-            total_hard_overload=total_hard_overload(state),
-            squared_hard_overload=squared_hard_overload(state),
+            total_overload=total_overload(
+                state,
+                physics_config=self.physics_config,
+            ),
+            total_hard_overload=total_hard_overload(
+                state,
+                physics_config=self.physics_config,
+            ),
+            squared_hard_overload=squared_hard_overload(
+                state,
+                physics_config=self.physics_config,
+            ),
             depth=int(depth),
             done=bool(done),
             solved=bool(solved),
@@ -644,7 +732,10 @@ class ImpactBeamSearchPlanner:
         if before_state is None:
             return None
 
-        before_safety = safety_score(before_state)
+        before_safety = safety_score(
+            before_state,
+            physics_config=self.physics_config,
+        )
 
         try:
             step_result = child_env.step(action.action_id)
@@ -694,7 +785,10 @@ class ImpactBeamSearchPlanner:
             )
 
         after_state = step_result.next_state
-        after_safety = safety_score(after_state)
+        after_safety = safety_score(
+            after_state,
+            physics_config=self.physics_config,
+        )
 
         impact_score = float(before_safety - after_safety)
 

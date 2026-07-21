@@ -3,10 +3,30 @@ import json
 import numpy as np
 import pandas as pd
 import pytest
-from grid_topology_ai.contracts import OUTCOME_VALUE_TARGET_CONTRACT_VERSION
+
+from grid_topology_ai.config.physics import DEFAULT_PHYSICS_CONFIG
+from grid_topology_ai.contracts import (
+    OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
+    physics_provenance,
+)
+from grid_topology_ai.models.graph_self_play_dataset import GraphSelfPlayDataset
 from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
 
-from grid_topology_ai.models.graph_self_play_dataset import GraphSelfPlayDataset
+
+def _csv_provenance() -> dict[str, object]:
+    provenance = physics_provenance(DEFAULT_PHYSICS_CONFIG)
+    return {
+        **provenance,
+        "physics_config": json.dumps(
+            provenance["physics_config"],
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
+    }
+
+
+def _state_metadata() -> np.ndarray:
+    return np.array(json.dumps(physics_provenance(DEFAULT_PHYSICS_CONFIG)))
 
 
 def _write_fake_state(
@@ -37,6 +57,7 @@ def _write_fake_state(
             dtype=np.int64,
         ),
         action_mask=np.asarray(action_mask, dtype=bool),
+        metadata_json=_state_metadata(),
     )
 
 
@@ -54,6 +75,7 @@ def _write_examples_csv(
                 "outcome_value_target": outcome_value_target,
                 "physical_objective_schema_version": PHYSICAL_OBJECTIVE_SCHEMA_VERSION,
                 "outcome_value_target_contract_version": OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
+                **_csv_provenance(),
                 "scenario_id": 1,
                 "step": 0,
                 "state_id": "state_0",

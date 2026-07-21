@@ -9,16 +9,17 @@ from typing import TYPE_CHECKING, Any, Mapping
 import numpy as np
 import torch
 
+from grid_topology_ai.config.physics import PhysicsConfig
 from grid_topology_ai.contracts import (
     CHECKPOINT_CONTRACT_VERSION,
     OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
+    physics_provenance,
     require_checkpoint_contracts,
 )
 from grid_topology_ai.models.graph_self_play_dataset import GraphSelfPlayDataset
 from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
 from grid_topology_ai.self_play.artifacts import sha256_file
 from grid_topology_ai.training.metrics import build_value_target_diagnostics
-
 
 _SELECTOR_METRIC_NAMES = {
     "val_loss": "validation_loss",
@@ -42,6 +43,7 @@ def load_checkpoint_payload(
     checkpoint_path: str | Path,
     *,
     map_location: str | torch.device = "cpu",
+    expected_physics_config: PhysicsConfig | None = None,
 ) -> dict[str, Any]:
     checkpoint_path = Path(checkpoint_path)
     if not checkpoint_path.exists():
@@ -49,7 +51,11 @@ def load_checkpoint_payload(
     payload = torch.load(checkpoint_path, map_location=map_location, weights_only=False)
     if not isinstance(payload, dict):
         raise ValueError(f"Checkpoint payload must be a mapping. Checkpoint: {checkpoint_path}")
-    require_checkpoint_contracts(payload, source=str(checkpoint_path))
+    require_checkpoint_contracts(
+        payload,
+        source=str(checkpoint_path),
+        expected_physics_config=expected_physics_config,
+    )
     return payload
 
 
@@ -225,6 +231,7 @@ def build_dataset_metadata(
             missing_state_count += 1
 
     return {
+        **physics_provenance(dataset.physics_config),
         "examples_csv": str(examples_csv),
         "examples_csv_abs": str(examples_csv_abs),
         "examples_csv_sha256": sha256_file(examples_csv_abs),
@@ -293,6 +300,7 @@ def make_checkpoint(
         "outcome_value_target_contract_version": (
             OUTCOME_VALUE_TARGET_CONTRACT_VERSION
         ),
+        **physics_provenance(dataset.physics_config),
         "model_type": str(getattr(model, "model_type", "graph_policy_value_net")),
         "model_state_dict": model_state_dict_cpu,
         "num_bus_features": int(dataset.num_bus_features),
@@ -369,7 +377,11 @@ def load_initial_checkpoint_into_model(
         if checkpoint_payload is not None
         else load_checkpoint_payload(checkpoint_path, map_location=device)
     )
-    require_checkpoint_contracts(checkpoint, source=str(checkpoint_path))
+    require_checkpoint_contracts(
+        checkpoint,
+        source=str(checkpoint_path),
+        expected_physics_config=dataset.physics_config,
+    )
 
     expected_model_type = (
         "graph_policy_value_net_v2"

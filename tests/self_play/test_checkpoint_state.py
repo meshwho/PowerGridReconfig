@@ -7,12 +7,17 @@ import pytest
 import torch
 
 from grid_topology_ai.config import SelfPlayConfig
+from grid_topology_ai.config.physics import DEFAULT_PHYSICS_CONFIG
 from grid_topology_ai.contracts import (
     CHECKPOINT_CONTRACT_VERSION,
     EVALUATION_METRICS_CONTRACT_VERSION,
     OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
+    physics_provenance,
 )
-from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
+from grid_topology_ai.physical_objective import (
+    PHYSICAL_OBJECTIVE_SCHEMA_VERSION,
+    physical_objective_contract,
+)
 from grid_topology_ai.self_play.checkpoint_state import (
     initialize_best_state,
     promote_candidate,
@@ -105,6 +110,7 @@ def _write_checkpoint(path: Path, *, tag: str) -> None:
             "outcome_value_target_contract_version": (
                 OUTCOME_VALUE_TARGET_CONTRACT_VERSION
             ),
+            **physics_provenance(DEFAULT_PHYSICS_CONFIG),
         },
         path,
     )
@@ -114,9 +120,8 @@ def _metrics(solve_rate: float) -> dict[str, object]:
     return {
         "solve_rate": solve_rate,
         "evaluation_metrics_contract_version": EVALUATION_METRICS_CONTRACT_VERSION,
-        "physical_objective_contract": {
-            "schema_version": PHYSICAL_OBJECTIVE_SCHEMA_VERSION
-        },
+        **physics_provenance(DEFAULT_PHYSICS_CONFIG),
+        "physical_objective_contract": physical_objective_contract(),
     }
 
 

@@ -1,17 +1,20 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
 
 from grid_topology_ai.config import EvaluationConfig
-from grid_topology_ai.self_play import stages
-from grid_topology_ai.self_play.artifacts import save_json
+from grid_topology_ai.config.physics import DEFAULT_PHYSICS_CONFIG
 from grid_topology_ai.contracts import (
     CHECKPOINT_CONTRACT_VERSION,
     OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
+    physics_provenance,
 )
 from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
+from grid_topology_ai.self_play import stages
+from grid_topology_ai.self_play.artifacts import save_json
 
 
 def _checkpoint_metadata(selector: str) -> dict[str, object]:
@@ -20,6 +23,7 @@ def _checkpoint_metadata(selector: str) -> dict[str, object]:
         "checkpoint_contract_version": CHECKPOINT_CONTRACT_VERSION,
         "physical_objective_schema_version": PHYSICAL_OBJECTIVE_SCHEMA_VERSION,
         "outcome_value_target_contract_version": OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
+        **physics_provenance(DEFAULT_PHYSICS_CONFIG),
     }
 
 
@@ -48,6 +52,7 @@ def test_run_evaluate_resolves_config_pf_alg(tmp_path: Path, monkeypatch) -> Non
 
 
 import torch
+
 from grid_topology_ai.config import TrainingConfig
 
 
@@ -62,6 +67,7 @@ def test_run_train_requires_validation_csv(tmp_path: Path) -> None:
             init_checkpoint=tmp_path / "best.pt",
             output_dir=tmp_path / "train",
             config=TrainingConfig(),
+            physics_config=DEFAULT_PHYSICS_CONFIG,
             iteration=1,
             seed=8,
         )
@@ -87,6 +93,7 @@ def test_run_train_passes_validation_and_seed(tmp_path: Path, monkeypatch) -> No
         init_checkpoint=tmp_path / "best.pt",
         output_dir=tmp_path / "train",
         config=TrainingConfig(),
+        physics_config=DEFAULT_PHYSICS_CONFIG,
         iteration=1,
         seed=8,
     )
@@ -116,18 +123,19 @@ def test_run_train_rejects_non_validation_selector(tmp_path: Path, monkeypatch) 
             init_checkpoint=tmp_path / "best.pt",
             output_dir=tmp_path / "train",
             config=TrainingConfig(),
+            physics_config=DEFAULT_PHYSICS_CONFIG,
             iteration=1,
             seed=8,
         )
 
 
-import math
 import pandas as pd
 
 
 def _stage_rows(
     *, reason: str = "solved", solved: bool = True, count: int = 1
 ) -> list[dict[str, object]]:
+    provenance = physics_provenance(DEFAULT_PHYSICS_CONFIG)
     return [
         {
             "state_path": "unused.npz",
@@ -139,6 +147,20 @@ def _stage_rows(
             "done": True,
             "termination_reason": reason,
             "physical_objective_schema_version": PHYSICAL_OBJECTIVE_SCHEMA_VERSION,
+            "outcome_value_target_contract_version": (
+                OUTCOME_VALUE_TARGET_CONTRACT_VERSION
+            ),
+            "physics_config_contract_version": provenance[
+                "physics_config_contract_version"
+            ],
+            "physics_config": json.dumps(
+                provenance["physics_config"],
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+            "physics_config_fingerprint": provenance[
+                "physics_config_fingerprint"
+            ],
         }
         for step in range(count)
     ]
