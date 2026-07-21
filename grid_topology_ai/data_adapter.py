@@ -12,10 +12,6 @@ from grid_topology_ai.config.physics import (
     ZeroRateAPolicy,
 )
 from grid_topology_ai.power_flow_errors import InvalidPhysicalState
-from grid_topology_ai.physical_objective import (
-    HARD_OVERLOAD_LIMIT_PERCENT,
-    OVERLOAD_LIMIT_PERCENT,
-)
 from grid_topology_ai.physical_constraints import (
     calculate_physical_metrics_from_frames,
 )
@@ -157,8 +153,10 @@ class GridFMAdapter:
         self,
         raw_dir: str | Path,
         scenario_ids: Sequence[int] | None = None,
+        physics_config: PhysicsConfig | None = None,
     ):
         self.raw_dir = Path(raw_dir)
+        self.physics_config = physics_config or DEFAULT_PHYSICS_CONFIG
 
         if scenario_ids is None:
             self._scenario_filter: tuple[int, ...] | None = None
@@ -185,7 +183,8 @@ class GridFMAdapter:
         )
 
         self.branch_df = self._add_branch_loading(
-            self.branch_df
+            self.branch_df,
+            physics_config=self.physics_config,
         )
 
         self._validate_required_columns()
@@ -429,6 +428,15 @@ class GridFMAdapter:
         - choosing training scenarios.
         """
 
+        overload_threshold = (
+                self.physics_config.overload_limit_percent
+                + self.physics_config.thermal_tolerance_percent
+        )
+        hard_overload_threshold = (
+                self.physics_config.hard_overload_limit_percent
+                + self.physics_config.thermal_tolerance_percent
+        )
+
         rows = []
 
         for scenario_id in self.scenario_ids():
@@ -439,8 +447,12 @@ class GridFMAdapter:
             in_service = branch[branch["br_status"] > 0]
             outaged = branch[branch["br_status"] <= 0]
 
-            overloaded = in_service[in_service["loading_percent"] > OVERLOAD_LIMIT_PERCENT]
-            hard_overloaded = in_service[in_service["loading_percent"] > HARD_OVERLOAD_LIMIT_PERCENT]
+            overloaded = in_service[
+                in_service["loading_percent"] > overload_threshold
+                ]
+            hard_overloaded = in_service[
+                in_service["loading_percent"] > hard_overload_threshold
+                ]
 
             voltage_metrics = compute_voltage_violation_metrics(bus)
 
@@ -549,9 +561,8 @@ class GridFMAdapter:
             bus_df=bus,
             branch_df=branch,
             gen_df=gen,
-            # GridFM parquet rows do not carry reliable AC-PF convergence
-            # provenance. The environment obtains it with an explicit no-op PF.
             power_flow_converged=False,
+            physics_config=self.physics_config,
         )
 
         metrics = {

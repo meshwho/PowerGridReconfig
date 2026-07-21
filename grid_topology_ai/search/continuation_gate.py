@@ -6,9 +6,9 @@ from typing import Any
 import numpy as np
 
 from grid_topology_ai.action_space import GridFMAction
-from grid_topology_ai.physical_objective import (
-    HARD_OVERLOAD_LIMIT_PERCENT,
-    OVERLOAD_LIMIT_PERCENT,
+from grid_topology_ai.config.physics import (
+    DEFAULT_PHYSICS_CONFIG,
+    PhysicsConfig,
 )
 from grid_topology_ai.data_adapter import BRANCH_FEATURE_COLUMNS, GridFMState
 from grid_topology_ai.search.mcts import MCTSNode, MCTSResult
@@ -73,41 +73,79 @@ def topology_penalty(
     state: GridFMState,
     depth: int = 0,
     switch_penalty: float = 8.0,
+    physics_config: PhysicsConfig | None = None,
 ) -> float:
     """
     Lower is better.
 
     This penalty is used only for lookahead branch comparison.
-    It is intentionally operational:
-      - hard overloads dominate;
-      - soft overloads matter;
-      - extra switching is penalized;
-      - voltage violation is included.
     """
-
+    config = physics_config or DEFAULT_PHYSICS_CONFIG
     loading = _active_loadings(state)
 
-    total_overload = float(np.sum(np.maximum(loading - OVERLOAD_LIMIT_PERCENT, 0.0)))
-    hard_overload = float(np.sum(np.maximum(loading - HARD_OVERLOAD_LIMIT_PERCENT, 0.0)))
+    overload_threshold = (
+        config.overload_limit_percent
+        + config.thermal_tolerance_percent
+    )
+    hard_overload_threshold = (
+        config.hard_overload_limit_percent
+        + config.thermal_tolerance_percent
+    )
 
-    num_overloaded = int(state.metrics.get("num_overloaded_branches", 0))
-    num_hard = int(state.metrics.get("num_hard_overloaded_branches", 0))
+    total_overload = float(
+        np.sum(
+            np.where(
+                loading > overload_threshold,
+                loading - config.overload_limit_percent,
+                0.0,
+            )
+        )
+    )
+    hard_overload = float(
+        np.sum(
+            np.where(
+                loading > hard_overload_threshold,
+                loading - config.hard_overload_limit_percent,
+                0.0,
+            )
+        )
+    )
 
-    max_loading = float(state.metrics.get("max_loading_percent", 0.0))
-    voltage_violation = float(state.metrics.get("total_voltage_violation", 0.0))
+    num_overloaded = int(
+        state.metrics.get("num_overloaded_branches", 0)
+    )
+    num_hard = int(
+        state.metrics.get("num_hard_overloaded_branches", 0)
+    )
+
+    max_loading = float(
+        state.metrics.get("max_loading_percent", 0.0)
+    )
+    voltage_violation = float(
+        state.metrics.get("total_voltage_violation", 0.0)
+    )
+
+    max_loading_excess = (
+        max_loading - config.overload_limit_percent
+        if max_loading > overload_threshold
+        else 0.0
+    )
 
     return float(
         1000.0 * num_hard
         + 30.0 * hard_overload
         + 80.0 * num_overloaded
         + 4.0 * total_overload
-        + 5.0 * max(0.0, max_loading - OVERLOAD_LIMIT_PERCENT)
+        + 5.0 * max_loading_excess
         + 500.0 * voltage_violation
         + switch_penalty * float(depth)
     )
 
 
-def _node_penalty(node: MCTSNode) -> float:
+def _node_penalty(
+    node: MCTSNode,
+    physics_config: PhysicsConfig,
+) -> float:
     state = node.env.current_state
 
     if state is None:
@@ -116,8 +154,8 @@ def _node_penalty(node: MCTSNode) -> float:
     return topology_penalty(
         state=state,
         depth=node.depth,
+        physics_config=physics_config,
     )
-
 
 def _node_metrics(node: MCTSNode) -> dict[str, Any]:
     state = node.env.current_state
@@ -131,6 +169,7 @@ def _node_metrics(node: MCTSNode) -> dict[str, Any]:
 def _best_reachable_state_from_subtree(
     start_node: MCTSNode,
     first_action_id: int,
+    physics_config: PhysicsConfig,
 ) -> tuple[float, list[int], list[int | None], list[float], dict[str, Any]]:
     """
     Iterative DFS over already-built MCTS subtree.
@@ -138,7 +177,7 @@ def _best_reachable_state_from_subtree(
     This is intentionally non-recursive and avoids repeated list copying where possible.
     """
 
-    best_penalty = _node_penalty(start_node)
+    best_penalty = _node_penalty(start_node, physics_config)
     best_actions = [int(first_action_id)]
     best_branches = [start_node.branch_id_from_parent]
     best_rewards = [float(start_node.reward_from_parent)]
@@ -163,7 +202,7 @@ def _best_reachable_state_from_subtree(
     while stack:
         node, action_path, branch_path, reward_path = stack.pop()
 
-        penalty = _node_penalty(node)
+        penalty = _node_penalty(node, physics_config)
 
         if penalty < best_penalty:
             best_penalty = penalty
@@ -246,6 +285,7 @@ def analyze_root_branches(
     min_soft_improvement: float = 15.0,
     min_visits: int = 5,
     min_visit_fraction: float = 0.01,
+    physics_config: PhysicsConfig | None = None,
 ) -> ContinuationDecision:
     """
     Decide executed action using lookahead gate.
@@ -260,6 +300,8 @@ def analyze_root_branches(
       - endless topology switching after hard overloads are already cleared;
       - selecting a low-confidence branch only because it had one lucky leaf.
     """
+
+    config = physics_config or DEFAULT_PHYSICS_CONFIG
 
     root = result.root
     root_state = root.env.current_state
@@ -283,7 +325,11 @@ def analyze_root_branches(
             branches=[],
         )
 
-    root_penalty = topology_penalty(root_state, depth=0)
+    root_penalty = topology_penalty(
+        root_state,
+        depth=0,
+        physics_config=config,
+    )
 
     root_num_hard = int(root_state.metrics.get("num_hard_overloaded_branches", 0))
     root_has_hard = root_num_hard > 0
@@ -298,6 +344,7 @@ def analyze_root_branches(
             _best_reachable_state_from_subtree(
                 start_node=child,
                 first_action_id=int(action_id),
+                physics_config=config,
             )
         )
 

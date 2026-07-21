@@ -9,15 +9,31 @@ def test_physical_objective_has_no_heavy_or_cyclic_imports():
         assert token not in text
 
 
-def test_core_files_import_physical_objective_contract():
+def test_objective_consumers_import_physical_objective_contract():
     files = [
-        "data_adapter.py", "reward.py", "environment.py", "search/mcts.py",
-        "search/continuation_gate.py", "self_play/generation.py",
-        "evaluation/metrics.py", "evaluation/checkpoint.py",
+        "reward.py",
+        "environment.py",
+        "search/mcts.py",
+        "evaluation/metrics.py",
+        "evaluation/checkpoint.py",
     ]
-    for rel in files:
-        assert "physical_objective" in (ROOT / "grid_topology_ai" / rel).read_text()
 
+    for rel in files:
+        text = (ROOT / "grid_topology_ai" / rel).read_text()
+        assert "physical_objective" in text
+
+
+def test_runtime_threshold_consumers_import_physics_config():
+    files = [
+        "data_adapter.py",
+        "search/continuation_gate.py",
+        "self_play/generation.py",
+        "evaluation/metrics.py",
+    ]
+
+    for rel in files:
+        text = (ROOT / "grid_topology_ai" / rel).read_text()
+        assert "grid_topology_ai.config.physics" in text
 
 def test_selected_literal_threshold_comparisons_were_removed():
     targets = [
