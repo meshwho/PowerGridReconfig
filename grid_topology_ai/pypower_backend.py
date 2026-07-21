@@ -824,16 +824,58 @@ class GridFMPowerFlowBackend:
         qf = qf64.astype(np.float32)
         pt = pt64.astype(np.float32)
         qt = qt64.astype(np.float32)
-        br_status = branch_res[:, BR_STATUS].astype(np.float32)
 
         s_from64 = np.hypot(pf64, qf64)
         s_to64 = np.hypot(pt64, qt64)
         s_max64 = np.maximum(s_from64, s_to64)
 
-        rate_a64 = np.asarray(branch_res[:, RATE_A], dtype=np.float64)
+        rate_a64 = np.asarray(
+            branch_res[:, RATE_A],
+            dtype=np.float64,
+        )
+        status64 = np.asarray(
+            branch_res[:, BR_STATUS],
+            dtype=np.float64,
+        )
+
+        if not np.isfinite(rate_a64).all():
+            raise InvalidPhysicalState(
+                "Branch RATE_A contains non-finite values."
+            )
+
+        if not np.isfinite(status64).all():
+            raise InvalidPhysicalState(
+                "Branch status contains non-finite values."
+            )
+
+        if np.any((status64 != 0.0) & (status64 != 1.0)):
+            raise InvalidPhysicalState(
+                "Branch status must contain only 0 or 1."
+            )
+
+        br_status = status64.astype(np.float32)
         active = br_status > 0.0
         rated = active & (rate_a64 > 0.0)
         unlimited = active & (rate_a64 == 0.0)
+
+        if np.any(active & (rate_a64 < 0.0)):
+            raise InvalidPhysicalState(
+                "Active branch RATE_A must be non-negative."
+            )
+
+        with np.errstate(over="ignore", under="ignore", invalid="ignore"):
+            rate_a = rate_a64.astype(np.float32)
+
+        if not np.isfinite(rate_a).all():
+            raise InvalidPhysicalState(
+                "Branch RATE_A cannot be represented in feature precision."
+            )
+
+        if np.any((rate_a64 > 0.0) & (rate_a == 0.0)):
+            raise InvalidPhysicalState(
+                "Positive RATE_A underflows to zero in feature precision."
+            )
+
         if not np.isfinite(s_from64[active]).all() or not np.isfinite(s_to64[active]).all():
             raise InvalidPhysicalState("Active branch flow magnitude is non-finite.")
         if self.physics_config.zero_rate_a_policy.value == "error" and unlimited.any():
@@ -853,6 +895,7 @@ class GridFMPowerFlowBackend:
         branch_features[:, branch_col["qf"]] = qf
         branch_features[:, branch_col["pt"]] = pt
         branch_features[:, branch_col["qt"]] = qt
+        branch_features[:, branch_col["rate_a"]] = rate_a
         branch_features[:, branch_col["br_status"]] = br_status
         branch_features[:, branch_col["s_from_mva"]] = s_from
         branch_features[:, branch_col["s_to_mva"]] = s_to
@@ -956,12 +999,16 @@ class GridFMPowerFlowBackend:
             bus_df.loc[mask, "Qg"] = float(row["q_mvar"])
 
         branch_df["br_status"] = branch_res[:, BR_STATUS]
+        branch_df["rate_a"] = branch_res[:, RATE_A]
         branch_df["pf"] = branch_res[:, PF]
         branch_df["qf"] = branch_res[:, QF]
         branch_df["pt"] = branch_res[:, PT]
         branch_df["qt"] = branch_res[:, QT]
 
-        branch_df = GridFMAdapter._add_branch_loading(branch_df)
+        branch_df = GridFMAdapter._add_branch_loading(
+            branch_df,
+            physics_config=self.physics_config,
+        )
 
         return self._build_state_from_frames(
             scenario_id=scenario_id,

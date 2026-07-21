@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
-from pypower.idx_brch import PF, PT, QF, QT
+from pypower.idx_brch import PF, PT, QF, QT, RATE_A
 
 from grid_topology_ai.data_adapter import (
     BRANCH_FEATURE_COLUMNS,
@@ -145,6 +145,42 @@ def test_fast_builder_rejects_float32_overflow_in_active_branch_features() -> No
             original_frames=frames,
         )
 
+def test_slow_and_fast_builders_reject_rate_a_underflow() -> None:
+    backend = GridFMPowerFlowBackend(adapter=_adapter())
+    ppc, frames = backend._build_ppc(1, None)
+
+    valid_result = _completed_result(ppc)
+    previous = backend._build_state_from_pypower_result(
+        scenario_id=1,
+        result_ppc=valid_result,
+        original_frames=frames,
+    )
+
+    damaged_result = _completed_result(ppc)
+    damaged_result["branch"][0, PF] = 1e20
+    damaged_result["branch"][0, PT] = -1e20
+    damaged_result["branch"][0, RATE_A] = 1e-300
+
+    damaged_frames = {
+        name: frame.copy()
+        for name, frame in frames.items()
+    }
+    damaged_frames["branch"].loc[0, "rate_a"] = 1e-300
+
+    with np.testing.assert_raises(InvalidPhysicalState):
+        backend._build_state_from_pypower_result(
+            scenario_id=1,
+            result_ppc=damaged_result,
+            original_frames=damaged_frames,
+        )
+
+    with np.testing.assert_raises(InvalidPhysicalState):
+        backend._build_state_from_pypower_result_fast(
+            scenario_id=1,
+            result_ppc=damaged_result,
+            previous_state=previous,
+            original_frames=damaged_frames,
+        )
 
 def test_initial_power_flow_rejects_non_finite_result(
     monkeypatch,

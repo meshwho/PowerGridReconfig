@@ -268,15 +268,26 @@ def calculate_physical_metrics(
     qf = branch[:, QF]
     pt = branch[:, PT]
     qt = branch[:, QT]
-    s_from = np.sqrt(np.square(pf) + np.square(qf))
-    s_to = np.sqrt(np.square(pt) + np.square(qt))
+
+    # np.hypot is more stable than sqrt(p**2 + q**2) for large values.
+    s_from = np.hypot(pf, qf)
+    s_to = np.hypot(pt, qt)
     s_max = np.maximum(s_from, s_to)
+
     rate_a = branch[:, RATE_A]
     constrained = active_branch & np.isfinite(rate_a) & (rate_a > 0.0)
     invalid_rate = active_branch & (~np.isfinite(rate_a) | (rate_a < 0.0))
+
     loading = np.zeros(len(branch), dtype=float)
-    loading[constrained] = s_max[constrained] / rate_a[constrained] * 100.0
-    invalid_flow = active_branch & ~np.isfinite(s_max)
+    with np.errstate(over="ignore", divide="ignore", invalid="ignore"):
+        loading[constrained] = (
+                s_max[constrained] / rate_a[constrained] * 100.0
+        )
+
+    invalid_loading = constrained & ~np.isfinite(loading)
+    invalid_flow = active_branch & (
+            ~np.isfinite(s_max) | invalid_loading
+    )
     config = physics_config or PhysicsConfig()
     overload = constrained & (
         loading > config.overload_limit_percent + config.thermal_tolerance_percent

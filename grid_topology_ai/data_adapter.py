@@ -6,7 +6,12 @@ from typing import Any, Sequence
 
 import numpy as np
 import pandas as pd
-
+from grid_topology_ai.config.physics import (
+    DEFAULT_PHYSICS_CONFIG,
+    PhysicsConfig,
+    ZeroRateAPolicy,
+)
+from grid_topology_ai.power_flow_errors import InvalidPhysicalState
 from grid_topology_ai.physical_objective import (
     HARD_OVERLOAD_LIMIT_PERCENT,
     OVERLOAD_LIMIT_PERCENT,
@@ -281,40 +286,129 @@ class GridFMAdapter:
             raise ValueError(f"Missing generator columns: {sorted(missing_gen)}")
 
     @staticmethod
-    def _add_branch_loading(branch_df: pd.DataFrame) -> pd.DataFrame:
+    def _add_branch_loading(
+        branch_df: pd.DataFrame,
+        physics_config: PhysicsConfig | None = None,
+    ) -> pd.DataFrame:
         """
-        Add MVA flow and loading columns.
+        Add strictly validated MVA flow and loading columns.
 
-        gridfm-datakit gives:
-            pf, qf, pt, qt, rate_a
+        Non-finite and non-representable mandatory physical values are rejected.
+        They must never be converted to zero.
 
-        We compute:
-            S_from = sqrt(pf^2 + qf^2)
-            S_to   = sqrt(pt^2 + qt^2)
-            loading = max(S_from, S_to) / rate_a * 100
-
-        If a branch is out of service, its loading is set to 0.
+        RATE_A == 0 follows PhysicsConfig.zero_rate_a_policy.
+        Inactive branches have loading_percent == 0.
         """
 
-        # GridFMAdapter owns this DataFrame, so a full deep copy
-        # is unnecessary and creates a large initialization peak.
+        config = physics_config or DEFAULT_PHYSICS_CONFIG
         df = branch_df
 
-        s_from = np.sqrt(df["pf"] ** 2 + df["qf"] ** 2)
-        s_to = np.sqrt(df["pt"] ** 2 + df["qt"] ** 2)
+        try:
+            pf = df["pf"].to_numpy(dtype=np.float64)
+            qf = df["qf"].to_numpy(dtype=np.float64)
+            pt = df["pt"].to_numpy(dtype=np.float64)
+            qt = df["qt"].to_numpy(dtype=np.float64)
+            rate_a = df["rate_a"].to_numpy(dtype=np.float64)
+            status = df["br_status"].to_numpy(dtype=np.float64)
+        except (KeyError, TypeError, ValueError) as exc:
+            raise InvalidPhysicalState(
+                "Branch flow data must contain numeric "
+                "pf/qf/pt/qt/rate_a/br_status columns."
+            ) from exc
 
+        mandatory_arrays = {
+            "pf": pf,
+            "qf": qf,
+            "pt": pt,
+            "qt": qt,
+            "rate_a": rate_a,
+            "br_status": status,
+        }
+
+        for name, values in mandatory_arrays.items():
+            if not np.isfinite(values).all():
+                raise InvalidPhysicalState(
+                    f"Branch column {name} contains NaN or infinity."
+                )
+
+        if not np.isin(status, (0.0, 1.0)).all():
+            raise InvalidPhysicalState(
+                "Branch status must contain only 0 or 1."
+            )
+
+        active = status > 0.0
+        rated = active & (rate_a > 0.0)
+        unlimited = active & (rate_a == 0.0)
+
+        if np.any(active & (rate_a < 0.0)):
+            raise InvalidPhysicalState(
+                "Active branch RATE_A must be non-negative."
+            )
+
+        if (
+            config.zero_rate_a_policy is ZeroRateAPolicy.ERROR
+            and unlimited.any()
+        ):
+            raise InvalidPhysicalState(
+                "Active branch RATE_A=0 is forbidden by PhysicsConfig."
+            )
+
+        s_from = np.hypot(pf, qf)
+        s_to = np.hypot(pt, qt)
         s_max = np.maximum(s_from, s_to)
 
-        rate_a = df["rate_a"].replace(0, np.nan)
+        if not all(
+            np.isfinite(values).all()
+            for values in (s_from, s_to, s_max)
+        ):
+            raise InvalidPhysicalState(
+                "Branch apparent-power magnitude is non-finite."
+            )
 
-        df["s_from_mva"] = s_from
-        df["s_to_mva"] = s_to
-        df["s_max_mva"] = s_max
-        df["loading_percent"] = s_max / rate_a * 100.0
+        loading = np.zeros_like(s_max, dtype=np.float64)
 
-        df.loc[df["br_status"] <= 0, "loading_percent"] = 0.0
-        df["loading_percent"] = df["loading_percent"].replace([np.inf, -np.inf], np.nan)
-        df["loading_percent"] = df["loading_percent"].fillna(0.0)
+        with np.errstate(over="ignore", divide="ignore", invalid="ignore"):
+            loading[rated] = (
+                s_max[rated] / rate_a[rated] * 100.0
+            )
+
+        if not np.isfinite(loading[rated]).all():
+            raise InvalidPhysicalState(
+                "Active rated branch loading is non-finite."
+            )
+
+        float32_features = {
+            **mandatory_arrays,
+            "s_from_mva": s_from,
+            "s_to_mva": s_to,
+            "s_max_mva": s_max,
+            "loading_percent": loading,
+        }
+
+        converted: dict[str, np.ndarray] = {}
+
+        for name, values in float32_features.items():
+            with np.errstate(over="ignore", under="ignore", invalid="ignore"):
+                feature = values.astype(np.float32)
+
+            if not np.isfinite(feature).all():
+                raise InvalidPhysicalState(
+                    f"Branch feature {name} cannot be represented in float32."
+                )
+
+            if name == "rate_a" and np.any(
+                (values > 0.0) & (feature == 0.0)
+            ):
+                raise InvalidPhysicalState(
+                    "Positive RATE_A underflows to zero in feature precision."
+                )
+
+            converted[name] = feature
+
+        df["s_from_mva"] = converted["s_from_mva"]
+        df["s_to_mva"] = converted["s_to_mva"]
+        df["s_max_mva"] = converted["s_max_mva"]
+        df["loading_percent"] = converted["loading_percent"]
 
         return df
 
