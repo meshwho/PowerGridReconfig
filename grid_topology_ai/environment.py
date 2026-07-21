@@ -96,30 +96,38 @@ class TopologySwitchingEnv:
 
     def reset(self, scenario_id: int) -> GridFMState:
         """
-        Reset environment to one emergency scenario.
+        Reset the environment through the canonical AC power-flow backend.
+
+        Raw adapter states are never exposed as MDP states because they do not
+        carry authoritative solver provenance.
         """
 
-        initial_state = self.adapter.build_state(int(scenario_id))
-        self.initial_scenario_id = int(scenario_id)
+        scenario_id = int(scenario_id)
+        self.current_state = None
+        self.initial_scenario_id = scenario_id
         self.step_count = 0
         self.done = False
         self.solved = False
         self.switched_branch_ids = []
         self.termination_reason = None
 
-        # GridFM parquet states do not provide trustworthy convergence
-        # provenance. Establish it once with a no-op AC power flow before the
-        # state can participate in terminal classification or MCTS.
         initial_result = self.backend.run_power_flow(
-            scenario_id=int(scenario_id),
+            scenario_id=scenario_id,
             switched_off_branch_id=None,
         )
         if not initial_result.success or initial_result.next_state is None:
-            self.current_state = initial_state
             self.done = True
-            self.solved = False
             self.termination_reason = TerminationReason.POWER_FLOW_FAILED
-            return self.current_state
+            failure_kind = (
+                initial_result.failure_kind.value
+                if initial_result.failure_kind is not None
+                else "unknown"
+            )
+            raise RuntimeError(
+                "Environment reset could not build a canonical initial state "
+                f"for scenario {scenario_id} "
+                f"(failure_kind={failure_kind}): {initial_result.message}"
+            )
 
         self.current_state = initial_result.next_state
         assessment = assess_physical_state(self.current_state.metrics)
@@ -208,7 +216,6 @@ class TopologySwitchingEnv:
 
         if action.action_type == "do_nothing":
             return self._step_do_nothing(action)
-
         if action.action_type == "switch_off_branch":
             return self._step_switch_off_branch(action)
 

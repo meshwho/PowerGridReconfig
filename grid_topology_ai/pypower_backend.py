@@ -37,6 +37,7 @@ class GridFMPowerFlowBackend(_CoreGridFMPowerFlowBackend):
         enable_cache: bool = True,
         store_raw_result: bool = False,
     ) -> None:
+        self._require_matching_physics_contract(adapter, physics_config)
         super().__init__(
             adapter=adapter,
             physics_config=physics_config,
@@ -44,6 +45,25 @@ class GridFMPowerFlowBackend(_CoreGridFMPowerFlowBackend):
             store_raw_result=store_raw_result,
         )
         self._state_builder = PowerFlowStateBuilder(self.physics_config)
+
+    @staticmethod
+    def _require_matching_physics_contract(
+        adapter: GridFMAdapter,
+        physics_config: PhysicsConfig,
+    ) -> None:
+        if not isinstance(physics_config, PhysicsConfig):
+            raise TypeError("physics_config must be a PhysicsConfig.")
+
+        adapter_config = getattr(adapter, "physics_config", None)
+        if adapter_config is None:
+            return
+        if not isinstance(adapter_config, PhysicsConfig):
+            raise TypeError("adapter.physics_config must be a PhysicsConfig.")
+        if adapter_config.fingerprint() != physics_config.fingerprint():
+            raise ValueError(
+                "Adapter and power-flow backend must use the same "
+                "PhysicsConfig fingerprint."
+            )
 
     def _solve_ppc(
         self,
