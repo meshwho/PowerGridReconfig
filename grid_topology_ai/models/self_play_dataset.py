@@ -12,6 +12,7 @@ from grid_topology_ai.self_play.example_validation import (
     REQUIRED_EXAMPLE_COLUMNS,
     validate_example_contract_versions,
     validate_example_outcome_contracts,
+    validate_state_physics_provenance,
 )
 
 
@@ -53,7 +54,7 @@ class SelfPlayDataset(Dataset):
             raise ValueError(
                 f"Examples CSV is missing required columns: {sorted(missing)}"
             )
-        validate_example_contract_versions(
+        self.physics_config = validate_example_contract_versions(
             self.examples,
             source_path=self.examples_csv,
         )
@@ -72,6 +73,11 @@ class SelfPlayDataset(Dataset):
 
             if not state_path.exists():
                 raise FileNotFoundError(f"State file not found: {state_path}")
+
+            validate_state_physics_provenance(
+                state_path,
+                expected_physics_config=self.physics_config,
+            )
 
             data = np.load(state_path, allow_pickle=False)
 

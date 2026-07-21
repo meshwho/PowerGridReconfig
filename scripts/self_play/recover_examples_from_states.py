@@ -9,14 +9,18 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from grid_topology_ai.contracts import require_exact_contract_version
+from grid_topology_ai.config.physics import PhysicsConfig
+from grid_topology_ai.contracts import (
+    physics_provenance,
+    require_exact_contract_version,
+    require_physics_provenance,
+)
 from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
 from grid_topology_ai.termination import (
     parse_termination_reason,
     validate_outcome_invariants,
 )
 from grid_topology_ai.value_targets import add_outcome_value_targets_to_rows
-
 
 STATE_RE = re.compile(r"impact_teacher_scenario_(\d+)_step_(\d+)\.npz$")
 
@@ -52,6 +56,7 @@ def require_metadata_bool(
 
 def recover_examples(states_dir: Path, gamma: float) -> pd.DataFrame:
     rows: list[dict[str, Any]] = []
+    observed_physics_config: PhysicsConfig | None = None
 
     for path in sorted(states_dir.glob("*.npz")):
         match = STATE_RE.search(path.name)
@@ -77,6 +82,14 @@ def recover_examples(states_dir: Path, gamma: float) -> pd.DataFrame:
             source=str(path),
             regeneration_command="python -m scripts.self_play.generate ...",
         )
+        state_physics_config = require_physics_provenance(
+            meta,
+            source=str(path),
+            expected_physics_config=observed_physics_config,
+        )
+        if observed_physics_config is None:
+            observed_physics_config = state_physics_config
+        provenance = physics_provenance(state_physics_config)
 
         scenario_id = int(meta.get("scenario_id", scenario_id_from_name))
         step = int(meta.get("step", step_from_name))
@@ -153,6 +166,17 @@ def recover_examples(states_dir: Path, gamma: float) -> pd.DataFrame:
                 "physical_objective_schema_version": (
                     PHYSICAL_OBJECTIVE_SCHEMA_VERSION
                 ),
+                "physics_config_contract_version": provenance[
+                    "physics_config_contract_version"
+                ],
+                "physics_config": json.dumps(
+                    provenance["physics_config"],
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+                "physics_config_fingerprint": provenance[
+                    "physics_config_fingerprint"
+                ],
                 "visit_counts_json": make_visit_counts_json(selected_action_id),
                 "mcts_policy_json": make_policy_json(selected_action_id),
                 "teacher_decision_reason": teacher_reason,

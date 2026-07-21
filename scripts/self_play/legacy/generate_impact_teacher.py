@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import replace
-
 import argparse
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -14,9 +13,9 @@ except ImportError:  # pragma: no cover
     tqdm = None
 
 from grid_topology_ai.action_space import GridFMActionSpace
+from grid_topology_ai.config.physics import DEFAULT_PHYSICS_CONFIG
 from grid_topology_ai.data_adapter import GridFMAdapter
 from grid_topology_ai.environment import TopologySwitchingEnv
-from grid_topology_ai.config.physics import DEFAULT_PHYSICS_CONFIG
 from grid_topology_ai.pypower_backend import GridFMPowerFlowBackend
 from grid_topology_ai.reward import GridFMReward
 from grid_topology_ai.search.impact_beam_search import (
@@ -221,11 +220,12 @@ def main() -> None:
     print(f"Cache enabled:        {not args.disable_cache}")
     print(f"Clear cache/scenario: {args.clear_cache_between_scenarios}")
 
-    adapter = GridFMAdapter(raw_dir)
+    physics_config = replace(DEFAULT_PHYSICS_CONFIG, pf_alg=args.pf_alg)
+    adapter = GridFMAdapter(raw_dir, physics_config=physics_config)
 
     backend = GridFMPowerFlowBackend(
         adapter=adapter,
-        physics_config=replace(DEFAULT_PHYSICS_CONFIG, pf_alg=args.pf_alg),
+        physics_config=physics_config,
         enable_cache=not args.disable_cache,
     )
 
@@ -234,7 +234,7 @@ def main() -> None:
         enable_cache=not args.disable_cache,
     )
 
-    reward_fn = GridFMReward()
+    reward_fn = GridFMReward(physics_config=physics_config)
 
     planner_config = ImpactBeamSearchConfig(
         max_depth=args.depth,
@@ -248,8 +248,14 @@ def main() -> None:
         progress_update_every=1,
     )
 
-    planner = ImpactBeamSearchPlanner(planner_config)
-    example_writer = ExampleWriter(args.output_dir)
+    planner = ImpactBeamSearchPlanner(
+        planner_config,
+        physics_config=physics_config,
+    )
+    example_writer = ExampleWriter(
+        args.output_dir,
+        physics_config=physics_config,
+    )
 
     total_saved = 0
     total_skipped = 0

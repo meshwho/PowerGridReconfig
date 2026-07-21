@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
+import pandas as pd
 import pytest
 
 from grid_topology_ai.config import (
@@ -10,13 +12,15 @@ from grid_topology_ai.config import (
     GenerationConfig,
     TrainingConfig,
 )
-from grid_topology_ai.self_play.artifacts import save_json
-from grid_topology_ai.self_play import stages
+from grid_topology_ai.config.physics import DEFAULT_PHYSICS_CONFIG
 from grid_topology_ai.contracts import (
     CHECKPOINT_CONTRACT_VERSION,
     OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
+    physics_provenance,
 )
 from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
+from grid_topology_ai.self_play import stages
+from grid_topology_ai.self_play.artifacts import save_json
 
 
 def test_run_generate_uses_generation_request(
@@ -29,18 +33,40 @@ def test_run_generate_uses_generation_request(
         captured.append(request)
         request.output_dir.mkdir(parents=True, exist_ok=True)
         examples_csv = request.output_dir / "examples.csv"
-        examples_csv.write_text(
-            "scenario_id,outcome_value_target,physical_objective_schema_version,"
-            "outcome_value_target_contract_version,solved,done,termination_reason,"
-            "outcome_class,outcome_steps_to_terminal,outcome_value_target_mode,outcome_gamma\n"
-            f"1,0.0,{PHYSICAL_OBJECTIVE_SCHEMA_VERSION},"
-            f"{OUTCOME_VALUE_TARGET_CONTRACT_VERSION},False,True,handoff_to_redispatch,"
-            "handoff_to_redispatch,1,alphazero_discounted,0.95\n"
-            f"2,0.0,{PHYSICAL_OBJECTIVE_SCHEMA_VERSION},"
-            f"{OUTCOME_VALUE_TARGET_CONTRACT_VERSION},False,True,handoff_to_redispatch,"
-            "handoff_to_redispatch,1,alphazero_discounted,0.95\n",
-            encoding="utf-8",
-        )
+        provenance = physics_provenance(DEFAULT_PHYSICS_CONFIG)
+        rows = []
+        for scenario_id in (1, 2):
+            rows.append(
+                {
+                    "scenario_id": scenario_id,
+                    "outcome_value_target": 0.0,
+                    "physical_objective_schema_version": (
+                        PHYSICAL_OBJECTIVE_SCHEMA_VERSION
+                    ),
+                    "outcome_value_target_contract_version": (
+                        OUTCOME_VALUE_TARGET_CONTRACT_VERSION
+                    ),
+                    "physics_config_contract_version": provenance[
+                        "physics_config_contract_version"
+                    ],
+                    "physics_config": json.dumps(
+                        provenance["physics_config"],
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ),
+                    "physics_config_fingerprint": provenance[
+                        "physics_config_fingerprint"
+                    ],
+                    "solved": False,
+                    "done": True,
+                    "termination_reason": "handoff_to_redispatch",
+                    "outcome_class": "handoff_to_redispatch",
+                    "outcome_steps_to_terminal": 1,
+                    "outcome_value_target_mode": "alphazero_discounted",
+                    "outcome_gamma": 0.95,
+                }
+            )
+        pd.DataFrame(rows).to_csv(examples_csv, index=False)
         print("generated examples")
         return examples_csv
 
@@ -93,6 +119,7 @@ def test_run_train_uses_training_request(
                 "checkpoint_contract_version": CHECKPOINT_CONTRACT_VERSION,
                 "physical_objective_schema_version": PHYSICAL_OBJECTIVE_SCHEMA_VERSION,
                 "outcome_value_target_contract_version": OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
+                **physics_provenance(DEFAULT_PHYSICS_CONFIG),
             },
             request.output_path,
         )
@@ -115,6 +142,7 @@ def test_run_train_uses_training_request(
         init_checkpoint=tmp_path / "best.pt",
         output_dir=tmp_path / "train",
         config=config,
+        physics_config=DEFAULT_PHYSICS_CONFIG,
         iteration=5,
         seed=47,
     )

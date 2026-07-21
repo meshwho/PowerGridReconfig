@@ -1,21 +1,28 @@
 from __future__ import annotations
 
-from dataclasses import FrozenInstanceError
+import json
+from dataclasses import FrozenInstanceError, replace
 from pathlib import Path
 from typing import Any
 
+import pandas as pd
 import pytest
 import torch
 
 from grid_topology_ai.config import SelfPlayConfig
+from grid_topology_ai.config.physics import DEFAULT_PHYSICS_CONFIG
 from grid_topology_ai.contracts import (
     CHECKPOINT_CONTRACT_VERSION,
     EVALUATION_METRICS_CONTRACT_VERSION,
     OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
+    physics_provenance,
 )
-from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
-from grid_topology_ai.self_play.checkpoint_state import BestState
+from grid_topology_ai.physical_objective import (
+    PHYSICAL_OBJECTIVE_SCHEMA_VERSION,
+    physical_objective_contract,
+)
 from grid_topology_ai.self_play import iteration as iteration_module
+from grid_topology_ai.self_play.checkpoint_state import BestState
 from grid_topology_ai.self_play.iteration import (
     IterationRequest,
     _count_examples_csv,
@@ -56,7 +63,32 @@ class _FakeReplayBuffer:
             }
         )
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text("scenario_id\n1\n2\n3\n", encoding="utf-8")
+        provenance = physics_provenance(DEFAULT_PHYSICS_CONFIG)
+        pd.DataFrame(
+            [
+                {
+                    "scenario_id": scenario_id,
+                    "physical_objective_schema_version": (
+                        PHYSICAL_OBJECTIVE_SCHEMA_VERSION
+                    ),
+                    "outcome_value_target_contract_version": (
+                        OUTCOME_VALUE_TARGET_CONTRACT_VERSION
+                    ),
+                    "physics_config_contract_version": provenance[
+                        "physics_config_contract_version"
+                    ],
+                    "physics_config": json.dumps(
+                        provenance["physics_config"],
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ),
+                    "physics_config_fingerprint": provenance[
+                        "physics_config_fingerprint"
+                    ],
+                }
+                for scenario_id in (1, 2, 3)
+            ]
+        ).to_csv(output_path, index=False)
         return {"n_examples": int(n_examples), "n_fresh": 2, "n_old": 1}
 
 
@@ -66,15 +98,17 @@ def _metrics(
     pf_alg: int = 3,
     failed_scenarios: int = 0,
 ) -> dict[str, object]:
+    physics_config = replace(DEFAULT_PHYSICS_CONFIG, pf_alg=pf_alg)
     return {
         "solve_rate": solve_rate,
         "failed_scenarios": failed_scenarios,
         "pf_alg": pf_alg,
         "task_config": {"pf_alg": pf_alg},
         "evaluation_metrics_contract_version": EVALUATION_METRICS_CONTRACT_VERSION,
-        "physical_objective_contract": {
-            "schema_version": PHYSICAL_OBJECTIVE_SCHEMA_VERSION
-        },
+        **physics_provenance(physics_config),
+        "physical_objective_contract": physical_objective_contract(
+            physics_config
+        ),
     }
 
 
@@ -160,6 +194,7 @@ def _install_stage_fakes(monkeypatch: pytest.MonkeyPatch, calls: list[str] | Non
                 "outcome_value_target_contract_version": (
                     OUTCOME_VALUE_TARGET_CONTRACT_VERSION
                 ),
+                **physics_provenance(DEFAULT_PHYSICS_CONFIG),
             },
             checkpoint,
         )

@@ -5,8 +5,12 @@ from typing import Any
 
 import pandas as pd
 
-from grid_topology_ai.contracts import EVALUATION_METRICS_CONTRACT_VERSION
 from grid_topology_ai.config.physics import DEFAULT_PHYSICS_CONFIG, PhysicsConfig
+from grid_topology_ai.contracts import (
+    EVALUATION_METRICS_CONTRACT_VERSION,
+    physics_provenance,
+    require_physics_provenance,
+)
 from grid_topology_ai.physical_objective import physical_objective_contract
 from grid_topology_ai.termination import (
     TerminationReason,
@@ -118,15 +122,13 @@ def build_evaluation_metrics(
     # Empty task configs are retained only for the metrics-only public helper.
     # Evaluation workers always provide the complete provenance payload.
     physics_config = (
-        PhysicsConfig.from_mapping(task_config["physics_config"])
-        if "physics_config" in task_config
+        require_physics_provenance(
+            task_config,
+            source="evaluation task config",
+        )
+        if task_config
         else DEFAULT_PHYSICS_CONFIG
     )
-    if (
-        "physics_config_fingerprint" in task_config
-        and physics_config.fingerprint() != task_config["physics_config_fingerprint"]
-    ):
-        raise ValueError("Evaluation metrics received mismatched PhysicsConfig.")
     solved = df["solved"].astype(bool)
     physically_secure = df["physically_secure"].astype(bool)
     if not solved.equals(physically_secure):
@@ -194,11 +196,7 @@ def build_evaluation_metrics(
         "solve_count": solve_count,
         "solve_rate": rate(solve_count, evaluated_scenarios),
         "pf_alg": physics_config.pf_alg,
-        "physics_config_contract_version": task_config.get(
-            "physics_config_contract_version", 1
-        ),
-        "physics_config": physics_config.to_dict(),
-        "physics_config_fingerprint": physics_config.fingerprint(),
+        **physics_provenance(physics_config),
         "physical_objective_contract": physical_objective_contract(physics_config),
         "evaluation_coverage_rate": rate(evaluated_scenarios, requested_count),
         "solve_rate_requested": rate(solve_count, requested_count),

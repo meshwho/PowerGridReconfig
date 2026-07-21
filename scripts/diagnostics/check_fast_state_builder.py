@@ -1,21 +1,20 @@
 from __future__ import annotations
 
-from dataclasses import replace
-
 import argparse
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
 from pypower.api import ppoption, runpf
 
 from grid_topology_ai.action_space import GridFMActionSpace
+from grid_topology_ai.config.physics import DEFAULT_PHYSICS_CONFIG
 from grid_topology_ai.data_adapter import (
     BRANCH_FEATURE_COLUMNS,
     BUS_FEATURE_COLUMNS,
     GridFMAdapter,
 )
 from grid_topology_ai.models.neural_evaluator import NeuralPolicyValueEvaluator
-from grid_topology_ai.config.physics import DEFAULT_PHYSICS_CONFIG
 from grid_topology_ai.pypower_backend import GridFMPowerFlowBackend
 
 
@@ -126,11 +125,12 @@ def main() -> None:
     print("=" * 100)
 
     raw_dir = Path(args.raw_dir)
+    physics_config = replace(DEFAULT_PHYSICS_CONFIG, pf_alg=args.pf_alg)
 
-    adapter = GridFMAdapter(raw_dir)
+    adapter = GridFMAdapter(raw_dir, physics_config=physics_config)
     backend = GridFMPowerFlowBackend(
         adapter=adapter,
-        physics_config=replace(DEFAULT_PHYSICS_CONFIG, pf_alg=args.pf_alg),
+        physics_config=physics_config,
         enable_cache=False,
         store_raw_result=True,
     )
@@ -230,7 +230,10 @@ def main() -> None:
         print("=" * 100)
 
         action_space = GridFMActionSpace(require_connected_after_switch=True)
-        evaluator = NeuralPolicyValueEvaluator(args.checkpoint)
+        evaluator = NeuralPolicyValueEvaluator(
+            args.checkpoint,
+            physics_config=physics_config,
+        )
 
         old_mask = action_space.valid_action_mask(old_state)
         new_mask = action_space.valid_action_mask(new_state)

@@ -15,14 +15,13 @@ from grid_topology_ai.config.physics import (
     PhysicsConfig,
     resolve_physics_config,
 )
-from grid_topology_ai.contracts import PHYSICS_CONFIG_CONTRACT_VERSION
-from grid_topology_ai.termination import (
-    TerminationReason,
-    validate_outcome_invariants,
-)
 from grid_topology_ai.data_adapter import (
     BRANCH_FEATURE_COLUMNS,
     GridFMState,
+)
+from grid_topology_ai.termination import (
+    TerminationReason,
+    validate_outcome_invariants,
 )
 
 _RUNTIME_DEPENDENCIES_LOADED = False
@@ -487,6 +486,7 @@ def generate_self_play_examples(request: GenerationRequest) -> Path:
             checkpoint_path=request.checkpoint,
             device=request.device,
             enable_cache=request.enable_cache,
+            physics_config=request.resolved_physics_config,
         )
         print("\nNeural evaluator loaded.")
 
@@ -496,7 +496,10 @@ def generate_self_play_examples(request: GenerationRequest) -> Path:
         evaluator=evaluator,
         physics_config=request.resolved_physics_config,
     )
-    example_writer = ExampleWriter(request.output_dir)
+    example_writer = ExampleWriter(
+        request.output_dir,
+        physics_config=request.resolved_physics_config,
+    )
 
     total_examples = 0
     start_time = time.perf_counter()
@@ -695,9 +698,6 @@ def generate_self_play_examples(request: GenerationRequest) -> Path:
                     "mcts_depth": int(request.config.depth),
                     "mcts_top_k": int(request.config.top_k),
                     "pf_alg": request.resolved_physics_config.pf_alg,
-                    "physics_config_contract_version": PHYSICS_CONFIG_CONTRACT_VERSION,
-                    "physics_config": request.resolved_physics_config.to_dict(),
-                    "physics_config_fingerprint": request.resolved_physics_config.fingerprint(),
                     "use_continuation_gate": bool(
                         request.config.use_continuation_gate
                     ),

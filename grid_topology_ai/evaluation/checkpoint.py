@@ -15,10 +15,13 @@ except ImportError:  # pragma: no cover
 
 from grid_topology_ai.config import EvaluationConfig
 from grid_topology_ai.config.physics import (
-    DEFAULT_PHYSICS_CONFIG, PhysicsConfig, resolve_physics_config,
+    PhysicsConfig,
+    resolve_physics_config,
 )
-from grid_topology_ai.contracts import PHYSICS_CONFIG_CONTRACT_VERSION
-from grid_topology_ai.config._validation import coerce_exact_int
+from grid_topology_ai.contracts import (
+    physics_provenance,
+    require_physics_provenance,
+)
 from grid_topology_ai.evaluation.metrics import (
     attach_difficulty_metadata,
     build_evaluation_metrics,
@@ -151,6 +154,8 @@ def _ensure_runtime_dependencies() -> None:
     from grid_topology_ai.reward import GridFMReward as _Reward
     from grid_topology_ai.search.continuation_gate import (
         analyze_root_branches as _analyze_root_branches,
+    )
+    from grid_topology_ai.search.continuation_gate import (
         make_do_nothing_action as _make_do_nothing_action,
     )
     from grid_topology_ai.search.mcts import MCTSConfig as _MCTSConfig
@@ -204,14 +209,10 @@ def init_worker_context(
     raw_dir = Path(raw_dir_str)
     checkpoint_path = Path(checkpoint_path_str)
 
-    if (
-        task_config.get("physics_config_contract_version")
-        != PHYSICS_CONFIG_CONTRACT_VERSION
-    ):
-        raise ValueError("Unsupported physics config contract in evaluation task.")
-    physics_config = PhysicsConfig.from_mapping(task_config["physics_config"])
-    if physics_config.fingerprint() != task_config["physics_config_fingerprint"]:
-        raise ValueError("Evaluation task PhysicsConfig fingerprint mismatch.")
+    physics_config = require_physics_provenance(
+        task_config,
+        source="evaluation task",
+    )
     adapter = GridFMAdapter(
         raw_dir,
         physics_config=physics_config,
@@ -230,6 +231,7 @@ def init_worker_context(
         checkpoint_path=checkpoint_path,
         device=str(task_config["device"]),
         enable_cache=not bool(task_config["disable_cache"]),
+        physics_config=physics_config,
     )
     mcts_config = MCTSConfig(
         num_simulations=int(task_config["simulations"]),
@@ -596,9 +598,7 @@ def _make_task_config(request: EvaluationRequest) -> dict[str, Any]:
         "stop_policy": str(request.stop_policy),
         "device": str(config.device),
         "pf_alg": request.resolved_physics_config.pf_alg,
-        "physics_config_contract_version": PHYSICS_CONFIG_CONTRACT_VERSION,
-        "physics_config": request.resolved_physics_config.to_dict(),
-        "physics_config_fingerprint": request.resolved_physics_config.fingerprint(),
+        **physics_provenance(request.resolved_physics_config),
         "disable_cache": bool(request.disable_cache),
         "use_continuation_gate": bool(config.use_continuation_gate),
         "min_hard_improvement": float(request.min_hard_improvement),

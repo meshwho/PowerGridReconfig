@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import FrozenInstanceError
 from pathlib import Path
 from types import SimpleNamespace
@@ -9,12 +10,16 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from grid_topology_ai.config import GenerationConfig
+from grid_topology_ai.config.physics import PhysicsConfig
+from grid_topology_ai.contracts import (
+    OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
+    physics_provenance,
+)
 from grid_topology_ai.data_adapter import (
     BRANCH_FEATURE_COLUMNS,
     GridFMState,
 )
-from grid_topology_ai.config import GenerationConfig
-from grid_topology_ai.contracts import OUTCOME_VALUE_TARGET_CONTRACT_VERSION
 from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
 from grid_topology_ai.self_play import generation
 from grid_topology_ai.self_play.generation import (
@@ -119,17 +124,27 @@ class _FakeExampleWriter:
         "termination_reason",
         "physical_objective_schema_version",
         "outcome_value_target_contract_version",
+        "physics_config_contract_version",
+        "physics_config",
+        "physics_config_fingerprint",
         "visit_counts_json",
         "mcts_policy_json",
     ]
 
-    def __init__(self, output_dir: Path) -> None:
+    def __init__(
+        self,
+        output_dir: Path,
+        *,
+        physics_config: PhysicsConfig,
+    ) -> None:
         self.output_dir = Path(output_dir)
+        self.physics_config = physics_config
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.states_dir = self.output_dir / "states"
         self.rows: list[dict[str, object]] = []
 
     def add_example(self, **kwargs: object) -> None:
+        provenance = physics_provenance(self.physics_config)
         self.rows.append(
             {
                 "state_id": kwargs["state_id"],
@@ -152,6 +167,17 @@ class _FakeExampleWriter:
                 "outcome_value_target_contract_version": (
                     OUTCOME_VALUE_TARGET_CONTRACT_VERSION
                 ),
+                "physics_config_contract_version": provenance[
+                    "physics_config_contract_version"
+                ],
+                "physics_config": json.dumps(
+                    provenance["physics_config"],
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+                "physics_config_fingerprint": provenance[
+                    "physics_config_fingerprint"
+                ],
                 "visit_counts_json": '{"1": 3}',
                 "mcts_policy_json": '{"1": 1.0}',
             }

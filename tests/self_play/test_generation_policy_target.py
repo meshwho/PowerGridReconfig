@@ -147,8 +147,9 @@ def test_gate_override_metadata_values(monkeypatch: pytest.MonkeyPatch, tmp_path
     class _Writer:
         states_dir = tmp_path / "states"
 
-        def __init__(self, output_dir):
+        def __init__(self, output_dir, *, physics_config):
             self.output_dir = output_dir
+            self.physics_config = physics_config
 
         def add_example(self, **kwargs):
             captured.append(kwargs)
@@ -157,7 +158,10 @@ def test_gate_override_metadata_values(monkeypatch: pytest.MonkeyPatch, tmp_path
             return tmp_path / "examples.csv"
 
     from grid_topology_ai.config import GenerationConfig
-    from grid_topology_ai.self_play.generation import GenerationRequest, generate_self_play_examples
+    from grid_topology_ai.self_play.generation import (
+        GenerationRequest,
+        generate_self_play_examples,
+    )
 
     class _Env:
         done = False

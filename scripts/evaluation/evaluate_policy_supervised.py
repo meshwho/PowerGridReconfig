@@ -8,7 +8,6 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
-import torch
 
 from grid_topology_ai.data_adapter import GridFMState
 from grid_topology_ai.models.neural_evaluator import NeuralPolicyValueEvaluator
@@ -263,13 +262,17 @@ def main() -> None:
 
     if df.empty:
         raise ValueError(f"Examples CSV is empty: {examples_path}")
-    validate_example_contract_versions(df, source_path=examples_path)
+    physics_config = validate_example_contract_versions(
+        df,
+        source_path=examples_path,
+    )
     validate_example_outcome_contracts(df, source_path=examples_path)
 
     evaluator = NeuralPolicyValueEvaluator(
         checkpoint_path=checkpoint_path,
         device=args.device,
         enable_cache=False,
+        physics_config=physics_config,
     )
 
     scenario_ids = sorted(int(x) for x in df["scenario_id"].unique())

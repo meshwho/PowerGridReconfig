@@ -2,15 +2,18 @@ from __future__ import annotations
 
 import json
 import math
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, NamedTuple
 
 import numpy as np
 import pandas as pd
 
+from grid_topology_ai.config.physics import PhysicsConfig
 from grid_topology_ai.contracts import (
     OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
     require_exact_contract_version,
+    require_physics_provenance,
 )
 from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
 from grid_topology_ai.termination import (
@@ -38,6 +41,9 @@ REQUIRED_EXAMPLE_COLUMNS: tuple[str, ...] = (
     "step",
     "state_id",
     "physical_objective_schema_version",
+    "physics_config_contract_version",
+    "physics_config",
+    "physics_config_fingerprint",
 ) + REQUIRED_OUTCOME_COLUMNS
 
 _REQUIRED_STATE_ARRAYS = ("bus_features", "branch_features", "edge_index", "action_mask")
@@ -73,7 +79,10 @@ def validate_examples_dataframe(examples: pd.DataFrame, *, source_path: str | Pa
     if examples.empty:
         raise ValueError(f"Examples CSV is empty: {source}")
 
-    validate_example_contract_versions(examples, source_path=source)
+    physics_config = validate_example_contract_versions(
+        examples,
+        source_path=source,
+    )
 
     for column in REQUIRED_EXAMPLE_COLUMNS:
         for index, value in examples[column].items():
@@ -102,7 +111,10 @@ def validate_examples_dataframe(examples: pd.DataFrame, *, source_path: str | Pa
             raise FileNotFoundError(f"State file not found: {state_path}. File: {source}")
         if not state_path.is_file():
             raise ValueError(f"State path is not a file: {state_path}. File: {source}")
-        dims, action_mask = _validate_npz_state(state_path)
+        dims, action_mask = _validate_npz_state(
+            state_path,
+            expected_physics_config=physics_config,
+        )
         if expected is None:
             expected = dims
         elif dims != expected:
@@ -121,8 +133,10 @@ def validate_example_contract_versions(
     examples: pd.DataFrame,
     *,
     source_path: str | Path,
-) -> None:
+    expected_physics_config: PhysicsConfig | None = None,
+) -> PhysicsConfig:
     source = Path(source_path)
+    observed_physics_config: PhysicsConfig | None = None
     for index, row in examples.iterrows():
         require_exact_contract_version(
             row.get("physical_objective_schema_version"),
@@ -142,6 +156,20 @@ def validate_example_contract_versions(
                 "python -m scripts" ".self_play.generate ..."
             ),
         )
+        row_config = require_physics_provenance(
+            row.to_dict(),
+            source=f"{source} row {index}",
+            expected_physics_config=(
+                expected_physics_config or observed_physics_config
+            ),
+        )
+        if observed_physics_config is None:
+            observed_physics_config = row_config
+
+    if observed_physics_config is None:
+        raise ValueError(f"Examples CSV is empty: {source}")
+
+    return observed_physics_config
 
 
 def validate_example_outcome_contracts(
@@ -378,7 +406,47 @@ def _parse_policy(value: Any, *, index: Any, source: Path) -> dict[int, float]:
     return policy
 
 
-def _validate_npz_state(state_path: Path) -> tuple[_GraphDimensions, np.ndarray]:
+def validate_state_physics_provenance(
+    state_path: str | Path,
+    *,
+    expected_physics_config: PhysicsConfig,
+) -> None:
+    state_path = Path(state_path)
+    try:
+        with np.load(state_path, allow_pickle=False) as data:
+            if "metadata_json" not in data.files:
+                raise ValueError(
+                    f"State NPZ is missing required metadata_json: {state_path}"
+                )
+            raw_metadata = np.asarray(data["metadata_json"])
+    except (OSError, EOFError) as exc:
+        raise ValueError(f"Could not read NPZ state: {state_path}") from exc
+
+    if raw_metadata.size != 1:
+        raise ValueError(
+            f"State metadata_json must contain one JSON object: {state_path}"
+        )
+
+    try:
+        metadata = json.loads(str(raw_metadata.item()))
+    except (json.JSONDecodeError, ValueError) as exc:
+        raise ValueError(f"Invalid state metadata_json: {state_path}") from exc
+
+    if not isinstance(metadata, Mapping):
+        raise ValueError(f"State metadata_json must be an object: {state_path}")
+
+    require_physics_provenance(
+        metadata,
+        source=str(state_path),
+        expected_physics_config=expected_physics_config,
+    )
+
+
+def _validate_npz_state(
+    state_path: Path,
+    *,
+    expected_physics_config: PhysicsConfig,
+) -> tuple[_GraphDimensions, np.ndarray]:
     try:
         with np.load(state_path, allow_pickle=False) as data:
             missing = [name for name in _REQUIRED_STATE_ARRAYS if name not in data.files]
@@ -392,6 +460,11 @@ def _validate_npz_state(state_path: Path) -> tuple[_GraphDimensions, np.ndarray]
         if isinstance(exc, ValueError) and "missing required arrays" in str(exc):
             raise
         raise ValueError(f"Could not read NPZ state: {state_path}") from exc
+
+    validate_state_physics_provenance(
+        state_path,
+        expected_physics_config=expected_physics_config,
+    )
 
     if bus_features.ndim != 2 or bus_features.shape[0] <= 0:
         raise ValueError(f"{state_path}: bus_features must be non-empty 2D, got {bus_features.shape}")

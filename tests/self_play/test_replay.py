@@ -8,20 +8,33 @@ import pandas as pd
 import pytest
 
 from grid_topology_ai.config import ReplayBufferConfig
+from grid_topology_ai.config.physics import DEFAULT_PHYSICS_CONFIG, PhysicsConfig
+from grid_topology_ai.contracts import (
+    OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
+    REPLAY_BUFFER_SCHEMA_VERSION,
+    physics_provenance,
+)
+from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
 from grid_topology_ai.self_play import replay as replay_module
 from grid_topology_ai.self_play.replay import RollingReplayBuffer
-from grid_topology_ai.contracts import OUTCOME_VALUE_TARGET_CONTRACT_VERSION
-from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
 from grid_topology_ai.termination import TerminationReason
 
 
 def rows(prefix: str, count: int) -> list[dict[str, object]]:
+    provenance = physics_provenance(DEFAULT_PHYSICS_CONFIG)
     return [
         {
             "state_id": f"{prefix}_{index}",
             "scenario_id": index,
             "physical_objective_schema_version": PHYSICAL_OBJECTIVE_SCHEMA_VERSION,
             "outcome_value_target_contract_version": OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
+            "physics_config_contract_version": provenance[
+                "physics_config_contract_version"
+            ],
+            "physics_config": json.dumps(provenance["physics_config"]),
+            "physics_config_fingerprint": provenance[
+                "physics_config_fingerprint"
+            ],
             "outcome_value_target": 0.0,
             "solved": False,
             "done": True,
@@ -106,12 +119,14 @@ def test_rolling_replay_buffer_class_name_is_explicit() -> None:
 
 
 def _write_valid_state(path: Path) -> Path:
+    provenance = physics_provenance(DEFAULT_PHYSICS_CONFIG)
     np.savez(
         path,
         bus_features=np.zeros((2, 3), dtype=np.float32),
         branch_features=np.zeros((1, 4), dtype=np.float32),
         edge_index=np.array([[0], [1]], dtype=np.int64),
         action_mask=np.array([True, True], dtype=bool),
+        metadata_json=np.array(json.dumps(provenance)),
     )
     return path
 
@@ -119,6 +134,7 @@ def _write_valid_state(path: Path) -> Path:
 def _valid_example_row(
     state_path: Path, *, state_id: str = "state-1"
 ) -> dict[str, object]:
+    provenance = physics_provenance(DEFAULT_PHYSICS_CONFIG)
     return {
         "state_path": str(state_path),
         "mcts_policy_json": '{"0": 0.25, "1": 0.75}',
@@ -128,6 +144,13 @@ def _valid_example_row(
         "outcome_value_target": 1.0,
         "physical_objective_schema_version": PHYSICAL_OBJECTIVE_SCHEMA_VERSION,
         "outcome_value_target_contract_version": OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
+        "physics_config_contract_version": provenance[
+            "physics_config_contract_version"
+        ],
+        "physics_config": json.dumps(provenance["physics_config"]),
+        "physics_config_fingerprint": provenance[
+            "physics_config_fingerprint"
+        ],
         "solved": True,
         "done": True,
         "termination_reason": TerminationReason.SOLVED.value,
@@ -173,7 +196,7 @@ def test_valid_csv_is_added_and_persisted(tmp_path: Path) -> None:
     with gzip.open(iter_file, "rt", encoding="utf-8") as f:
         assert json.loads(f.readline())["replay_iteration"] == 1
     manifest_payload = json.loads(manifest.read_text(encoding="utf-8"))
-    assert manifest_payload["schema_version"] == 2
+    assert manifest_payload["schema_version"] == REPLAY_BUFFER_SCHEMA_VERSION
     assert manifest_payload["physical_objective_schema_version"] == (
         PHYSICAL_OBJECTIVE_SCHEMA_VERSION
     )
@@ -188,6 +211,38 @@ def test_legacy_replay_manifest_is_rejected(tmp_path: Path) -> None:
     )
     with pytest.raises(ValueError, match="legacy artifacts cannot be upgraded safely"):
         RollingReplayBuffer(save_dir=save_dir)
+
+
+def test_replay_manifest_physics_config_mismatch_is_rejected(
+    tmp_path: Path,
+) -> None:
+    save_dir = tmp_path / "replay"
+    source = RollingReplayBuffer(save_dir=save_dir)
+    source.save_manifest()
+
+    with pytest.raises(ValueError, match="PhysicsConfig mismatch"):
+        RollingReplayBuffer(
+            save_dir=save_dir,
+            physics_config=PhysicsConfig(
+                overload_limit_percent=115.0,
+                hard_overload_limit_percent=135.0,
+            ),
+        )
+
+
+def test_replay_rejects_row_from_other_physics_config(tmp_path: Path) -> None:
+    buffer = RollingReplayBuffer(save_dir=tmp_path / "replay")
+    row = rows("other", 1)[0]
+    other = PhysicsConfig(
+        overload_limit_percent=115.0,
+        hard_overload_limit_percent=135.0,
+    )
+    row.update(physics_provenance(other))
+
+    with pytest.raises(ValueError, match="PhysicsConfig mismatch"):
+        buffer.add_examples([row], iteration=1)
+
+    assert buffer.buffer == []
 
 
 def test_invalid_csv_does_not_mutate_buffer(tmp_path: Path) -> None:
@@ -331,9 +386,10 @@ def test_load_rejects_current_version_semantic_invalid_chunk(tmp_path: Path) -> 
     (save_dir / "buffer_manifest.json").write_text(
         json.dumps(
             {
-                "schema_version": 2,
+                "schema_version": REPLAY_BUFFER_SCHEMA_VERSION,
                 "physical_objective_schema_version": PHYSICAL_OBJECTIVE_SCHEMA_VERSION,
                 "outcome_value_target_contract_version": OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
+                **physics_provenance(DEFAULT_PHYSICS_CONFIG),
                 "files": [{"path": chunk.name, "n": 1, "iteration": 1}],
             }
         ),

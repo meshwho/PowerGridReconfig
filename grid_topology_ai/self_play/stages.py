@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from contextlib import contextmanager, redirect_stderr, redirect_stdout
-import math
 import io
+import math
 import os
 import sys
 import traceback
 from collections.abc import Iterator, Mapping
+from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from pathlib import Path
 from typing import Any
 
@@ -19,11 +19,20 @@ from grid_topology_ai.config import (
     TrainingConfig,
 )
 from grid_topology_ai.config.physics import PhysicsConfig
+from grid_topology_ai.contracts import (
+    OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
+    physics_provenance,
+    require_checkpoint_contracts,
+)
 from grid_topology_ai.evaluation.checkpoint import (
     EvaluationRequest,
     evaluate_checkpoint,
 )
 from grid_topology_ai.self_play.artifacts import load_json, save_json, sha256_file
+from grid_topology_ai.self_play.example_validation import (
+    validate_example_contract_versions,
+    validate_example_outcome_contracts,
+)
 from grid_topology_ai.self_play.generation import (
     GenerationRequest,
     generate_self_play_examples,
@@ -33,15 +42,6 @@ from grid_topology_ai.training.graph_policy_value import (
     train_graph_policy_value_model,
 )
 from grid_topology_ai.value_targets import add_outcome_value_targets_to_rows
-from grid_topology_ai.contracts import (
-    OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
-    require_checkpoint_contracts,
-)
-from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
-from grid_topology_ai.self_play.example_validation import (
-    validate_example_contract_versions,
-    validate_example_outcome_contracts,
-)
 
 
 class _TeeTextIO(io.TextIOBase):
@@ -214,6 +214,10 @@ def split_examples_by_scenario(
         raise ValueError(f"Examples CSV contains no rows: {examples_path}")
     if "scenario_id" not in df.columns:
         raise ValueError("Examples CSV must contain scenario_id column.")
+    physics_config = validate_example_contract_versions(
+        df,
+        source_path=examples_path,
+    )
 
     scenario_ids = df["scenario_id"].map(_coerce_integer_scenario_id)
     df = df.copy()
@@ -265,6 +269,7 @@ def split_examples_by_scenario(
 
     metadata: dict[str, object] = {
         "schema_version": 1,
+        **physics_provenance(physics_config),
         "source_csv": str(examples_path),
         "train_csv": str(train_path),
         "validation_csv": str(validation_path),
@@ -414,6 +419,7 @@ def run_train(
     init_checkpoint: str | Path,
     output_dir: str | Path,
     config: TrainingConfig,
+    physics_config: PhysicsConfig,
     iteration: int,
     seed: int,
 ) -> Path:
@@ -452,6 +458,7 @@ def run_train(
         run_name=f"self_play_iter_{int(iteration):03d}",
         metrics_csv=metrics_csv,
         seed=int(seed),
+        physics_config=physics_config,
     )
 
     with _working_directory(project_root):
@@ -474,7 +481,11 @@ def run_train(
     checkpoint = torch.load(candidate_checkpoint, map_location="cpu", weights_only=False)
     if not isinstance(checkpoint, dict):
         raise RuntimeError("Candidate checkpoint payload must be a mapping.")
-    require_checkpoint_contracts(checkpoint, source=str(candidate_checkpoint))
+    require_checkpoint_contracts(
+        checkpoint,
+        source=str(candidate_checkpoint),
+        expected_physics_config=physics_config,
+    )
     if checkpoint.get("checkpoint_selection_metric") != "validation_loss":
         raise RuntimeError(
             "Self-play fine-tuning candidate must be selected by validation_loss; "

@@ -8,7 +8,6 @@ from typing import Mapping
 
 from grid_topology_ai.termination import TerminationReason
 
-
 PHYSICAL_OBJECTIVE_SCHEMA_VERSION = 3
 OVERLOAD_LIMIT_PERCENT = 100.0
 HARD_OVERLOAD_LIMIT_PERCENT = 120.0
@@ -258,14 +257,12 @@ def classify_stop_outcome(
 def physical_objective_contract(physics_config=None) -> dict[str, object]:
     """Describe the actual physics contract used to produce an artifact."""
     from grid_topology_ai.config.physics import DEFAULT_PHYSICS_CONFIG
-    from grid_topology_ai.contracts import PHYSICS_CONFIG_CONTRACT_VERSION
+    from grid_topology_ai.contracts import physics_provenance
 
     config = physics_config or DEFAULT_PHYSICS_CONFIG
     return {
         "schema_version": PHYSICAL_OBJECTIVE_SCHEMA_VERSION,
-        "physics_config_contract_version": PHYSICS_CONFIG_CONTRACT_VERSION,
-        "physics_config": config.to_dict(),
-        "physics_config_fingerprint": config.fingerprint(),
+        **physics_provenance(config),
         "overload_limit_percent": config.overload_limit_percent,
         "hard_overload_limit_percent": config.hard_overload_limit_percent,
         "thermal_limit_tolerance_percent": config.thermal_tolerance_percent,

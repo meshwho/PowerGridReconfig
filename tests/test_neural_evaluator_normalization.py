@@ -3,12 +3,14 @@ from __future__ import annotations
 import numpy as np
 import torch
 
-from grid_topology_ai.models.graph_policy_value_net import GraphPolicyValueNet
-from grid_topology_ai.models.neural_evaluator import NeuralPolicyValueEvaluator
+from grid_topology_ai.config.physics import DEFAULT_PHYSICS_CONFIG
 from grid_topology_ai.contracts import (
     CHECKPOINT_CONTRACT_VERSION,
     OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
+    physics_provenance,
 )
+from grid_topology_ai.models.graph_policy_value_net import GraphPolicyValueNet
+from grid_topology_ai.models.neural_evaluator import NeuralPolicyValueEvaluator
 from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
 
 
@@ -27,6 +29,7 @@ def test_graph_evaluator_loads_checkpoint_normalization_arrays(tmp_path):
             "checkpoint_contract_version": CHECKPOINT_CONTRACT_VERSION,
             "physical_objective_schema_version": PHYSICAL_OBJECTIVE_SCHEMA_VERSION,
             "outcome_value_target_contract_version": OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
+            **physics_provenance(DEFAULT_PHYSICS_CONFIG),
             "model_type": "graph_policy_value_net",
             "model_state_dict": model.state_dict(),
             "num_bus_features": 3,

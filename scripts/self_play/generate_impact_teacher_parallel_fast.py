@@ -1,16 +1,15 @@
 from __future__ import annotations
 
-from dataclasses import replace
-
-import math
 import argparse
 import gc
 import json
+import math
 import multiprocessing as mp
 import os
 import time
 import traceback
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -23,10 +22,15 @@ except ImportError:  # pragma: no cover
     tqdm = None
 
 from grid_topology_ai.action_space import GridFMAction, GridFMActionSpace
+from grid_topology_ai.config.physics import DEFAULT_PHYSICS_CONFIG, PhysicsConfig
+from grid_topology_ai.contracts import (
+    PHYSICS_CONFIG_CONTRACT_VERSION,
+    physics_provenance,
+    require_physics_provenance,
+)
 from grid_topology_ai.data_adapter import BRANCH_FEATURE_COLUMNS, GridFMAdapter
 from grid_topology_ai.environment import TopologySwitchingEnv
-from grid_topology_ai.config.physics import DEFAULT_PHYSICS_CONFIG, PhysicsConfig
-from grid_topology_ai.contracts import PHYSICS_CONFIG_CONTRACT_VERSION
+from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
 from grid_topology_ai.pypower_backend import GridFMPowerFlowBackend
 from grid_topology_ai.reward import GridFMReward
 from grid_topology_ai.search.continuation_gate import make_do_nothing_action
@@ -36,6 +40,10 @@ from grid_topology_ai.search.impact_beam_search import (
     ImpactBeamSearchResult,
     safety_score,
 )
+from grid_topology_ai.self_play.example_validation import (
+    validate_example_contract_versions,
+    validate_example_outcome_contracts,
+)
 from grid_topology_ai.state_store import GridFMStateStore
 from grid_topology_ai.termination import (
     TerminationReason,
@@ -44,14 +52,26 @@ from grid_topology_ai.termination import (
     validate_outcome_invariants,
 )
 from grid_topology_ai.value_targets import add_outcome_value_targets_to_rows
-from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
-
 
 # ======================================================================================
 # Worker-global context
 # ======================================================================================
 
 _WORKER_CONTEXT: dict[str, Any] | None = None
+
+
+def _csv_physics_provenance(
+    physics_config: PhysicsConfig,
+) -> dict[str, object]:
+    provenance = physics_provenance(physics_config)
+    return {
+        **provenance,
+        "physics_config": json.dumps(
+            provenance["physics_config"],
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
+    }
 
 
 def _require_worker_context() -> dict[str, Any]:
@@ -1363,6 +1383,7 @@ def process_one_scenario_fast(scenario_id: int) -> dict[str, Any]:
                 state_id=state_id,
                 action_mask=item["action_mask"],
                 extra_metadata={
+                    **physics_provenance(physics_config),
                     "source": "impact_beam_teacher_multistep_fast",
                     "scenario_id": int(scenario_id),
                     "step": int(step_idx),
@@ -1455,6 +1476,7 @@ def process_one_scenario_fast(scenario_id: int) -> dict[str, Any]:
                     "physical_objective_schema_version": (
                         PHYSICAL_OBJECTIVE_SCHEMA_VERSION
                     ),
+                    **_csv_physics_provenance(physics_config),
                     "visit_counts_json": json.dumps(
                         {str(k): int(v) for k, v in item["visit_counts"].items()}
                     ),
@@ -2420,6 +2442,10 @@ def main() -> None:
     )
 
     task_config = make_task_config(args)
+    physics_config = require_physics_provenance(
+        task_config,
+        source="impact-teacher task config",
+    )
 
     checkpoint_path = (
         output_dir
@@ -2640,6 +2666,16 @@ def main() -> None:
     examples_df = examples_df.sort_values(
         ["scenario_id", "step"],
         ascending=[True, True],
+    )
+
+    validate_example_contract_versions(
+        examples_df,
+        source_path=examples_path,
+        expected_physics_config=physics_config,
+    )
+    validate_example_outcome_contracts(
+        examples_df,
+        source_path=examples_path,
     )
 
     examples_df.to_csv(examples_path, index=False)

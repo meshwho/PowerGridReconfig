@@ -5,16 +5,30 @@ import pandas as pd
 import pytest
 import torch
 
+from grid_topology_ai.config.physics import DEFAULT_PHYSICS_CONFIG
+from grid_topology_ai.contracts import physics_provenance
 from grid_topology_ai.models.graph_self_play_dataset import GraphSelfPlayDataset
-from grid_topology_ai.value_targets import add_outcome_value_targets_to_rows
 from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
+from grid_topology_ai.value_targets import add_outcome_value_targets_to_rows
 
 
 def _current(rows):
+    provenance = physics_provenance(DEFAULT_PHYSICS_CONFIG)
     for row in rows:
         row["physical_objective_schema_version"] = (
             PHYSICAL_OBJECTIVE_SCHEMA_VERSION
         )
+        row["physics_config_contract_version"] = provenance[
+            "physics_config_contract_version"
+        ]
+        row["physics_config"] = json.dumps(
+            provenance["physics_config"],
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        row["physics_config_fingerprint"] = provenance[
+            "physics_config_fingerprint"
+        ]
     return rows
 
 def _write_fake_state(path):
@@ -34,6 +48,9 @@ def _write_fake_state(path):
         branch_features=np.zeros((1, 4), dtype=np.float32),
         edge_index=np.array([[0], [1]], dtype=np.int64),
         action_mask=np.array([True, True], dtype=bool),
+        metadata_json=np.array(
+            json.dumps(physics_provenance(DEFAULT_PHYSICS_CONFIG))
+        ),
     )
 
 

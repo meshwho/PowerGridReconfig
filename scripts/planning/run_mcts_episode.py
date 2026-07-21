@@ -1,24 +1,23 @@
 from __future__ import annotations
 
-from dataclasses import replace
-
 import argparse
+import time
+from dataclasses import replace
 from pathlib import Path
 
 from grid_topology_ai.action_space import GridFMActionSpace
+from grid_topology_ai.config.physics import DEFAULT_PHYSICS_CONFIG
 from grid_topology_ai.data_adapter import GridFMAdapter
 from grid_topology_ai.environment import TopologySwitchingEnv
-from grid_topology_ai.config.physics import DEFAULT_PHYSICS_CONFIG
+from grid_topology_ai.models.neural_evaluator import NeuralPolicyValueEvaluator
 from grid_topology_ai.pypower_backend import GridFMPowerFlowBackend
 from grid_topology_ai.reward import GridFMReward
-from grid_topology_ai.search.mcts import MCTSConfig, MCTSPlanner
-
-from grid_topology_ai.models.neural_evaluator import NeuralPolicyValueEvaluator
-import time
 from grid_topology_ai.search.continuation_gate import (
     analyze_root_branches,
     make_do_nothing_action,
 )
+from grid_topology_ai.search.mcts import MCTSConfig, MCTSPlanner
+
 
 def print_state_metrics(prefix: str, env: TopologySwitchingEnv) -> None:
     state = env.current_state
@@ -237,6 +236,7 @@ def main() -> None:
             checkpoint_path=args.checkpoint,
             device=args.device,
             enable_cache=not args.disable_cache,
+            physics_config=physics_config,
         )
 
         print("\nNeural evaluator loaded.")

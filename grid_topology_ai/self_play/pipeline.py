@@ -3,14 +3,19 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 from grid_topology_ai.config import SelfPlayConfig
+from grid_topology_ai.self_play.acceptance import (
+    require_metrics_pf_alg,
+    require_metrics_physics_config,
+)
 from grid_topology_ai.self_play.artifacts import save_yaml
-from grid_topology_ai.self_play.acceptance import require_metrics_pf_alg
 from grid_topology_ai.self_play.checkpoint_state import initialize_best_state
 from grid_topology_ai.self_play.completion import write_iteration_completion_marker
-from grid_topology_ai.self_play.iteration import IterationRequest, run_self_play_iteration
+from grid_topology_ai.self_play.iteration import (
+    IterationRequest,
+    run_self_play_iteration,
+)
 from grid_topology_ai.self_play.learning_curve import (
     load_learning_curve,
     save_learning_curve,
@@ -99,6 +104,11 @@ def run_self_play_pipeline(
         expected_pf_alg=config.evaluation.pf_alg,
         source=str(paths.best_metrics),
     )
+    require_metrics_physics_config(
+        best_metrics,
+        expected_physics_config=config.physics,
+        source=str(paths.best_metrics),
+    )
 
     pool_metadata = initialize_pool_metadata(
         transitions_csv=paths.pool_transitions_csv,
@@ -110,6 +120,7 @@ def run_self_play_pipeline(
     replay_buffer = RollingReplayBuffer(
         save_dir=paths.replay_dir,
         config=config.replay_buffer,
+        physics_config=config.physics,
     )
 
     learning_curve_path = paths.learning_curve
