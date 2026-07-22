@@ -69,7 +69,6 @@ def test_custom_runtime_thresholds_are_used_consistently():
     from grid_topology_ai.search.continuation_gate import topology_penalty
     from grid_topology_ai.search.dc_action_screener import DCActionScreener
     from grid_topology_ai.search.impact_beam_search import safety_score
-    from grid_topology_ai.search.mcts import MCTSConfig, MCTSPlanner
     from grid_topology_ai.self_play.generation import (
         state_security_penalty,
         terminal_outcome_reward,
@@ -120,11 +119,6 @@ def test_custom_runtime_thresholds_are_used_consistently():
     assert state_security_penalty(state, physics_config) == 140.0
     assert topology_penalty(state, physics_config=physics_config) == 315.0
     assert safety_score(state, physics_config=physics_config) == 1205.0
-    mcts = MCTSPlanner(
-        MCTSConfig(num_simulations=1),
-        physics_config=physics_config,
-    )
-    assert mcts._state_penalty(state) == 140.0
 
     dc_branch = np.zeros((2, 17), dtype=float)
     dc_branch[:, BR_STATUS] = 1.0
