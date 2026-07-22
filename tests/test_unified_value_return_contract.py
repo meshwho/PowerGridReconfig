@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import ast
 import inspect
+import textwrap
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -100,12 +102,46 @@ def test_mcts_backup_and_value_targets_share_terminal_utility(
 
 
 def test_mcts_backup_has_no_dense_reward_path() -> None:
-    source = inspect.getsource(MCTSPlanner._backup)
+    source = textwrap.dedent(inspect.getsource(MCTSPlanner._backup))
+    tree = ast.parse(source)
 
-    assert "reward_from_parent" not in source
-    assert "potential_shaping_reward" not in source
-    assert "step_result.reward" not in source
-    assert "node.total_value += value" in source
+    attribute_names = {
+        node.attr
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Attribute)
+    }
+    referenced_names = {
+        node.id
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Name)
+    }
+    step_reward_reads = [
+        node
+        for node in ast.walk(tree)
+        if (
+            isinstance(node, ast.Attribute)
+            and node.attr == "reward"
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "step_result"
+        )
+    ]
+    total_value_updates = [
+        node
+        for node in ast.walk(tree)
+        if (
+            isinstance(node, ast.AugAssign)
+            and isinstance(node.op, ast.Add)
+            and isinstance(node.target, ast.Attribute)
+            and node.target.attr == "total_value"
+            and isinstance(node.target.value, ast.Name)
+            and node.target.value.id == "node"
+        )
+    ]
+
+    assert "reward_from_parent" not in attribute_names
+    assert "potential_shaping_reward" not in referenced_names
+    assert not step_reward_reads
+    assert len(total_value_updates) == 1
 
 
 def test_training_datasets_have_no_shaped_return_fallback() -> None:
