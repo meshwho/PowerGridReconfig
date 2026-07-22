@@ -32,6 +32,7 @@ from grid_topology_ai.evaluation.policy_comparison import (
     print_policy_comparison_summary,
     select_evaluation_root_policy,
 )
+from grid_topology_ai.physical_objective import STOP_POLICIES
 from grid_topology_ai.self_play.artifacts import save_json
 
 GridFMActionSpace = GridFMAdapter = GridFMPowerFlowBackend = None
@@ -87,12 +88,7 @@ class EvaluationRequest:
             raise ValueError("resolved pf_alg must be one of 1, 2, 3, or 4")
         if float(self.leaf_penalty_weight) < 0:
             raise ValueError("leaf_penalty_weight must be >= 0")
-        if self.stop_policy not in {
-            "never",
-            "solved_only",
-            "no_hard_overloads",
-            "always",
-        }:
+        if self.stop_policy not in STOP_POLICIES:
             raise ValueError("Unsupported stop_policy")
         if min(
             float(self.min_hard_improvement),
@@ -390,7 +386,9 @@ def run_episode_from_worker_context(
             "row": row,
             "traceback": None,
         }
-    except Exception:  # process-worker isolation boundary
+    # Intentional process-worker boundary: serialize one evaluation-mode
+    # failure with its traceback without terminating the worker pool.
+    except Exception:
         return {
             "ok": False,
             "scenario_id": int(scenario_id),
