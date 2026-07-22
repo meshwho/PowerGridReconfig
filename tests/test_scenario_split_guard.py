@@ -32,6 +32,7 @@ def _write_fake_state(path):
         bus_features=np.zeros((2, 3), dtype=np.float32),
         branch_features=np.zeros((1, 4), dtype=np.float32),
         edge_index=np.array([[0], [1]], dtype=np.int64),
+        branch_status=np.ones(1, dtype=np.float32),
         action_mask=np.array([True, True], dtype=bool),
         metadata_json=np.array(
             json.dumps(physics_provenance(DEFAULT_PHYSICS_CONFIG))
@@ -41,7 +42,6 @@ def _write_fake_state(path):
 
 def _write_examples_csv(path, state_path, scenario_ids):
     rows = []
-
     for i, scenario_id in enumerate(scenario_ids):
         rows.append(
             {
@@ -63,99 +63,40 @@ def _write_examples_csv(path, state_path, scenario_ids):
                 "outcome_gamma": 0.95,
             }
         )
-
     pd.DataFrame(rows).to_csv(path, index=False)
 
 
 def test_validate_no_scenario_overlap_accepts_disjoint_splits(tmp_path):
     state_path = tmp_path / "state.npz"
     _write_fake_state(state_path)
-
     train_csv = tmp_path / "examples_train.csv"
     val_csv = tmp_path / "examples_val.csv"
+    _write_examples_csv(train_csv, state_path, [1, 2, 3])
+    _write_examples_csv(val_csv, state_path, [4, 5])
 
-    _write_examples_csv(
-        path=train_csv,
-        state_path=state_path,
-        scenario_ids=[1, 2, 3],
-    )
-
-    _write_examples_csv(
-        path=val_csv,
-        state_path=state_path,
-        scenario_ids=[4, 5],
-    )
-
-    train_dataset = GraphSelfPlayDataset(
-        examples_csv=train_csv,
-        normalize_features=False,
-    )
-
-    val_dataset = GraphSelfPlayDataset(
-        examples_csv=val_csv,
-        normalize_features=False,
-    )
-
-    validate_no_scenario_overlap(
-        train_dataset=train_dataset,
-        val_dataset=val_dataset,
-    )
+    train_dataset = GraphSelfPlayDataset(train_csv, normalize_features=False)
+    val_dataset = GraphSelfPlayDataset(val_csv, normalize_features=False)
+    validate_no_scenario_overlap(train_dataset, val_dataset)
 
 
 def test_validate_no_scenario_overlap_rejects_leakage(tmp_path):
     state_path = tmp_path / "state.npz"
     _write_fake_state(state_path)
-
     train_csv = tmp_path / "examples_train.csv"
     val_csv = tmp_path / "examples_val.csv"
+    _write_examples_csv(train_csv, state_path, [1, 2, 3])
+    _write_examples_csv(val_csv, state_path, [3, 4])
 
-    _write_examples_csv(
-        path=train_csv,
-        state_path=state_path,
-        scenario_ids=[1, 2, 3],
-    )
-
-    _write_examples_csv(
-        path=val_csv,
-        state_path=state_path,
-        scenario_ids=[3, 4],
-    )
-
-    train_dataset = GraphSelfPlayDataset(
-        examples_csv=train_csv,
-        normalize_features=False,
-    )
-
-    val_dataset = GraphSelfPlayDataset(
-        examples_csv=val_csv,
-        normalize_features=False,
-    )
-
+    train_dataset = GraphSelfPlayDataset(train_csv, normalize_features=False)
+    val_dataset = GraphSelfPlayDataset(val_csv, normalize_features=False)
     with pytest.raises(ValueError, match="scenario leakage"):
-        validate_no_scenario_overlap(
-            train_dataset=train_dataset,
-            val_dataset=val_dataset,
-        )
+        validate_no_scenario_overlap(train_dataset, val_dataset)
 
 
 def test_validate_no_scenario_overlap_accepts_missing_validation(tmp_path):
     state_path = tmp_path / "state.npz"
     _write_fake_state(state_path)
-
     train_csv = tmp_path / "examples_train.csv"
-
-    _write_examples_csv(
-        path=train_csv,
-        state_path=state_path,
-        scenario_ids=[1, 2, 3],
-    )
-
-    train_dataset = GraphSelfPlayDataset(
-        examples_csv=train_csv,
-        normalize_features=False,
-    )
-
-    validate_no_scenario_overlap(
-        train_dataset=train_dataset,
-        val_dataset=None,
-    )
+    _write_examples_csv(train_csv, state_path, [1, 2, 3])
+    train_dataset = GraphSelfPlayDataset(train_csv, normalize_features=False)
+    validate_no_scenario_overlap(train_dataset, None)

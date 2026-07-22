@@ -31,6 +31,7 @@ def _write_fake_state(path):
         bus_features=np.zeros((2, 3), dtype=np.float32),
         branch_features=np.zeros((1, 4), dtype=np.float32),
         edge_index=np.array([[0], [1]], dtype=np.int64),
+        branch_status=np.ones(1, dtype=np.float32),
         action_mask=np.array([True, True], dtype=bool),
         metadata_json=np.array(
             json.dumps(physics_provenance(DEFAULT_PHYSICS_CONFIG))
@@ -41,10 +42,8 @@ def _write_fake_state(path):
 def test_dataset_rejects_legacy_csv_without_outcome_value_target(tmp_path):
     state_path = tmp_path / "state_0.npz"
     _write_fake_state(state_path)
-
     examples_csv = tmp_path / "examples.csv"
-
-    df = pd.DataFrame(
+    pd.DataFrame(
         [
             {
                 "state_path": str(state_path),
@@ -60,9 +59,7 @@ def test_dataset_rejects_legacy_csv_without_outcome_value_target(tmp_path):
                 "termination_reason": "max_steps_reached",
             }
         ]
-    )
-
-    df.to_csv(examples_csv, index=False)
+    ).to_csv(examples_csv, index=False)
 
     with pytest.raises(ValueError, match="outcome_value_target"):
         GraphSelfPlayDataset(
@@ -74,10 +71,8 @@ def test_dataset_rejects_legacy_csv_without_outcome_value_target(tmp_path):
 def test_dataset_reads_strict_outcome_value_target(tmp_path):
     state_path = tmp_path / "state_0.npz"
     _write_fake_state(state_path)
-
     examples_csv = tmp_path / "examples.csv"
-
-    df = pd.DataFrame(
+    pd.DataFrame(
         [
             {
                 "state_path": str(state_path),
@@ -98,15 +93,10 @@ def test_dataset_reads_strict_outcome_value_target(tmp_path):
                 "outcome_gamma": 0.95,
             }
         ]
-    )
+    ).to_csv(examples_csv, index=False)
 
-    df.to_csv(examples_csv, index=False)
-
-    dataset = GraphSelfPlayDataset(
+    sample = GraphSelfPlayDataset(
         examples_csv=examples_csv,
         normalize_features=False,
-    )
-
-    sample = dataset[0]
-
+    )[0]
     assert float(sample["target_value"].item()) == pytest.approx(0.0)
