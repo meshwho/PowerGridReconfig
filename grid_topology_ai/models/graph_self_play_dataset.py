@@ -32,6 +32,7 @@ class GraphSelfPlayDataset(Dataset):
         bus_features
         branch_features
         edge_index
+        edge_active_mask
         action_mask
         target_policy
         target_value
@@ -149,12 +150,19 @@ class GraphSelfPlayDataset(Dataset):
         bus_features = data["bus_features"].astype(np.float32)
         branch_features = data["branch_features"].astype(np.float32)
         edge_index = data["edge_index"].astype(np.int64)
+        branch_status = np.asarray(
+            data["branch_status"],
+            dtype=np.float32,
+        )
+        edge_active_mask = branch_status > 0.5
         action_mask = data["action_mask"].astype(bool)
 
         self._validate_graph_shapes(
             bus_features=bus_features,
             branch_features=branch_features,
             edge_index=edge_index,
+            branch_status=branch_status,
+            edge_active_mask=edge_active_mask,
             action_mask=action_mask,
             state_path=Path(str(row["state_path"])),
         )
@@ -182,11 +190,24 @@ class GraphSelfPlayDataset(Dataset):
 
         return {
             "bus_features": torch.tensor(bus_features, dtype=torch.float32),
-            "branch_features": torch.tensor(branch_features, dtype=torch.float32),
+            "branch_features": torch.tensor(
+                branch_features,
+                dtype=torch.float32,
+            ),
             "edge_index": torch.tensor(edge_index, dtype=torch.long),
+            "edge_active_mask": torch.tensor(
+                edge_active_mask,
+                dtype=torch.bool,
+            ),
             "action_mask": torch.tensor(action_mask, dtype=torch.bool),
-            "target_policy": torch.tensor(target_policy, dtype=torch.float32),
-            "target_value": torch.tensor(target_value, dtype=torch.float32),
+            "target_policy": torch.tensor(
+                target_policy,
+                dtype=torch.float32,
+            ),
+            "target_value": torch.tensor(
+                target_value,
+                dtype=torch.float32,
+            ),
             "scenario_id": int(row["scenario_id"]),
             "step": int(row["step"]),
             "state_id": str(row["state_id"]),
@@ -317,6 +338,8 @@ class GraphSelfPlayDataset(Dataset):
         bus_features: np.ndarray,
         branch_features: np.ndarray,
         edge_index: np.ndarray,
+        branch_status: np.ndarray,
+        edge_active_mask: np.ndarray,
         action_mask: np.ndarray,
         state_path: Path,
     ) -> None:
@@ -341,6 +364,41 @@ class GraphSelfPlayDataset(Dataset):
             raise ValueError(
                 f"{state_path}: edge_index must have shape "
                 f"(2, num_branches), got {edge_index.shape}"
+            )
+
+        num_branches = int(branch_features.shape[0])
+
+        if branch_status.shape != (num_branches,):
+            raise ValueError(
+                f"{state_path}: branch_status must have shape "
+                f"({num_branches},), got {branch_status.shape}"
+            )
+
+        if not np.isfinite(branch_status).all():
+            raise ValueError(
+                f"{state_path}: branch_status must contain only finite values"
+            )
+
+        if not np.isin(branch_status, (0.0, 1.0)).all():
+            raise ValueError(
+                f"{state_path}: branch_status must contain only 0 or 1"
+            )
+
+        if edge_active_mask.shape != (num_branches,):
+            raise ValueError(
+                f"{state_path}: edge_active_mask must have shape "
+                f"({num_branches},), got {edge_active_mask.shape}"
+            )
+
+        expected_edge_active_mask = branch_status > 0.5
+
+        if not np.array_equal(
+                edge_active_mask,
+                expected_edge_active_mask,
+        ):
+            raise ValueError(
+                f"{state_path}: edge_active_mask must be derived from "
+                "branch_status"
             )
 
         if action_mask.ndim != 1:

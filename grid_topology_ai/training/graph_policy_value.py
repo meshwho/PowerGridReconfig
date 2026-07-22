@@ -33,6 +33,7 @@ from grid_topology_ai.training.metrics import (
     setup_live_logging,
 )
 
+GraphModel = GraphPolicyValueNet | GraphPolicyValueNetV2
 
 @dataclass(frozen=True, slots=True)
 class TrainingRequest:
@@ -115,9 +116,40 @@ def move_batch_to_device(
 
     return moved
 
+def _forward_graph_model(
+    model: GraphModel,
+    *,
+    bus_features: torch.Tensor,
+    branch_features: torch.Tensor,
+    edge_index: torch.Tensor,
+    edge_active_mask: torch.Tensor,
+    action_mask: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    Call graph V1 and V2 without changing the legacy V1 forward contract.
+
+    GraphPolicyValueNetV2 receives the physical edge activity mask.
+    GraphPolicyValueNet V1 keeps its existing input signature.
+    """
+
+    if isinstance(model, GraphPolicyValueNetV2):
+        return model(
+            bus_features=bus_features,
+            branch_features=branch_features,
+            edge_index=edge_index,
+            edge_active_mask=edge_active_mask,
+            action_mask=action_mask,
+        )
+
+    return model(
+        bus_features=bus_features,
+        branch_features=branch_features,
+        edge_index=edge_index,
+        action_mask=action_mask,
+    )
 
 def train_one_epoch(
-    model: GraphPolicyValueNet,
+    model: GraphModel,
     loader: DataLoader,
     optimizer: torch.optim.Optimizer,
     value_loss_fn: nn.Module,
@@ -143,6 +175,7 @@ def train_one_epoch(
         bus_features = batch["bus_features"]
         branch_features = batch["branch_features"]
         edge_index = batch["edge_index"]
+        edge_active_mask = batch["edge_active_mask"]
         action_mask = batch["action_mask"]
         target_policy = batch["target_policy"]
         target_value = batch["target_value"]
@@ -150,10 +183,12 @@ def train_one_epoch(
         optimizer.zero_grad(set_to_none=True)
 
         with torch.amp.autocast("cuda", enabled=use_amp):
-            policy_logits, predicted_value = model(
+            policy_logits, predicted_value = _forward_graph_model(
+                model,
                 bus_features=bus_features,
                 branch_features=branch_features,
                 edge_index=edge_index,
+                edge_active_mask=edge_active_mask,
                 action_mask=action_mask,
             )
 
@@ -193,7 +228,7 @@ def train_one_epoch(
 
 
 def evaluate_one_epoch(
-    model: GraphPolicyValueNet,
+    model: GraphModel,
     loader: DataLoader,
     value_loss_fn: nn.Module,
     device: torch.device,
@@ -228,6 +263,7 @@ def evaluate_one_epoch(
             bus_features = batch["bus_features"]
             branch_features = batch["branch_features"]
             edge_index = batch["edge_index"]
+            edge_active_mask = batch["edge_active_mask"]
             action_mask = batch["action_mask"]
             target_policy = batch["target_policy"]
             target_value = batch["target_value"]
@@ -235,10 +271,12 @@ def evaluate_one_epoch(
             batch_size = int(bus_features.shape[0])
 
             with torch.amp.autocast("cuda", enabled=use_amp):
-                policy_logits, predicted_value = model(
+                policy_logits, predicted_value = _forward_graph_model(
+                    model,
                     bus_features=bus_features,
                     branch_features=branch_features,
                     edge_index=edge_index,
+                    edge_active_mask=edge_active_mask,
                     action_mask=action_mask,
                 )
 
@@ -318,7 +356,7 @@ def evaluate_one_epoch(
 
 
 def evaluate_training_samples(
-    model: GraphPolicyValueNet,
+    model: GraphModel,
     dataset: GraphSelfPlayDataset,
     device: torch.device,
     max_samples: int = 20,
@@ -339,15 +377,20 @@ def evaluate_training_samples(
             bus_features = sample["bus_features"].unsqueeze(0).to(device)
             branch_features = sample["branch_features"].unsqueeze(0).to(device)
             edge_index = sample["edge_index"].unsqueeze(0).to(device)
+            edge_active_mask = (
+                sample["edge_active_mask"].unsqueeze(0).to(device)
+            )
             action_mask = sample["action_mask"].unsqueeze(0).to(device)
             target_policy = sample["target_policy"].unsqueeze(0).to(device)
 
             target_value = float(sample["target_value"].item())
 
-            logits, value = model(
+            logits, value = _forward_graph_model(
+                model,
                 bus_features=bus_features,
                 branch_features=branch_features,
                 edge_index=edge_index,
+                edge_active_mask=edge_active_mask,
                 action_mask=action_mask,
             )
 
@@ -447,7 +490,7 @@ def _build_model(
     request: TrainingRequest,
     dataset: GraphSelfPlayDataset,
     device: torch.device,
-) -> torch.nn.Module:
+) -> GraphModel:
     if request.config.model_type == "graph_v2":
         return GraphPolicyValueNetV2(
             num_bus_features=dataset.num_bus_features,

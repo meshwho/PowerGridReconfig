@@ -140,27 +140,46 @@ class ResidualEdgeMessagePassingV2(nn.Module):
             messages: torch.Tensor,
             target_indices: torch.Tensor,
             num_nodes: int,
+            edge_active_mask: torch.Tensor,
     ) -> torch.Tensor:
         """
-        Batched aggregation of edge messages into node embeddings.
+        Aggregate only physically active edge messages into node embeddings.
 
+        Parameters
+        ----------
         messages:
-            [batch_size, num_edges, hidden_dim]
+            Shape [batch_size, num_edges, hidden_dim].
 
         target_indices:
-            [batch_size, num_edges]
+            Shape [batch_size, num_edges].
 
-        returns:
-            [batch_size, num_nodes, hidden_dim]
+        edge_active_mask:
+            Physical branch activity mask.
+            Shape [batch_size, num_edges].
+            True means that the branch physically exists in the current topology.
+
+        Returns
+        -------
+        torch.Tensor
+            Shape [batch_size, num_nodes, hidden_dim].
         """
 
         batch_size, num_edges, hidden_dim = messages.shape
+
+        if edge_active_mask.shape != (batch_size, num_edges):
+            raise ValueError(
+                "edge_active_mask must have shape "
+                f"({batch_size}, {num_edges}), "
+                f"got {tuple(edge_active_mask.shape)}"
+            )
 
         index = target_indices.long().unsqueeze(-1).expand(
             batch_size,
             num_edges,
             hidden_dim,
         )
+
+        active = edge_active_mask.to(dtype=messages.dtype).unsqueeze(-1)
 
         aggregated = messages.new_zeros(
             batch_size,
@@ -171,7 +190,7 @@ class ResidualEdgeMessagePassingV2(nn.Module):
         aggregated.scatter_add_(
             dim=1,
             index=index,
-            src=messages,
+            src=messages * active,
         )
 
         count_index = target_indices.long().unsqueeze(-1)
@@ -182,16 +201,10 @@ class ResidualEdgeMessagePassingV2(nn.Module):
             1,
         )
 
-        ones = messages.new_ones(
-            batch_size,
-            num_edges,
-            1,
-        )
-
         counts.scatter_add_(
             dim=1,
             index=count_index,
-            src=ones,
+            src=active,
         )
 
         return aggregated / counts.clamp_min(1.0)
@@ -228,10 +241,11 @@ class ResidualEdgeMessagePassingV2(nn.Module):
         return raw_message * gate
 
     def forward(
-        self,
-        node_embeddings: torch.Tensor,
-        edge_embeddings: torch.Tensor,
-        edge_index: torch.Tensor,
+            self,
+            node_embeddings: torch.Tensor,
+            edge_embeddings: torch.Tensor,
+            edge_index: torch.Tensor,
+            edge_active_mask: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         batch_size, num_nodes, _ = node_embeddings.shape
 
@@ -256,12 +270,14 @@ class ResidualEdgeMessagePassingV2(nn.Module):
             messages=forward_messages,
             target_indices=target,
             num_nodes=num_nodes,
+            edge_active_mask=edge_active_mask,
         )
 
         reverse_aggregated = self._aggregate_messages(
             messages=reverse_messages,
             target_indices=source,
             num_nodes=num_nodes,
+            edge_active_mask=edge_active_mask,
         )
 
         aggregated = 0.5 * (forward_aggregated + reverse_aggregated)
@@ -627,6 +643,7 @@ class GraphPolicyValueNetV2(nn.Module):
         bus_features: torch.Tensor,
         branch_features: torch.Tensor,
         edge_index: torch.Tensor,
+        edge_active_mask: torch.Tensor,
         action_mask: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         bus_features = self._ensure_batched_features(
@@ -647,6 +664,12 @@ class GraphPolicyValueNetV2(nn.Module):
             name="edge_index",
         )
 
+        edge_active_mask = self._ensure_batched_features(
+            tensor=edge_active_mask,
+            expected_rank_without_batch=1,
+            name="edge_active_mask",
+        ).bool()
+
         if action_mask is not None:
             action_mask = self._ensure_batched_features(
                 tensor=action_mask,
@@ -656,6 +679,12 @@ class GraphPolicyValueNetV2(nn.Module):
 
         batch_size, num_nodes, _ = bus_features.shape
         _, num_edges, _ = branch_features.shape
+
+        if edge_active_mask.shape[0] != batch_size:
+            raise ValueError(
+                "edge_active_mask batch dimension does not match "
+                f"bus_features: {edge_active_mask.shape[0]} != {batch_size}"
+            )
 
         if edge_index.shape[1] != 2:
             raise ValueError(
@@ -667,6 +696,12 @@ class GraphPolicyValueNetV2(nn.Module):
             raise ValueError(
                 f"edge_index num_edges={edge_index.shape[2]} does not match "
                 f"branch_features num_edges={num_edges}"
+            )
+
+        if edge_active_mask.shape[1] != num_edges:
+            raise ValueError(
+                f"edge_active_mask has {edge_active_mask.shape[1]} edges, "
+                f"but branch_features has {num_edges}."
             )
 
         if num_edges != self.num_branch_actions:
@@ -681,6 +716,17 @@ class GraphPolicyValueNetV2(nn.Module):
                 f"but model expects {self.num_actions}."
             )
 
+        if action_mask is not None:
+            invalid_physical_actions = (
+                action_mask[:, 1:] & ~edge_active_mask
+            )
+
+            if bool(invalid_physical_actions.any()):
+                raise ValueError(
+                    "action_mask marks a physically inactive branch action "
+                    "as valid."
+                )
+
         edge_index = self._normalize_edge_index(
             edge_index=edge_index,
             num_nodes=num_nodes,
@@ -694,6 +740,7 @@ class GraphPolicyValueNetV2(nn.Module):
                 node_embeddings=node_embeddings,
                 edge_embeddings=edge_embeddings,
                 edge_index=edge_index,
+                edge_active_mask=edge_active_mask,
             )
 
         source = edge_index[:, 0, :]

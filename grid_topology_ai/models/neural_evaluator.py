@@ -317,6 +317,11 @@ class NeuralPolicyValueEvaluator:
         bus_features = state.bus_features.astype(np.float32)
         branch_features = state.branch_features.astype(np.float32)
         edge_index = state.edge_index.astype(np.int64)
+        branch_status = np.asarray(
+            state.branch_status,
+            dtype=np.float32,
+        )
+        edge_active_mask = branch_status > 0.5
 
         if bus_features.shape != (self.num_buses, self.num_bus_features):
             raise ValueError(
@@ -339,6 +344,22 @@ class NeuralPolicyValueEvaluator:
             raise ValueError(
                 f"edge_index shape mismatch: expected "
                 f"(2, {self.num_branches}), got {edge_index.shape}"
+            )
+
+        if branch_status.shape != (self.num_branches,):
+            raise ValueError(
+                "branch_status shape mismatch: expected "
+                f"({self.num_branches},), got {branch_status.shape}"
+            )
+
+        if not np.isfinite(branch_status).all():
+            raise ValueError(
+                "branch_status must contain only finite values"
+            )
+
+        if not np.isin(branch_status, (0.0, 1.0)).all():
+            raise ValueError(
+                "branch_status must contain only 0 or 1"
             )
 
         bus_features = (
@@ -367,6 +388,12 @@ class NeuralPolicyValueEvaluator:
             device=self.device,
         ).unsqueeze(0)
 
+        edge_active_mask_tensor = torch.tensor(
+            edge_active_mask,
+            dtype=torch.bool,
+            device=self.device,
+        ).unsqueeze(0)
+
         mask_tensor = torch.tensor(
             action_mask.astype(bool),
             dtype=torch.bool,
@@ -374,15 +401,30 @@ class NeuralPolicyValueEvaluator:
         ).unsqueeze(0)
 
         with torch.no_grad():
-            logits, value = self.model(
-                bus_features=bus_tensor,
-                branch_features=branch_tensor,
-                edge_index=edge_index_tensor,
-                action_mask=mask_tensor,
-            )
+            if self.model_type == "graph_policy_value_net_v2":
+                logits, value = self.model(
+                    bus_features=bus_tensor,
+                    branch_features=branch_tensor,
+                    edge_index=edge_index_tensor,
+                    edge_active_mask=edge_active_mask_tensor,
+                    action_mask=mask_tensor,
+                )
+            else:
+                logits, value = self.model(
+                    bus_features=bus_tensor,
+                    branch_features=branch_tensor,
+                    edge_index=edge_index_tensor,
+                    action_mask=mask_tensor,
+                )
 
-            policy = torch.softmax(logits, dim=1)[0].detach().cpu().numpy()
-            value_float = float(value.detach().cpu().item())
+            policy = torch.softmax(
+                logits,
+                dim=1,
+            )[0].detach().cpu().numpy()
+
+            value_float = float(
+                value.detach().cpu().item()
+            )
 
         return policy.astype(np.float32), value_float
 
