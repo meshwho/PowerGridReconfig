@@ -206,7 +206,10 @@ def main() -> None:
         require_connected_after_switch=True,
         enable_cache=not args.disable_cache,
     )
-    reward_fn = GridFMReward(physics_config=physics_config)
+    reward_fn = GridFMReward(
+        physics_config=physics_config,
+        discount_factor=args.gamma,
+    )
 
     env = TopologySwitchingEnv(
         adapter=adapter,

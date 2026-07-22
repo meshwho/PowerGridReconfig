@@ -192,7 +192,10 @@ def init_worker_context(
         require_connected_after_switch=True,
         enable_cache=cache,
     )
-    reward_fn = GridFMReward(physics_config=physics)
+    reward_fn = GridFMReward(
+        physics_config=physics,
+        discount_factor=float(task_config["gamma"]),
+    )
     evaluator = NeuralPolicyValueEvaluator(
         checkpoint_path=Path(checkpoint_path_str),
         device=str(task_config["device"]),
@@ -471,7 +474,8 @@ def _make_task_config(request: EvaluationRequest) -> dict[str, Any]:
         "dc_failure_penalty": float(request.dc_failure_penalty),
         "dc_max_depth": int(request.dc_max_depth),
         "reward_config": GridFMReward(
-            physics_config=request.resolved_physics_config
+            physics_config=request.resolved_physics_config,
+            discount_factor=config.gamma,
         ).config_dict(),
     }
 

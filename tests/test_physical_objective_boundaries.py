@@ -69,11 +69,6 @@ def test_custom_runtime_thresholds_are_used_consistently():
     from grid_topology_ai.search.continuation_gate import topology_penalty
     from grid_topology_ai.search.dc_action_screener import DCActionScreener
     from grid_topology_ai.search.impact_beam_search import safety_score
-    from grid_topology_ai.self_play.generation import (
-        state_security_penalty,
-        terminal_outcome_reward,
-    )
-    from grid_topology_ai.termination import TerminationReason
     from pypower.idx_brch import BR_STATUS, PF, PT, RATE_A
 
     physics_config = PhysicsConfig(
@@ -116,7 +111,6 @@ def test_custom_runtime_thresholds_are_used_consistently():
         "discounted_return": 40.0,
     }
 
-    assert state_security_penalty(state, physics_config) == 140.0
     assert topology_penalty(state, physics_config=physics_config) == 315.0
     assert safety_score(state, physics_config=physics_config) == 1205.0
 
@@ -142,16 +136,6 @@ def test_custom_runtime_thresholds_are_used_consistently():
         evaluation_row,
         physics_config=physics_config,
     ) == -423.0
-    assert terminal_outcome_reward(
-        state=state,
-        solved=False,
-        termination_reason=TerminationReason.MAX_STEPS_REACHED,
-        terminal_unsolved_penalty=500.0,
-        terminal_handoff_penalty=150.0,
-        terminal_failure_penalty=1000.0,
-        terminal_penalty_weight=0.1,
-        physics_config=physics_config,
-    ) == -514.0
 
 
 def test_pypower_backend_does_not_patch_numpy_in1d():

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import warnings
 from dataclasses import dataclass
 
 from grid_topology_ai.config._mapping import ConfigMapping
@@ -10,6 +9,17 @@ from grid_topology_ai.config._validation import (
     require_fraction,
     require_non_negative,
     require_positive,
+)
+
+
+_LEGACY_TERMINAL_PENALTY_FIELDS = frozenset(
+    f"terminal_{suffix}"
+    for suffix in (
+        "unsolved_penalty",
+        "handoff_penalty",
+        "failure_penalty",
+        "penalty_weight",
+    )
 )
 
 
@@ -30,14 +40,6 @@ class GenerationConfig:
 
     pf_alg: int = 3
     stop_policy: str = "no_hard_overloads"
-
-    # Deprecated compatibility fields. Self-play generation still reads them,
-    # but this config normalizes every value to zero so terminal penalties can
-    # no longer create a second optimized return.
-    terminal_unsolved_penalty: float = 0.0
-    terminal_handoff_penalty: float = 0.0
-    terminal_failure_penalty: float = 0.0
-    terminal_penalty_weight: float = 0.0
 
     def __post_init__(self) -> None:
         require_positive("generation.simulations", self.simulations)
@@ -60,30 +62,17 @@ class GenerationConfig:
             {"never", "solved_only", "no_hard_overloads", "always"},
         )
 
-        terminal_fields = (
-            "terminal_unsolved_penalty",
-            "terminal_handoff_penalty",
-            "terminal_failure_penalty",
-            "terminal_penalty_weight",
-        )
-        supplied = {}
-        for field_name in terminal_fields:
-            value = float(getattr(self, field_name))
-            require_non_negative(f"generation.{field_name}", value)
-            if value != 0.0:
-                supplied[field_name] = value
-            object.__setattr__(self, field_name, 0.0)
-        if supplied:
-            warnings.warn(
-                "Generation terminal penalties are deprecated and ignored. "
-                "Value targets use discounted terminal utility; dense rewards "
-                "are diagnostic potential shaping only.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-
     @classmethod
     def from_mapping(cls, data: ConfigMapping) -> "GenerationConfig":
+        legacy_fields = sorted(_LEGACY_TERMINAL_PENALTY_FIELDS.intersection(data))
+        if legacy_fields:
+            raise ValueError(
+                "Unsupported legacy generation terminal penalty fields: "
+                f"{', '.join(legacy_fields)}. Terminal penalties were removed. "
+                "Value targets use discounted terminal utility; dense rewards "
+                "are diagnostic potential shaping only."
+            )
+
         return cls(
             simulations=int(data.get("simulations", 150)),
             depth=int(data.get("depth", 4)),
@@ -97,16 +86,4 @@ class GenerationConfig:
             use_continuation_gate=bool(data.get("use_continuation_gate", True)),
             pf_alg=coerce_exact_int("generation.pf_alg", data.get("pf_alg", 3)),
             stop_policy=str(data.get("stop_policy", "no_hard_overloads")),
-            terminal_unsolved_penalty=float(
-                data.get("terminal_unsolved_penalty", 0.0)
-            ),
-            terminal_handoff_penalty=float(
-                data.get("terminal_handoff_penalty", 0.0)
-            ),
-            terminal_failure_penalty=float(
-                data.get("terminal_failure_penalty", 0.0)
-            ),
-            terminal_penalty_weight=float(
-                data.get("terminal_penalty_weight", 0.0)
-            ),
         )

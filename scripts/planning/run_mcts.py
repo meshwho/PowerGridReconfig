@@ -98,7 +98,7 @@ def main() -> None:
     adapter = GridFMAdapter(raw_dir)
     backend = GridFMPowerFlowBackend(adapter)
     action_space = GridFMActionSpace(require_connected_after_switch=True)
-    reward_fn = GridFMReward()
+    reward_fn = GridFMReward(discount_factor=args.gamma)
 
     env = TopologySwitchingEnv(
         adapter=adapter,

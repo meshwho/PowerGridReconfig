@@ -10,22 +10,13 @@ import pandas as pd
 
 from grid_topology_ai.config import GenerationConfig
 from grid_topology_ai.config.physics import (
-    DEFAULT_PHYSICS_CONFIG,
     PhysicsConfig,
     resolve_physics_config,
-)
-from grid_topology_ai.data_adapter import (
-    BRANCH_FEATURE_COLUMNS,
-    GridFMState,
 )
 from grid_topology_ai.search.root_policy import (
     require_action_in_policy_support,
     select_action_from_policy,
     select_policy_action,
-)
-from grid_topology_ai.termination import (
-    TerminationReason,
-    validate_outcome_invariants,
 )
 
 _RUNTIME_DEPENDENCIES_LOADED = False
@@ -205,106 +196,6 @@ def _select_generation_action(
     )
 
 
-def state_security_penalty(
-    state: GridFMState,
-    physics_config: PhysicsConfig | None = None,
-) -> float:
-    config = physics_config or DEFAULT_PHYSICS_CONFIG
-
-    loading_idx = BRANCH_FEATURE_COLUMNS.index("loading_percent")
-    status_idx = BRANCH_FEATURE_COLUMNS.index("br_status")
-
-    loading = state.branch_features[:, loading_idx]
-    status = state.branch_features[:, status_idx]
-    active_loading = loading[status > 0]
-
-    overload_threshold = (
-        config.overload_limit_percent
-        + config.thermal_tolerance_percent
-    )
-    hard_overload_threshold = (
-        config.hard_overload_limit_percent
-        + config.thermal_tolerance_percent
-    )
-
-    total_overload = float(
-        np.sum(
-            np.where(
-                active_loading > overload_threshold,
-                active_loading - config.overload_limit_percent,
-                0.0,
-            )
-        )
-    )
-    hard_overload = float(
-        np.sum(
-            np.where(
-                active_loading > hard_overload_threshold,
-                active_loading - config.hard_overload_limit_percent,
-                0.0,
-            )
-        )
-    )
-
-    num_overloaded = int(
-        state.metrics["num_overloaded_branches"]
-    )
-    num_hard_overloaded = int(
-        state.metrics["num_hard_overloaded_branches"]
-    )
-    voltage_penalty = float(
-        state.metrics.get("total_voltage_violation", 0.0)
-    )
-
-    return float(
-        2.0 * total_overload
-        + 5.0 * hard_overload
-        + 10.0 * num_overloaded
-        + 30.0 * num_hard_overloaded
-        + 500.0 * voltage_penalty
-    )
-
-
-def terminal_outcome_reward(
-    state: GridFMState | None,
-    solved: bool,
-    termination_reason: TerminationReason | None,
-    terminal_unsolved_penalty: float,
-    terminal_handoff_penalty: float,
-    terminal_failure_penalty: float,
-    terminal_penalty_weight: float,
-    physics_config: PhysicsConfig | None = None,
-) -> float:
-    reason = validate_outcome_invariants(
-        solved=bool(solved),
-        termination_reason=termination_reason,
-    )
-    if solved:
-        return 0.0
-
-    if state is None:
-        return -float(terminal_failure_penalty)
-
-    penalty = state_security_penalty(
-        state,
-        physics_config=physics_config,
-    )
-
-    if reason is TerminationReason.HANDOFF_TO_REDISPATCH:
-        return -float(terminal_handoff_penalty) - (
-            float(terminal_penalty_weight) * penalty
-        )
-
-    if reason is TerminationReason.POWER_FLOW_FAILED:
-        return -float(terminal_failure_penalty) - (
-            float(terminal_penalty_weight) * penalty
-        )
-
-    return -float(terminal_unsolved_penalty) - (
-        float(terminal_penalty_weight) * penalty
-    )
-
-
 def _scenario_ids_from_request(request: GenerationRequest) -> list[int]:
     if not request.transitions_csv.exists():
         raise FileNotFoundError(
@@ -389,22 +280,6 @@ def generate_self_play_examples(request: GenerationRequest) -> Path:
     print(f"Gamma:          {request.config.gamma}")
     print(f"C_PUCT:         {request.config.c_puct}")
     print(f"Prior exponent: {request.config.prior_exponent}")
-    print(
-        f"Terminal unsolved penalty: "
-        f"{request.config.terminal_unsolved_penalty}"
-    )
-    print(
-        f"Terminal penalty weight:   "
-        f"{request.config.terminal_penalty_weight}"
-    )
-    print(
-        f"Terminal handoff penalty:  "
-        f"{request.config.terminal_handoff_penalty}"
-    )
-    print(
-        f"Terminal failure penalty:  "
-        f"{request.config.terminal_failure_penalty}"
-    )
     print(f"Stop policy:               {request.config.stop_policy}")
     print(f"Checkpoint:     {request.checkpoint}")
     print(f"Device:         {request.device}")
@@ -449,7 +324,10 @@ def generate_self_play_examples(request: GenerationRequest) -> Path:
         require_connected_after_switch=True,
         enable_cache=request.enable_cache,
     )
-    reward_fn = GridFMReward(physics_config=request.resolved_physics_config)
+    reward_fn = GridFMReward(
+        physics_config=request.resolved_physics_config,
+        discount_factor=request.config.gamma,
+    )
 
     mcts_config = MCTSConfig(
         num_simulations=request.config.simulations,
@@ -625,26 +503,9 @@ def generate_self_play_examples(request: GenerationRequest) -> Path:
         final_done = bool(env.done)
         final_solved = bool(env.solved)
         final_reason = env.termination_reason
-        final_state = env.current_state
 
-        terminal_reward = terminal_outcome_reward(
-            state=final_state,
-            solved=final_solved,
-            termination_reason=final_reason,
-            terminal_unsolved_penalty=request.config.terminal_unsolved_penalty,
-            terminal_handoff_penalty=request.config.terminal_handoff_penalty,
-            terminal_failure_penalty=request.config.terminal_failure_penalty,
-            terminal_penalty_weight=request.config.terminal_penalty_weight,
-            physics_config=request.resolved_physics_config,
-        )
-
-        rewards_with_terminal = [*rewards, terminal_reward]
-        returns_with_terminal = discounted_returns(
-            rewards_with_terminal,
-            request.config.gamma,
-        )
-        returns = returns_with_terminal[:-1]
-        final_return = returns[0] if returns else terminal_reward
+        returns = discounted_returns(rewards, request.config.gamma)
+        final_return = returns[0] if returns else 0.0
 
         for item, return_from_step in zip(pending_examples, returns):
             example_writer.add_example(
@@ -702,7 +563,6 @@ def generate_self_play_examples(request: GenerationRequest) -> Path:
         print(
             f"Scenario {scenario_id} finished: "
             f"steps={len(rewards)}, "
-            f"terminal_reward={terminal_reward:.4f}, "
             f"final_return={final_return:.4f}, "
             f"solved={final_solved}, "
             f"reason={final_reason}"

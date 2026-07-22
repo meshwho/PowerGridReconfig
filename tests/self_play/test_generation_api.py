@@ -6,7 +6,6 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-import numpy as np
 import pandas as pd
 import pytest
 
@@ -16,17 +15,11 @@ from grid_topology_ai.contracts import (
     OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
     physics_provenance,
 )
-from grid_topology_ai.data_adapter import (
-    BRANCH_FEATURE_COLUMNS,
-    GridFMState,
-)
 from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
 from grid_topology_ai.self_play import generation
 from grid_topology_ai.self_play.generation import (
     GenerationRequest,
     generate_self_play_examples,
-    state_security_penalty,
-    terminal_outcome_reward,
 )
 from grid_topology_ai.termination import TerminationReason
 
@@ -239,44 +232,9 @@ def _request(tmp_path: Path, **kwargs: object) -> GenerationRequest:
     return GenerationRequest(**values)  # type: ignore[arg-type]
 
 
-def _minimal_state() -> GridFMState:
-    branch_features = np.zeros((3, len(BRANCH_FEATURE_COLUMNS)), dtype=float)
-    loading_idx = BRANCH_FEATURE_COLUMNS.index("loading_percent")
-    status_idx = BRANCH_FEATURE_COLUMNS.index("br_status")
-    branch_features[:, loading_idx] = [130.0, 105.0, 200.0]
-    branch_features[:, status_idx] = [1.0, 1.0, 0.0]
-
-    return GridFMState(
-        scenario_id=1,
-        load_scenario_idx=1.0,
-        bus_features=np.zeros((1, 1), dtype=float),
-        branch_features=branch_features,
-        edge_index=np.zeros((2, 3), dtype=int),
-        branch_ids=np.array([1, 2, 3], dtype=int),
-        branch_status=np.array([1, 1, 0], dtype=int),
-        metrics={
-            "num_overloaded_branches": 2,
-            "num_hard_overloaded_branches": 1,
-            "total_voltage_violation": 0.2,
-        },
-        outaged_branch_ids=[],
-    )
-
-
-def test_state_security_penalty_works_without_generation_initialization() -> None:
-    assert state_security_penalty(_minimal_state()) == 270.0
-
-
-def test_terminal_outcome_reward_works_without_generation_initialization() -> None:
-    assert terminal_outcome_reward(
-        state=_minimal_state(),
-        solved=False,
-        termination_reason=TerminationReason.MAX_STEPS_REACHED,
-        terminal_unsolved_penalty=500.0,
-        terminal_handoff_penalty=150.0,
-        terminal_failure_penalty=1000.0,
-        terminal_penalty_weight=0.1,
-    ) == -527.0
+def test_generation_module_excludes_legacy_terminal_helpers() -> None:
+    assert not hasattr(generation, "terminal_outcome_reward")
+    assert not hasattr(generation, "state_security_penalty")
 
 
 def test_runtime_loader_uses_explicit_loaded_flag() -> None:
@@ -308,6 +266,10 @@ def test_generate_self_play_examples_creates_output(
 
     assert examples_csv == tmp_path / "out" / "examples.csv"
     assert examples_csv.is_file()
+    row = pd.read_csv(examples_csv).iloc[0]
+    assert row["step_reward"] == pytest.approx(1.0)
+    assert row["final_return"] == pytest.approx(1.0)
+    assert row["discounted_return_from_step"] == pytest.approx(1.0)
 
 
 def test_generation_preserves_scenario_order(
@@ -356,10 +318,6 @@ def test_generation_uses_typed_config(
         use_continuation_gate=False,
         pf_alg=2,
         stop_policy="solved_only",
-        terminal_unsolved_penalty=321.0,
-        terminal_handoff_penalty=123.0,
-        terminal_failure_penalty=777.0,
-        terminal_penalty_weight=0.2,
     )
 
     generate_self_play_examples(_request(tmp_path, config=config))
@@ -378,6 +336,13 @@ def test_generation_uses_typed_config(
         "root_exploration_fraction": 0.25,
         "random_seed": 42,
     }
+    reward_instances = [
+        instance
+        for instance in _FakeCache.instances
+        if "discount_factor" in instance.kwargs
+    ]
+    assert len(reward_instances) == 1
+    assert reward_instances[0].kwargs["discount_factor"] == pytest.approx(0.91)
 
 
 def test_clear_cache_between_scenarios(
