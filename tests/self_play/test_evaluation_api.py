@@ -15,11 +15,20 @@ from grid_topology_ai.termination import TerminationReason
 
 
 class _FakeReward:
-    def __init__(self, *, physics_config=None) -> None:
+    def __init__(
+        self,
+        *,
+        physics_config=None,
+        discount_factor: float = 0.95,
+    ) -> None:
         self.physics_config = physics_config
+        self.discount_factor = float(discount_factor)
 
     def config_dict(self) -> dict[str, object]:
-        return {"reward": "fake"}
+        return {
+            "reward": "fake",
+            "discount_factor": self.discount_factor,
+        }
 
 
 class _FakeCache:
@@ -348,7 +357,10 @@ def test_task_config_uses_evaluation_config_and_request_values(tmp_path: Path) -
     assert task["dc_policy_weight"] == 0.4
     assert task["dc_failure_penalty"] == 123.0
     assert task["dc_max_depth"] == -1
-    assert task["reward_config"] == {"reward": "fake"}
+    assert task["reward_config"] == {
+        "reward": "fake",
+        "discount_factor": 0.91,
+    }
 
 
 def test_evaluate_checkpoint_uses_sequential_runner(

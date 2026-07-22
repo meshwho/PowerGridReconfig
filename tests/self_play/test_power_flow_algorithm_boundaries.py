@@ -42,14 +42,22 @@ def test_power_flow_algorithm_static_boundaries(tmp_path: Path, monkeypatch) -> 
     )
 
     class FakeReward:
-        def __init__(self, *, physics_config=None) -> None:
+        def __init__(
+            self,
+            *,
+            physics_config=None,
+            discount_factor: float = 0.95,
+        ) -> None:
             self.physics_config = physics_config
+            self.discount_factor = float(discount_factor)
 
         def config_dict(self) -> dict[str, object]:
-            return {}
+            return {"discount_factor": self.discount_factor}
 
     monkeypatch.setattr(evaluation_checkpoint, "GridFMReward", FakeReward)
-    assert evaluation_checkpoint._make_task_config(request)["pf_alg"] == 3
+    task_config = evaluation_checkpoint._make_task_config(request)
+    assert task_config["pf_alg"] == 3
+    assert task_config["reward_config"]["discount_factor"] == 0.95
 
     assert "pf_alg=1" not in Path("grid_topology_ai/self_play/stages.py").read_text()
     cli_source = Path("scripts/evaluation/evaluate_checkpoint.py").read_text()
