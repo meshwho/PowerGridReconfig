@@ -10,10 +10,6 @@ from grid_topology_ai.action_space import GridFMAction
 from grid_topology_ai.config.physics import DEFAULT_PHYSICS_CONFIG, PhysicsConfig
 from grid_topology_ai.data_adapter import BRANCH_FEATURE_COLUMNS, GridFMState
 from grid_topology_ai.environment import TopologyStepResult, TopologySwitchingEnv
-from grid_topology_ai.grid_utility import (
-    active_branch_loadings,
-    state_security_penalty,
-)
 from grid_topology_ai.physical_objective import (
     assess_physical_state,
     stop_allowed_for_policy,
@@ -36,8 +32,7 @@ class MCTSConfig:
     """Configuration for single-agent AlphaZero-style MCTS.
 
     ``gamma`` discounts the common terminal utility contract. Dense environment
-    rewards are retained on nodes for diagnostics, but are not accumulated by
-    PUCT backup.
+    rewards are retained on nodes for diagnostics, but never enter PUCT backup.
     """
 
     num_simulations: int = 100
@@ -46,18 +41,13 @@ class MCTSConfig:
     gamma: float = 0.95
     c_puct: float = 1.5
 
-    # Deprecated compatibility fields. They are intentionally not used by the
-    # terminal-utility backup and are removed in the shaping-isolation stage.
-    leaf_penalty_weight: float = 0.10
-    terminal_unsolved_penalty: float = 500.0
-    value_scale: float = 1000.0
+    # Temporary constructor compatibility for callers migrated in the next
+    # commit. This value is ignored and never enters leaf evaluation or backup.
+    leaf_penalty_weight: float = 0.0
 
     heuristic_utility_scale: float = DEFAULT_HEURISTIC_UTILITY_SCALE
     include_stop_action: bool = True
     stop_prior: float = 1.0
-
-    # First Play Urgency for unvisited actions. It already lives in the same
-    # bounded utility range as the value head.
     fpu_value: float = -0.25
 
     prior_exponent: float = 0.5
@@ -89,6 +79,7 @@ class MCTSNode:
 
     action_id_from_parent: int | None = None
     branch_id_from_parent: int | None = None
+    # Diagnostic potential shaping only; never used in backup or selection.
     reward_from_parent: float = 0.0
     step_result_from_parent: TopologyStepResult | None = None
 
@@ -151,12 +142,14 @@ class MCTSPlanner:
         self.physics_config = physics_config or DEFAULT_PHYSICS_CONFIG
         self.gamma = require_discount_factor(config.gamma)
         self.heuristic_utility_scale = float(config.heuristic_utility_scale)
-        if not np.isfinite(self.heuristic_utility_scale) or self.heuristic_utility_scale <= 0:
+        if (
+            not np.isfinite(self.heuristic_utility_scale)
+            or self.heuristic_utility_scale <= 0
+        ):
             raise ValueError("heuristic_utility_scale must be finite and > 0")
         require_bounded_utility(config.fpu_value, context="MCTS fpu_value")
 
         self.loading_idx = BRANCH_FEATURE_COLUMNS.index("loading_percent")
-        self.status_idx = BRANCH_FEATURE_COLUMNS.index("br_status")
         self.rng = np.random.default_rng(config.random_seed)
 
         self.dc_screener = None
@@ -251,7 +244,7 @@ class MCTSPlanner:
         if alpha <= 0.0 or epsilon <= 0.0:
             return
         noise = self.rng.dirichlet(alpha=[alpha for _ in action_ids])
-        for action_id, noise_value in zip(action_ids, noise):
+        for action_id, noise_value in zip(action_ids, noise, strict=True):
             old_prior = float(root.action_priors[action_id])
             root.action_priors[action_id] = (
                 (1.0 - epsilon) * old_prior
@@ -527,6 +520,7 @@ class MCTSPlanner:
         A leaf value describes the leaf state; every traversed edge therefore
         contributes exactly one factor of ``gamma``.
         """
+
         value = require_bounded_utility(
             leaf_value,
             context="MCTS leaf utility",
@@ -538,6 +532,7 @@ class MCTSPlanner:
 
     def _leaf_value(self, node: MCTSNode) -> float:
         """Evaluate a leaf under the shared terminal-utility contract."""
+
         if node.done:
             terminal_utility, _ = terminal_utility_from_outcome(
                 node.solved,
@@ -572,27 +567,12 @@ class MCTSPlanner:
             utility_scale=self.heuristic_utility_scale,
         )
 
-    def _scale_value(self, value: float) -> float:
-        """Deprecated compatibility helper; MCTS backup no longer calls it."""
-        scaled = float(value) / float(self.config.value_scale)
-        return float(np.clip(scaled, -5.0, 5.0))
-
-    def _state_penalty(self, state: GridFMState) -> float:
-        """Compatibility wrapper around the canonical physical utility."""
-        return state_security_penalty(
-            state,
-            physics_config=self.physics_config,
-        )
-
-    def _active_loadings(self, state: GridFMState) -> np.ndarray:
-        """Compatibility wrapper around the canonical active-branch filter."""
-        return active_branch_loadings(state)
-
     def _principal_variation(
         self,
         root: MCTSNode,
     ) -> tuple[list[int], list[int | None], list[float], float, dict[str, Any]]:
-        """Follow the most visited path and retain shaped rewards as diagnostics."""
+        """Follow the most visited path and report shaping diagnostics."""
+
         action_ids: list[int] = []
         branch_ids: list[int | None] = []
         rewards: list[float] = []
