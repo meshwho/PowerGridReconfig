@@ -1,0 +1,48 @@
+name: Trigger physical edge mask patch
+
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  patch:
+    if: github.event.issue.title == 'run physical edge mask patch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Extract and run patch
+        shell: bash
+        run: |
+          awk '/python - <<'\''PY'\''/{capture=1; next} capture && /^          PY$/{exit} capture{sub(/^          /, ""); print}' \
+            .github/workflows/edge-mask-one-shot-20260722.yml > /tmp/edge_mask_patch.py
+          python /tmp/edge_mask_patch.py
+      - name: Check syntax and push
+        shell: bash
+        run: |
+          python -m py_compile \
+            grid_topology_ai/models/graph_policy_value_net_v2.py \
+            grid_topology_ai/models/graph_self_play_dataset.py \
+            grid_topology_ai/training/graph_policy_value.py \
+            grid_topology_ai/models/neural_evaluator.py \
+            tests/test_graph_policy_value_net_v2.py \
+            tests/test_graph_self_play_dataset.py \
+            tests/self_play/test_training_api.py
+          git diff --check
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add \
+            grid_topology_ai/models/graph_policy_value_net_v2.py \
+            grid_topology_ai/models/graph_self_play_dataset.py \
+            grid_topology_ai/training/graph_policy_value.py \
+            grid_topology_ai/models/neural_evaluator.py \
+            tests/test_graph_policy_value_net_v2.py \
+            tests/test_graph_self_play_dataset.py \
+            tests/self_play/test_training_api.py
+          git commit -m "chore: materialize physical edge activity mask"
+          git push origin HEAD:main
