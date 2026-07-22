@@ -304,7 +304,6 @@ def test_task_config_uses_evaluation_config_and_request_values(tmp_path: Path) -
         config=config,
         pf_alg=2,
         disable_cache=True,
-        leaf_penalty_weight=0.25,
         stop_policy="solved_only",
         min_hard_improvement=7.0,
         min_soft_improvement=3.0,
@@ -330,7 +329,6 @@ def test_task_config_uses_evaluation_config_and_request_values(tmp_path: Path) -
     assert task["gamma"] == 0.91
     assert task["c_puct"] == 1.7
     assert task["prior_exponent"] == 0.6
-    assert task["leaf_penalty_weight"] == 0.25
     assert task["stop_policy"] == "solved_only"
     assert task["device"] == "cpu"
     assert task["pf_alg"] == 2

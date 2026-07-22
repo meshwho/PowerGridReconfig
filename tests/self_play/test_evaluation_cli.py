@@ -134,8 +134,6 @@ def test_cli_passes_request_only_settings(
             "9",
             "--min-gate-visit-fraction",
             "0.2",
-            "--leaf-penalty-weight",
-            "0.25",
             "--stop-policy",
             "solved_only",
             "--clear-caches-every",
@@ -170,7 +168,6 @@ def test_cli_passes_request_only_settings(
     assert request.min_soft_improvement == 3.0
     assert request.min_gate_visits == 9
     assert request.min_gate_visit_fraction == 0.2
-    assert request.leaf_penalty_weight == 0.25
     assert request.stop_policy == "solved_only"
     assert request.clear_caches_every == 8
     assert request.use_dc_screening is True
@@ -190,6 +187,23 @@ def test_cli_main_returns_zero(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _run_cli(monkeypatch, tmp_path)
+
+
+def test_cli_rejects_removed_leaf_penalty_weight() -> None:
+    with pytest.raises(SystemExit) as excinfo:
+        cli.build_parser().parse_args(
+            [
+                "raw",
+                "--transitions",
+                "transitions.csv",
+                "--checkpoint",
+                "checkpoint.pt",
+                "--leaf-penalty-weight",
+                "0.25",
+            ]
+        )
+
+    assert excinfo.value.code == 2
 
 
 def test_cli_help_still_works(capsys: pytest.CaptureFixture[str]) -> None:

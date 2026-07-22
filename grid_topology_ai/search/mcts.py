@@ -41,10 +41,6 @@ class MCTSConfig:
     gamma: float = 0.95
     c_puct: float = 1.5
 
-    # Temporary constructor compatibility for callers migrated in the next
-    # commit. This value is ignored and never enters leaf evaluation or backup.
-    leaf_penalty_weight: float = 0.0
-
     heuristic_utility_scale: float = DEFAULT_HEURISTIC_UTILITY_SCALE
     include_stop_action: bool = True
     stop_prior: float = 1.0

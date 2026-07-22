@@ -56,7 +56,6 @@ class EvaluationRequest:
     quiet: bool = False
     pf_alg: int | None = None
     disable_cache: bool = False
-    leaf_penalty_weight: float = 0.10
     stop_policy: str = "no_hard_overloads"
     min_hard_improvement: float = 50.0
     min_soft_improvement: float = 15.0
@@ -86,8 +85,6 @@ class EvaluationRequest:
             raise ValueError("limit must be None or > 0")
         if self.resolved_pf_alg not in {1, 2, 3, 4}:
             raise ValueError("resolved pf_alg must be one of 1, 2, 3, or 4")
-        if float(self.leaf_penalty_weight) < 0:
-            raise ValueError("leaf_penalty_weight must be >= 0")
         if self.stop_policy not in STOP_POLICIES:
             raise ValueError("Unsupported stop_policy")
         if min(
@@ -208,7 +205,6 @@ def init_worker_context(
         top_k_actions=int(task_config["top_k"]),
         gamma=float(task_config["gamma"]),
         c_puct=float(task_config["c_puct"]),
-        leaf_penalty_weight=float(task_config["leaf_penalty_weight"]),
         include_stop_action=True,
         prior_exponent=float(task_config["prior_exponent"]),
         stop_policy=str(task_config["stop_policy"]),
@@ -448,7 +444,6 @@ def _make_task_config(request: EvaluationRequest) -> dict[str, Any]:
         "gamma": float(config.gamma),
         "c_puct": float(config.c_puct),
         "prior_exponent": float(config.prior_exponent),
-        "leaf_penalty_weight": float(request.leaf_penalty_weight),
         "stop_policy": str(request.stop_policy),
         "device": str(config.device),
         "pf_alg": request.resolved_physics_config.pf_alg,

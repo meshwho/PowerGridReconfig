@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import fields
 from types import SimpleNamespace
 
 import pytest
@@ -33,6 +34,16 @@ def _node(
         depth=1,
         reward_from_parent=reward,
     )
+
+
+def test_mcts_config_excludes_legacy_return_knobs() -> None:
+    field_names = {field.name for field in fields(MCTSConfig)}
+
+    assert {
+        "leaf_penalty_weight",
+        "terminal_unsolved_penalty",
+        "value_scale",
+    }.isdisjoint(field_names)
 
 
 def test_mcts_backup_ignores_shaped_environment_rewards() -> None:

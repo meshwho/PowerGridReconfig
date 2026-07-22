@@ -370,7 +370,6 @@ def test_generation_uses_typed_config(
         "top_k_actions": 11,
         "gamma": 0.91,
         "c_puct": 1.7,
-        "leaf_penalty_weight": 0.10,
         "include_stop_action": True,
         "prior_exponent": 0.6,
         "stop_policy": "solved_only",

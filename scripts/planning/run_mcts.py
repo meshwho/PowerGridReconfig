@@ -114,7 +114,6 @@ def main() -> None:
         top_k_actions=args.top_k,
         gamma=args.gamma,
         c_puct=args.c_puct,
-        leaf_penalty_weight=0.10,
         include_stop_action=True,
         prior_exponent=args.prior_exponent,
         stop_policy=args.stop_policy,

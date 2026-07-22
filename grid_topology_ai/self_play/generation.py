@@ -457,7 +457,6 @@ def generate_self_play_examples(request: GenerationRequest) -> Path:
         top_k_actions=request.config.top_k,
         gamma=request.config.gamma,
         c_puct=request.config.c_puct,
-        leaf_penalty_weight=0.10,
         include_stop_action=True,
         prior_exponent=request.config.prior_exponent,
         stop_policy=request.config.stop_policy,

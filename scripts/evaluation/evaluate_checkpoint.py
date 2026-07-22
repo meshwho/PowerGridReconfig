@@ -74,12 +74,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--c-puct", type=float, default=2.0)
     parser.add_argument("--prior-exponent", type=float, default=0.5)
     parser.add_argument(
-        "--leaf-penalty-weight",
-        type=float,
-        default=0.10,
-        help="Weight of safety/penalty term inside MCTS leaf evaluation.",
-    )
-    parser.add_argument(
         "--stop-policy",
         type=str,
         default="no_hard_overloads",
@@ -244,7 +238,6 @@ def main(argv: list[str] | None = None) -> int:
         limit=args.limit,
         quiet=args.quiet,
         disable_cache=args.disable_cache,
-        leaf_penalty_weight=args.leaf_penalty_weight,
         stop_policy=args.stop_policy,
         min_hard_improvement=args.min_hard_improvement,
         min_soft_improvement=args.min_soft_improvement,

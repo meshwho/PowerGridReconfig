@@ -208,7 +208,6 @@ def test_run_evaluate_uses_evaluation_request(
     assert request.pf_alg is None
     assert request.resolved_pf_alg == 3
     assert request.disable_cache is False
-    assert request.leaf_penalty_weight == 0.10
     assert request.stop_policy == "no_hard_overloads"
     assert request.use_dc_screening is False
     assert metrics == {"solve_rate": 0.8, "source": "json"}
