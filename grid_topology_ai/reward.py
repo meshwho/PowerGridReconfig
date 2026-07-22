@@ -2,72 +2,46 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-import numpy as np
-
+from grid_topology_ai.config.physics import PhysicsConfig
+from grid_topology_ai.data_adapter import GridFMState
+from grid_topology_ai.grid_utility import (
+    GridUtilityBreakdown,
+    GridUtilityWeights,
+    grid_utility_breakdown,
+)
 from grid_topology_ai.physical_objective import (
     HARD_OVERLOAD_LIMIT_PERCENT,
     OVERLOAD_LIMIT_PERCENT,
     assess_physical_state,
 )
-from grid_topology_ai.config.physics import PhysicsConfig
-from grid_topology_ai.data_adapter import (
-    BRANCH_FEATURE_COLUMNS,
-    BUS_FEATURE_COLUMNS,
-    GridFMState,
-)
 
 
 @dataclass(frozen=True)
 class GridFMRewardBreakdown:
-    """
-    Detailed reward explanation.
-
-    This is important for debugging:
-    we do not want a black-box reward where we cannot understand why
-    an action was considered good or bad.
-    """
+    """Detailed and auditable reward explanation."""
 
     reward: float
-
     before_penalty: float
     after_penalty: float
-
     improvement: float
     switching_penalty: float
-
     before_max_loading: float
     after_max_loading: float
-
     before_total_overload: float
     after_total_overload: float
-
     before_num_overloaded: int
     after_num_overloaded: int
-
     before_num_hard_overloaded: int
     after_num_hard_overloaded: int
-
     before_voltage_penalty: float
     after_voltage_penalty: float
-
     done: bool
     success: bool
     message: str
 
 
 class GridFMReward:
-    """
-    Reward function for topology switching.
-
-    Main idea:
-        reward = improvement in grid security - switching cost
-
-    We compare:
-        before_state -> after_state
-
-    If the action improves the grid, reward is positive.
-    If it makes the grid worse, reward is negative.
-    """
+    """Dense diagnostic reward based on shared physical grid utility."""
 
     def __init__(
         self,
@@ -85,46 +59,50 @@ class GridFMReward:
         voltage_violation_weight: float = 500.0,
     ):
         if physics_config is not None:
-            if (overload_limit_percent != OVERLOAD_LIMIT_PERCENT or
-                    hard_overload_limit_percent != HARD_OVERLOAD_LIMIT_PERCENT):
-                raise ValueError("PhysicsConfig cannot be combined with explicit overload thresholds.")
+            if (
+                overload_limit_percent != OVERLOAD_LIMIT_PERCENT
+                or hard_overload_limit_percent != HARD_OVERLOAD_LIMIT_PERCENT
+            ):
+                raise ValueError(
+                    "PhysicsConfig cannot be combined with explicit overload thresholds."
+                )
             overload_limit_percent = physics_config.overload_limit_percent
             hard_overload_limit_percent = physics_config.hard_overload_limit_percent
-        self.physics_config = physics_config
-        self.overload_limit_percent = overload_limit_percent
-        self.hard_overload_limit_percent = hard_overload_limit_percent
-        self.switching_penalty = switching_penalty
-        self.non_convergence_penalty = non_convergence_penalty
-        self.solved_bonus = solved_bonus
-        self.total_overload_weight = float(total_overload_weight)
-        self.hard_overload_weight = float(hard_overload_weight)
-        self.num_overloaded_weight = float(num_overloaded_weight)
-        self.num_hard_overloaded_weight = float(num_hard_overloaded_weight)
-        self.voltage_violation_weight = float(voltage_violation_weight)
-        self.loading_idx = BRANCH_FEATURE_COLUMNS.index("loading_percent")
-        self.status_idx = BRANCH_FEATURE_COLUMNS.index("br_status")
 
-        self.vm_idx = BUS_FEATURE_COLUMNS.index("Vm")
+        self.physics_config = physics_config
+        self.overload_limit_percent = float(overload_limit_percent)
+        self.hard_overload_limit_percent = float(hard_overload_limit_percent)
+        self.switching_penalty = float(switching_penalty)
+        self.non_convergence_penalty = float(non_convergence_penalty)
+        self.solved_bonus = float(solved_bonus)
+        self.utility_weights = GridUtilityWeights(
+            total_overload=total_overload_weight,
+            hard_overload=hard_overload_weight,
+            num_overloaded=num_overloaded_weight,
+            num_hard_overloaded=num_hard_overloaded_weight,
+            voltage_violation=voltage_violation_weight,
+        )
+
+        # Public compatibility attributes used in metadata and tests.
+        self.total_overload_weight = self.utility_weights.total_overload
+        self.hard_overload_weight = self.utility_weights.hard_overload
+        self.num_overloaded_weight = self.utility_weights.num_overloaded
+        self.num_hard_overloaded_weight = self.utility_weights.num_hard_overloaded
+        self.voltage_violation_weight = self.utility_weights.voltage_violation
 
     def config_dict(self) -> dict[str, float]:
-        """
-        Return reward configuration for experiment metadata.
-
-        This makes reward settings reproducible across dataset generation,
-        training, evaluation, and checkpoints.
-        """
-
+        """Return reproducible reward and utility configuration."""
         return {
-            "overload_limit_percent": float(self.overload_limit_percent),
-            "hard_overload_limit_percent": float(self.hard_overload_limit_percent),
-            "switching_penalty": float(self.switching_penalty),
-            "non_convergence_penalty": float(self.non_convergence_penalty),
-            "solved_bonus": float(self.solved_bonus),
-            "total_overload_weight": float(self.total_overload_weight),
-            "hard_overload_weight": float(self.hard_overload_weight),
-            "num_overloaded_weight": float(self.num_overloaded_weight),
-            "num_hard_overloaded_weight": float(self.num_hard_overloaded_weight),
-            "voltage_violation_weight": float(self.voltage_violation_weight),
+            "overload_limit_percent": self.overload_limit_percent,
+            "hard_overload_limit_percent": self.hard_overload_limit_percent,
+            "switching_penalty": self.switching_penalty,
+            "non_convergence_penalty": self.non_convergence_penalty,
+            "solved_bonus": self.solved_bonus,
+            "total_overload_weight": self.total_overload_weight,
+            "hard_overload_weight": self.hard_overload_weight,
+            "num_overloaded_weight": self.num_overloaded_weight,
+            "num_hard_overloaded_weight": self.num_hard_overloaded_weight,
+            "voltage_violation_weight": self.voltage_violation_weight,
         }
 
     def compute(
@@ -134,175 +112,90 @@ class GridFMReward:
         action_is_switching: bool,
         power_flow_success: bool,
     ) -> GridFMRewardBreakdown:
-        """
-        Compute reward for one transition.
-
-        Parameters
-        ----------
-        before_state:
-            State before action.
-
-        after_state:
-            State after action. Can be None if power flow failed.
-
-        action_is_switching:
-            True if the action changed topology.
-            False for do_nothing.
-
-        power_flow_success:
-            Whether AC power flow converged after action.
-        """
-
-        before_penalty = self._state_penalty(before_state)
+        """Compute one dense transition reward and its physical breakdown."""
+        before = self._utility_breakdown(before_state)
 
         if not power_flow_success or after_state is None:
-            reward = -self.non_convergence_penalty
-
+            topology_cost = self.switching_penalty if action_is_switching else 0.0
             return GridFMRewardBreakdown(
-                reward=reward,
-                before_penalty=before_penalty,
+                reward=-self.non_convergence_penalty,
+                before_penalty=before.penalty,
                 after_penalty=self.non_convergence_penalty,
                 improvement=-self.non_convergence_penalty,
-                switching_penalty=self.switching_penalty if action_is_switching else 0.0,
-                before_max_loading=before_state.metrics["max_loading_percent"],
+                switching_penalty=topology_cost,
+                before_max_loading=float(
+                    before_state.metrics["max_loading_percent"]
+                ),
                 after_max_loading=float("inf"),
-                before_total_overload=self._total_overload(before_state),
+                before_total_overload=before.total_overload,
                 after_total_overload=float("inf"),
-                before_num_overloaded=before_state.metrics["num_overloaded_branches"],
+                before_num_overloaded=before.num_overloaded,
                 after_num_overloaded=10**9,
-                before_num_hard_overloaded=before_state.metrics[
-                    "num_hard_overloaded_branches"
-                ],
+                before_num_hard_overloaded=before.num_hard_overloaded,
                 after_num_hard_overloaded=10**9,
-                before_voltage_penalty=self._voltage_penalty(before_state),
+                before_voltage_penalty=before.voltage_violation,
                 after_voltage_penalty=float("inf"),
                 done=True,
                 success=False,
                 message="Power flow failed after action.",
             )
 
-        after_penalty = self._state_penalty(after_state)
-
-        improvement = before_penalty - after_penalty
-
+        after = self._utility_breakdown(after_state)
+        improvement = before.penalty - after.penalty
         topology_cost = self.switching_penalty if action_is_switching else 0.0
-
         reward = improvement - topology_cost
 
-        # Reward magnitude follows the authoritative physical assessment.
         assessment = assess_physical_state(after_state.metrics)
-        done = assessment.physically_secure
-
-        if done:
+        if assessment.physically_secure:
             reward += self.solved_bonus
 
         return GridFMRewardBreakdown(
             reward=float(reward),
-            before_penalty=float(before_penalty),
-            after_penalty=float(after_penalty),
+            before_penalty=before.penalty,
+            after_penalty=after.penalty,
             improvement=float(improvement),
-            switching_penalty=float(topology_cost),
+            switching_penalty=topology_cost,
             before_max_loading=float(before_state.metrics["max_loading_percent"]),
             after_max_loading=float(after_state.metrics["max_loading_percent"]),
-            before_total_overload=float(self._total_overload(before_state)),
-            after_total_overload=float(self._total_overload(after_state)),
-            before_num_overloaded=int(before_state.metrics["num_overloaded_branches"]),
-            after_num_overloaded=int(after_state.metrics["num_overloaded_branches"]),
-            before_num_hard_overloaded=int(
-                before_state.metrics["num_hard_overloaded_branches"]
-            ),
-            after_num_hard_overloaded=int(
-                after_state.metrics["num_hard_overloaded_branches"]
-            ),
-            before_voltage_penalty=float(self._voltage_penalty(before_state)),
-            after_voltage_penalty=float(self._voltage_penalty(after_state)),
-            done=bool(done),
+            before_total_overload=before.total_overload,
+            after_total_overload=after.total_overload,
+            before_num_overloaded=before.num_overloaded,
+            after_num_overloaded=after.num_overloaded,
+            before_num_hard_overloaded=before.num_hard_overloaded,
+            after_num_hard_overloaded=after.num_hard_overloaded,
+            before_voltage_penalty=before.voltage_violation,
+            after_voltage_penalty=after.voltage_violation,
+            done=assessment.physically_secure,
             success=True,
             message="Reward computed successfully.",
         )
 
-    def _state_penalty(self, state: GridFMState) -> float:
-        """
-        Convert one grid state into a scalar penalty.
-
-        Lower is better.
-
-        Penalty components:
-        - total overload above 100%;
-        - hard overload above 120%;
-        - number of overloaded branches;
-        - voltage violations.
-        """
-
-        total_overload = self._total_overload(state)
-        hard_overload = self._total_hard_overload(state)
-        voltage_penalty = self._voltage_penalty(state)
-
-        num_overloaded = state.metrics["num_overloaded_branches"]
-        num_hard_overloaded = state.metrics["num_hard_overloaded_branches"]
-
-        penalty = (
-            self.total_overload_weight * total_overload
-            + self.hard_overload_weight * hard_overload
-            + self.num_overloaded_weight * num_overloaded
-            + self.num_hard_overloaded_weight * num_hard_overloaded
-            + self.voltage_violation_weight * voltage_penalty
+    def _utility_breakdown(self, state: GridFMState) -> GridUtilityBreakdown:
+        return grid_utility_breakdown(
+            state,
+            physics_config=self.physics_config,
+            overload_limit_percent=(
+                None
+                if self.physics_config is not None
+                else self.overload_limit_percent
+            ),
+            hard_overload_limit_percent=(
+                None
+                if self.physics_config is not None
+                else self.hard_overload_limit_percent
+            ),
+            weights=self.utility_weights,
         )
 
-        return float(penalty)
-
-    def _active_loadings(self, state: GridFMState) -> np.ndarray:
-        """
-        Return loading_percent only for active branches.
-        """
-
-        status = state.branch_features[:, self.status_idx]
-        loading = state.branch_features[:, self.loading_idx]
-
-        return loading[status > 0]
+    def _state_penalty(self, state: GridFMState) -> float:
+        """Compatibility wrapper around the canonical grid utility."""
+        return self._utility_breakdown(state).penalty
 
     def _total_overload(self, state: GridFMState) -> float:
-        """
-        Sum of overloads above 100%.
-
-        Example:
-            loading = [80, 105, 130]
-            total_overload = 0 + 5 + 30 = 35
-        """
-
-        loading = self._active_loadings(state)
-
-        overload = np.maximum(loading - self.overload_limit_percent, 0.0)
-
-        return float(np.sum(overload))
+        return self._utility_breakdown(state).total_overload
 
     def _total_hard_overload(self, state: GridFMState) -> float:
-        """
-        Sum of overloads above hard threshold, for example 120%.
-        """
-
-        loading = self._active_loadings(state)
-
-        hard_overload = np.maximum(loading - self.hard_overload_limit_percent, 0.0)
-
-        return float(np.sum(hard_overload))
+        return self._utility_breakdown(state).total_hard_overload
 
     def _voltage_penalty(self, state: GridFMState) -> float:
-        """
-        Voltage penalty based on violation magnitude, not only count.
-
-        Example:
-            Vm = 1.0601 with max limit 1.06 should produce a tiny penalty.
-            Vm = 1.10 with max limit 1.06 should produce a much larger penalty.
-
-        This is much better than counting violation buses.
-        """
-
-        if "total_voltage_violation" in state.metrics:
-            return float(state.metrics["total_voltage_violation"])
-
-        # Fallback for older states.
-        num_low = state.metrics["num_low_voltage_buses"]
-        num_high = state.metrics["num_high_voltage_buses"]
-
-        return float(num_low + num_high)
+        return self._utility_breakdown(state).voltage_violation

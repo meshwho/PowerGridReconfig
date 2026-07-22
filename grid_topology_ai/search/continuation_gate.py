@@ -3,11 +3,14 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-import numpy as np
-
 from grid_topology_ai.action_space import GridFMAction
 from grid_topology_ai.config.physics import DEFAULT_PHYSICS_CONFIG, PhysicsConfig
-from grid_topology_ai.data_adapter import BRANCH_FEATURE_COLUMNS, GridFMState
+from grid_topology_ai.data_adapter import GridFMState
+from grid_topology_ai.grid_utility import (
+    CONTINUATION_GRID_UTILITY_WEIGHTS,
+    CONTINUATION_SWITCH_PENALTY,
+    state_security_penalty,
+)
 from grid_topology_ai.search.mcts import MCTSNode, MCTSResult
 
 
@@ -64,64 +67,24 @@ class ContinuationDecision:
         return self.recommendation_reason
 
 
-def _active_loadings(state: GridFMState) -> np.ndarray:
-    status_idx = BRANCH_FEATURE_COLUMNS.index("br_status")
-    loading_idx = BRANCH_FEATURE_COLUMNS.index("loading_percent")
-    status = state.branch_features[:, status_idx]
-    loading = state.branch_features[:, loading_idx]
-    return loading[status > 0.0]
-
-
 def topology_penalty(
     state: GridFMState,
     depth: int = 0,
-    switch_penalty: float = 8.0,
+    switch_penalty: float = CONTINUATION_SWITCH_PENALTY,
     physics_config: PhysicsConfig | None = None,
 ) -> float:
-    """Return a lower-is-better heuristic for lookahead diagnostics."""
-    config = physics_config or DEFAULT_PHYSICS_CONFIG
-    loading = _active_loadings(state)
-    overload_threshold = (
-        config.overload_limit_percent + config.thermal_tolerance_percent
-    )
-    hard_overload_threshold = (
-        config.hard_overload_limit_percent + config.thermal_tolerance_percent
-    )
-    total_overload = float(
-        np.sum(
-            np.where(
-                loading > overload_threshold,
-                loading - config.overload_limit_percent,
-                0.0,
-            )
-        )
-    )
-    hard_overload = float(
-        np.sum(
-            np.where(
-                loading > hard_overload_threshold,
-                loading - config.hard_overload_limit_percent,
-                0.0,
-            )
-        )
-    )
-    num_overloaded = int(state.metrics.get("num_overloaded_branches", 0))
-    num_hard = int(state.metrics.get("num_hard_overloaded_branches", 0))
-    max_loading = float(state.metrics.get("max_loading_percent", 0.0))
-    voltage_violation = float(state.metrics.get("total_voltage_violation", 0.0))
-    max_loading_excess = (
-        max_loading - config.overload_limit_percent
-        if max_loading > overload_threshold
-        else 0.0
-    )
+    """Return the shared physical penalty plus lookahead switching cost."""
+    if int(depth) < 0:
+        raise ValueError("depth must be non-negative.")
+    if float(switch_penalty) < 0.0:
+        raise ValueError("switch_penalty must be non-negative.")
     return float(
-        1000.0 * num_hard
-        + 30.0 * hard_overload
-        + 80.0 * num_overloaded
-        + 4.0 * total_overload
-        + 5.0 * max_loading_excess
-        + 500.0 * voltage_violation
-        + switch_penalty * float(depth)
+        state_security_penalty(
+            state,
+            physics_config=physics_config or DEFAULT_PHYSICS_CONFIG,
+            weights=CONTINUATION_GRID_UTILITY_WEIGHTS,
+        )
+        + float(switch_penalty) * float(depth)
     )
 
 
