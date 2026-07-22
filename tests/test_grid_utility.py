@@ -142,7 +142,10 @@ def test_discounted_potential_shaping_telescopes() -> None:
         )
         for index in range(len(states) - 1)
     ]
-    discounted_sum = sum(gamma**index * value.for index, value in enumerate(rewards))
+    discounted_sum = sum(
+        gamma**index * value
+        for index, value in enumerate(rewards)
+    )
 
     assert discounted_sum == pytest.approx(
         gamma ** (len(states) - 1) * state_potential(states[-1])
