@@ -12,6 +12,7 @@ from grid_topology_ai.grid_utility import (
     CONTINUATION_SWITCH_PENALTY,
     GridUtilityWeights,
     grid_utility_breakdown,
+    potential_shaping_reward,
     state_potential,
     state_security_penalty,
 )
@@ -69,7 +70,6 @@ def test_default_grid_utility_has_auditable_components() -> None:
         num_hard=1,
         voltage_violation=0.1,
     )
-
     breakdown = grid_utility_breakdown(state)
 
     assert breakdown.total_overload == pytest.approx(40.0)
@@ -78,8 +78,8 @@ def test_default_grid_utility_has_auditable_components() -> None:
     assert breakdown.num_hard_overloaded == 1
     assert breakdown.voltage_violation == pytest.approx(0.1)
     assert breakdown.penalty == pytest.approx(230.0)
-    assert state_security_penalty(state) == pytest.approx(breakdown.penalty)
-    assert state_potential(state) == pytest.approx(-breakdown.penalty)
+    assert state_security_penalty(state) == pytest.approx(230.0)
+    assert state_potential(state) == pytest.approx(-230.0)
 
 
 def test_reward_uses_the_default_grid_utility() -> None:
@@ -96,13 +96,71 @@ def test_reward_uses_the_default_grid_utility() -> None:
         voltage_violation=0.2,
         max_loading=130.0,
     )
-
     canonical = state_security_penalty(state, physics_config=physics)
 
     assert canonical == pytest.approx(140.0)
     assert GridFMReward(physics_config=physics)._state_penalty(state) == pytest.approx(
         canonical
     )
+
+
+def test_potential_shaping_uses_exact_discounted_difference() -> None:
+    before = _state(
+        [130.0],
+        [1.0],
+        num_overloaded=1,
+        num_hard=1,
+        voltage_violation=0.0,
+    )
+    after = _state(
+        [110.0],
+        [1.0],
+        num_overloaded=1,
+        num_hard=0,
+        voltage_violation=0.0,
+    )
+
+    assert potential_shaping_reward(
+        before,
+        after,
+        discount_factor=0.95,
+    ) == pytest.approx(0.95 * state_potential(after) - state_potential(before))
+
+
+def test_discounted_potential_shaping_telescopes() -> None:
+    states = [
+        _state([130.0], [1.0], num_overloaded=1, num_hard=1, voltage_violation=0.0),
+        _state([110.0], [1.0], num_overloaded=1, num_hard=0, voltage_violation=0.0),
+        _state([90.0], [1.0], num_overloaded=0, num_hard=0, voltage_violation=0.0),
+    ]
+    gamma = 0.9
+    rewards = [
+        potential_shaping_reward(
+            states[index],
+            states[index + 1],
+            discount_factor=gamma,
+        )
+        for index in range(len(states) - 1)
+    ]
+    discounted_sum = sum(gamma**index * value.for index, value in enumerate(rewards))
+
+    assert discounted_sum == pytest.approx(
+        gamma ** (len(states) - 1) * state_potential(states[-1])
+        - state_potential(states[0])
+    )
+
+
+@pytest.mark.parametrize("gamma", [-0.1, 1.1, float("nan"), True])
+def test_potential_shaping_rejects_invalid_discount(gamma: object) -> None:
+    state = _state(
+        [100.0],
+        [1.0],
+        num_overloaded=0,
+        num_hard=0,
+        voltage_violation=0.0,
+    )
+    with pytest.raises(ValueError, match="discount_factor"):
+        potential_shaping_reward(state, state, discount_factor=gamma)  # type: ignore[arg-type]
 
 
 def test_continuation_scoring_uses_named_shared_weights() -> None:
@@ -119,7 +177,6 @@ def test_continuation_scoring_uses_named_shared_weights() -> None:
         voltage_violation=0.2,
         max_loading=130.0,
     )
-
     base = state_security_penalty(
         state,
         physics_config=physics,
@@ -149,7 +206,6 @@ def test_tolerance_and_branch_status_are_applied_once() -> None:
         voltage_violation=0.0,
         max_loading=100.005,
     )
-
     breakdown = grid_utility_breakdown(state, physics_config=physics)
 
     assert breakdown.total_overload == 0.0
@@ -163,12 +219,13 @@ def test_grid_utility_rejects_invalid_weights() -> None:
         GridUtilityWeights(total_overload=-1.0)
 
 
-def test_grid_utility_consumers_do_not_duplicate_active_loading_helpers() -> None:
+def test_shaping_is_separate_from_mcts_backup() -> None:
     root = Path(__file__).resolve().parents[1] / "grid_topology_ai"
-    for relative_path in (
-        "reward.py",
-        "search/continuation_gate.py",
-    ):
-        text = (root / relative_path).read_text(encoding="utf-8")
-        assert "grid_topology_ai.grid_utility" in text
-        assert "def _active_loadings(" not in text
+    reward = (root / "reward.py").read_text(encoding="utf-8")
+    mcts = (root / "search/mcts.py").read_text(encoding="utf-8")
+    backup = mcts.split("def _backup", 1)[1].split("def _leaf_value", 1)[0]
+
+    assert "potential_shaping_reward" in reward
+    assert "scaled_reward" not in backup
+    assert "_scale_value(" not in backup
+    assert "node.total_value += value" in backup

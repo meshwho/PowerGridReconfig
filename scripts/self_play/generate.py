@@ -15,7 +15,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Generate AlphaZero-like self-play data using MCTS."
     )
-
     parser.add_argument(
         "raw_dir",
         type=str,
@@ -61,7 +60,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--gamma",
         type=float,
         default=0.95,
-        help="Discount factor.",
+        help=(
+            "Discount factor shared by terminal-utility targets and diagnostic "
+            "potential shaping."
+        ),
     )
     parser.add_argument(
         "--c-puct",
@@ -76,35 +78,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Exponent for heuristic prior smoothing.",
     )
     parser.add_argument(
-        "--terminal-unsolved-penalty",
-        type=float,
-        default=500.0,
-        help="Terminal penalty added when an episode ends without solving the grid.",
-    )
-    parser.add_argument(
-        "--terminal-penalty-weight",
-        type=float,
-        default=0.10,
-        help="Additional penalty weight for remaining final-state violations.",
-    )
-    parser.add_argument(
         "--stop-policy",
         type=str,
         default="no_hard_overloads",
         choices=["never", "solved_only", "no_hard_overloads", "always"],
         help="When MCTS is allowed to use the stop/handoff action.",
-    )
-    parser.add_argument(
-        "--terminal-handoff-penalty",
-        type=float,
-        default=150.0,
-        help="Terminal penalty for handoff_to_redispatch episodes.",
-    )
-    parser.add_argument(
-        "--terminal-failure-penalty",
-        type=float,
-        default=1000.0,
-        help="Terminal penalty for power flow failure.",
     )
     parser.add_argument(
         "--checkpoint",
@@ -118,6 +96,7 @@ def build_parser() -> argparse.ArgumentParser:
         default="cpu",
         help="Device for neural evaluator: cpu or cuda.",
     )
+
     root_noise = parser.add_mutually_exclusive_group()
     root_noise.add_argument(
         "--use-root-noise",
@@ -171,43 +150,47 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Disable power flow/action/evaluator caches.",
     )
+
     continuation_gate = parser.add_mutually_exclusive_group()
     continuation_gate.add_argument(
         "--use-continuation-gate",
         dest="use_continuation_gate",
         action="store_true",
-        help="Use lookahead continuation gate to select executed self-play actions.",
+        help=(
+            "Run continuation analysis for diagnostics; it does not override "
+            "the executed self-play action or policy target."
+        ),
     )
     continuation_gate.add_argument(
         "--no-use-continuation-gate",
         dest="use_continuation_gate",
         action="store_false",
-        help="Disable lookahead continuation gate.",
+        help="Disable continuation diagnostics.",
     )
     parser.set_defaults(use_continuation_gate=False)
     parser.add_argument(
         "--min-hard-improvement",
         type=float,
         default=50.0,
-        help="Minimum penalty improvement required while hard overloads exist.",
+        help="Minimum diagnostic improvement while hard overloads exist.",
     )
     parser.add_argument(
         "--min-soft-improvement",
         type=float,
         default=15.0,
-        help="Minimum penalty improvement required after hard overloads are cleared.",
+        help="Minimum diagnostic improvement after hard overloads are cleared.",
     )
     parser.add_argument(
         "--min-gate-visits",
         type=int,
         default=5,
-        help="Minimum visits required for a branch to be trusted by continuation gate.",
+        help="Minimum visits required for continuation diagnostics.",
     )
     parser.add_argument(
         "--min-gate-visit-fraction",
         type=float,
         default=0.01,
-        help="Minimum root policy fraction required for a branch to be trusted.",
+        help="Minimum root policy fraction for continuation diagnostics.",
     )
     parser.add_argument(
         "--clear-cache-between-scenarios",
@@ -217,7 +200,6 @@ def build_parser() -> argparse.ArgumentParser:
             "Useful for large self-play generation to avoid unbounded memory growth."
         ),
     )
-
     return parser
 
 
@@ -236,10 +218,6 @@ def main(argv: list[str] | None = None) -> int:
         use_continuation_gate=args.use_continuation_gate,
         pf_alg=args.pf_alg,
         stop_policy=args.stop_policy,
-        terminal_unsolved_penalty=args.terminal_unsolved_penalty,
-        terminal_handoff_penalty=args.terminal_handoff_penalty,
-        terminal_failure_penalty=args.terminal_failure_penalty,
-        terminal_penalty_weight=args.terminal_penalty_weight,
     )
     request = GenerationRequest(
         raw_dir=Path(args.raw_dir),

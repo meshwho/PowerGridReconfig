@@ -13,9 +13,7 @@ def _capture_request(
     result_path: Path,
     captured: list[GenerationRequest],
 ) -> None:
-    def fake_generate_self_play_examples(
-        request: GenerationRequest,
-    ) -> Path:
+    def fake_generate_self_play_examples(request: GenerationRequest) -> Path:
         captured.append(request)
         result_path.parent.mkdir(parents=True, exist_ok=True)
         result_path.write_text("", encoding="utf-8")
@@ -40,7 +38,6 @@ def test_cli_builds_generation_request(
     captured: list[GenerationRequest] = []
     result_path = tmp_path / "out" / "examples.csv"
     _capture_request(monkeypatch, result_path, captured)
-
     raw_dir = tmp_path / "raw"
     transitions_csv = tmp_path / "transitions.csv"
     checkpoint = tmp_path / "best.pt"
@@ -106,14 +103,6 @@ def test_cli_builds_generation_config(
             "2",
             "--stop-policy",
             "solved_only",
-            "--terminal-unsolved-penalty",
-            "321.0",
-            "--terminal-handoff-penalty",
-            "123.0",
-            "--terminal-failure-penalty",
-            "777.0",
-            "--terminal-penalty-weight",
-            "0.2",
             "--root-dirichlet-alpha",
             "0.4",
             "--root-exploration-fraction",
@@ -143,10 +132,6 @@ def test_cli_builds_generation_config(
     assert config.selection_temperature == 0.25
     assert config.pf_alg == 2
     assert config.stop_policy == "solved_only"
-    assert config.terminal_unsolved_penalty == 321.0
-    assert config.terminal_handoff_penalty == 123.0
-    assert config.terminal_failure_penalty == 777.0
-    assert config.terminal_penalty_weight == 0.2
     assert config.use_root_noise is True
     assert config.use_continuation_gate is True
     assert request.root_dirichlet_alpha == 0.4
@@ -163,12 +148,12 @@ def test_cli_preserves_boolean_flags(
 ) -> None:
     captured: list[GenerationRequest] = []
     _capture_request(monkeypatch, tmp_path / "examples.csv", captured)
-
     base_args = [
         str(tmp_path / "raw"),
         "--transitions",
         str(tmp_path / "transitions.csv"),
     ]
+
     assert generate_cli.main(
         [*base_args, "--use-root-noise", "--use-continuation-gate"]
     ) == 0
@@ -182,32 +167,17 @@ def test_cli_preserves_boolean_flags(
     assert captured[-1].config.use_continuation_gate is False
 
 
-def test_cli_prints_result_path(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
+def test_cli_help_exposes_no_terminal_penalty_controls(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    captured: list[GenerationRequest] = []
-    result_path = tmp_path / "out" / "examples.csv"
-    _capture_request(monkeypatch, result_path, captured)
-
-    assert generate_cli.main(
-        [
-            str(tmp_path / "raw"),
-            "--transitions",
-            str(tmp_path / "transitions.csv"),
-        ]
-    ) == 0
-
-    assert capsys.readouterr().out.strip() == str(result_path)
-
-
-def test_cli_help_still_works(capsys: pytest.CaptureFixture[str]) -> None:
     with pytest.raises(SystemExit) as exc_info:
         generate_cli.build_parser().parse_args(["--help"])
-
     assert exc_info.value.code == 0
     output = capsys.readouterr().out
     assert "--transitions" in output
     assert "--use-root-noise" in output
     assert "--no-use-continuation-gate" in output
+    assert "terminal-unsolved-penalty" not in output
+    assert "terminal-handoff-penalty" not in output
+    assert "terminal-failure-penalty" not in output
+    assert "terminal-penalty-weight" not in output

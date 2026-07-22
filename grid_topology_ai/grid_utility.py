@@ -1,9 +1,10 @@
-"""Canonical physical grid scoring shared by reward, search, and diagnostics."""
+"""Canonical physical grid scoring and potential shaping."""
 
 from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from numbers import Real
 
 import numpy as np
 
@@ -101,8 +102,22 @@ def _resolved_limits(
     return overload_limit, hard_overload_limit, tolerance
 
 
+def _require_discount_factor(value: object) -> float:
+    if isinstance(value, bool) or not isinstance(value, Real):
+        raise ValueError(
+            f"discount_factor must be a finite real number in [0, 1], got {value!r}"
+        )
+    discount = float(value)
+    if not math.isfinite(discount) or not 0.0 <= discount <= 1.0:
+        raise ValueError(
+            f"discount_factor must be a finite real number in [0, 1], got {value!r}"
+        )
+    return discount
+
+
 def active_branch_loadings(state: GridFMState) -> np.ndarray:
     """Return finite loading percentages for active branches only."""
+
     loading_idx = BRANCH_FEATURE_COLUMNS.index("loading_percent")
     status_idx = BRANCH_FEATURE_COLUMNS.index("br_status")
     loading = np.asarray(state.branch_features[:, loading_idx], dtype=np.float64)
@@ -123,6 +138,7 @@ def grid_utility_breakdown(
     weights: GridUtilityWeights = DEFAULT_GRID_UTILITY_WEIGHTS,
 ) -> GridUtilityBreakdown:
     """Build the canonical physical penalty and all of its components."""
+
     overload_limit, hard_limit, tolerance = _resolved_limits(
         physics_config=physics_config,
         overload_limit_percent=overload_limit_percent,
@@ -209,6 +225,7 @@ def state_security_penalty(
     weights: GridUtilityWeights = DEFAULT_GRID_UTILITY_WEIGHTS,
 ) -> float:
     """Return the canonical lower-is-better grid security penalty."""
+
     return grid_utility_breakdown(
         state,
         physics_config=physics_config,
@@ -223,11 +240,54 @@ def state_potential(
     state: GridFMState,
     *,
     physics_config: PhysicsConfig | None = None,
+    overload_limit_percent: float | None = None,
+    hard_overload_limit_percent: float | None = None,
+    thermal_tolerance_percent: float | None = None,
     weights: GridUtilityWeights = DEFAULT_GRID_UTILITY_WEIGHTS,
 ) -> float:
-    """Return a higher-is-better potential derived from the shared penalty."""
+    """Return the higher-is-better potential ``Phi(s) = -penalty(s)``."""
+
     return -state_security_penalty(
         state,
         physics_config=physics_config,
+        overload_limit_percent=overload_limit_percent,
+        hard_overload_limit_percent=hard_overload_limit_percent,
+        thermal_tolerance_percent=thermal_tolerance_percent,
         weights=weights,
     )
+
+
+def potential_shaping_reward(
+    before_state: GridFMState,
+    after_state: GridFMState,
+    *,
+    discount_factor: float,
+    physics_config: PhysicsConfig | None = None,
+    overload_limit_percent: float | None = None,
+    hard_overload_limit_percent: float | None = None,
+    thermal_tolerance_percent: float | None = None,
+    weights: GridUtilityWeights = DEFAULT_GRID_UTILITY_WEIGHTS,
+) -> float:
+    """Return policy-invariant potential shaping ``gamma*Phi(s') - Phi(s)``."""
+
+    gamma = _require_discount_factor(discount_factor)
+    before_potential = state_potential(
+        before_state,
+        physics_config=physics_config,
+        overload_limit_percent=overload_limit_percent,
+        hard_overload_limit_percent=hard_overload_limit_percent,
+        thermal_tolerance_percent=thermal_tolerance_percent,
+        weights=weights,
+    )
+    after_potential = state_potential(
+        after_state,
+        physics_config=physics_config,
+        overload_limit_percent=overload_limit_percent,
+        hard_overload_limit_percent=hard_overload_limit_percent,
+        thermal_tolerance_percent=thermal_tolerance_percent,
+        weights=weights,
+    )
+    shaping = gamma * after_potential - before_potential
+    if not math.isfinite(shaping):
+        raise ValueError("Potential shaping reward must be finite.")
+    return float(shaping)

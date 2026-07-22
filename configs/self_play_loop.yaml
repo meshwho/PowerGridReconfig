@@ -22,15 +22,11 @@ eval_csv: data/gridfm_transitions/case118_eval_v1/transitions_balanced.csv
 eval_raw_dir: data/gridfm_generated/case118_eval_v1/raw
 
 # Initial supervised checkpoint.
-# This is the bootstrap model from which self-play starts.
 bootstrap_checkpoint: runs/bootstrap/best_checkpoint.pt
 bootstrap_eval_metrics: runs/bootstrap/eval_metrics.json
 
-# Output directory for all self-play artifacts.
+# Output directory and canonical best artifacts.
 checkpoint_dir: runs/self_play_v1
-
-# Canonical best checkpoint inside the self-play run.
-# loop.py will initialize it from bootstrap_checkpoint if it does not exist yet.
 best_checkpoint_path: runs/self_play_v1/checkpoints/best.pt
 best_metrics_path: runs/self_play_v1/checkpoints/best_metrics.json
 
@@ -51,15 +47,14 @@ physics:
   generator_q_tolerance_mvar: 1.0e-6
   angle_tolerance_degrees: 1.0e-6
 
-# Replay buffer
 replay_buffer:
   max_size: 50000
   min_size_to_train: 1000
   fresh_fraction: 0.70
   random_seed: 42
 
-# Self-play generation.
-# This section is used by scripts/self_play/run_iteration.py::run_generate().
+# MCTS/value optimization uses discounted terminal utility. Environment rewards
+# are diagnostic potential shaping only and introduce no terminal penalties.
 generation:
   simulations: 150
   depth: 4
@@ -68,24 +63,12 @@ generation:
   gamma: 0.95
   c_puct: 2.0
   prior_exponent: 0.5
-
-  # Model-guided self-play exploration
   use_root_noise: true
   selection_temperature: 0.0
   use_continuation_gate: true
-
-  # Power flow / episode settings
   pf_alg: 3
   stop_policy: no_hard_overloads
 
-  # Terminal outcome shaping for generated self-play trajectories
-  terminal_unsolved_penalty: 500.0
-  terminal_handoff_penalty: 150.0
-  terminal_failure_penalty: 1000.0
-  terminal_penalty_weight: 0.10
-
-# Training.
-# This section is used by scripts/self_play/run_iteration.py::run_train().
 training:
   examples_per_iteration: 20000
   validation_fraction: 0.20
@@ -103,8 +86,6 @@ training:
   save_multiple_best: true
   no_tensorboard: true
 
-# Evaluation.
-# This section is used by scripts/self_play/run_iteration.py::run_evaluate().
 evaluation:
   simulations: 150
   pf_alg: 3
@@ -122,14 +103,12 @@ evaluation:
   output_csv_name: eval_results.csv
   output_json_name: eval_metrics.json
 
-# Candidate acceptance policy.
 acceptance:
   metric: solve_rate
   min_improvement: 0.0
   max_simple_solve_rate_drop: 0.05
   reject_if_failed_scenarios_above: 0
 
-# Metadata and reproducibility
 metadata:
   save_config_copy_per_iteration: true
   save_dataset_hash: true

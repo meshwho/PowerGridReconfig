@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import numpy as np
 import pytest
 
@@ -6,61 +8,46 @@ from grid_topology_ai.data_adapter import (
     BUS_FEATURE_COLUMNS,
     GridFMState,
 )
+from grid_topology_ai.grid_utility import state_potential
 from grid_topology_ai.reward import GridFMReward
 
 
 def _state(
-    scenario_id=1,
-    loadings=(130.0,),
-    vm_values=(1.0, 1.0),
-    total_voltage_violation=0.0,
-):
-    """
-    Build a minimal GridFMState compatible with GridFMReward.
-
-    Reward uses:
-    - branch_features[:, loading_percent]
-    - branch_features[:, br_status]
-    - state.metrics
-    """
-
+    scenario_id: int = 1,
+    loadings: tuple[float, ...] = (130.0,),
+    vm_values: tuple[float, ...] = (1.0, 1.0),
+    total_voltage_violation: float = 0.0,
+) -> GridFMState:
     num_buses = len(vm_values)
     num_branches = len(loadings)
-
     bus_features = np.zeros(
         (num_buses, len(BUS_FEATURE_COLUMNS)),
         dtype=np.float32,
     )
-
-    vm_idx = BUS_FEATURE_COLUMNS.index("Vm")
-    bus_features[:, vm_idx] = np.asarray(vm_values, dtype=np.float32)
-
+    bus_features[:, BUS_FEATURE_COLUMNS.index("Vm")] = np.asarray(
+        vm_values,
+        dtype=np.float32,
+    )
     branch_features = np.zeros(
         (num_branches, len(BRANCH_FEATURE_COLUMNS)),
         dtype=np.float32,
     )
-
-    loading_idx = BRANCH_FEATURE_COLUMNS.index("loading_percent")
-    status_idx = BRANCH_FEATURE_COLUMNS.index("br_status")
-
-    branch_features[:, loading_idx] = np.asarray(loadings, dtype=np.float32)
-    branch_features[:, status_idx] = 1.0
-
-    num_overloaded = int(sum(float(x) > 100.0 for x in loadings))
-    num_hard_overloaded = int(sum(float(x) > 120.0 for x in loadings))
-
-    if num_branches == 1:
-        edge_index = np.array([[0], [1]], dtype=np.int64)
-    else:
-        edge_index = np.vstack(
+    branch_features[:, BRANCH_FEATURE_COLUMNS.index("loading_percent")] = loadings
+    branch_features[:, BRANCH_FEATURE_COLUMNS.index("br_status")] = 1.0
+    num_overloaded = sum(float(value) > 100.0 for value in loadings)
+    num_hard = sum(float(value) > 120.0 for value in loadings)
+    edge_index = (
+        np.array([[0], [1]], dtype=np.int64)
+        if num_branches == 1
+        else np.vstack(
             [
                 np.zeros(num_branches, dtype=np.int64),
                 np.ones(num_branches, dtype=np.int64),
             ]
         )
-
+    )
     return GridFMState(
-        scenario_id=int(scenario_id),
+        scenario_id=scenario_id,
         load_scenario_idx=0.0,
         bus_features=bus_features,
         branch_features=branch_features,
@@ -71,11 +58,11 @@ def _state(
             "power_flow_converged": True,
             "all_values_finite": True,
             "topology_connected": True,
-            "max_loading_percent": float(max(loadings) if loadings else 0.0),
-            "num_overloaded_branches": num_overloaded,
-            "num_hard_overloaded_branches": num_hard_overloaded,
+            "max_loading_percent": float(max(loadings, default=0.0)),
+            "num_overloaded_branches": int(num_overloaded),
+            "num_hard_overloaded_branches": int(num_hard),
             "total_thermal_overload_mva": float(
-                sum(max(float(x) - 100.0, 0.0) for x in loadings)
+                sum(max(float(value) - 100.0, 0.0) for value in loadings)
             ),
             "num_low_voltage_buses": 0,
             "num_high_voltage_buses": int(total_voltage_violation > 0.0),
@@ -91,253 +78,101 @@ def _state(
     )
 
 
-def test_reward_is_positive_when_grid_security_improves():
-    reward_fn = GridFMReward(
-        switching_penalty=1.0,
-        solved_bonus=50.0,
-    )
-
+def test_reward_is_exact_potential_shaping() -> None:
+    reward_fn = GridFMReward(discount_factor=0.95)
     before = _state(loadings=(130.0,))
     after = _state(loadings=(110.0,))
 
-    result = reward_fn.compute(
-        before_state=before,
-        after_state=after,
-        action_is_switching=True,
-        power_flow_success=True,
-    )
+    result = reward_fn.compute(before, after, True, True)
 
-    assert np.isfinite(result.reward)
-    assert result.reward > 0.0
-    assert result.improvement > 0.0
-    assert result.after_penalty < result.before_penalty
+    expected = 0.95 * state_potential(after) - state_potential(before)
+    assert result.reward == pytest.approx(expected)
+    assert result.potential_shaping == pytest.approx(expected)
+    assert result.improvement == pytest.approx(
+        result.before_penalty - result.after_penalty
+    )
+    assert result.reward_role == "diagnostic_potential_shaping"
     assert result.success is True
     assert result.done is False
 
 
-def test_reward_is_negative_when_grid_security_gets_worse():
-    reward_fn = GridFMReward(
-        switching_penalty=1.0,
-        solved_bonus=50.0,
+def test_worse_grid_has_negative_potential_shaping() -> None:
+    result = GridFMReward(discount_factor=0.95).compute(
+        _state(loadings=(110.0,)),
+        _state(loadings=(130.0,)),
+        True,
+        True,
     )
 
-    before = _state(loadings=(110.0,))
-    after = _state(loadings=(130.0,))
-
-    result = reward_fn.compute(
-        before_state=before,
-        after_state=after,
-        action_is_switching=True,
-        power_flow_success=True,
-    )
-
-    assert np.isfinite(result.reward)
     assert result.reward < 0.0
-    assert result.improvement < 0.0
     assert result.after_penalty > result.before_penalty
-    assert result.success is True
-    assert result.done is False
 
 
-def test_reward_adds_solved_bonus_and_marks_done():
-    reward_fn = GridFMReward(
-        switching_penalty=1.0,
-        solved_bonus=50.0,
-    )
-
+def test_solved_state_has_no_solved_bonus() -> None:
     before = _state(loadings=(130.0,))
     after = _state(loadings=(90.0,))
-
-    result = reward_fn.compute(
-        before_state=before,
-        after_state=after,
-        action_is_switching=True,
-        power_flow_success=True,
+    result = GridFMReward(discount_factor=0.95).compute(
+        before,
+        after,
+        True,
+        True,
     )
 
-    assert np.isfinite(result.reward)
-    assert result.reward > 50.0
+    assert result.reward == pytest.approx(
+        0.95 * state_potential(after) - state_potential(before)
+    )
     assert result.done is True
-    assert result.success is True
-    assert result.after_num_overloaded == 0
-    assert result.after_num_hard_overloaded == 0
+    assert result.switching_penalty == 0.0
 
 
-def test_reward_penalizes_power_flow_failure():
-    reward_fn = GridFMReward(
-        non_convergence_penalty=1000.0,
+def test_power_flow_failure_adds_no_second_terminal_penalty() -> None:
+    result = GridFMReward(discount_factor=0.95).compute(
+        _state(loadings=(130.0,)),
+        None,
+        True,
+        False,
     )
 
-    before = _state(loadings=(130.0,))
-
-    result = reward_fn.compute(
-        before_state=before,
-        after_state=None,
-        action_is_switching=True,
-        power_flow_success=False,
-    )
-
-    assert result.reward == pytest.approx(-1000.0)
+    assert result.reward == 0.0
+    assert result.potential_shaping == 0.0
+    assert result.after_potential is None
     assert result.success is False
     assert result.done is True
-    assert result.message == "Power flow failed after action."
+    assert "no non-potential failure reward" in result.message
 
 
-def test_switching_penalty_reduces_reward():
-    before = _state(loadings=(130.0,))
-    after = _state(loadings=(110.0,))
-
-    no_switching_penalty = GridFMReward(
-        switching_penalty=0.0,
-        solved_bonus=0.0,
-    )
-
-    with_switching_penalty = GridFMReward(
-        switching_penalty=5.0,
-        solved_bonus=0.0,
-    )
-
-    reward_without_penalty = no_switching_penalty.compute(
-        before_state=before,
-        after_state=after,
-        action_is_switching=True,
-        power_flow_success=True,
-    )
-
-    reward_with_penalty = with_switching_penalty.compute(
-        before_state=before,
-        after_state=after,
-        action_is_switching=True,
-        power_flow_success=True,
-    )
-
-    assert reward_with_penalty.reward == pytest.approx(
-        reward_without_penalty.reward - 5.0
-    )
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"switching_penalty": 1.0},
+        {"non_convergence_penalty": 1.0},
+        {"solved_bonus": 1.0},
+    ],
+)
+def test_non_potential_reward_terms_are_rejected(kwargs: dict[str, float]) -> None:
+    with pytest.raises(ValueError, match="only potential-based shaping"):
+        GridFMReward(**kwargs)
 
 
-def test_voltage_violation_increases_state_penalty():
-    reward_fn = GridFMReward()
-
-    before = _state(
-        loadings=(101.0,),
-        total_voltage_violation=0.00,
-    )
-
-    after = _state(
-        loadings=(101.0,),
-        total_voltage_violation=0.05,
-    )
-
-    result = reward_fn.compute(
-        before_state=before,
-        after_state=after,
-        action_is_switching=False,
-        power_flow_success=True,
-    )
-
-    assert result.after_voltage_penalty > result.before_voltage_penalty
-    assert result.after_penalty > result.before_penalty
-    assert result.improvement < 0.0
-    assert result.reward < 0.0
-    assert result.done is False
-
-def test_reward_weights_are_configurable():
-    before = _state(
-        loadings=(100.0,),
-        total_voltage_violation=0.0,
-    )
-
-    after = _state(
-        loadings=(100.0,),
-        total_voltage_violation=0.05,
-    )
-
-    default_reward = GridFMReward(
-        solved_bonus=0.0,
-        voltage_violation_weight=500.0,
-    )
-
-    weaker_voltage_penalty_reward = GridFMReward(
-        solved_bonus=0.0,
-        voltage_violation_weight=100.0,
-    )
-
-    default_result = default_reward.compute(
-        before_state=before,
-        after_state=after,
-        action_is_switching=False,
-        power_flow_success=True,
-    )
-
-    weaker_result = weaker_voltage_penalty_reward.compute(
-        before_state=before,
-        after_state=after,
-        action_is_switching=False,
-        power_flow_success=True,
-    )
-
-    assert default_result.after_penalty == pytest.approx(25.0)
-    assert weaker_result.after_penalty == pytest.approx(5.0)
-    assert weaker_result.reward > default_result.reward
-
-def test_reward_config_dict_contains_all_weights():
-    reward_fn = GridFMReward(
+def test_reward_config_identifies_diagnostic_contract() -> None:
+    config = GridFMReward(
+        discount_factor=0.91,
         overload_limit_percent=101.0,
         hard_overload_limit_percent=125.0,
-        switching_penalty=2.0,
-        non_convergence_penalty=900.0,
-        solved_bonus=40.0,
         total_overload_weight=3.0,
         hard_overload_weight=6.0,
         num_overloaded_weight=11.0,
         num_hard_overloaded_weight=31.0,
         voltage_violation_weight=600.0,
-    )
+    ).config_dict()
 
-    config = reward_fn.config_dict()
-
+    assert config["reward_contract"] == "potential_shaping_v1"
+    assert config["reward_role"] == "diagnostic_only"
+    assert config["discount_factor"] == pytest.approx(0.91)
     assert config["overload_limit_percent"] == pytest.approx(101.0)
     assert config["hard_overload_limit_percent"] == pytest.approx(125.0)
-    assert config["switching_penalty"] == pytest.approx(2.0)
-    assert config["non_convergence_penalty"] == pytest.approx(900.0)
-    assert config["solved_bonus"] == pytest.approx(40.0)
     assert config["total_overload_weight"] == pytest.approx(3.0)
     assert config["hard_overload_weight"] == pytest.approx(6.0)
     assert config["num_overloaded_weight"] == pytest.approx(11.0)
     assert config["num_hard_overloaded_weight"] == pytest.approx(31.0)
     assert config["voltage_violation_weight"] == pytest.approx(600.0)
-
-def test_done_remains_true_for_thermal_solved_state():
-    reward_fn = GridFMReward(switching_penalty=1.0, solved_bonus=50.0)
-    result = reward_fn.compute(_state(loadings=(130.0,)), _state(loadings=(99.0,)), True, True)
-    assert result.done is True
-
-
-def test_done_remains_false_for_soft_overload_state():
-    reward_fn = GridFMReward(switching_penalty=1.0, solved_bonus=50.0)
-    result = reward_fn.compute(_state(loadings=(130.0,)), _state(loadings=(110.0,)), True, True)
-    assert result.done is False
-
-
-def test_voltage_violation_without_thermal_overload_is_not_done_or_solved_bonus():
-    reward_fn = GridFMReward(switching_penalty=1.0, solved_bonus=50.0)
-    result = reward_fn.compute(
-        _state(loadings=(130.0,)),
-        _state(loadings=(90.0,), total_voltage_violation=0.5),
-        True,
-        True,
-    )
-    assert result.done is False
-    assert result.reward < 199.0
-
-
-def test_existing_reward_fixture_numerical_value_is_unchanged():
-    reward_fn = GridFMReward(switching_penalty=1.0, solved_bonus=50.0)
-    result = reward_fn.compute(
-        _state(loadings=(130.0,)),
-        _state(loadings=(90.0,)),
-        True,
-        True,
-    )
-    assert result.reward == pytest.approx(199.0)

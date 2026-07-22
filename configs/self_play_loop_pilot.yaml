@@ -32,10 +32,6 @@ generation:
   use_continuation_gate: true
   pf_alg: 3
   stop_policy: no_hard_overloads
-  terminal_unsolved_penalty: 500.0
-  terminal_handoff_penalty: 150.0
-  terminal_failure_penalty: 1000.0
-  terminal_penalty_weight: 0.1
 training:
   examples_per_iteration: 128
   validation_fraction: 0.20
