@@ -9,6 +9,12 @@ import pandas as pd
 
 from grid_topology_ai.contracts import OUTCOME_VALUE_TARGET_CONTRACT_VERSION
 from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
+from grid_topology_ai.return_contract import (
+    VALUE_TARGET_MODE,
+    discounted_terminal_utility,
+    require_discount_factor,
+    terminal_utility_from_outcome,
+)
 from grid_topology_ai.termination import (
     TerminationReason,
     parse_termination_reason,
@@ -23,38 +29,19 @@ def _require_bool(value: object, *, field: str) -> bool:
 
 
 def _require_gamma(value: object) -> float:
-    if isinstance(value, (bool, np.bool_)) or not isinstance(value, Real):
-        raise ValueError(f"gamma must be a finite real number in [0, 1], got {value!r}")
-    gamma = float(value)
-    if not math.isfinite(gamma) or not 0.0 <= gamma <= 1.0:
-        raise ValueError(f"gamma must be a finite real number in [0, 1], got {value!r}")
-    return gamma
+    """Compatibility wrapper around the shared return contract."""
+    return require_discount_factor(value)
 
 
 def terminal_value_from_outcome(
     solved: bool,
     termination_reason: TerminationReason | str | None,
 ) -> tuple[float, str]:
-    """Convert a terminal outcome into a normalized value and class.
-
-    Solved episodes return ``+1.0``, redispatch handoffs return ``0.0``,
-    and failed terminal outcomes return ``-1.0``.  The accompanying class
-    is normalized for diagnostics and outcome-contract validation.
-    """
-    strict_solved = _require_bool(solved, field="solved")
-    reason = validate_outcome_invariants(
-        solved=strict_solved,
-        termination_reason=termination_reason,
+    """Compatibility name for the canonical terminal-utility mapping."""
+    return terminal_utility_from_outcome(
+        _require_bool(solved, field="solved"),
+        termination_reason,
     )
-    if reason is TerminationReason.SOLVED:
-        return 1.0, TerminationReason.SOLVED.value
-    if reason in {
-        TerminationReason.HANDOFF_TO_REDISPATCH,
-        TerminationReason.HANDOFF_TO_REDISPATCH_TEACHER,
-        TerminationReason.HANDOFF_TO_REDISPATCH_WITH_HARD_OVERLOAD,
-    }:
-        return 0.0, TerminationReason.HANDOFF_TO_REDISPATCH.value
-    return -1.0, "unsolved_terminal" if reason is None else reason.value
 
 
 def _require_group_key(row: Mapping[str, object], key: str) -> object:
@@ -100,8 +87,8 @@ def add_outcome_value_targets_to_rows(
     gamma: float,
     group_keys: tuple[str, ...] = ("scenario_id",),
 ) -> None:
-    """Atomically derive strict discounted terminal targets for episode rows."""
-    normalized_gamma = _require_gamma(gamma)
+    """Atomically derive discounted terminal-utility targets for episode rows."""
+    normalized_gamma = require_discount_factor(gamma)
     if (
         not isinstance(group_keys, tuple)
         or not group_keys
@@ -109,6 +96,7 @@ def add_outcome_value_targets_to_rows(
         or len(set(group_keys)) != len(group_keys)
     ):
         raise ValueError("group_keys must be a non-empty tuple of unique field names")
+
     groups: dict[tuple[object, ...], list[tuple[int, dict[str, object]]]] = {}
     for row in rows:
         if (
@@ -127,6 +115,7 @@ def add_outcome_value_targets_to_rows(
         if len(steps) != len(set(steps)):
             raise ValueError(f"Duplicate step in episode group {key!r}")
         indexed_rows.sort(key=lambda item: item[0])
+
         expected_solved: bool | None = None
         expected_reason: TerminationReason | None = None
         for _, row in indexed_rows:
@@ -134,13 +123,18 @@ def add_outcome_value_targets_to_rows(
             done = _require_bool(row.get("done"), field="done")
             if not done:
                 raise ValueError(
-                    "done must be True; cannot derive outcome target from an unfinished episode."
+                    "done must be True; cannot derive outcome target from an "
+                    "unfinished episode."
                 )
             try:
                 reason = parse_termination_reason(
-                    row.get("termination_reason"), allow_none=False
+                    row.get("termination_reason"),
+                    allow_none=False,
                 )
-                validate_outcome_invariants(solved=solved, termination_reason=reason)
+                validate_outcome_invariants(
+                    solved=solved,
+                    termination_reason=reason,
+                )
             except (TypeError, ValueError) as exc:
                 raise ValueError(
                     f"Invalid terminal outcome in episode group {key!r}: {exc}"
@@ -154,21 +148,26 @@ def add_outcome_value_targets_to_rows(
 
         if expected_solved is None or expected_reason is None:
             raise RuntimeError(f"Episode group {key!r} unexpectedly has no rows")
-        terminal_value, outcome_class = terminal_value_from_outcome(
-            expected_solved, expected_reason
+
+        terminal_utility, outcome_class = terminal_utility_from_outcome(
+            expected_solved,
+            expected_reason,
         )
         total = len(indexed_rows)
         for position, (_, row) in enumerate(indexed_rows):
+            steps_to_terminal = total - position
             pending_updates.append(
                 (
                     row,
                     {
-                        "outcome_value_target": (
-                            terminal_value * normalized_gamma ** (total - position)
+                        "outcome_value_target": discounted_terminal_utility(
+                            terminal_utility,
+                            steps_to_terminal=steps_to_terminal,
+                            gamma=normalized_gamma,
                         ),
                         "outcome_class": outcome_class,
-                        "outcome_steps_to_terminal": total - position,
-                        "outcome_value_target_mode": "alphazero_discounted",
+                        "outcome_steps_to_terminal": steps_to_terminal,
+                        "outcome_value_target_mode": VALUE_TARGET_MODE,
                         "outcome_gamma": normalized_gamma,
                         "outcome_value_target_contract_version": (
                             OUTCOME_VALUE_TARGET_CONTRACT_VERSION
@@ -176,5 +175,6 @@ def add_outcome_value_targets_to_rows(
                     },
                 )
             )
+
     for row, updates in pending_updates:
         row.update(updates)

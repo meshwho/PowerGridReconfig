@@ -9,13 +9,13 @@ if TYPE_CHECKING:
     from grid_topology_ai.config.physics import PhysicsConfig
 
 
-# Version 3 binds the stored policy target to the behavior policy that actually
-# produced selected_action_id. Version 2 artifacts may contain gate overrides.
-OUTCOME_VALUE_TARGET_CONTRACT_VERSION = 3
+# Version 4 makes MCTS backup and the value head optimize the same discounted
+# terminal utility. Version 3 checkpoints were searched with shaped returns.
+OUTCOME_VALUE_TARGET_CONTRACT_VERSION = 4
 # Version 4 adds paired ungated/constrained mode metrics and comparison deltas.
 EVALUATION_METRICS_CONTRACT_VERSION = 4
-CHECKPOINT_CONTRACT_VERSION = 4
-REPLAY_BUFFER_SCHEMA_VERSION = 3
+CHECKPOINT_CONTRACT_VERSION = 5
+REPLAY_BUFFER_SCHEMA_VERSION = 4
 PHYSICS_CONFIG_CONTRACT_VERSION = 1
 
 
@@ -53,7 +53,6 @@ def physics_provenance(
     physics_config: "PhysicsConfig",
 ) -> dict[str, object]:
     """Build the canonical physics provenance stored in every artifact."""
-
     return {
         "physics_config_contract_version": PHYSICS_CONFIG_CONTRACT_VERSION,
         "physics_config": physics_config.to_dict(),
@@ -68,7 +67,6 @@ def require_physics_provenance(
     expected_physics_config: "PhysicsConfig | None" = None,
 ) -> "PhysicsConfig":
     """Validate self-contained physics provenance and optional compatibility."""
-
     from grid_topology_ai.config.physics import PhysicsConfig
 
     require_exact_contract_version(
