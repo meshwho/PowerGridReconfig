@@ -198,20 +198,36 @@ def build_evaluation_metrics(
         "pf_alg": physics_config.pf_alg,
         **physics_provenance(physics_config),
         "physical_objective_contract": physical_objective_contract(physics_config),
-        "evaluation_coverage_rate": rate(evaluated_scenarios, requested_count),
-        "solve_rate_requested": rate(solve_count, requested_count),
+        "evaluation_coverage_rate": rate(
+            evaluated_scenarios,
+            requested_count,
+        ),
+        "solve_rate_requested": rate(
+            solve_count,
+            requested_count,
+        ),
         "failed_scenario_rate_requested": rate(
-            failed_scenarios, requested_count
+            failed_scenarios,
+            requested_count,
         ),
         "hard_overload_free_count": hard_overload_free_count,
         "hard_overload_free_rate": rate(
-            hard_overload_free_count, evaluated_scenarios
+            hard_overload_free_count,
+            evaluated_scenarios,
         ),
         "voltage_feasible_count": voltage_feasible_count,
-        "voltage_feasible_rate": rate(voltage_feasible_count, evaluated_scenarios),
+        "voltage_feasible_rate": rate(
+            voltage_feasible_count,
+            evaluated_scenarios,
+        ),
         "physically_secure_count": physically_secure_count,
         "physically_secure_rate": rate(
-            physically_secure_count, evaluated_scenarios
+            physically_secure_count,
+            evaluated_scenarios,
+        ),
+        "physically_secure_rate_requested": rate(
+            physically_secure_count,
+            requested_count,
         ),
         "safe_handoff_count": safe_handoff_count,
         "safe_handoff_rate": rate(safe_handoff_count, evaluated_scenarios),
@@ -221,7 +237,12 @@ def build_evaluation_metrics(
         ),
         "power_flow_failure_count": power_flow_failure_count,
         "power_flow_failure_rate": rate(
-            power_flow_failure_count, evaluated_scenarios
+            power_flow_failure_count,
+            evaluated_scenarios,
+        ),
+        "power_flow_failure_rate_requested": rate(
+            power_flow_failure_count,
+            requested_count,
         ),
         "avg_steps": _safe_mean(df["steps"]),
         "avg_steps_to_solve": _safe_mean(df.loc[solved, "steps"]),
@@ -241,7 +262,19 @@ def build_evaluation_metrics(
 
     for field, count in component_counts.items():
         metrics[f"{field}_count"] = count
-        metrics[f"{field}_rate"] = rate(count, evaluated_scenarios)
+
+        metrics[f"{field}_rate"] = rate(
+            count,
+            evaluated_scenarios,
+        )
+
+        requested_rate_key = f"{field}_rate_requested"
+
+        if requested_rate_key not in metrics:
+            metrics[requested_rate_key] = rate(
+                count,
+                requested_count,
+            )
 
     for field in (
         "num_low_voltage_buses",

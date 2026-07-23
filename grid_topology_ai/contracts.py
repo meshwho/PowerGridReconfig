@@ -13,7 +13,7 @@ if TYPE_CHECKING:
 # terminal utility. Version 3 checkpoints were searched with shaped returns.
 OUTCOME_VALUE_TARGET_CONTRACT_VERSION = 4
 # Version 4 adds paired ungated/constrained mode metrics and comparison deltas.
-EVALUATION_METRICS_CONTRACT_VERSION = 4
+EVALUATION_METRICS_CONTRACT_VERSION = 5
 CHECKPOINT_CONTRACT_VERSION = 5
 REPLAY_BUFFER_SCHEMA_VERSION = 4
 PHYSICS_CONFIG_CONTRACT_VERSION = 1
