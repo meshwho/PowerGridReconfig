@@ -137,6 +137,21 @@ def require_physics_provenance(
             parsed_pf_alg = int(legacy_pf_alg.strip())
         else:
             parsed_pf_alg = None
+
+        if parsed_pf_alg is None:
+            raise ValueError(
+                f"PF_ALG conflicts with PhysicsConfig for {source}: expected "
+                f"exact integer PF_ALG value, observed PF_ALG={legacy_pf_alg!r}, "
+                f"physics.pf_alg={observed_config.pf_alg}."
+            )
+
+        if parsed_pf_alg not in {1, 2, 3, 4}:
+            raise ValueError(
+                f"PF_ALG conflicts with PhysicsConfig for {source}: observed "
+                f"PF_ALG={parsed_pf_alg} is invalid; expected one of 1, 2, 3, "
+                f"or 4, physics.pf_alg={observed_config.pf_alg}."
+            )
+
         if parsed_pf_alg != observed_config.pf_alg:
             raise ValueError(
                 f"PF_ALG conflicts with PhysicsConfig for {source}: observed "
