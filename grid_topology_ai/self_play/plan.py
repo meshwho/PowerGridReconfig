@@ -126,7 +126,10 @@ def render_execution_plan(
             "Acceptance:",
             f"  metric:                   {config.acceptance.metric}",
             f"  min_improvement:          {config.acceptance.min_improvement}",
-            f"  max_simple_drop:          {config.acceptance.max_simple_solve_rate_drop}",
+            (
+                "  max failed scenarios:     "
+                f"{config.acceptance.reject_if_failed_scenarios_above}"
+            ),
             "",
             "First iteration would write:",
             f"  {first_iter_dir / 'selected_scenario_ids.txt'}",

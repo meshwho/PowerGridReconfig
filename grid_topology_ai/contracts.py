@@ -12,7 +12,8 @@ if TYPE_CHECKING:
 # Version 4 makes MCTS backup and the value head optimize the same discounted
 # terminal utility. Version 3 checkpoints were searched with shaped returns.
 OUTCOME_VALUE_TARGET_CONTRACT_VERSION = 4
-# Version 4 adds paired ungated/constrained mode metrics and comparison deltas.
+# Version 5 adds requested-scenario denominator metrics required by strict
+# fail-closed candidate acceptance.
 EVALUATION_METRICS_CONTRACT_VERSION = 5
 CHECKPOINT_CONTRACT_VERSION = 5
 REPLAY_BUFFER_SCHEMA_VERSION = 4
