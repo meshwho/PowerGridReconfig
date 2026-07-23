@@ -506,7 +506,10 @@ def test_require_metrics_pf_alg_mismatch_rejects() -> None:
 
 
 def test_require_metrics_pf_alg_invalid_rejects() -> None:
-    with pytest.raises(ValueError, match="invalid"):
+    with pytest.raises(
+        ValueError,
+        match="PF_ALG conflicts with PhysicsConfig",
+    ):
         require_metrics_pf_alg(
             _metrics(pf_alg=9),
             expected_pf_alg=3,
@@ -528,7 +531,10 @@ def test_require_metrics_pf_alg_accepts_exact_float_and_string() -> None:
 
 
 def test_require_metrics_pf_alg_rejects_fractional_top_level() -> None:
-    with pytest.raises(ValueError, match="exact integer"):
+    with pytest.raises(
+        ValueError,
+        match="PF_ALG conflicts with PhysicsConfig",
+    ):
         require_metrics_pf_alg(
             _metrics(pf_alg=3.5),
             expected_pf_alg=3,
