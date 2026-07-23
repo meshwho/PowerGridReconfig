@@ -559,68 +559,82 @@ class GraphPolicyValueNetV2(nn.Module):
         return out
 
     def _overload_focused_pool(
-        self,
-        edge_embeddings: torch.Tensor,
-        branch_mask: torch.Tensor | None,
+            self,
+            edge_embeddings: torch.Tensor,
+            edge_active_mask: torch.Tensor,
     ) -> torch.Tensor:
         """
-        Learned severity pooling over branches.
+        Learned severity pooling over physically active branches.
 
-        It lets the model focus on the most operationally important branches
-        without relying on fixed feature indices.
+        Physically inactive branches must not contribute to the global
+        representation, regardless of their stored branch features.
         """
 
-        scores = self.overload_attention(edge_embeddings).squeeze(-1)
+        scores = self.overload_attention(
+            edge_embeddings
+        ).squeeze(-1)
 
-        if branch_mask is not None:
-            scores = scores.masked_fill(
-                ~branch_mask,
-                torch.finfo(scores.dtype).min,
-            )
+        scores = scores.masked_fill(
+            ~edge_active_mask,
+            torch.finfo(scores.dtype).min,
+        )
 
-            no_valid = ~branch_mask.any(dim=1)
+        no_active_edges = ~edge_active_mask.any(dim=1)
 
-            if bool(no_valid.any()):
-                scores = scores.clone()
-                scores[no_valid] = 0.0
+        if bool(no_active_edges.any()):
+            scores = scores.clone()
+            scores[no_active_edges] = 0.0
 
-        weights = torch.softmax(scores, dim=1).unsqueeze(-1)
+        weights = torch.softmax(
+            scores,
+            dim=1,
+        ).unsqueeze(-1)
 
-        if branch_mask is not None:
-            weights = weights * branch_mask.to(dtype=edge_embeddings.dtype).unsqueeze(-1)
-            weights = weights / weights.sum(dim=1, keepdim=True).clamp_min(1e-6)
+        active_weights = edge_active_mask.to(
+            dtype=edge_embeddings.dtype,
+        ).unsqueeze(-1)
+
+        weights = weights * active_weights
+
+        weights = weights / weights.sum(
+            dim=1,
+            keepdim=True,
+        ).clamp_min(1e-6)
 
         return (edge_embeddings * weights).sum(dim=1)
 
     def _build_contexts(
-        self,
-        node_embeddings: torch.Tensor,
-        edge_embeddings: torch.Tensor,
-        action_mask: torch.Tensor | None,
+            self,
+            node_embeddings: torch.Tensor,
+            edge_embeddings: torch.Tensor,
+            edge_active_mask: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        if action_mask is None:
-            branch_mask = None
-        else:
-            branch_mask = action_mask[:, 1:].bool()
+        """
+        Build global graph contexts from the physical network topology.
+
+        Policy action legality must not affect the value representation.
+        Every physically active branch participates even when its switching
+        action is unavailable.
+        """
 
         node_mean = node_embeddings.mean(dim=1)
         node_max = node_embeddings.max(dim=1).values
 
         edge_mean = self._masked_mean(
             values=edge_embeddings,
-            mask=branch_mask,
+            mask=edge_active_mask,
             dim=1,
         )
 
         edge_max = self._masked_max(
             values=edge_embeddings,
-            mask=branch_mask,
+            mask=edge_active_mask,
             dim=1,
         )
 
         overload_pool = self._overload_focused_pool(
             edge_embeddings=edge_embeddings,
-            branch_mask=branch_mask,
+            edge_active_mask=edge_active_mask,
         )
 
         global_embedding = torch.cat(
@@ -634,9 +648,15 @@ class GraphPolicyValueNetV2(nn.Module):
             dim=-1,
         )
 
-        global_projected = self.global_projection(global_embedding)
+        global_projected = self.global_projection(
+            global_embedding
+        )
 
-        return global_embedding, global_projected, overload_pool
+        return (
+            global_embedding,
+            global_projected,
+            overload_pool,
+        )
 
     def forward(
         self,
@@ -759,7 +779,7 @@ class GraphPolicyValueNetV2(nn.Module):
         global_embedding, global_projected, overload_pool = self._build_contexts(
             node_embeddings=node_embeddings,
             edge_embeddings=edge_embeddings,
-            action_mask=action_mask,
+            edge_active_mask=edge_active_mask,
         )
 
         global_repeated = global_projected.unsqueeze(1).expand(
