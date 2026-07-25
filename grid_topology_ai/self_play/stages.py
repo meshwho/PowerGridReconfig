@@ -504,6 +504,7 @@ def run_evaluate(
     output_dir: str | Path,
     config: EvaluationConfig,
     physics_config: PhysicsConfig | None = None,
+    scenario_ids: tuple[int, ...] | None = None,
 ) -> dict[str, Any]:
     """
     Evaluate candidate checkpoint on fixed eval set.
@@ -525,6 +526,7 @@ def run_evaluate(
         physics_config=physics_config,
         output_csv=output_csv,
         output_json=output_json,
+        scenario_ids=scenario_ids,
         limit=None,
         quiet=True,
     )

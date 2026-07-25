@@ -26,7 +26,7 @@ from grid_topology_ai.self_play.stages import (
     run_train,
     split_examples_by_scenario,
 )
-
+from grid_topology_ai.evaluation.checkpoint import load_scenario_ids
 
 @dataclass(frozen=True, slots=True)
 class IterationRequest:
@@ -36,7 +36,6 @@ class IterationRequest:
     paths: SelfPlayPaths
 
     parent_checkpoint: Path
-    parent_metrics: Mapping[str, object]
 
     pool_metadata: dict[str, Any]
     replay_buffer: RollingReplayBuffer
@@ -62,6 +61,7 @@ class IterationResult:
     candidate_checkpoint: Path
     metadata_path: Path
 
+    parent_metrics: dict[str, object]
     candidate_metrics: dict[str, object]
 
     best_checkpoint: Path
@@ -110,6 +110,7 @@ def _save_iteration_metadata(
     validation_examples_csv: str | Path,
     split_metadata_path: str | Path,
     raw_examples_csv: str | Path | None,
+    parent_metrics: dict[str, Any],
     metrics: dict[str, Any],
     config: dict[str, Any],
     extra: dict[str, Any] | None = None,
@@ -139,6 +140,7 @@ def _save_iteration_metadata(
         "split_metadata_path": str(split_metadata_path),
         "raw_examples_csv": None if raw_examples_csv is None else str(raw_examples_csv),
         "hashes": {},
+        "parent_metrics": parent_metrics,
         "metrics": metrics,
         "config": config,
     }
@@ -182,7 +184,6 @@ def run_self_play_iteration(
     iter_dir.mkdir(parents=True, exist_ok=True)
 
     parent_checkpoint = request.parent_checkpoint
-    parent_metrics = dict(request.parent_metrics)
 
     iteration_seed = int(config.seed) + iteration
 
@@ -263,38 +264,72 @@ def run_self_play_iteration(
         seed=iteration_seed,
     )
 
-    metrics = run_evaluate(
+    evaluation_scenario_ids = tuple(
+        load_scenario_ids(
+            paths.eval_csv,
+            limit=None,
+        )
+    )
+
+    evaluation_dir = iter_dir / "evaluation"
+    parent_evaluation_dir = evaluation_dir / "parent"
+    candidate_evaluation_dir = evaluation_dir / "candidate"
+
+    parent_metrics = run_evaluate(
+        project_root=paths.project_root,
+        checkpoint=parent_checkpoint,
+        eval_csv=paths.eval_csv,
+        eval_raw_dir=paths.eval_raw_dir,
+        output_dir=parent_evaluation_dir,
+        config=config.evaluation,
+        physics_config=config.physics,
+        scenario_ids=evaluation_scenario_ids,
+    )
+
+    candidate_metrics = run_evaluate(
         project_root=paths.project_root,
         checkpoint=candidate_checkpoint,
         eval_csv=paths.eval_csv,
         eval_raw_dir=paths.eval_raw_dir,
-        output_dir=iter_dir,
+        output_dir=candidate_evaluation_dir,
         config=config.evaluation,
         physics_config=config.physics,
+        scenario_ids=evaluation_scenario_ids,
     )
-    require_metrics_pf_alg(
-        metrics,
-        expected_pf_alg=config.evaluation.pf_alg,
-        source=str(iter_dir / config.evaluation.output_json_name),
+
+    parent_metrics_path = (
+            parent_evaluation_dir
+            / config.evaluation.output_json_name
     )
-    require_metrics_physics_config(
-        metrics,
-        expected_physics_config=config.physics,
-        source=str(iter_dir / config.evaluation.output_json_name),
+    candidate_metrics_path = (
+            candidate_evaluation_dir
+            / config.evaluation.output_json_name
     )
+
     require_metrics_pf_alg(
         parent_metrics,
         expected_pf_alg=config.evaluation.pf_alg,
-        source="parent/best metrics",
+        source=str(parent_metrics_path),
     )
     require_metrics_physics_config(
         parent_metrics,
         expected_physics_config=config.physics,
-        source="parent/best metrics",
+        source=str(parent_metrics_path),
+    )
+
+    require_metrics_pf_alg(
+        candidate_metrics,
+        expected_pf_alg=config.evaluation.pf_alg,
+        source=str(candidate_metrics_path),
+    )
+    require_metrics_physics_config(
+        candidate_metrics,
+        expected_physics_config=config.physics,
+        source=str(candidate_metrics_path),
     )
 
     accepted = accept_candidate(
-        new_metrics=metrics,
+        new_metrics=candidate_metrics,
         best_metrics=parent_metrics,
         config=config.acceptance,
     )
@@ -313,13 +348,17 @@ def run_self_play_iteration(
         validation_examples_csv=validation_examples_path,
         split_metadata_path=split_metadata_path,
         raw_examples_csv=raw_examples_csv,
-        metrics=metrics,
+        parent_metrics=parent_metrics,
+        metrics=candidate_metrics,
         config=dict(request.raw_config),
         extra={
             "status": status,
             "metric_name": metric_name,
-            "candidate_metric": metrics.get(metric_name),
+            "candidate_metric": candidate_metrics.get(metric_name),
             "best_metric_before": parent_metrics.get(metric_name),
+            "n_evaluation_scenarios": len(evaluation_scenario_ids),
+            "parent_evaluation_dir": str(parent_evaluation_dir),
+            "candidate_evaluation_dir": str(candidate_evaluation_dir),
             "n_sampled_scenarios": len(scenario_ids),
             "n_raw_examples": raw_examples_count,
             "n_new_examples_loaded": len(new_examples),
@@ -340,14 +379,15 @@ def run_self_play_iteration(
     if accepted:
         best_state = promote_candidate(
             candidate_checkpoint=Path(candidate_checkpoint),
-            candidate_metrics=metrics,
+            candidate_metrics=candidate_metrics,
             paths=paths,
         )
         best_checkpoint = best_state.checkpoint
         best_metrics = dict(best_state.metrics)
     else:
         best_checkpoint = parent_checkpoint
-        best_metrics = parent_metrics
+        best_metrics = dict(parent_metrics)
+        save_json(best_metrics, paths.best_metrics)
 
     raw_examples_df = pd.read_csv(raw_examples_csv)
 
@@ -359,7 +399,7 @@ def run_self_play_iteration(
         selected_scenario_ids=scenario_ids,
     )
 
-    candidate_metric = metrics.get(metric_name)
+    candidate_metric = candidate_metrics.get(metric_name)
     best_metric_after = best_metrics.get(metric_name)
 
     row: dict[str, object] = {
@@ -383,7 +423,7 @@ def run_self_play_iteration(
         "best_checkpoint_after": str(best_checkpoint),
     }
 
-    for key, value in metrics.items():
+    for key, value in candidate_metrics.items():
         row[f"candidate_{key}"] = value
 
     for key, value in best_metrics.items():
@@ -401,7 +441,8 @@ def run_self_play_iteration(
         split_metadata_path=split_metadata_path,
         candidate_checkpoint=candidate_checkpoint,
         metadata_path=metadata_path,
-        candidate_metrics=metrics,
+        parent_metrics=dict(parent_metrics),
+        candidate_metrics=dict(candidate_metrics),
         best_checkpoint=best_checkpoint,
         best_metrics=best_metrics,
         pool_metadata=pool_metadata,

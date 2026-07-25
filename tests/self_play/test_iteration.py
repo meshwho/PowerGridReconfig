@@ -157,6 +157,23 @@ def _paths(tmp_path: Path) -> SelfPlayPaths:
 
 def _request(tmp_path: Path, *, iteration: int = 2) -> IterationRequest:
     paths = _paths(tmp_path)
+    paths.eval_csv.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+    pd.DataFrame(
+        {
+            "scenario_id": [3, 1, 2],
+        }
+    ).to_csv(
+        paths.eval_csv,
+        index=False,
+    )
+
+    paths.eval_raw_dir.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
     parent_checkpoint = tmp_path / "parent.pt"
     parent_checkpoint.write_bytes(b"parent")
     return IterationRequest(
@@ -165,7 +182,6 @@ def _request(tmp_path: Path, *, iteration: int = 2) -> IterationRequest:
         raw_config={"raw": "config"},
         paths=paths,
         parent_checkpoint=parent_checkpoint,
-        parent_metrics=_metrics(0.5),
         pool_metadata={"scenarios": {"1": {}, "2": {}, "3": {}}},
         replay_buffer=_FakeReplayBuffer(),  # type: ignore[arg-type]
     )
@@ -201,8 +217,14 @@ def _install_stage_fakes(monkeypatch: pytest.MonkeyPatch, calls: list[str] | Non
         return checkpoint
 
     def fake_evaluate(**kwargs: Any) -> dict[str, object]:
+        checkpoint = Path(kwargs["checkpoint"])
+
         if calls is not None:
-            calls.append("evaluate")
+            calls.append(f"evaluate:{checkpoint.name}")
+
+        if checkpoint.name == "parent.pt":
+            return _metrics(0.5)
+
         return _metrics(0.6)
 
     monkeypatch.setattr("grid_topology_ai.self_play.iteration.run_generate", fake_generate)
@@ -275,7 +297,12 @@ def test_iteration_runs_generation_training_evaluation_in_order(
 
     run_self_play_iteration(_request(tmp_path))
 
-    assert calls == ["generate", "train", "evaluate"]
+    assert calls == [
+        "generate",
+        "train",
+        "evaluate:parent.pt",
+        "evaluate:candidate_checkpoint.pt",
+    ]
 
 
 def test_accepted_iteration_promotes_candidate(
@@ -314,7 +341,8 @@ def test_rejected_iteration_keeps_parent(
 
     assert result.status == "REJECTED"
     assert result.best_checkpoint == request.parent_checkpoint
-    assert result.best_metrics == dict(request.parent_metrics)
+    assert result.parent_metrics["solve_rate"] == 0.5
+    assert result.best_metrics["solve_rate"] == 0.5
 
 
 def test_metadata_is_saved_before_promotion(
@@ -386,27 +414,92 @@ def test_iteration_returns_learning_curve_row(
     assert row["best_solve_rate"] == 0.6
 
 
-def test_parent_metrics_are_not_mutated(
+def test_parent_is_reevaluated_before_selection(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _install_stage_fakes(monkeypatch)
-    parent_metrics = _metrics(0.5)
-    request = _request(tmp_path)
-    request = IterationRequest(
-        iteration=request.iteration,
-        config=request.config,
-        raw_config=request.raw_config,
-        paths=request.paths,
-        parent_checkpoint=request.parent_checkpoint,
-        parent_metrics=parent_metrics,
-        pool_metadata=request.pool_metadata,
-        replay_buffer=request.replay_buffer,
+
+    captured: dict[str, object] = {}
+
+    def fake_accept_candidate(
+        *,
+        new_metrics,
+        best_metrics,
+        config,
+    ) -> bool:
+        captured["candidate"] = dict(new_metrics)
+        captured["parent"] = dict(best_metrics)
+        return True
+
+    monkeypatch.setattr(
+        iteration_module,
+        "accept_candidate",
+        fake_accept_candidate,
     )
 
-    run_self_play_iteration(request)
+    result = run_self_play_iteration(_request(tmp_path))
 
-    assert parent_metrics == _metrics(0.5)
+    assert captured["candidate"]["solve_rate"] == 0.6
+    assert captured["parent"]["solve_rate"] == 0.5
+    assert result.parent_metrics["solve_rate"] == 0.5
+
+
+def test_parent_and_candidate_use_the_same_evaluation_scenarios(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_stage_fakes(monkeypatch)
+
+    evaluation_calls: list[tuple[int, ...]] = []
+
+    def fake_evaluate(**kwargs: Any) -> dict[str, object]:
+        evaluation_calls.append(
+            tuple(kwargs["scenario_ids"])
+        )
+
+        checkpoint = Path(kwargs["checkpoint"])
+        return _metrics(
+            0.5
+            if checkpoint.name == "parent.pt"
+            else 0.6
+        )
+
+    monkeypatch.setattr(
+        iteration_module,
+        "run_evaluate",
+        fake_evaluate,
+    )
+
+    run_self_play_iteration(_request(tmp_path))
+
+    assert evaluation_calls == [
+        (1, 2, 3),
+        (1, 2, 3),
+    ]
+
+
+def test_rejected_candidate_refreshes_best_metrics(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_stage_fakes(monkeypatch)
+
+    monkeypatch.setattr(
+        iteration_module,
+        "accept_candidate",
+        lambda **kwargs: False,
+    )
+
+    result = run_self_play_iteration(_request(tmp_path))
+
+    best_metrics_path = _paths(tmp_path).best_metrics
+    saved_metrics = json.loads(
+        best_metrics_path.read_text(encoding="utf-8")
+    )
+
+    assert result.best_metrics["solve_rate"] == 0.5
+    assert saved_metrics["solve_rate"] == 0.5
 
 
 def test_iteration_stops_before_training_when_replay_validation_fails(

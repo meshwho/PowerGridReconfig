@@ -176,7 +176,6 @@ def run_self_play_pipeline(
                 raw_config=request.raw_config,
                 paths=paths,
                 parent_checkpoint=best_checkpoint,
-                parent_metrics=best_metrics,
                 pool_metadata=pool_metadata,
                 replay_buffer=replay_buffer,
             )

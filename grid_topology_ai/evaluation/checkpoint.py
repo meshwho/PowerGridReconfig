@@ -53,6 +53,7 @@ class EvaluationRequest:
     output_csv: Path | None = None
     output_json: Path | None = None
     limit: int | None = None
+    scenario_ids: tuple[int, ...] | None = None
     quiet: bool = False
     pf_alg: int | None = None
     disable_cache: bool = False
@@ -83,6 +84,28 @@ class EvaluationRequest:
     def __post_init__(self) -> None:
         if self.limit is not None and int(self.limit) <= 0:
             raise ValueError("limit must be None or > 0")
+        if self.scenario_ids is not None:
+            if self.limit is not None:
+                raise ValueError(
+                    "scenario_ids and limit cannot be used together."
+                )
+
+            normalized_ids = tuple(
+                int(scenario_id)
+                for scenario_id in self.scenario_ids
+            )
+
+            if not normalized_ids:
+                raise ValueError("scenario_ids must not be empty.")
+
+            if len(normalized_ids) != len(set(normalized_ids)):
+                raise ValueError("scenario_ids must not contain duplicates.")
+
+            object.__setattr__(
+                self,
+                "scenario_ids",
+                normalized_ids,
+            )
         if self.resolved_pf_alg not in {1, 2, 3, 4}:
             raise ValueError("resolved pf_alg must be one of 1, 2, 3, or 4")
         if self.stop_policy not in STOP_POLICIES:
@@ -623,10 +646,30 @@ def evaluate_checkpoint(request: EvaluationRequest) -> dict[str, Any]:
             if not path.exists():
                 raise FileNotFoundError(f"{label} not found: {path}")
 
-        scenario_ids = load_scenario_ids(
+        available_scenario_ids = load_scenario_ids(
             request.transitions_csv,
-            request.limit,
+            limit=None,
         )
+
+        if request.scenario_ids is None:
+            scenario_ids = (
+                available_scenario_ids
+                if request.limit is None
+                else available_scenario_ids[: int(request.limit)]
+            )
+        else:
+            scenario_ids = list(request.scenario_ids)
+
+            missing_scenario_ids = sorted(
+                set(scenario_ids) - set(available_scenario_ids)
+            )
+
+            if missing_scenario_ids:
+                raise ValueError(
+                    "Requested evaluation scenarios are missing from "
+                    f"{request.transitions_csv}: "
+                    f"{missing_scenario_ids[:20]}"
+                )
         batches = chunk_list(
             scenario_ids,
             request.config.batch_size,
