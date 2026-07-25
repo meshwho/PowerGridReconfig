@@ -535,7 +535,6 @@ def test_iteration_stops_before_training_when_replay_validation_fails(
         raw_config=base.raw_config,
         paths=base.paths,
         parent_checkpoint=base.parent_checkpoint,
-        parent_metrics=base.parent_metrics,
         pool_metadata=base.pool_metadata,
         replay_buffer=FailingReplay(),  # type: ignore[arg-type]
     )
@@ -605,7 +604,11 @@ def test_iteration_rejects_candidate_metrics_pf_alg_before_acceptance(
     _install_stage_fakes(monkeypatch)
     monkeypatch.setattr(
         "grid_topology_ai.self_play.iteration.run_evaluate",
-        lambda **kwargs: _metrics(0.9, pf_alg=1),
+        lambda **kwargs: (
+            _metrics(0.5)
+            if Path(kwargs["checkpoint"]).name == "parent.pt"
+            else _metrics(0.9, pf_alg=1)
+        ),
     )
     monkeypatch.setattr(
         "grid_topology_ai.self_play.iteration.accept_candidate",

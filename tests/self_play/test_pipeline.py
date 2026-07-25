@@ -108,7 +108,7 @@ def _patch_basics(monkeypatch, tmp_path: Path, calls: list[str] | None = None, *
 
 
 def _iteration_result(iteration: int, best: Path, metric: float, pool: dict[str, object]) -> IterationResult:
-    return IterationResult(iteration=iteration, accepted=True, status="ACCEPTED", selected_scenario_ids=(), raw_examples_csv=Path("raw.csv"), train_batch_csv=Path("train.csv"), train_examples_csv=Path("train_examples.csv"), validation_examples_csv=Path("validation_examples.csv"), split_metadata_path=Path("train_validation_split.json"), candidate_checkpoint=Path(f"candidate-{iteration}.pt"), metadata_path=Path("metadata.json"), candidate_metrics=_metrics(metric), best_checkpoint=best, best_metrics=_metrics(metric), pool_metadata=pool, learning_curve_row={"iteration": iteration, "n_fresh": 1, "n_old": 0})
+    return IterationResult(iteration=iteration, accepted=True, status="ACCEPTED", selected_scenario_ids=(), raw_examples_csv=Path("raw.csv"), train_batch_csv=Path("train.csv"), train_examples_csv=Path("train_examples.csv"), validation_examples_csv=Path("validation_examples.csv"), split_metadata_path=Path("train_validation_split.json"), candidate_checkpoint=Path(f"candidate-{iteration}.pt"), metadata_path=Path("metadata.json"), parent_metrics=_metrics(max(metric - 0.1, 0.0)), candidate_metrics=_metrics(metric), best_checkpoint=best, best_metrics=_metrics(metric), pool_metadata=pool, learning_curve_row={"iteration": iteration, "n_fresh": 1, "n_old": 0})
 
 
 def test_pipeline_request_is_frozen_and_slotted(tmp_path: Path) -> None:
@@ -129,15 +129,13 @@ def test_pipeline_passes_shared_state_between_iterations(tmp_path: Path, monkeyp
     _patch_basics(monkeypatch, tmp_path)
     seen = []
     def fake_run(request):
-        seen.append((request.iteration, request.parent_checkpoint, dict(request.parent_metrics), request.pool_metadata, request.replay_buffer))
+        seen.append((request.iteration, request.parent_checkpoint, request.pool_metadata, request.replay_buffer))
         return _iteration_result(request.iteration, tmp_path / f"best-{request.iteration}.pt", request.iteration / 10, {"scenarios": [], "iter": request.iteration})
     monkeypatch.setattr(pipeline_module, "run_self_play_iteration", fake_run)
     run_self_play_pipeline(_request(tmp_path, n_iterations=3))
     assert seen[1][1] == tmp_path / "best-1.pt"
-    assert seen[2][2]["solve_rate"] == 0.2
-    assert seen[2][2]["pf_alg"] == 3
-    assert seen[2][3]["iter"] == 2
-    assert len({id(item[4]) for item in seen}) == 1
+    assert seen[2][2]["iter"] == 2
+    assert len({id(item[3]) for item in seen}) == 1
 
 
 def test_pipeline_uses_resolved_start_iteration(tmp_path: Path, monkeypatch) -> None:
