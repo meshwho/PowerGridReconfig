@@ -103,8 +103,6 @@ def _metrics(
         pf_alg=pf_alg,
     )
     provenance = physics_provenance(physics_config)
-
-    physics_config = replace(DEFAULT_PHYSICS_CONFIG, pf_alg=pf_alg)
     return {
         "solve_rate": solve_rate,
         "failed_scenarios": failed_scenarios,

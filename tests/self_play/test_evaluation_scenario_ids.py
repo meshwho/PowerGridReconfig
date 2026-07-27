@@ -50,7 +50,14 @@ def _request(
 ) -> EvaluationRequest:
     raw_dir = tmp_path / "raw"
     raw_dir.mkdir()
-
+    for file_name in (
+        "bus_data.parquet",
+        "branch_data.parquet",
+        "gen_data.parquet",
+    ):
+        (raw_dir / file_name).write_bytes(
+            file_name.encode("utf-8")
+        )
     transitions = tmp_path / "transitions.csv"
     pd.DataFrame({"scenario_id": [1, 2, 3]}).to_csv(
         transitions,

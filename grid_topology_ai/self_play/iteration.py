@@ -28,6 +28,20 @@ from grid_topology_ai.self_play.stages import (
 )
 from grid_topology_ai.evaluation.checkpoint import load_scenario_ids
 
+
+_MATCHING_EVALUATION_FIELDS = (
+        "transitions_sha256",
+        "raw_data_sha256",
+        "scenario_ids_sha256",
+        "task_config_sha256",
+        "physics_config_fingerprint",
+        "evaluation_metrics_contract_version",
+        "git_revision",
+        "git_dirty",
+    )
+
+
+
 @dataclass(frozen=True, slots=True)
 class IterationRequest:
     iteration: int
@@ -489,16 +503,6 @@ def run_self_play_iteration(
     for key, value in best_metrics.items():
         row[f"best_{key}"] = value
 
-    _MATCHING_EVALUATION_FIELDS = (
-        "transitions_sha256",
-        "raw_data_sha256",
-        "scenario_ids_sha256",
-        "task_config_sha256",
-        "physics_config_fingerprint",
-        "evaluation_metrics_contract_version",
-        "git_revision",
-        "git_dirty",
-    )
 
     return IterationResult(
         iteration=iteration,
