@@ -127,6 +127,14 @@ def render_execution_plan(
             f"  metric:                   {config.acceptance.metric}",
             f"  min_improvement:          {config.acceptance.min_improvement}",
             (
+                "  confidence level:        "
+                f"{config.acceptance.confidence_level}"
+            ),
+            (
+                "  bootstrap samples:       "
+                f"{config.acceptance.bootstrap_samples}"
+            ),
+            (
                 "  max failed scenarios:     "
                 f"{config.acceptance.reject_if_failed_scenarios_above}"
             ),

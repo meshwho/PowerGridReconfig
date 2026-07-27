@@ -11,6 +11,7 @@ import pandas as pd
 from grid_topology_ai.config import SelfPlayConfig
 from grid_topology_ai.self_play.acceptance import (
     accept_candidate,
+    passes_confidence_gates,
     require_metrics_pf_alg,
     require_metrics_physics_config,
 )
@@ -470,6 +471,12 @@ def run_self_play_iteration(
         parent_csv=parent_results_path,
         candidate_csv=candidate_results_path,
         policy_mode=parent_policy_mode,
+        confidence_level=(
+            config.acceptance.confidence_level
+        ),
+        bootstrap_samples=(
+            config.acceptance.bootstrap_samples
+        ),
         seed=iteration_seed,
     )
 
@@ -482,10 +489,26 @@ def run_self_play_iteration(
         comparison_path,
     )
 
-    accepted = accept_candidate(
+    aggregate_gates_passed = accept_candidate(
         new_metrics=candidate_metrics,
         best_metrics=parent_metrics,
         config=config.acceptance,
+    )
+
+    confidence_gates_passed = (
+        passes_confidence_gates(
+            comparison=comparison,
+            config=config.acceptance,
+        )
+    )
+
+    accepted = (
+            aggregate_gates_passed
+            and confidence_gates_passed
+    )
+
+    physically_secure_comparison = (
+        comparison["metrics"]["physically_secure"]
     )
 
     status = "ACCEPTED" if accepted else "REJECTED"
@@ -545,6 +568,27 @@ def run_self_play_iteration(
             "paired_comparison_bootstrap_samples": int(
                 comparison["bootstrap_samples"]
             ),
+            "aggregate_gates_passed": bool(
+                aggregate_gates_passed
+            ),
+            "confidence_gates_passed": bool(
+                confidence_gates_passed
+            ),
+            "paired_physically_secure_rate_difference": float(
+                physically_secure_comparison[
+                    "rate_difference"
+                ]
+            ),
+            "paired_physically_secure_ci_lower": float(
+                physically_secure_comparison[
+                    "ci_lower"
+                ]
+            ),
+            "paired_physically_secure_ci_upper": float(
+                physically_secure_comparison[
+                    "ci_upper"
+                ]
+            ),
         },
     )
 
@@ -593,6 +637,36 @@ def run_self_play_iteration(
         "n_old": int(train_batch_metadata["n_old"]),
         "candidate_checkpoint": str(candidate_checkpoint),
         "best_checkpoint_after": str(best_checkpoint),
+        "aggregate_gates_passed": bool(
+            aggregate_gates_passed
+        ),
+        "confidence_gates_passed": bool(
+            confidence_gates_passed
+        ),
+        "paired_scenario_count": int(
+            comparison["scenario_count"]
+        ),
+        "paired_confidence_level": float(
+            comparison["confidence_level"]
+        ),
+        "paired_bootstrap_samples": int(
+            comparison["bootstrap_samples"]
+        ),
+        "physically_secure_rate_difference": float(
+            physically_secure_comparison[
+                "rate_difference"
+            ]
+        ),
+        "physically_secure_ci_lower": float(
+            physically_secure_comparison[
+                "ci_lower"
+            ]
+        ),
+        "physically_secure_ci_upper": float(
+            physically_secure_comparison[
+                "ci_upper"
+            ]
+        ),
     }
 
     for key, value in candidate_metrics.items():

@@ -68,6 +68,8 @@ acceptance:
   metric: physically_secure_rate_requested
   min_improvement: 0.0
   reject_if_failed_scenarios_above: 0
+  confidence_level: 0.95
+  bootstrap_samples: 5000
 metadata:
   save_config_copy_per_iteration: true
   save_dataset_hash: true

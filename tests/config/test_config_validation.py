@@ -41,7 +41,8 @@ def test_training_config_accepts_supported_model_types() -> None:
 
 def test_acceptance_defaults_to_requested_physical_metric() -> None:
     config = AcceptanceConfig()
-
+    assert config.confidence_level == 0.95
+    assert config.bootstrap_samples == 5000
     assert config.metric == PRIMARY_ACCEPTANCE_METRIC
     assert config.min_improvement == 0.0
     assert config.reject_if_failed_scenarios_above == 0
@@ -72,6 +73,51 @@ def test_acceptance_rejects_invalid_min_improvement(
             min_improvement=invalid_value,  # type: ignore[arg-type]
         )
 
+@pytest.mark.parametrize(
+    "invalid_value",
+    [
+        0.0,
+        1.0,
+        -0.1,
+        1.1,
+        float("nan"),
+        float("inf"),
+        True,
+    ],
+)
+def test_acceptance_rejects_invalid_confidence_level(
+    invalid_value: object,
+) -> None:
+    with pytest.raises(
+        ValueError,
+        match="confidence_level",
+    ):
+        AcceptanceConfig(
+            confidence_level=invalid_value,  # type: ignore[arg-type]
+        )
+
+
+@pytest.mark.parametrize(
+    "invalid_value",
+    [
+        0,
+        -1,
+        0.5,
+        True,
+        float("nan"),
+        float("inf"),
+    ],
+)
+def test_acceptance_rejects_invalid_bootstrap_samples(
+    invalid_value: object,
+) -> None:
+    with pytest.raises(
+        ValueError,
+        match="bootstrap_samples",
+    ):
+        AcceptanceConfig(
+            bootstrap_samples=invalid_value,  # type: ignore[arg-type]
+        )
 
 @pytest.mark.parametrize(
     "invalid_value",
@@ -97,7 +143,8 @@ def test_acceptance_from_mapping_rejects_legacy_simple_gate() -> None:
 
 def test_acceptance_from_mapping_uses_strict_defaults() -> None:
     config = AcceptanceConfig.from_mapping({})
-
+    assert config.confidence_level == 0.95
+    assert config.bootstrap_samples == 5000
     assert config.metric == PRIMARY_ACCEPTANCE_METRIC
     assert config.min_improvement == 0.0
     assert config.reject_if_failed_scenarios_above == 0

@@ -105,7 +105,8 @@ def test_render_execution_plan_contains_resolved_values(
     assert "unique scenarios:         2" in output
     assert "unique eval scenarios:    2" in output
     assert "No generation, training, evaluation, or file creation was performed." in output
-
+    assert "confidence level:" in output
+    assert "bootstrap samples:" in output
 
 def test_render_execution_plan_does_not_create_artifacts(
     tmp_path: Path,

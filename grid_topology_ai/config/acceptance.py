@@ -7,6 +7,7 @@ from grid_topology_ai.config._mapping import ConfigMapping
 from grid_topology_ai.config._validation import (
     coerce_exact_int,
     require_non_negative,
+    require_positive,
 )
 
 
@@ -18,6 +19,8 @@ class AcceptanceConfig:
     metric: str = PRIMARY_ACCEPTANCE_METRIC
     min_improvement: float = 0.0
     reject_if_failed_scenarios_above: int = 0
+    confidence_level: float = 0.95
+    bootstrap_samples: int = 5000
 
     def __post_init__(self) -> None:
         metric = str(self.metric).strip()
@@ -33,7 +36,54 @@ class AcceptanceConfig:
             "metric",
             metric,
         )
+        if isinstance(self.confidence_level, bool):
+            raise ValueError(
+                "acceptance.confidence_level must be a finite "
+                "number strictly between 0 and 1."
+            )
 
+        try:
+            confidence_level = float(
+                self.confidence_level
+            )
+        except (TypeError, ValueError):
+            raise ValueError(
+                "acceptance.confidence_level must be a finite "
+                "number strictly between 0 and 1."
+            ) from None
+
+        if (
+                not math.isfinite(confidence_level)
+                or confidence_level <= 0.0
+                or confidence_level >= 1.0
+        ):
+            raise ValueError(
+                "acceptance.confidence_level must be a finite "
+                "number strictly between 0 and 1, "
+                f"got {self.confidence_level!r}."
+            )
+
+        object.__setattr__(
+            self,
+            "confidence_level",
+            confidence_level,
+        )
+
+        bootstrap_samples = coerce_exact_int(
+            "acceptance.bootstrap_samples",
+            self.bootstrap_samples,
+        )
+
+        require_positive(
+            "acceptance.bootstrap_samples",
+            bootstrap_samples,
+        )
+
+        object.__setattr__(
+            self,
+            "bootstrap_samples",
+            bootstrap_samples,
+        )
         if isinstance(self.min_improvement, bool):
             raise ValueError(
                 "acceptance.min_improvement must be a finite number "
@@ -110,6 +160,19 @@ class AcceptanceConfig:
                 data.get(
                     "reject_if_failed_scenarios_above",
                     0,
+                ),
+            ),
+            confidence_level=float(
+                data.get(
+                    "confidence_level",
+                    0.95,
+                )
+            ),
+            bootstrap_samples=coerce_exact_int(
+                "acceptance.bootstrap_samples",
+                data.get(
+                    "bootstrap_samples",
+                    5000,
                 ),
             ),
         )

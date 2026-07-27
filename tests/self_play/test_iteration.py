@@ -141,11 +141,11 @@ def _write_evaluation_results(
     output_dir: Path,
     output_csv_name: str,
     scenario_ids: tuple[int, ...],
+    secure: bool,
 ) -> Path:
     rows: list[dict[str, object]] = []
 
     for scenario_id in scenario_ids:
-        secure = int(scenario_id) % 2 == 1
 
         row: dict[str, object] = {
             "scenario_id": int(scenario_id),
@@ -271,7 +271,12 @@ def _config() -> SelfPlayConfig:
                 "device": "cpu",
             },
             "evaluation": {"simulations": 1, "depth": 1, "max_steps": 1, "top_k": 1},
-            "acceptance": {"metric": "solve_rate", "min_improvement": 0.0},
+            "acceptance": {
+                "metric": "solve_rate",
+                "min_improvement": 0.0,
+                "confidence_level": 0.95,
+                "bootstrap_samples": 200,
+            },
         }
     )
 
@@ -547,6 +552,14 @@ def test_iteration_returns_learning_curve_row(
     assert row["best_checkpoint_after"] == str(result.best_checkpoint)
     assert row["candidate_solve_rate"] == 0.6
     assert row["best_solve_rate"] == 0.6
+    assert row["aggregate_gates_passed"] is True
+    assert row["confidence_gates_passed"] is True
+    assert row["paired_scenario_count"] == 3
+    assert row["paired_confidence_level"] == 0.95
+    assert row["paired_bootstrap_samples"] == 200
+    assert row["physically_secure_rate_difference"] == 1.0
+    assert row["physically_secure_ci_lower"] == 1.0
+    assert row["physically_secure_ci_upper"] == 1.0
 
 
 def test_parent_is_reevaluated_before_selection(
@@ -589,6 +602,10 @@ def test_parent_and_candidate_use_the_same_evaluation_scenarios(
     evaluation_calls: list[tuple[int, ...]] = []
 
     def fake_evaluate(**kwargs: Any) -> dict[str, object]:
+        checkpoint = Path(kwargs["checkpoint"])
+        is_candidate = (
+                checkpoint.name != "parent.pt"
+        )
         evaluation_calls.append(
             tuple(kwargs["scenario_ids"])
         )
@@ -603,6 +620,7 @@ def test_parent_and_candidate_use_the_same_evaluation_scenarios(
             scenario_ids=tuple(
                 kwargs["scenario_ids"]
             ),
+            secure=is_candidate,
         )
 
         checkpoint = Path(kwargs["checkpoint"])
@@ -657,9 +675,45 @@ def test_iteration_saves_paired_comparison(
     assert (
         comparison["metrics"]
         ["physically_secure"]
-        ["rate_difference"]
-        == 0.0
+        ["rate_difference"] == 1.0
     )
+    assert (
+            comparison["metrics"]
+            ["physically_secure"]
+            ["ci_lower"]
+            == 1.0
+    )
+
+def test_confidence_gate_can_reject_candidate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_stage_fakes(monkeypatch)
+
+    monkeypatch.setattr(
+        iteration_module,
+        "accept_candidate",
+        lambda **kwargs: True,
+    )
+    monkeypatch.setattr(
+        iteration_module,
+        "passes_confidence_gates",
+        lambda **kwargs: False,
+    )
+    monkeypatch.setattr(
+        iteration_module,
+        "promote_candidate",
+        lambda **kwargs: pytest.fail(
+            "candidate should not be promoted"
+        ),
+    )
+
+    result = run_self_play_iteration(
+        _request(tmp_path)
+    )
+
+    assert result.accepted is False
+    assert result.status == "REJECTED"
 
 def test_rejected_candidate_refreshes_best_metrics(
     tmp_path: Path,

@@ -19,6 +19,10 @@ from grid_topology_ai.contracts import (
 from grid_topology_ai.physical_objective import (
     PHYSICAL_OBJECTIVE_SCHEMA_VERSION,
 )
+from grid_topology_ai.evaluation.paired_results import (
+    PAIRED_COMPARISON_VERSION,
+    PAIRED_OUTCOME_FIELDS,
+)
 
 _COMPARISON_EPSILON = 1e-12
 
@@ -36,6 +40,11 @@ _COMPONENT_FIELDS = (
     "physically_secure",
 )
 
+_CONFIDENCE_SAFETY_FIELDS = tuple(
+    field
+    for field in PAIRED_OUTCOME_FIELDS
+    if field != "physically_secure"
+)
 
 @dataclass(frozen=True, slots=True)
 class _ValidatedAcceptanceMetrics:
@@ -54,6 +63,12 @@ class _ValidatedAcceptanceMetrics:
     voltage_feasible_rate_requested: float
     generator_p_feasible_rate_requested: float
     generator_q_feasible_rate_requested: float
+
+@dataclass(frozen=True, slots=True)
+class _ValidatedPairedMetric:
+    rate_difference: float
+    ci_lower: float
+    ci_upper: float
 
 def _require_count(
     metrics: Mapping[str, object],
@@ -415,6 +430,333 @@ def _validate_acceptance_metrics(
             component_requested_rates["generator_q_feasible"]
         ),
     )
+
+def _require_difference(
+    values: Mapping[str, object],
+    *,
+    name: str,
+    source: str,
+) -> float:
+    if name not in values:
+        raise ValueError(
+            f"Invalid {source}: required field "
+            f"{name!r} is missing."
+        )
+
+    raw_value = values[name]
+
+    if isinstance(raw_value, bool) or not isinstance(
+        raw_value,
+        Real,
+    ):
+        raise ValueError(
+            f"Invalid {source}: {name!r} must be "
+            "a finite number in [-1, 1], "
+            f"got {raw_value!r}."
+        )
+
+    value = float(raw_value)
+
+    if (
+        not math.isfinite(value)
+        or value < -1.0
+        or value > 1.0
+    ):
+        raise ValueError(
+            f"Invalid {source}: {name!r} must be "
+            "a finite number in [-1, 1], "
+            f"got {raw_value!r}."
+        )
+
+    return value
+
+def _validate_paired_metric(
+    metrics: Mapping[str, object],
+    *,
+    name: str,
+    scenario_count: int,
+) -> _ValidatedPairedMetric:
+    raw_metric = metrics.get(name)
+
+    if not isinstance(raw_metric, Mapping):
+        raise ValueError(
+            "Invalid paired comparison: metric "
+            f"{name!r} is missing or is not a mapping."
+        )
+
+    source = f"paired comparison metric {name!r}"
+
+    parent_count = _require_count(
+        raw_metric,
+        name="parent_count",
+        source=source,
+    )
+    candidate_count = _require_count(
+        raw_metric,
+        name="candidate_count",
+        source=source,
+    )
+
+    improved = _require_count(
+        raw_metric,
+        name="improved_scenarios",
+        source=source,
+    )
+    regressed = _require_count(
+        raw_metric,
+        name="regressed_scenarios",
+        source=source,
+    )
+    unchanged = _require_count(
+        raw_metric,
+        name="unchanged_scenarios",
+        source=source,
+    )
+
+    for count_name, count in (
+        ("parent_count", parent_count),
+        ("candidate_count", candidate_count),
+        ("improved_scenarios", improved),
+        ("regressed_scenarios", regressed),
+        ("unchanged_scenarios", unchanged),
+    ):
+        if count > scenario_count:
+            raise ValueError(
+                f"Invalid {source}: {count_name!r} "
+                "cannot exceed scenario_count."
+            )
+
+    if improved + regressed + unchanged != scenario_count:
+        raise ValueError(
+            f"Invalid {source}: improved, regressed "
+            "and unchanged scenario counts must sum "
+            "to scenario_count."
+        )
+
+    parent_rate = _require_rate(
+        raw_metric,
+        name="parent_rate",
+        source=source,
+    )
+    candidate_rate = _require_rate(
+        raw_metric,
+        name="candidate_rate",
+        source=source,
+    )
+
+    _require_consistent_rate(
+        name="parent_rate",
+        observed=parent_rate,
+        numerator=parent_count,
+        denominator=scenario_count,
+        source=source,
+    )
+    _require_consistent_rate(
+        name="candidate_rate",
+        observed=candidate_rate,
+        numerator=candidate_count,
+        denominator=scenario_count,
+        source=source,
+    )
+
+    rate_difference = _require_difference(
+        raw_metric,
+        name="rate_difference",
+        source=source,
+    )
+    ci_lower = _require_difference(
+        raw_metric,
+        name="ci_lower",
+        source=source,
+    )
+    ci_upper = _require_difference(
+        raw_metric,
+        name="ci_upper",
+        source=source,
+    )
+
+    expected_difference = (
+        float(candidate_count - parent_count)
+        / float(scenario_count)
+    )
+
+    if (
+        abs(rate_difference - expected_difference)
+        > _COMPARISON_EPSILON
+    ):
+        raise ValueError(
+            f"Invalid {source}: rate_difference "
+            "is inconsistent with parent and "
+            "candidate counts."
+        )
+
+    paired_difference = (
+        float(improved - regressed)
+        / float(scenario_count)
+    )
+
+    if (
+        abs(rate_difference - paired_difference)
+        > _COMPARISON_EPSILON
+    ):
+        raise ValueError(
+            f"Invalid {source}: rate_difference "
+            "is inconsistent with improved and "
+            "regressed scenario counts."
+        )
+
+    if ci_lower > ci_upper:
+        raise ValueError(
+            f"Invalid {source}: ci_lower cannot "
+            "exceed ci_upper."
+        )
+
+    if (
+        rate_difference
+        < ci_lower - _COMPARISON_EPSILON
+        or rate_difference
+        > ci_upper + _COMPARISON_EPSILON
+    ):
+        raise ValueError(
+            f"Invalid {source}: confidence interval "
+            "must contain rate_difference."
+        )
+
+    return _ValidatedPairedMetric(
+        rate_difference=rate_difference,
+        ci_lower=ci_lower,
+        ci_upper=ci_upper,
+    )
+
+def passes_confidence_gates(
+    *,
+    comparison: Mapping[str, object],
+    config: AcceptanceConfig,
+) -> bool:
+    try:
+        version = coerce_exact_int(
+            "paired_comparison_version",
+            comparison.get(
+                "paired_comparison_version"
+            ),
+        )
+    except ValueError:
+        raise ValueError(
+            "Invalid paired comparison version."
+        ) from None
+
+    if version != PAIRED_COMPARISON_VERSION:
+        raise ValueError(
+            "Paired comparison version mismatch: "
+            f"expected {PAIRED_COMPARISON_VERSION}, "
+            f"observed {version}."
+        )
+
+    scenario_count = coerce_exact_int(
+        "paired comparison scenario_count",
+        comparison.get("scenario_count"),
+    )
+
+    if scenario_count <= 0:
+        raise ValueError(
+            "Paired comparison scenario_count "
+            "must be greater than zero."
+        )
+
+    confidence_level = _require_rate(
+        comparison,
+        name="confidence_level",
+        source="paired comparison",
+    )
+
+    if not 0.0 < confidence_level < 1.0:
+        raise ValueError(
+            "Paired comparison confidence_level "
+            "must be strictly between 0 and 1."
+        )
+
+    if (
+        abs(
+            confidence_level
+            - config.confidence_level
+        )
+        > _COMPARISON_EPSILON
+    ):
+        raise ValueError(
+            "Paired comparison confidence_level "
+            "does not match acceptance config: "
+            f"comparison={confidence_level}, "
+            f"config={config.confidence_level}."
+        )
+
+    bootstrap_samples = coerce_exact_int(
+        "paired comparison bootstrap_samples",
+        comparison.get("bootstrap_samples"),
+    )
+
+    if bootstrap_samples <= 0:
+        raise ValueError(
+            "Paired comparison bootstrap_samples "
+            "must be greater than zero."
+        )
+
+    if bootstrap_samples != config.bootstrap_samples:
+        raise ValueError(
+            "Paired comparison bootstrap_samples "
+            "does not match acceptance config: "
+            f"comparison={bootstrap_samples}, "
+            f"config={config.bootstrap_samples}."
+        )
+
+    policy_mode = comparison.get("policy_mode")
+
+    if (
+        not isinstance(policy_mode, str)
+        or not policy_mode.strip()
+    ):
+        raise ValueError(
+            "Paired comparison policy_mode "
+            "must be a non-empty string."
+        )
+
+    raw_metrics = comparison.get("metrics")
+
+    if not isinstance(raw_metrics, Mapping):
+        raise ValueError(
+            "Paired comparison is missing metrics."
+        )
+
+    validated = {
+        field: _validate_paired_metric(
+            raw_metrics,
+            name=field,
+            scenario_count=scenario_count,
+        )
+        for field in PAIRED_OUTCOME_FIELDS
+    }
+
+    primary = validated["physically_secure"]
+
+    # The lower confidence bound must strictly
+    # exceed the configured improvement threshold.
+    if (
+        primary.ci_lower
+        <= config.min_improvement
+        + _COMPARISON_EPSILON
+    ):
+        return False
+
+    # Other physical outcomes are non-inferiority
+    # gates. Their lower confidence bound may be
+    # zero, but it must not be negative.
+    for field in _CONFIDENCE_SAFETY_FIELDS:
+        if (
+            validated[field].ci_lower
+            < -_COMPARISON_EPSILON
+        ):
+            return False
+
+    return True
 
 def _coerce_pf_alg(value: object, *, source: str) -> int:
     try:

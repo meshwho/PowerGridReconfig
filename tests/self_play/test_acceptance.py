@@ -3,19 +3,22 @@ from __future__ import annotations
 from dataclasses import replace
 
 import pytest
-
+from grid_topology_ai.evaluation.paired_results import (
+    PAIRED_COMPARISON_VERSION,
+    PAIRED_OUTCOME_FIELDS,
+)
 from grid_topology_ai.config import AcceptanceConfig
-from grid_topology_ai.config.acceptance import PRIMARY_ACCEPTANCE_METRIC
+from grid_topology_ai.self_play.acceptance import (
+    accept_candidate,
+    passes_confidence_gates,
+    require_metrics_pf_alg,
+)
 from grid_topology_ai.config.physics import DEFAULT_PHYSICS_CONFIG
 from grid_topology_ai.contracts import (
     EVALUATION_METRICS_CONTRACT_VERSION,
     physics_provenance,
 )
 from grid_topology_ai.physical_objective import physical_objective_contract
-from grid_topology_ai.self_play.acceptance import (
-    accept_candidate,
-    require_metrics_pf_alg,
-)
 
 
 _COMPONENT_FIELDS = (
@@ -132,6 +135,292 @@ def _metrics(
     metrics.update(overrides)
     return metrics
 
+def _paired_metric(
+    *,
+    scenario_count: int = 100,
+    parent_count: int = 100,
+    candidate_count: int = 100,
+    ci_lower: float | None = None,
+    ci_upper: float | None = None,
+) -> dict[str, object]:
+    difference = (
+        candidate_count - parent_count
+    ) / scenario_count
+
+    improved = max(
+        candidate_count - parent_count,
+        0,
+    )
+    regressed = max(
+        parent_count - candidate_count,
+        0,
+    )
+
+    return {
+        "parent_count": parent_count,
+        "candidate_count": candidate_count,
+        "parent_rate": (
+            parent_count / scenario_count
+        ),
+        "candidate_rate": (
+            candidate_count / scenario_count
+        ),
+        "rate_difference": difference,
+        "ci_lower": (
+            difference
+            if ci_lower is None
+            else ci_lower
+        ),
+        "ci_upper": (
+            difference
+            if ci_upper is None
+            else ci_upper
+        ),
+        "improved_scenarios": improved,
+        "regressed_scenarios": regressed,
+        "unchanged_scenarios": (
+            scenario_count
+            - improved
+            - regressed
+        ),
+    }
+
+
+def _comparison(
+    *,
+    primary_ci_lower: float = 0.10,
+    primary_ci_upper: float = 0.10,
+    metric_overrides: dict[
+        str,
+        dict[str, object],
+    ] | None = None,
+    confidence_level: float = 0.95,
+    bootstrap_samples: int = 5000,
+) -> dict[str, object]:
+    metrics = {
+        field: _paired_metric()
+        for field in PAIRED_OUTCOME_FIELDS
+    }
+
+    metrics["physically_secure"] = (
+        _paired_metric(
+            parent_count=50,
+            candidate_count=60,
+            ci_lower=primary_ci_lower,
+            ci_upper=primary_ci_upper,
+        )
+    )
+
+    if metric_overrides is not None:
+        metrics.update(metric_overrides)
+
+    return {
+        "paired_comparison_version": (
+            PAIRED_COMPARISON_VERSION
+        ),
+        "policy_mode": "ungated",
+        "scenario_count": 100,
+        "confidence_level": confidence_level,
+        "bootstrap_samples": bootstrap_samples,
+        "seed": 7,
+        "metrics": metrics,
+    }
+
+def test_accepts_confirmed_paired_improvement() -> None:
+    assert passes_confidence_gates(
+        comparison=_comparison(
+            primary_ci_lower=0.06,
+            primary_ci_upper=0.14,
+        ),
+        config=_config(
+            min_improvement=0.05
+        ),
+    )
+
+
+def test_positive_point_estimate_is_not_enough() -> None:
+    assert not passes_confidence_gates(
+        comparison=_comparison(
+            primary_ci_lower=-0.01,
+            primary_ci_upper=0.20,
+        ),
+        config=_config(),
+    )
+
+
+def test_lower_bound_must_exceed_threshold() -> None:
+    assert not passes_confidence_gates(
+        comparison=_comparison(
+            primary_ci_lower=0.05,
+            primary_ci_upper=0.15,
+        ),
+        config=_config(
+            min_improvement=0.05
+        ),
+    )
+
+
+def test_voltage_regression_blocks_promotion() -> None:
+    voltage = _paired_metric(
+        parent_count=100,
+        candidate_count=99,
+        ci_lower=-0.03,
+        ci_upper=0.0,
+    )
+
+    assert not passes_confidence_gates(
+        comparison=_comparison(
+            metric_overrides={
+                "voltage_feasible": voltage,
+            }
+        ),
+        config=_config(),
+    )
+
+
+def test_power_flow_regression_blocks_promotion() -> None:
+    power_flow = _paired_metric(
+        parent_count=100,
+        candidate_count=99,
+        ci_lower=-0.02,
+        ci_upper=0.0,
+    )
+
+    assert not passes_confidence_gates(
+        comparison=_comparison(
+            metric_overrides={
+                "power_flow_converged": power_flow,
+            }
+        ),
+        config=_config(),
+    )
+
+
+def test_comparison_settings_must_match_config() -> None:
+    with pytest.raises(
+        ValueError,
+        match="bootstrap_samples",
+    ):
+        passes_confidence_gates(
+            comparison=_comparison(
+                bootstrap_samples=1000,
+            ),
+            config=_config(),
+        )
+
+
+def test_missing_paired_metric_fails_closed() -> None:
+    comparison = _comparison()
+    metrics = dict(comparison["metrics"])
+    metrics.pop("angle_difference_feasible")
+    comparison["metrics"] = metrics
+
+    with pytest.raises(
+        ValueError,
+        match="angle_difference_feasible",
+    ):
+        passes_confidence_gates(
+            comparison=comparison,
+            config=_config(),
+        )
+
+def test_accepts_confirmed_paired_improvement() -> None:
+    assert passes_confidence_gates(
+        comparison=_comparison(
+            primary_ci_lower=0.06,
+            primary_ci_upper=0.14,
+        ),
+        config=_config(
+            min_improvement=0.05
+        ),
+    )
+
+
+def test_positive_point_estimate_is_not_enough() -> None:
+    assert not passes_confidence_gates(
+        comparison=_comparison(
+            primary_ci_lower=-0.01,
+            primary_ci_upper=0.20,
+        ),
+        config=_config(),
+    )
+
+
+def test_lower_bound_must_exceed_threshold() -> None:
+    assert not passes_confidence_gates(
+        comparison=_comparison(
+            primary_ci_lower=0.05,
+            primary_ci_upper=0.15,
+        ),
+        config=_config(
+            min_improvement=0.05
+        ),
+    )
+
+
+def test_voltage_regression_blocks_promotion() -> None:
+    voltage = _paired_metric(
+        parent_count=100,
+        candidate_count=99,
+        ci_lower=-0.03,
+        ci_upper=0.0,
+    )
+
+    assert not passes_confidence_gates(
+        comparison=_comparison(
+            metric_overrides={
+                "voltage_feasible": voltage,
+            }
+        ),
+        config=_config(),
+    )
+
+
+def test_power_flow_regression_blocks_promotion() -> None:
+    power_flow = _paired_metric(
+        parent_count=100,
+        candidate_count=99,
+        ci_lower=-0.02,
+        ci_upper=0.0,
+    )
+
+    assert not passes_confidence_gates(
+        comparison=_comparison(
+            metric_overrides={
+                "power_flow_converged": power_flow,
+            }
+        ),
+        config=_config(),
+    )
+
+
+def test_comparison_settings_must_match_config() -> None:
+    with pytest.raises(
+        ValueError,
+        match="bootstrap_samples",
+    ):
+        passes_confidence_gates(
+            comparison=_comparison(
+                bootstrap_samples=1000,
+            ),
+            config=_config(),
+        )
+
+
+def test_missing_paired_metric_fails_closed() -> None:
+    comparison = _comparison()
+    metrics = dict(comparison["metrics"])
+    metrics.pop("angle_difference_feasible")
+    comparison["metrics"] = metrics
+
+    with pytest.raises(
+        ValueError,
+        match="angle_difference_feasible",
+    ):
+        passes_confidence_gates(
+            comparison=comparison,
+            config=_config(),
+        )
 
 def _config(
     *,
