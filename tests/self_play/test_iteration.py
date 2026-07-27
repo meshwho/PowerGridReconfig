@@ -346,21 +346,33 @@ def _install_stage_fakes(monkeypatch: pytest.MonkeyPatch, calls: list[str] | Non
         )
         return checkpoint
 
-    def fake_evaluate(**kwargs: Any) -> dict[str, object]:
-        checkpoint = Path(kwargs["checkpoint"])
+    def fake_evaluate(
+            **kwargs: Any,
+    ) -> dict[str, object]:
+        checkpoint = Path(
+            kwargs["checkpoint"]
+        )
+        is_candidate = (
+                checkpoint.name != "parent.pt"
+        )
 
         _write_evaluation_results(
-            output_dir=Path(kwargs["output_dir"]),
+            output_dir=Path(
+                kwargs["output_dir"]
+            ),
             output_csv_name=(
                 kwargs["config"].output_csv_name
             ),
             scenario_ids=tuple(
                 kwargs["scenario_ids"]
             ),
+            secure=is_candidate,
         )
 
         if calls is not None:
-            calls.append(f"evaluate:{checkpoint.name}")
+            calls.append(
+                f"evaluate:{checkpoint.name}"
+            )
 
         if checkpoint.name == "parent.pt":
             return _metrics(0.5)

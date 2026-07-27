@@ -19,7 +19,9 @@ from grid_topology_ai.contracts import (
     physics_provenance,
 )
 from grid_topology_ai.physical_objective import physical_objective_contract
-
+from grid_topology_ai.config.acceptance import (
+    PRIMARY_ACCEPTANCE_METRIC,
+)
 
 _COMPONENT_FIELDS = (
     "power_flow_converged",
