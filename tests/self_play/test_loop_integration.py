@@ -23,6 +23,8 @@ def _config_mapping() -> dict[str, object]:
         },
         "eval_csv": "inputs/eval.csv",
         "eval_raw_dir": "inputs/eval_raw",
+        "final_test_csv": "inputs/final_test.csv",
+        "final_test_raw_dir": "inputs/final_test_raw",
         "bootstrap_checkpoint": "bootstrap/bootstrap.pt",
         "bootstrap_eval_metrics": "bootstrap/metrics.json",
         "checkpoint_dir": "runs/test_self_play",
