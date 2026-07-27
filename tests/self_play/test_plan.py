@@ -22,6 +22,8 @@ def _config() -> SelfPlayConfig:
             },
             "eval_csv": "inputs/eval.csv",
             "eval_raw_dir": "inputs/eval_raw",
+            "final_test_csv": "inputs/final_test.csv",
+            "final_test_raw_dir": "inputs/final_test_raw",
             "bootstrap_checkpoint": "bootstrap/bootstrap.pt",
             "bootstrap_eval_metrics": "bootstrap/metrics.json",
             "checkpoint_dir": "runs/test_self_play",
@@ -78,8 +80,13 @@ def _write_plan_inputs(paths: SelfPlayPaths) -> None:
         "scenario_id\n3\n4\n",
         encoding="utf-8",
     )
+    paths.final_test_csv.write_text(
+        "scenario_id\n5\n6\n",
+        encoding="utf-8",
+    )
     paths.pool_raw_dir.mkdir(parents=True)
     paths.eval_raw_dir.mkdir(parents=True)
+    paths.final_test_raw_dir.mkdir(parents=True)
 
 
 def test_render_execution_plan_contains_resolved_values(
@@ -104,9 +111,14 @@ def test_render_execution_plan_contains_resolved_values(
     assert str(paths.learning_curve) in output
     assert "unique scenarios:         2" in output
     assert "unique eval scenarios:    2" in output
+    assert "Final test set:" in output
+    assert str(paths.final_test_csv) in output
+    assert str(paths.final_test_raw_dir) in output
+    assert "unique test scenarios:   2" in output
     assert "No generation, training, evaluation, or file creation was performed." in output
     assert "confidence level:" in output
     assert "bootstrap samples:" in output
+
 
 def test_render_execution_plan_does_not_create_artifacts(
     tmp_path: Path,
