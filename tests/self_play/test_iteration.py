@@ -98,6 +98,12 @@ def _metrics(
     pf_alg: int = 3,
     failed_scenarios: int = 0,
 ) -> dict[str, object]:
+    physics_config = replace(
+        DEFAULT_PHYSICS_CONFIG,
+        pf_alg=pf_alg,
+    )
+    provenance = physics_provenance(physics_config)
+
     physics_config = replace(DEFAULT_PHYSICS_CONFIG, pf_alg=pf_alg)
     return {
         "solve_rate": solve_rate,
@@ -105,12 +111,90 @@ def _metrics(
         "pf_alg": pf_alg,
         "task_config": {"pf_alg": pf_alg},
         "evaluation_metrics_contract_version": EVALUATION_METRICS_CONTRACT_VERSION,
-        **physics_provenance(physics_config),
+        **provenance,
         "physical_objective_contract": physical_objective_contract(
             physics_config
         ),
+        "run_info": {
+            "checkpoint_sha256": f"checkpoint-{solve_rate}",
+            "transitions_sha256": "eval-transitions",
+            "raw_data_sha256": "eval-raw-data",
+            "scenario_ids_sha256": "eval-scenarios",
+            "task_config_sha256": "eval-task-config",
+            "physics_config_fingerprint": provenance[
+                "physics_config_fingerprint"
+            ],
+            "evaluation_metrics_contract_version": (
+                EVALUATION_METRICS_CONTRACT_VERSION
+            ),
+            "git_revision": "test-revision",
+            "git_dirty": False,
+        },
     }
 
+def test_iteration_rejects_mismatched_evaluation_inputs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_stage_fakes(monkeypatch)
+
+    def fake_evaluate(**kwargs: Any) -> dict[str, object]:
+        checkpoint = Path(kwargs["checkpoint"])
+
+        metrics = _metrics(
+            0.5
+            if checkpoint.name == "parent.pt"
+            else 0.6
+        )
+
+        if checkpoint.name != "parent.pt":
+            run_info = dict(metrics["run_info"])
+            run_info["transitions_sha256"] = "changed-eval-csv"
+            metrics["run_info"] = run_info
+
+        return metrics
+
+    monkeypatch.setattr(
+        iteration_module,
+        "run_evaluate",
+        fake_evaluate,
+    )
+    monkeypatch.setattr(
+        iteration_module,
+        "accept_candidate",
+        lambda **kwargs: pytest.fail(
+            "accept_candidate should not run"
+        ),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="transitions_sha256",
+    ):
+        run_self_play_iteration(_request(tmp_path))
+
+def test_iteration_rejects_missing_evaluation_run_info(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_stage_fakes(monkeypatch)
+
+    def fake_evaluate(**kwargs: Any) -> dict[str, object]:
+        metrics = _metrics(0.5)
+        metrics.pop("run_info")
+        return metrics
+
+    monkeypatch.setattr(
+        iteration_module,
+        "run_evaluate",
+        fake_evaluate,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="missing run_info",
+    ):
+        run_self_play_iteration(_request(tmp_path))
 
 def _config() -> SelfPlayConfig:
     return SelfPlayConfig.from_mapping(

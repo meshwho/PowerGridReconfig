@@ -15,7 +15,11 @@ except ImportError:  # pragma: no cover
 
 from grid_topology_ai.config import EvaluationConfig
 from grid_topology_ai.config.physics import PhysicsConfig, resolve_physics_config
-from grid_topology_ai.contracts import physics_provenance, require_physics_provenance
+from grid_topology_ai.contracts import (
+    EVALUATION_METRICS_CONTRACT_VERSION,
+    physics_provenance,
+    require_physics_provenance,
+)
 from grid_topology_ai.evaluation.episode_result import (
     EvaluationEpisodeTrace,
     build_evaluation_episode_row,
@@ -33,7 +37,13 @@ from grid_topology_ai.evaluation.policy_comparison import (
     select_evaluation_root_policy,
 )
 from grid_topology_ai.physical_objective import STOP_POLICIES
-from grid_topology_ai.self_play.artifacts import save_json
+from grid_topology_ai.self_play.artifacts import (
+    read_git_state,
+    save_json,
+    sha256_file,
+    sha256_files,
+    sha256_json,
+)
 
 GridFMActionSpace = GridFMAdapter = GridFMPowerFlowBackend = None
 GridFMReward = MCTSConfig = MCTSPlanner = None
@@ -49,6 +59,7 @@ class EvaluationRequest:
     transitions_csv: Path
     checkpoint: Path
     config: EvaluationConfig
+    project_root: Path | None = None
     physics_config: PhysicsConfig | None = None
     output_csv: Path | None = None
     output_json: Path | None = None
@@ -503,6 +514,60 @@ def _make_task_config(request: EvaluationRequest) -> dict[str, Any]:
     }
 
 
+_RAW_DATA_FILES = (
+    "bus_data.parquet",
+    "branch_data.parquet",
+    "gen_data.parquet",
+)
+
+
+def _build_evaluation_run_info(
+    request: EvaluationRequest,
+    *,
+    scenario_ids: list[int],
+    task_config: dict[str, Any],
+) -> dict[str, object]:
+    raw_files = [
+        request.raw_dir / file_name
+        for file_name in _RAW_DATA_FILES
+    ]
+
+    run_info: dict[str, object] = {
+        "checkpoint_sha256": sha256_file(
+            request.checkpoint
+        ),
+        "transitions_sha256": sha256_file(
+            request.transitions_csv
+        ),
+        "raw_data_sha256": sha256_files(
+            raw_files,
+            root=request.raw_dir,
+        ),
+        "scenario_ids_sha256": sha256_json(
+            [int(value) for value in scenario_ids]
+        ),
+        "task_config_sha256": sha256_json(
+            task_config
+        ),
+        "physics_config_fingerprint": str(
+            task_config["physics_config_fingerprint"]
+        ),
+        "evaluation_metrics_contract_version": (
+            EVALUATION_METRICS_CONTRACT_VERSION
+        ),
+        "git_revision": None,
+        "git_dirty": None,
+    }
+
+    if request.project_root is not None:
+        git_state = read_git_state(
+            Path(request.project_root)
+        )
+        run_info["git_revision"] = git_state["revision"]
+        run_info["git_dirty"] = git_state["dirty"]
+
+    return run_info
+
 def _record_batch_results(
     batch_results: list[dict[str, Any]],
     *,
@@ -675,6 +740,12 @@ def evaluate_checkpoint(request: EvaluationRequest) -> dict[str, Any]:
             request.config.batch_size,
         )
         task = _make_task_config(request)
+        run_info = _build_evaluation_run_info(
+            request,
+            scenario_ids=scenario_ids,
+            task_config=task,
+        )
+
         print("=" * 100)
         print("Evaluating checkpoint")
         print("=" * 100)
@@ -705,6 +776,8 @@ def evaluate_checkpoint(request: EvaluationRequest) -> dict[str, Any]:
             requested_scenarios=len(scenario_ids),
             task_config=task,
         )
+        metrics["run_info"] = run_info
+
         if request.output_csv is not None:
             request.output_csv.parent.mkdir(
                 parents=True,

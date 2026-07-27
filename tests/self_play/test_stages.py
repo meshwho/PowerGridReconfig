@@ -49,6 +49,7 @@ def test_run_evaluate_resolves_config_pf_alg(tmp_path: Path, monkeypatch) -> Non
 
     assert captured[0].pf_alg is None
     assert captured[0].resolved_pf_alg == 3
+    assert captured[0].project_root == tmp_path
 
 
 import torch

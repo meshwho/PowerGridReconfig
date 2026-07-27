@@ -45,6 +45,14 @@ class _FakeCache:
 def _write_inputs(tmp_path: Path, scenario_ids: list[int] | None = None) -> tuple[Path, Path, Path]:
     raw_dir = tmp_path / "raw"
     raw_dir.mkdir()
+    for file_name in (
+            "bus_data.parquet",
+            "branch_data.parquet",
+            "gen_data.parquet",
+    ):
+        (raw_dir / file_name).write_bytes(
+            file_name.encode("utf-8")
+        )
     transitions = tmp_path / "transitions.csv"
     ids = [1, 2, 3] if scenario_ids is None else scenario_ids
     pd.DataFrame({"scenario_id": ids}).to_csv(transitions, index=False)
@@ -52,6 +60,55 @@ def _write_inputs(tmp_path: Path, scenario_ids: list[int] | None = None) -> tupl
     checkpoint.write_bytes(b"checkpoint")
     return raw_dir, transitions, checkpoint
 
+def test_evaluation_records_input_hashes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        evaluation,
+        "run_sequential",
+        _successful_sequential(_row(1)),
+    )
+
+    request = _request(tmp_path)
+    metrics = evaluation.evaluate_checkpoint(request)
+
+    run_info = metrics["run_info"]
+
+    assert run_info["checkpoint_sha256"]
+    assert run_info["transitions_sha256"]
+    assert run_info["raw_data_sha256"]
+    assert run_info["scenario_ids_sha256"]
+    assert run_info["task_config_sha256"]
+    assert run_info["physics_config_fingerprint"]
+    assert (
+        run_info["evaluation_metrics_contract_version"]
+        == metrics["evaluation_metrics_contract_version"]
+    )
+    assert run_info["git_revision"] is None
+    assert run_info["git_dirty"] is None
+
+def test_checkpoint_hash_changes_with_checkpoint_content(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        evaluation,
+        "run_sequential",
+        _successful_sequential(_row(1)),
+    )
+
+    request = _request(tmp_path)
+    first = evaluation.evaluate_checkpoint(request)
+
+    request.checkpoint.write_bytes(b"updated checkpoint")
+
+    second = evaluation.evaluate_checkpoint(request)
+
+    assert (
+        first["run_info"]["checkpoint_sha256"]
+        != second["run_info"]["checkpoint_sha256"]
+    )
 
 def _request(
     tmp_path: Path,

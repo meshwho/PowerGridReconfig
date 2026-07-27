@@ -71,6 +71,61 @@ class IterationResult:
     learning_curve_row: dict[str, object]
 
 
+def _require_matching_evaluation_inputs(
+    parent_metrics: Mapping[str, object],
+    candidate_metrics: Mapping[str, object],
+) -> None:
+    parent_run_info = parent_metrics.get("run_info")
+    candidate_run_info = candidate_metrics.get("run_info")
+
+    if not isinstance(parent_run_info, Mapping):
+        raise ValueError(
+            "Parent evaluation metrics are missing run_info."
+        )
+
+    if not isinstance(candidate_run_info, Mapping):
+        raise ValueError(
+            "Candidate evaluation metrics are missing run_info."
+        )
+
+    missing_fields = [
+        field
+        for field in _MATCHING_EVALUATION_FIELDS
+        if field not in parent_run_info
+        or field not in candidate_run_info
+    ]
+
+    if missing_fields:
+        raise ValueError(
+            "Evaluation run_info is incomplete: "
+            + ", ".join(missing_fields)
+        )
+
+    mismatches = [
+        field
+        for field in _MATCHING_EVALUATION_FIELDS
+        if parent_run_info[field]
+        != candidate_run_info[field]
+    ]
+
+    if not mismatches:
+        return
+
+    details = "; ".join(
+        (
+            f"{field}: "
+            f"parent={parent_run_info[field]!r}, "
+            f"candidate={candidate_run_info[field]!r}"
+        )
+        for field in mismatches
+    )
+
+    raise ValueError(
+        "Parent and candidate evaluations used different inputs: "
+        + details
+    )
+
+
 def _count_examples_csv(path: str | Path) -> int:
     path = Path(path)
 
@@ -328,6 +383,11 @@ def run_self_play_iteration(
         source=str(candidate_metrics_path),
     )
 
+    _require_matching_evaluation_inputs(
+        parent_metrics,
+        candidate_metrics,
+    )
+
     accepted = accept_candidate(
         new_metrics=candidate_metrics,
         best_metrics=parent_metrics,
@@ -428,6 +488,17 @@ def run_self_play_iteration(
 
     for key, value in best_metrics.items():
         row[f"best_{key}"] = value
+
+    _MATCHING_EVALUATION_FIELDS = (
+        "transitions_sha256",
+        "raw_data_sha256",
+        "scenario_ids_sha256",
+        "task_config_sha256",
+        "physics_config_fingerprint",
+        "evaluation_metrics_contract_version",
+        "git_revision",
+        "git_dirty",
+    )
 
     return IterationResult(
         iteration=iteration,

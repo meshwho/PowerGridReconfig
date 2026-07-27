@@ -523,6 +523,7 @@ def run_evaluate(
         transitions_csv=Path(eval_csv),
         checkpoint=Path(checkpoint),
         config=config,
+        project_root=project_root,
         physics_config=physics_config,
         output_csv=output_csv,
         output_json=output_json,

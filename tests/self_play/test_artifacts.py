@@ -12,6 +12,8 @@ from grid_topology_ai.self_play.artifacts import (
     save_json,
     save_yaml,
     sha256_file,
+    sha256_files,
+    sha256_json,
 )
 
 
@@ -119,3 +121,55 @@ def test_sha256_rejects_non_positive_chunk_size(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError):
         sha256_file(path, chunk_size=-1)
+
+
+def test_sha256_json_is_independent_of_mapping_order() -> None:
+    first = {
+        "alpha": 1,
+        "nested": {
+            "left": True,
+            "right": [1, 2, 3],
+        },
+    }
+    second = {
+        "nested": {
+            "right": [1, 2, 3],
+            "left": True,
+        },
+        "alpha": 1,
+    }
+
+    assert sha256_json(first) == sha256_json(second)
+
+
+def test_sha256_files_changes_when_file_content_changes(
+    tmp_path: Path,
+) -> None:
+    first = tmp_path / "first.bin"
+    second = tmp_path / "second.bin"
+    first.write_bytes(b"first")
+    second.write_bytes(b"second")
+
+    before = sha256_files(
+        [first, second],
+        root=tmp_path,
+    )
+
+    second.write_bytes(b"changed")
+
+    after = sha256_files(
+        [first, second],
+        root=tmp_path,
+    )
+
+    assert before != after
+
+
+def test_sha256_files_rejects_missing_file(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(FileNotFoundError):
+        sha256_files(
+            [tmp_path / "missing.bin"],
+            root=tmp_path,
+        )
