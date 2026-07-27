@@ -19,6 +19,8 @@ def test_power_flow_algorithm_static_boundaries(tmp_path: Path, monkeypatch) -> 
         "pool": {"transitions_csv": "pool.csv", "raw_dir": "raw", "metadata_path": "pool.json"},
         "eval_csv": "eval.csv",
         "eval_raw_dir": "eval_raw",
+        "final_test_csv": "final_test.csv",
+        "final_test_raw_dir": "final_test_raw",
         "bootstrap_checkpoint": "bootstrap.pt",
         "bootstrap_eval_metrics": "metrics.json",
         "checkpoint_dir": "runs/pf_boundary",
