@@ -82,6 +82,12 @@ The main candidate checkpoint records `checkpoint_selection_metric=validation_lo
 
 Candidate checkpoints are evaluated on the fixed evaluation transitions and raw states. This keeps acceptance comparable across iterations. `solve_count` and `solve_rate` count only physically secure outcomes and therefore equal `physically_secure_count` and `physically_secure_rate`. Thermal feasibility remains a separate diagnostic rate. Evaluation also records counts/rates for PF convergence, finite values, topology connectivity, thermal, voltage, generator P/Q, and angle feasibility, plus violation diagnostics.
 
+The regular evaluation set is a selection set: it is used after each iteration
+to decide whether a candidate checkpoint is promoted. The final test set is
+independent and is never used for training, self-play generation, candidate
+selection, or promotion. It is reserved for one evaluation of the final best
+checkpoint after the loop has completed.
+
 ## 12. PF_ALG provenance
 
 Generation config, evaluation config, evaluation requests, and fixed metrics must use exact integer `PF_ALG` values. Fractional or boolean values are rejected instead of rounded.
