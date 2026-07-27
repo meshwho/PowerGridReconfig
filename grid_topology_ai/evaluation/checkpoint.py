@@ -29,6 +29,9 @@ from grid_topology_ai.evaluation.metrics import (
     print_row,
     print_summary,
 )
+from grid_topology_ai.evaluation.paired_results import (
+    PAIRED_OUTCOME_FIELDS,
+)
 from grid_topology_ai.evaluation.policy_comparison import (
     PolicyMode,
     build_policy_comparison_metrics,
@@ -699,6 +702,53 @@ def _prepare_results_frame(
         transitions_path=transitions_path,
     )
 
+def _prepare_output_frame(
+    successful_rows: pd.DataFrame,
+    failures: list[dict[str, Any]],
+) -> pd.DataFrame:
+    output = successful_rows.copy()
+    output["evaluation_failed"] = False
+    output["evaluation_error"] = ""
+
+    if failures:
+        failed_rows: list[dict[str, object]] = []
+
+        for failure in failures:
+            row: dict[str, object] = {
+                "scenario_id": int(
+                    failure["scenario_id"]
+                ),
+                "policy_mode": str(
+                    failure.get(
+                        "policy_mode",
+                        PolicyMode.UNGATED.value,
+                    )
+                ),
+                "evaluation_failed": True,
+                "evaluation_error": str(
+                    failure.get("traceback") or ""
+                ),
+                "solved": False,
+            }
+
+            for field in PAIRED_OUTCOME_FIELDS:
+                if field != "evaluation_success":
+                    row[field] = False
+
+            failed_rows.append(row)
+
+        output = pd.concat(
+            [
+                output,
+                pd.DataFrame(failed_rows),
+            ],
+            ignore_index=True,
+            sort=False,
+        )
+
+    return output.sort_values(
+        ["scenario_id", "policy_mode"]
+    ).reset_index(drop=True)
 
 def evaluate_checkpoint(request: EvaluationRequest) -> dict[str, Any]:
     sequential = int(request.config.num_workers) <= 1
@@ -783,7 +833,15 @@ def evaluate_checkpoint(request: EvaluationRequest) -> dict[str, Any]:
                 parents=True,
                 exist_ok=True,
             )
-            df.to_csv(request.output_csv, index=False)
+
+            output_frame = _prepare_output_frame(
+                df,
+                failures,
+            )
+            output_frame.to_csv(
+                request.output_csv,
+                index=False,
+            )
             print(f"\nSaved evaluation CSV: {request.output_csv}")
         if request.output_json is not None:
             save_json(

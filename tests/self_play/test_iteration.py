@@ -29,7 +29,9 @@ from grid_topology_ai.self_play.iteration import (
     run_self_play_iteration,
 )
 from grid_topology_ai.self_play.paths import SelfPlayPaths
-
+from grid_topology_ai.evaluation.paired_results import (
+    PAIRED_OUTCOME_FIELDS,
+)
 
 class _FakeReplayBuffer:
     def __init__(self) -> None:
@@ -107,7 +109,11 @@ def _metrics(
         "solve_rate": solve_rate,
         "failed_scenarios": failed_scenarios,
         "pf_alg": pf_alg,
-        "task_config": {"pf_alg": pf_alg},
+        "task_config": {
+            "pf_alg": pf_alg,
+            "primary_policy_mode": "ungated",
+        },
+        "primary_policy_mode": "ungated",
         "evaluation_metrics_contract_version": EVALUATION_METRICS_CONTRACT_VERSION,
         **provenance,
         "physical_objective_contract": physical_objective_contract(
@@ -129,6 +135,43 @@ def _metrics(
             "git_dirty": False,
         },
     }
+
+def _write_evaluation_results(
+    *,
+    output_dir: Path,
+    output_csv_name: str,
+    scenario_ids: tuple[int, ...],
+) -> Path:
+    rows: list[dict[str, object]] = []
+
+    for scenario_id in scenario_ids:
+        secure = int(scenario_id) % 2 == 1
+
+        row: dict[str, object] = {
+            "scenario_id": int(scenario_id),
+            "policy_mode": "ungated",
+            "evaluation_failed": False,
+        }
+
+        for field in PAIRED_OUTCOME_FIELDS:
+            if field != "evaluation_success":
+                row[field] = secure
+
+        rows.append(row)
+
+    output_dir.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+    output_path = (
+        output_dir / output_csv_name
+    )
+    pd.DataFrame(rows).to_csv(
+        output_path,
+        index=False,
+    )
+
+    return output_path
 
 def test_iteration_rejects_mismatched_evaluation_inputs(
     tmp_path: Path,
@@ -300,6 +343,16 @@ def _install_stage_fakes(monkeypatch: pytest.MonkeyPatch, calls: list[str] | Non
 
     def fake_evaluate(**kwargs: Any) -> dict[str, object]:
         checkpoint = Path(kwargs["checkpoint"])
+
+        _write_evaluation_results(
+            output_dir=Path(kwargs["output_dir"]),
+            output_csv_name=(
+                kwargs["config"].output_csv_name
+            ),
+            scenario_ids=tuple(
+                kwargs["scenario_ids"]
+            ),
+        )
 
         if calls is not None:
             calls.append(f"evaluate:{checkpoint.name}")
@@ -540,6 +593,18 @@ def test_parent_and_candidate_use_the_same_evaluation_scenarios(
             tuple(kwargs["scenario_ids"])
         )
 
+        _write_evaluation_results(
+            output_dir=Path(
+                kwargs["output_dir"]
+            ),
+            output_csv_name=(
+                kwargs["config"].output_csv_name
+            ),
+            scenario_ids=tuple(
+                kwargs["scenario_ids"]
+            ),
+        )
+
         checkpoint = Path(kwargs["checkpoint"])
         return _metrics(
             0.5
@@ -560,6 +625,41 @@ def test_parent_and_candidate_use_the_same_evaluation_scenarios(
         (1, 2, 3),
     ]
 
+def test_iteration_saves_paired_comparison(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_stage_fakes(monkeypatch)
+
+    result = run_self_play_iteration(
+        _request(tmp_path)
+    )
+
+    comparison_path = (
+        _paths(tmp_path)
+        .iteration_dir(result.iteration)
+        / "evaluation"
+        / "comparison.json"
+    )
+
+    comparison = json.loads(
+        comparison_path.read_text(
+            encoding="utf-8"
+        )
+    )
+
+    assert comparison["policy_mode"] == "ungated"
+    assert comparison["scenario_count"] == 3
+    assert (
+        "physically_secure"
+        in comparison["metrics"]
+    )
+    assert (
+        comparison["metrics"]
+        ["physically_secure"]
+        ["rate_difference"]
+        == 0.0
+    )
 
 def test_rejected_candidate_refreshes_best_metrics(
     tmp_path: Path,

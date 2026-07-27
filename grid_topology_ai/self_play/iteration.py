@@ -27,7 +27,9 @@ from grid_topology_ai.self_play.stages import (
     split_examples_by_scenario,
 )
 from grid_topology_ai.evaluation.checkpoint import load_scenario_ids
-
+from grid_topology_ai.evaluation.paired_results import (
+    compare_evaluation_results,
+)
 
 _MATCHING_EVALUATION_FIELDS = (
         "transitions_sha256",
@@ -139,6 +141,38 @@ def _require_matching_evaluation_inputs(
         + details
     )
 
+def _configured_primary_policy_mode(
+    metrics: Mapping[str, object],
+    *,
+    source: str,
+) -> str:
+    task_config = metrics.get("task_config")
+
+    if not isinstance(task_config, Mapping):
+        raise ValueError(
+            f"Evaluation metrics are missing task_config: "
+            f"{source}"
+        )
+
+    policy_mode = task_config.get(
+        "primary_policy_mode"
+    )
+
+    if not isinstance(policy_mode, str):
+        raise ValueError(
+            f"Evaluation task_config is missing "
+            f"primary_policy_mode: {source}"
+        )
+
+    policy_mode = policy_mode.strip()
+
+    if not policy_mode:
+        raise ValueError(
+            f"Evaluation primary_policy_mode is empty: "
+            f"{source}"
+        )
+
+    return policy_mode
 
 def _count_examples_csv(path: str | Path) -> int:
     path = Path(path)
@@ -402,6 +436,52 @@ def run_self_play_iteration(
         candidate_metrics,
     )
 
+    parent_policy_mode = (
+        _configured_primary_policy_mode(
+            parent_metrics,
+            source=str(parent_metrics_path),
+        )
+    )
+    candidate_policy_mode = (
+        _configured_primary_policy_mode(
+            candidate_metrics,
+            source=str(candidate_metrics_path),
+        )
+    )
+
+    if parent_policy_mode != candidate_policy_mode:
+        raise ValueError(
+            "Parent and candidate evaluations use "
+            "different primary policy modes: "
+            f"parent={parent_policy_mode!r}, "
+            f"candidate={candidate_policy_mode!r}."
+        )
+
+    parent_results_path = (
+            parent_evaluation_dir
+            / config.evaluation.output_csv_name
+    )
+    candidate_results_path = (
+            candidate_evaluation_dir
+            / config.evaluation.output_csv_name
+    )
+
+    comparison = compare_evaluation_results(
+        parent_csv=parent_results_path,
+        candidate_csv=candidate_results_path,
+        policy_mode=parent_policy_mode,
+        seed=iteration_seed,
+    )
+
+    comparison_path = (
+            evaluation_dir
+            / "comparison.json"
+    )
+    save_json(
+        comparison,
+        comparison_path,
+    )
+
     accepted = accept_candidate(
         new_metrics=candidate_metrics,
         best_metrics=parent_metrics,
@@ -446,6 +526,24 @@ def run_self_play_iteration(
                 sha256_file(paths.pool_metadata)
                 if paths.pool_metadata.exists()
                 else None
+            ),
+            "paired_comparison_path": str(
+                comparison_path
+            ),
+            "paired_comparison_sha256": sha256_file(
+                comparison_path
+            ),
+            "paired_comparison_scenarios": int(
+                comparison["scenario_count"]
+            ),
+            "paired_comparison_policy_mode": str(
+                comparison["policy_mode"]
+            ),
+            "paired_comparison_confidence_level": float(
+                comparison["confidence_level"]
+            ),
+            "paired_comparison_bootstrap_samples": int(
+                comparison["bootstrap_samples"]
             ),
         },
     )

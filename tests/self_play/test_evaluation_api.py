@@ -110,6 +110,62 @@ def test_checkpoint_hash_changes_with_checkpoint_content(
         != second["run_info"]["checkpoint_sha256"]
     )
 
+def test_failed_scenarios_are_kept_in_output_csv(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output_csv = tmp_path / "evaluation.csv"
+    request = _request(
+        tmp_path,
+        output_csv=output_csv,
+    )
+
+    failed = [
+        {
+            "ok": False,
+            "scenario_id": 2,
+            "policy_mode": "ungated",
+            "row": None,
+            "traceback": "evaluation failed",
+        },
+    ]
+
+    def fake_sequential(**kwargs: object):
+        _set_fake_worker_context()
+        return [_row(1)], failed
+
+    monkeypatch.setattr(
+        evaluation,
+        "run_sequential",
+        fake_sequential,
+    )
+
+    metrics = evaluation.evaluate_checkpoint(
+        request
+    )
+
+    output = pd.read_csv(output_csv)
+
+    assert metrics["failed_scenarios"] == 1
+    assert output["scenario_id"].tolist() == [
+        1,
+        2,
+    ]
+
+    failed_row = output.loc[
+        output["scenario_id"] == 2
+    ].iloc[0]
+
+    assert bool(
+        failed_row["evaluation_failed"]
+    ) is True
+    assert bool(
+        failed_row["power_flow_converged"]
+    ) is False
+    assert bool(
+        failed_row["physically_secure"]
+    ) is False
+
 def _request(
     tmp_path: Path,
     *,
