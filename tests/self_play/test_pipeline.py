@@ -180,3 +180,189 @@ def test_pipeline_returns_final_state(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(pipeline_module, "run_self_play_iteration", lambda request: _iteration_result(request.iteration, tmp_path / f"best-{request.iteration}.pt", 0.4, {"scenarios": [], "done": True}))
     result = run_self_play_pipeline(_request(tmp_path, n_iterations=2))
     assert result.best_checkpoint == tmp_path / "best-2.pt"
+    assert result.best_metrics["solve_rate"] == 0.4
+    assert result.best_metrics["pf_alg"] == 3
+    assert result.start_iteration == 2
+    assert result.completed_iterations_before_run == (1,)
+    assert result.executed_iterations == (2,)
+    assert result.learning_curve_path.name == "learning_curve.csv"
+    assert result.pool_metadata["done"] is True
+    assert result.already_complete is False
+
+
+def test_pipeline_returns_already_complete(tmp_path: Path, monkeypatch) -> None:
+    _patch_basics(monkeypatch, tmp_path, start=3, completed=(1, 2))
+    monkeypatch.setattr(pipeline_module, "run_self_play_iteration", lambda request: pytest.fail("iteration should not run"))
+    result = run_self_play_pipeline(_request(tmp_path, n_iterations=2))
+    assert result.executed_iterations == ()
+    assert result.already_complete is True
+
+
+def test_pipeline_does_not_mutate_raw_config(tmp_path: Path, monkeypatch) -> None:
+    raw = _raw_config(n_iterations=1)
+    original = dict(raw)
+    _patch_basics(monkeypatch, tmp_path)
+    monkeypatch.setattr(pipeline_module, "save_yaml", lambda *, payload, path: payload.update({"mutated": True}))
+    monkeypatch.setattr(pipeline_module, "run_self_play_iteration", lambda request: _iteration_result(request.iteration, tmp_path / "best.pt", 0.2, {"scenarios": []}))
+    run_self_play_pipeline(_request(tmp_path, n_iterations=1, raw=raw))
+    assert raw == original
+
+
+def test_pipeline_does_not_mark_complete_when_iteration_fails(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _patch_basics(monkeypatch, tmp_path)
+
+    def fail_iteration(request):
+        raise RuntimeError("iteration failed")
+
+    monkeypatch.setattr(pipeline_module, "run_self_play_iteration", fail_iteration)
+    monkeypatch.setattr(
+        pipeline_module,
+        "write_iteration_completion_marker",
+        lambda **kwargs: pytest.fail("completion writer should not be called"),
+    )
+
+    with pytest.raises(RuntimeError, match="iteration failed"):
+        run_self_play_pipeline(_request(tmp_path, n_iterations=1))
+
+
+def test_pipeline_does_not_mark_complete_when_learning_curve_save_fails(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _patch_basics(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        pipeline_module,
+        "run_self_play_iteration",
+        lambda request: _iteration_result(
+            request.iteration,
+            tmp_path / "best.pt",
+            0.2,
+            {"scenarios": []},
+        ),
+    )
+
+    def fail_learning_curve(*, rows, path):
+        raise RuntimeError("learning curve failed")
+
+    monkeypatch.setattr(pipeline_module, "save_learning_curve", fail_learning_curve)
+    monkeypatch.setattr(
+        pipeline_module,
+        "write_iteration_completion_marker",
+        lambda **kwargs: pytest.fail("completion writer should not be called"),
+    )
+
+    with pytest.raises(RuntimeError, match="learning curve failed"):
+        run_self_play_pipeline(_request(tmp_path, n_iterations=1))
+
+
+def test_pipeline_stops_when_completion_marker_fails(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _patch_basics(monkeypatch, tmp_path)
+    iterations: list[int] = []
+
+    def fake_run(request):
+        iterations.append(request.iteration)
+        return _iteration_result(
+            request.iteration,
+            tmp_path / f"best-{request.iteration}.pt",
+            0.2,
+            {"scenarios": []},
+        )
+
+    def fail_marker(**kwargs):
+        raise RuntimeError("marker failed")
+
+    monkeypatch.setattr(pipeline_module, "run_self_play_iteration", fake_run)
+    monkeypatch.setattr(pipeline_module, "write_iteration_completion_marker", fail_marker)
+
+    with pytest.raises(RuntimeError, match="marker failed"):
+        run_self_play_pipeline(_request(tmp_path, n_iterations=2))
+
+    assert iterations == [1]
+
+
+def test_pipeline_passes_completion_artifacts(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _patch_basics(monkeypatch, tmp_path)
+    captured: dict[str, object] = {}
+
+    def fake_run(request):
+        return _iteration_result(
+            request.iteration,
+            tmp_path / "best-after.pt",
+            0.2,
+            {"scenarios": []},
+        )
+
+    def capture_marker(**kwargs):
+        captured.update(kwargs)
+        return kwargs["path"]
+
+    request = _request(tmp_path, n_iterations=1)
+    monkeypatch.setattr(pipeline_module, "run_self_play_iteration", fake_run)
+    monkeypatch.setattr(pipeline_module, "write_iteration_completion_marker", capture_marker)
+
+    run_self_play_pipeline(request)
+
+    assert captured["iteration"] == 1
+    assert captured["accepted"] is True
+    assert captured["status"] == "ACCEPTED"
+    assert captured["metadata_path"] == Path("metadata.json")
+    assert captured["candidate_checkpoint"] == Path("candidate-1.pt")
+    assert captured["best_checkpoint_after"] == tmp_path / "best-after.pt"
+    assert captured["best_metrics_path"] == request.paths.best_metrics
+    assert captured["pool_metadata_path"] == request.paths.pool_metadata
+    assert captured["replay_manifest_path"] == request.paths.replay_manifest
+    assert captured["replay_iteration_path"] == request.paths.replay_iteration_file(1)
+    assert captured["learning_curve_path"] == request.paths.learning_curve
+
+
+def test_format_metric_formats_numeric_value() -> None:
+    assert _format_metric({"score": 0.123456}, "score") == "0.1235"
+
+
+def test_format_metric_returns_na_for_missing_metric() -> None:
+    assert _format_metric({}, "score") == "n/a"
+
+
+def test_format_metric_stringifies_non_numeric_value() -> None:
+    assert _format_metric({"score": "not numeric"}, "score") == "not numeric"
+
+
+def test_format_metric_does_not_hide_unexpected_runtime_error() -> None:
+    class BrokenMetric:
+        def __float__(self) -> float:
+            raise RuntimeError("broken metric")
+
+    with pytest.raises(RuntimeError, match="broken metric"):
+        _format_metric({"score": BrokenMetric()}, "score")
+
+
+def test_pipeline_rejects_bootstrap_metrics_pf_alg_before_iteration(tmp_path: Path, monkeypatch) -> None:
+    _patch_basics(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        pipeline_module,
+        "initialize_best_state",
+        lambda **kwargs: _BestState(
+            tmp_path / "best.pt",
+            {**_metrics(0.25), "pf_alg": 1, "task_config": {"pf_alg": 1}},
+        ),
+    )
+    called = False
+
+    def fake_run(request):
+        nonlocal called
+        called = True
+        raise AssertionError("iteration should not run")
+
+    monkeypatch.setattr(pipeline_module, "run_self_play_iteration", fake_run)
+    with pytest.raises(ValueError, match="PF_ALG"):
+        run_self_play_pipeline(_request(tmp_path, n_iterations=1))
+    assert called is False
