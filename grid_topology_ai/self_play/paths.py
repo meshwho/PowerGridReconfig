@@ -47,6 +47,9 @@ class SelfPlayPaths:
     eval_csv: Path
     eval_raw_dir: Path
 
+    final_test_csv: Path
+    final_test_raw_dir: Path
+
     bootstrap_checkpoint: Path
     bootstrap_metrics: Path
 
@@ -78,6 +81,14 @@ class SelfPlayPaths:
             ),
             eval_csv=_resolve(root, config.eval_csv),
             eval_raw_dir=_resolve(root, config.eval_raw_dir),
+            final_test_csv=_resolve(
+                root,
+                config.final_test_csv,
+            ),
+            final_test_raw_dir=_resolve(
+                root,
+                config.final_test_raw_dir,
+            ),
             bootstrap_checkpoint=_resolve(
                 root,
                 config.bootstrap_checkpoint,

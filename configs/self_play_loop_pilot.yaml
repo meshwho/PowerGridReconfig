@@ -7,8 +7,13 @@ pool:
   transitions_csv: data/gridfm_transitions/case118_bootstrap_v1/transitions_train.csv
   raw_dir: data/gridfm_generated/case118_bootstrap_v1/raw
   metadata_path: runs/self_play_pilot/inputs/pool_metadata_pilot.json
+
 eval_csv: runs/self_play_pilot/inputs/eval_pilot.csv
 eval_raw_dir: data/gridfm_generated/case118_eval_v1/raw
+
+final_test_csv: data/gridfm_transitions/case118_final_test_v1/transitions_balanced.csv
+final_test_raw_dir: data/gridfm_generated/case118_final_test_v1/raw
+
 bootstrap_checkpoint: runs/bootstrap/best_checkpoint.pt
 bootstrap_eval_metrics: runs/bootstrap/eval_metrics_pilot.json
 checkpoint_dir: runs/self_play_pilot

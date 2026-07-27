@@ -21,6 +21,11 @@ pool:
 eval_csv: data/gridfm_transitions/case118_eval_v1/transitions_balanced.csv
 eval_raw_dir: data/gridfm_generated/case118_eval_v1/raw
 
+# Independent final test set.
+# It must never be used for training or candidate selection.
+final_test_csv: data/gridfm_transitions/case118_final_test_v1/transitions_balanced.csv
+final_test_raw_dir: data/gridfm_generated/case118_final_test_v1/raw
+
 # Initial supervised checkpoint.
 bootstrap_checkpoint: runs/bootstrap/best_checkpoint.pt
 bootstrap_eval_metrics: runs/bootstrap/eval_metrics.json

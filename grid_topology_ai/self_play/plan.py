@@ -41,6 +41,9 @@ def render_execution_plan(
 ) -> str:
     pool_size = _count_unique_scenarios(paths.pool_transitions_csv)
     eval_size = _count_unique_scenarios(paths.eval_csv)
+    final_test_size = _count_unique_scenarios(
+        paths.final_test_csv
+    )
     estimated_examples_per_iteration = (
         config.n_scenarios_per_iteration * config.generation.max_steps
     )
@@ -77,6 +80,28 @@ def render_execution_plan(
             f"  eval_raw_dir:             {paths.eval_raw_dir}",
             f"  eval raw status:          {_path_status(paths.eval_raw_dir)}",
             f"  unique eval scenarios:    {eval_size}",
+            "",
+            "Final test set:",
+            (
+                "  final_test_csv:          "
+                f"{paths.final_test_csv}"
+            ),
+            (
+                "  final test csv status:   "
+                f"{_path_status(paths.final_test_csv)}"
+            ),
+            (
+                "  final_test_raw_dir:      "
+                f"{paths.final_test_raw_dir}"
+            ),
+            (
+                "  final test raw status:   "
+                f"{_path_status(paths.final_test_raw_dir)}"
+            ),
+            (
+                "  unique test scenarios:   "
+                f"{final_test_size}"
+            ),
             "",
             "Bootstrap:",
             f"  checkpoint:               {paths.bootstrap_checkpoint}",

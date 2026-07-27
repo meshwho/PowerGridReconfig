@@ -3,7 +3,9 @@ from __future__ import annotations
 from pathlib import Path
 
 from grid_topology_ai.self_play.paths import SelfPlayPaths
-
+from grid_topology_ai.evaluation.checkpoint import (
+    load_scenario_ids,
+)
 
 def _require_file(path: Path, label: str) -> None:
     if not path.is_file():
@@ -14,6 +16,37 @@ def _require_directory(path: Path, label: str) -> None:
     if not path.is_dir():
         raise FileNotFoundError(f"{label} not found: {path}")
 
+def _require_disjoint_scenario_ids(
+    first_csv: Path,
+    first_label: str,
+    second_csv: Path,
+    second_label: str,
+) -> None:
+    first_ids = set(
+        load_scenario_ids(
+            first_csv,
+            limit=None,
+        )
+    )
+    second_ids = set(
+        load_scenario_ids(
+            second_csv,
+            limit=None,
+        )
+    )
+
+    overlap = sorted(
+        first_ids & second_ids
+    )
+
+    if not overlap:
+        return
+
+    raise ValueError(
+        f"{first_label} and {second_label} "
+        "scenario IDs overlap: "
+        f"{overlap[:20]}"
+    )
 
 def validate_inputs(
     paths: SelfPlayPaths,
@@ -36,6 +69,14 @@ def validate_inputs(
         paths.eval_raw_dir,
         "Evaluation raw directory",
     )
+    _require_file(
+        paths.final_test_csv,
+        "Final-test transitions CSV",
+    )
+    _require_directory(
+        paths.final_test_raw_dir,
+        "Final-test raw directory",
+    )
 
     bootstrap_files = (
         (
@@ -46,6 +87,20 @@ def validate_inputs(
             paths.bootstrap_metrics,
             "Bootstrap evaluation metrics",
         ),
+    )
+
+    _require_disjoint_scenario_ids(
+        paths.eval_csv,
+        "Evaluation",
+        paths.final_test_csv,
+        "final-test",
+    )
+
+    _require_disjoint_scenario_ids(
+        paths.pool_transitions_csv,
+        "Pool",
+        paths.final_test_csv,
+        "final-test",
     )
 
     if require_bootstrap:

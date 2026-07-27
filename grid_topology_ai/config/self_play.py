@@ -84,6 +84,9 @@ class SelfPlayConfig:
     eval_csv: Path
     eval_raw_dir: Path
 
+    final_test_csv: Path
+    final_test_raw_dir: Path
+
     bootstrap_checkpoint: Path
     bootstrap_eval_metrics: Path
 
@@ -111,6 +114,17 @@ class SelfPlayConfig:
             "n_scenarios_per_iteration",
             self.n_scenarios_per_iteration,
         )
+
+        if self.final_test_csv == self.eval_csv:
+            raise ValueError(
+                "final_test_csv must differ from eval_csv."
+            )
+
+        if self.final_test_raw_dir == self.eval_raw_dir:
+            raise ValueError(
+                "final_test_raw_dir must differ from eval_raw_dir."
+            )
+
         values = (
             int(self.generation.pf_alg),
             int(self.evaluation.pf_alg),
@@ -150,6 +164,18 @@ class SelfPlayConfig:
             ),
             eval_raw_dir=Path(
                 require_value(data, "eval_raw_dir")
+            ),
+            final_test_csv=Path(
+                require_value(
+                    data,
+                    "final_test_csv",
+                )
+            ),
+            final_test_raw_dir=Path(
+                require_value(
+                    data,
+                    "final_test_raw_dir",
+                )
             ),
             bootstrap_checkpoint=Path(
                 require_value(
