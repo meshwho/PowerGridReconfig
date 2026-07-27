@@ -5,6 +5,42 @@ import pytest
 from grid_topology_ai.config import SelfPlayConfig
 
 
+def _minimal_self_play_mapping() -> dict[str, object]:
+    return {
+        "run_name": "test",
+        "seed": 1,
+        "n_iterations": 1,
+        "n_scenarios_per_iteration": 1,
+        "pool": {
+            "transitions_csv": "pool.csv",
+            "raw_dir": "pool_raw",
+            "metadata_path": "pool.json",
+        },
+        "eval_csv": "eval.csv",
+        "eval_raw_dir": "eval_raw",
+        "final_test_csv": "final.csv",
+        "final_test_raw_dir": "final_raw",
+        "bootstrap_checkpoint": "bootstrap.pt",
+        "bootstrap_eval_metrics": "metrics.json",
+        "checkpoint_dir": "runs/test",
+        "best_checkpoint_path": "runs/test/best.pt",
+        "best_metrics_path": "runs/test/best_metrics.json",
+        "replay_buffer": {
+            "max_size": 1,
+            "min_size_to_train": 1,
+            "fresh_fraction": 1.0,
+        },
+        "generation": {"pf_alg": 3},
+        "training": {
+            "examples_per_iteration": 1,
+            "batch_size": 1,
+            "learning_rate": 0.001,
+        },
+        "evaluation": {"pf_alg": 3},
+        "acceptance": {},
+    }
+
+
 @pytest.mark.parametrize(
     "path",
     [
@@ -19,6 +55,10 @@ def test_repository_config_parses(path: Path) -> None:
     assert config.run_name
     assert config.n_iterations > 0
     assert config.n_scenarios_per_iteration > 0
+    assert config.final_test_csv
+    assert config.final_test_raw_dir
+    assert config.final_test_csv != config.eval_csv
+    assert config.final_test_raw_dir != config.eval_raw_dir
 
 
 def test_pilot_config_preserves_current_values() -> None:
@@ -35,6 +75,29 @@ def test_pilot_config_preserves_current_values() -> None:
     assert config.evaluation.simulations == 50
     assert config.replay_buffer.fresh_fraction == 0.70
 
+
+def test_final_test_csv_must_differ_from_eval_csv() -> None:
+    raw = _minimal_self_play_mapping()
+    raw["final_test_csv"] = raw["eval_csv"]
+
+    with pytest.raises(
+        ValueError,
+        match="final_test_csv",
+    ):
+        SelfPlayConfig.from_mapping(raw)
+
+
+def test_final_test_raw_dir_must_differ_from_eval_raw_dir() -> None:
+    raw = _minimal_self_play_mapping()
+    raw["final_test_raw_dir"] = raw["eval_raw_dir"]
+
+    with pytest.raises(
+        ValueError,
+        match="final_test_raw_dir",
+    ):
+        SelfPlayConfig.from_mapping(raw)
+
+
 def test_evaluation_config_defaults_to_pf_alg_3() -> None:
     from grid_topology_ai.config import EvaluationConfig
 
@@ -49,34 +112,15 @@ def test_evaluation_config_reads_pf_alg() -> None:
 
 def test_evaluation_config_rejects_unknown_pf_alg() -> None:
     from grid_topology_ai.config import EvaluationConfig
-    import pytest
 
     with pytest.raises(ValueError, match="evaluation.pf_alg"):
         EvaluationConfig(pf_alg=9)
 
 
 def test_self_play_config_rejects_generation_evaluation_pf_alg_mismatch() -> None:
-    import pytest
+    raw = _minimal_self_play_mapping()
+    raw["evaluation"] = {"pf_alg": 1}
 
-    raw = {
-        "run_name": "mismatch",
-        "seed": 1,
-        "n_iterations": 1,
-        "n_scenarios_per_iteration": 1,
-        "pool": {"transitions_csv": "pool.csv", "raw_dir": "raw", "metadata_path": "pool.json"},
-        "eval_csv": "eval.csv",
-        "eval_raw_dir": "eval_raw",
-        "bootstrap_checkpoint": "bootstrap.pt",
-        "bootstrap_eval_metrics": "metrics.json",
-        "checkpoint_dir": "runs/mismatch",
-        "best_checkpoint_path": "runs/mismatch/best.pt",
-        "best_metrics_path": "runs/mismatch/best_metrics.json",
-        "replay_buffer": {"max_size": 1, "min_size_to_train": 1, "fresh_fraction": 1.0},
-        "generation": {"pf_alg": 3},
-        "training": {"examples_per_iteration": 1, "batch_size": 1, "learning_rate": 0.001},
-        "evaluation": {"pf_alg": 1},
-        "acceptance": {},
-    }
     with pytest.raises(ValueError, match="Power-flow algorithm mismatch"):
         SelfPlayConfig.from_mapping(raw)
 
@@ -111,7 +155,6 @@ def test_training_config_reads_validation_contract() -> None:
 
 def test_training_config_rejects_invalid_validation_fraction() -> None:
     from grid_topology_ai.config import TrainingConfig
-    import pytest
 
     for value in [0.0, 1.0, -0.1]:
         with pytest.raises(ValueError, match="validation_fraction"):
@@ -120,7 +163,6 @@ def test_training_config_rejects_invalid_validation_fraction() -> None:
 
 def test_training_config_rejects_zero_min_validation_scenarios() -> None:
     from grid_topology_ai.config import TrainingConfig
-    import pytest
 
     with pytest.raises(ValueError, match="min_validation_scenarios"):
         TrainingConfig(min_validation_scenarios=0)
@@ -135,6 +177,7 @@ def test_repository_self_play_configs_have_validation_contract() -> None:
         config = SelfPlayConfig.load(path)
         assert 0.0 < config.training.validation_fraction < 1.0
         assert config.training.min_validation_scenarios > 0
+
 
 @pytest.mark.parametrize("value", [3.0, "3"])
 def test_pf_alg_exact_integer_values_are_accepted(value: object) -> None:
