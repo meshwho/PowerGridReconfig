@@ -34,6 +34,18 @@ def test_resolves_relative_paths_from_project_root(
         / "runs/self_play_pilot"
         / "checkpoints/best.pt"
     )
+    assert paths.final_test_csv == (
+        tmp_path
+        / "data/gridfm_transitions"
+        / "case118_final_test_v1"
+        / "transitions_balanced.csv"
+    )
+    assert paths.final_test_raw_dir == (
+        tmp_path
+        / "data/gridfm_generated"
+        / "case118_final_test_v1"
+        / "raw"
+    )
 
 
 def test_discover_project_root_from_nested_directory(tmp_path: Path) -> None:
