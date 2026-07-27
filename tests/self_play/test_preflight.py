@@ -34,11 +34,24 @@ def create_required_inputs(paths: SelfPlayPaths) -> None:
         exist_ok=True,
     )
     paths.eval_csv.write_text(
-        "scenario_id\n1\n",
+        "scenario_id\n2\n",
         encoding="utf-8",
     )
 
     paths.eval_raw_dir.mkdir(parents=True)
+
+    paths.final_test_csv.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+    paths.final_test_csv.write_text(
+        "scenario_id\n3\n",
+        encoding="utf-8",
+    )
+
+    paths.final_test_raw_dir.mkdir(
+        parents=True,
+    )
 
 
 def test_validation_allows_missing_bootstrap_in_plan_mode(
@@ -68,6 +81,63 @@ def test_validation_requires_bootstrap_for_real_run(
         validate_inputs(
             paths,
             require_bootstrap=True,
+        )
+
+
+def test_validation_requires_final_test_csv(
+    tmp_path: Path,
+) -> None:
+    paths = make_paths(tmp_path)
+    create_required_inputs(paths)
+    paths.final_test_csv.unlink()
+
+    with pytest.raises(
+        FileNotFoundError,
+        match="Final-test transitions CSV",
+    ):
+        validate_inputs(
+            paths,
+            require_bootstrap=False,
+        )
+
+
+def test_validation_rejects_eval_final_overlap(
+    tmp_path: Path,
+) -> None:
+    paths = make_paths(tmp_path)
+    create_required_inputs(paths)
+    paths.final_test_csv.write_text(
+        "scenario_id\n2\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="Evaluation and final-test",
+    ):
+        validate_inputs(
+            paths,
+            require_bootstrap=False,
+        )
+
+
+def test_validation_rejects_pool_final_overlap(
+    tmp_path: Path,
+) -> None:
+    paths = make_paths(tmp_path)
+    create_required_inputs(paths)
+    paths.final_test_csv.write_text(
+        "scenario_id\n1\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="Pool and final-test",
+    ):
+        validate_inputs(
+            paths,
+            require_bootstrap=False,
         )
 
 
