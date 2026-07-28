@@ -123,7 +123,8 @@ def test_generation_request_rejects_invalid_iteration(
             output_dir=tmp_path / "out",
             checkpoint=None,
             config=GenerationConfig(),
-            seed=42,
+            mcts_seed=42,
+            action_seed=43,
             clear_cache_between_scenarios=False,
             iteration=iteration,  # type: ignore[arg-type]
         )
