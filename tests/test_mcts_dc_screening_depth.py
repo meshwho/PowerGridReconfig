@@ -122,6 +122,10 @@ def _dc_calls(
         ),
         evaluator=_Evaluator(policy),  # type: ignore[arg-type]
     )
+    planner._should_include_stop_action = (  # type: ignore[method-assign]
+        lambda state: False
+    )
+
     ranker = _RecordingDCRanker()
     planner.dc_screener = ranker  # type: ignore[assignment]
 
