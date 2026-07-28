@@ -69,7 +69,36 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--simulations", type=int, default=150)
     parser.add_argument("--depth", type=int, default=4)
     parser.add_argument("--max-steps", type=int, default=5)
-    parser.add_argument("--top-k", type=int, default=30)
+    parser.add_argument(
+        "--top-k",
+        type=int,
+        default=30,
+        help=(
+            "Initial number of switch actions exposed to PUCT at each node. "
+            "Progressive widening may activate additional legal actions."
+        ),
+    )
+    parser.add_argument(
+        "--widening-coefficient",
+        type=float,
+        default=2.0,
+        help="Progressive-widening growth coefficient.",
+    )
+    parser.add_argument(
+        "--widening-exponent",
+        type=float,
+        default=0.5,
+        help="Progressive-widening visit-count exponent in (0, 1].",
+    )
+    parser.add_argument(
+        "--exploration-quota",
+        type=int,
+        default=2,
+        help=(
+            "Number of off-prior switch actions guaranteed one trial. "
+            "Use 0 to disable forced tail exploration."
+        ),
+    )
     parser.add_argument(
         "--seed",
         type=int,
@@ -227,6 +256,9 @@ def main(argv: list[str] | None = None) -> int:
         depth=args.depth,
         max_steps=args.max_steps,
         top_k=args.top_k,
+        widening_coefficient=args.widening_coefficient,
+        widening_exponent=args.widening_exponent,
+        exploration_quota=args.exploration_quota,
         random_seed=args.seed,
         gamma=args.gamma,
         c_puct=args.c_puct,
