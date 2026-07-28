@@ -15,7 +15,7 @@ from grid_topology_ai.search.continuation_gate import analyze_root_branches
 from grid_topology_ai.search.mcts import MCTSConfig, MCTSPlanner
 
 
-def main() -> None:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Analyze MCTS root branches using lookahead continuation gate."
     )
@@ -37,7 +37,42 @@ def main() -> None:
     parser.add_argument("--simulations", type=int, default=300)
     parser.add_argument("--depth", type=int, default=4)
     parser.add_argument("--max-steps", type=int, default=5)
-    parser.add_argument("--top-k", type=int, default=30)
+    parser.add_argument(
+        "--top-k",
+        type=int,
+        default=30,
+        help=(
+            "Initial number of switch actions exposed to PUCT at each node. "
+            "Progressive widening may activate additional legal actions."
+        ),
+    )
+    parser.add_argument(
+        "--widening-coefficient",
+        type=float,
+        default=2.0,
+        help="Progressive-widening growth coefficient.",
+    )
+    parser.add_argument(
+        "--widening-exponent",
+        type=float,
+        default=0.5,
+        help="Progressive-widening visit-count exponent in (0, 1].",
+    )
+    parser.add_argument(
+        "--exploration-quota",
+        type=int,
+        default=2,
+        help=(
+            "Number of off-prior switch actions guaranteed one trial. "
+            "Use 0 to disable forced tail exploration."
+        ),
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=42,
+        help="Random seed for reproducible MCTS exploration.",
+    )
     parser.add_argument("--gamma", type=float, default=0.95)
     parser.add_argument("--c-puct", type=float, default=2.0)
     parser.add_argument("--prior-exponent", type=float, default=0.5)
@@ -72,8 +107,11 @@ def main() -> None:
     parser.add_argument("--min-visits", type=int, default=5)
     parser.add_argument("--min-visit-fraction", type=float, default=0.01)
 
-    args = parser.parse_args()
+    return parser
 
+
+def main() -> None:
+    args = build_parser().parse_args()
     raw_dir = Path(args.raw_dir)
 
     physics_config = replace(
@@ -111,12 +149,16 @@ def main() -> None:
     print("=" * 100)
     print("Analyzing MCTS root branches")
     print("=" * 100)
-    print(f"Scenario:        {args.scenario}")
-    print(f"Prefix branches: {args.prefix_branches}")
-    print(f"Simulations:     {args.simulations}")
-    print(f"Depth:           {args.depth}")
-    print(f"Top-K:           {args.top_k}")
-    print(f"PF alg:          {args.pf_alg}")
+    print(f"Scenario:             {args.scenario}")
+    print(f"Prefix branches:      {args.prefix_branches}")
+    print(f"Simulations:          {args.simulations}")
+    print(f"Depth:                {args.depth}")
+    print(f"Initial width:        {args.top_k}")
+    print(f"Widening coefficient: {args.widening_coefficient}")
+    print(f"Widening exponent:    {args.widening_exponent}")
+    print(f"Exploration quota:    {args.exploration_quota}")
+    print(f"Random seed:          {args.seed}")
+    print(f"PF alg:               {args.pf_alg}")
 
     for branch_id in args.prefix_branches:
         action = env.action_by_branch_id(int(branch_id))
@@ -128,7 +170,6 @@ def main() -> None:
             f"done={step_result.done} | "
             f"reason={env.termination_reason}"
         )
-
 
         if step_result.done:
             break
@@ -155,6 +196,10 @@ def main() -> None:
         num_simulations=args.simulations,
         max_depth=args.depth,
         top_k_actions=args.top_k,
+        widening_coefficient=args.widening_coefficient,
+        widening_exponent=args.widening_exponent,
+        exploration_quota=args.exploration_quota,
+        random_seed=args.seed,
         gamma=args.gamma,
         c_puct=args.c_puct,
         prior_exponent=args.prior_exponent,
@@ -169,6 +214,13 @@ def main() -> None:
     )
 
     result = planner.search_from_env(env)
+
+    print("\nRoot action coverage:")
+    print(f"  legal actions:       {result.root_legal_action_count}")
+    print(f"  considered actions:  {result.root_considered_action_count}")
+    print(f"  visited actions:     {result.root_visited_action_count}")
+    print(f"  considered coverage: {result.root_action_coverage:.1%}")
+    print(f"  visited coverage:    {result.root_visited_action_coverage:.1%}")
 
     decision = analyze_root_branches(
         result=result,
@@ -185,8 +237,16 @@ def main() -> None:
 
     print(f"Root penalty:              {decision.root_penalty:.4f}")
     print(f"Root has hard overload:    {decision.root_has_hard_overload}")
-    print(f"Best by visits:            action={decision.best_visit_action_id}, branch={decision.best_visit_branch_id}")
-    print(f"Best by improvement:       action={decision.best_improvement_action_id}, branch={decision.best_improvement_branch_id}")
+    print(
+        f"Best by visits:            "
+        f"action={decision.best_visit_action_id}, "
+        f"branch={decision.best_visit_branch_id}"
+    )
+    print(
+        f"Best by improvement:       "
+        f"action={decision.best_improvement_action_id}, "
+        f"branch={decision.best_improvement_branch_id}"
+    )
     print(f"Best improvement:          {decision.best_improvement:.4f}")
     print(f"Selected action:           {decision.selected_action_id}")
     print(f"Selected branch:           {decision.selected_branch_id}")
@@ -203,9 +263,18 @@ def main() -> None:
     print("-" * len(header))
 
     for rank, branch in enumerate(decision.branches[: args.show], start=1):
-        final_max = branch.best_final_metrics.get("max_loading_percent", float("nan"))
-        final_over = branch.best_final_metrics.get("num_overloaded_branches", -1)
-        final_hard = branch.best_final_metrics.get("num_hard_overloaded_branches", -1)
+        final_max = branch.best_final_metrics.get(
+            "max_loading_percent",
+            float("nan"),
+        )
+        final_over = branch.best_final_metrics.get(
+            "num_overloaded_branches",
+            -1,
+        )
+        final_hard = branch.best_final_metrics.get(
+            "num_hard_overloaded_branches",
+            -1,
+        )
 
         sequence = " -> ".join(
             "-" if item is None else str(item)
