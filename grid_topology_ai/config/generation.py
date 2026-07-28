@@ -32,6 +32,7 @@ class GenerationConfig:
     top_k: int = 30
     widening_coefficient: float = 2.0
     widening_exponent: float = 0.5
+    exploration_quota: int = 2
     gamma: float = 0.95
     c_puct: float = 2.0
     prior_exponent: float = 0.5
@@ -48,6 +49,19 @@ class GenerationConfig:
         require_positive("generation.depth", self.depth)
         require_positive("generation.max_steps", self.max_steps)
         require_positive("generation.top_k", self.top_k)
+        exploration_quota = coerce_exact_int(
+            "generation.exploration_quota",
+            self.exploration_quota,
+        )
+        object.__setattr__(
+            self,
+            "exploration_quota",
+            exploration_quota,
+        )
+        require_non_negative(
+            "generation.exploration_quota",
+            exploration_quota,
+        )
         require_fraction("generation.gamma", self.gamma)
         require_positive("generation.c_puct", self.c_puct)
         require_positive("generation.prior_exponent", self.prior_exponent)
@@ -130,6 +144,13 @@ class GenerationConfig:
             ),
             widening_exponent=float(
                 data.get("widening_exponent", 0.5)
+            ),
+            exploration_quota=coerce_exact_int(
+                "generation.exploration_quota",
+                data.get(
+                    "exploration_quota",
+                    2,
+                ),
             ),
             gamma=float(data.get("gamma", 0.95)),
             c_puct=float(data.get("c_puct", 2.0)),

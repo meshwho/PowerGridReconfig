@@ -19,6 +19,7 @@ class EvaluationConfig:
     depth: int = 4
     max_steps: int = 5
     top_k: int = 30
+    exploration_quota: int = 2
     pf_alg: int = 3
     widening_coefficient: float = 2.0
     widening_exponent: float = 0.5
@@ -50,6 +51,19 @@ class EvaluationConfig:
         pf_alg = coerce_exact_int(
             "evaluation.pf_alg",
             self.pf_alg,
+        )
+        exploration_quota = coerce_exact_int(
+            "evaluation.exploration_quota",
+            self.exploration_quota,
+        )
+        object.__setattr__(
+            self,
+            "exploration_quota",
+            exploration_quota,
+        )
+        require_non_negative(
+            "evaluation.exploration_quota",
+            exploration_quota,
         )
         object.__setattr__(self, "pf_alg", pf_alg)
         require_choice(
@@ -154,6 +168,13 @@ class EvaluationConfig:
             ),
             widening_exponent=float(
                 data.get("widening_exponent", 0.5)
+            ),
+            exploration_quota=coerce_exact_int(
+                "evaluation.exploration_quota",
+                data.get(
+                    "exploration_quota",
+                    2,
+                ),
             ),
             gamma=float(data.get("gamma", 0.95)),
             c_puct=float(data.get("c_puct", 2.0)),

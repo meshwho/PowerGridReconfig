@@ -288,6 +288,10 @@ def generate_self_play_examples(request: GenerationRequest) -> Path:
         "Widening exponent:    "
         f"{request.config.widening_exponent}"
     )
+    print(
+        "Exploration quota:    "
+        f"{request.config.exploration_quota}"
+    )
     print(f"Gamma:          {request.config.gamma}")
     print(f"C_PUCT:         {request.config.c_puct}")
     print(f"Prior exponent: {request.config.prior_exponent}")
@@ -349,6 +353,9 @@ def generate_self_play_examples(request: GenerationRequest) -> Path:
         ),
         widening_exponent=(
             request.config.widening_exponent
+        ),
+        exploration_quota=(
+            request.config.exploration_quota
         ),
         gamma=request.config.gamma,
         c_puct=request.config.c_puct,
@@ -553,6 +560,9 @@ def generate_self_play_examples(request: GenerationRequest) -> Path:
                     ),
                     "mcts_widening_exponent": float(
                         request.config.widening_exponent
+                    ),
+                    "mcts_exploration_quota": int(
+                        request.config.exploration_quota
                     ),
                     "pf_alg": request.resolved_physics_config.pf_alg,
                     "use_continuation_gate": bool(

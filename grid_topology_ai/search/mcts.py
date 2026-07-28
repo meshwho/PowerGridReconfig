@@ -40,6 +40,7 @@ class MCTSConfig:
     top_k_actions: int = 30
     widening_coefficient: float = 2.0
     widening_exponent: float = 0.5
+    exploration_quota: int = 2
     gamma: float = 0.95
     c_puct: float = 1.5
 
@@ -67,6 +68,35 @@ class MCTSConfig:
     dc_max_depth: int = 0
 
     def __post_init__(self) -> None:
+
+        if (
+            isinstance(self.exploration_quota, bool)
+            or not isinstance(
+                self.exploration_quota,
+                (int, np.integer),
+            )
+        ):
+            raise ValueError(
+                "exploration_quota must be a "
+                "non-negative integer."
+            )
+
+        exploration_quota = int(
+            self.exploration_quota
+        )
+
+        if exploration_quota < 0:
+            raise ValueError(
+                "exploration_quota must be a "
+                "non-negative integer."
+            )
+
+        object.__setattr__(
+            self,
+            "exploration_quota",
+            exploration_quota,
+        )
+
         if isinstance(
             self.widening_coefficient,
             bool,
@@ -148,6 +178,11 @@ class MCTSNode:
     )
     action_scores: dict[int, float] = field(
         default_factory=dict
+    )
+
+    # Tail actions that still require one trial.
+    forced_exploration_action_ids: list[int] = field(
+        default_factory=list
     )
 
     # Only actions currently available to PUCT.
@@ -349,7 +384,16 @@ class MCTSPlanner:
 
             self._widen_node(node)
 
-            action_id = self._select_action_id(node)
+            action_id = (
+                self._next_forced_exploration_action(
+                    node
+                )
+            )
+
+            if action_id is None:
+                action_id = self._select_action_id(
+                    node
+                )
             if action_id is None:
                 leaf_value = self._leaf_value(node)
                 break
@@ -410,6 +454,13 @@ class MCTSPlanner:
             if int(action.action_id) != action_id
         ]
 
+        node.forced_exploration_action_ids = [
+            candidate_id
+            for candidate_id
+            in node.forced_exploration_action_ids
+            if candidate_id != action_id
+        ]
+
     @staticmethod
     def _set_active_actions(
         node: MCTSNode,
@@ -452,6 +503,67 @@ class MCTSPlanner:
         node.actions_by_id = actions_by_id
         node.action_priors = action_priors
 
+    def _choose_exploration_actions(
+        self,
+        *,
+        ranked_switches: list[GridFMAction],
+        initial_switches: list[GridFMAction],
+    ) -> list[GridFMAction]:
+        quota = int(
+            self.config.exploration_quota
+        )
+
+        if quota <= 0:
+            return []
+
+        initial_action_ids = {
+            int(action.action_id)
+            for action in initial_switches
+        }
+
+        tail = [
+            action
+            for action in ranked_switches
+            if int(action.action_id)
+            not in initial_action_ids
+        ]
+
+        if not tail:
+            return []
+
+        count = min(
+            quota,
+            len(tail),
+        )
+
+        indices = self.rng.permutation(
+            len(tail)
+        )[:count]
+
+        return [
+            tail[int(index)]
+            for index in indices
+        ]
+
+    @staticmethod
+    def _next_forced_exploration_action(
+        node: MCTSNode,
+    ) -> int | None:
+        for action_id in (
+            node.forced_exploration_action_ids
+        ):
+            if action_id not in node.actions_by_id:
+                continue
+
+            child = node.children.get(action_id)
+
+            if (
+                child is None
+                or child.visit_count == 0
+            ):
+                return action_id
+
+        return None
 
     def _target_switch_width(
         self,
@@ -472,12 +584,15 @@ class MCTSPlanner:
         if self.config.top_k_actions <= 0:
             return total_switches
 
-        current_width = sum(
-            1
-            for action in ranked_switches
-            if int(action.action_id)
-            in node.actions_by_id
-        )
+        current_width = 0
+
+        for action in ranked_switches:
+            action_id = int(action.action_id)
+
+            if action_id not in node.actions_by_id:
+                break
+
+            current_width += 1
 
         initial_width = min(
             int(self.config.top_k_actions),
@@ -525,36 +640,41 @@ class MCTSPlanner:
             == "switch_off_branch"
         ]
 
-        active_switch_count = sum(
-            1
-            for action in ranked_switches
-            if int(action.action_id)
-            in node.actions_by_id
-        )
-
         target_width = self._target_switch_width(
             node
         )
 
-        if target_width <= active_switch_count:
+        ranked_prefix = ranked_switches[
+            :target_width
+        ]
+
+        if all(
+            int(action.action_id)
+            in node.actions_by_id
+            for action in ranked_prefix
+        ):
             return False
 
-        active_stop_actions = [
+        active_actions = [
             action
             for action in node.ranked_actions
-            if (
-                action.action_type == "do_nothing"
-                and int(action.action_id)
-                in node.actions_by_id
-            )
+            if int(action.action_id)
+            in node.actions_by_id
         ]
+        active_action_ids = {
+            int(action.action_id)
+            for action in active_actions
+        }
+
+        self._extend_unique_actions(
+            active_actions,
+            ranked_prefix,
+            active_action_ids,
+        )
 
         self._set_active_actions(
             node,
-            [
-                *active_stop_actions,
-                *ranked_switches[:target_width],
-            ],
+            active_actions,
         )
 
         return True
@@ -830,9 +950,24 @@ class MCTSPlanner:
         node.ranked_actions = ranked_actions
         node.action_scores = action_scores
 
+        exploration_actions = (
+            self._choose_exploration_actions(
+                ranked_switches=ranked_switches,
+                initial_switches=initial_switches,
+            )
+        )
+
+        node.forced_exploration_action_ids = [
+            int(action.action_id)
+            for action in exploration_actions
+        ]
+
         self._set_active_actions(
             node,
-            active_actions,
+            [
+                *active_actions,
+                *exploration_actions,
+            ],
         )
 
         node.is_expanded = True

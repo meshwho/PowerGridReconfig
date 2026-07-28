@@ -253,6 +253,9 @@ def init_worker_context(
                 "widening_exponent"
             ]
         ),
+        exploration_quota=int(
+            task_config["exploration_quota"]
+        ),
         gamma=float(task_config["gamma"]),
         c_puct=float(task_config["c_puct"]),
         include_stop_action=True,
@@ -493,6 +496,7 @@ def _make_task_config(request: EvaluationRequest) -> dict[str, Any]:
         "top_k": int(config.top_k),
         "widening_coefficient": float(config.widening_coefficient),
         "widening_exponent": float(config.widening_exponent),
+        "exploration_quota": int(config.exploration_quota),
         "gamma": float(config.gamma),
         "c_puct": float(config.c_puct),
         "prior_exponent": float(config.prior_exponent),
