@@ -3,6 +3,8 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+import numpy as np
+
 from grid_topology_ai.config import GenerationConfig
 from grid_topology_ai.self_play.generation import (
     GenerationRequest,
@@ -163,7 +165,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--seed",
         type=int,
         default=42,
-        help="Random seed for self-play action sampling and root noise.",
+        help=(
+            "Base seed used to derive independent "
+            "MCTS and action-sampling streams."
+        ),
     )
     parser.add_argument(
         "--pf-alg",
@@ -232,6 +237,32 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    root_sequence = np.random.SeedSequence(
+        [
+            int(args.seed),
+            int(args.iteration),
+        ]
+    )
+
+    # Keep the same child positions as the full self-play loop.
+    (
+        _,
+        mcts_sequence,
+        action_sequence,
+    ) = root_sequence.spawn(3)
+
+    mcts_seed = int(
+        mcts_sequence.generate_state(
+            1,
+            dtype=np.uint64,
+        )[0]
+    )
+    action_seed = int(
+        action_sequence.generate_state(
+            1,
+            dtype=np.uint64,
+        )[0]
+    )
     config = GenerationConfig(
         simulations=args.simulations,
         depth=args.depth,
@@ -258,7 +289,8 @@ def main(argv: list[str] | None = None) -> int:
         output_dir=Path(args.output_dir),
         checkpoint=(None if args.checkpoint is None else Path(args.checkpoint)),
         config=config,
-        seed=args.seed,
+        mcts_seed=mcts_seed,
+        action_seed=action_seed,
         iteration=args.iteration,
         clear_cache_between_scenarios=args.clear_cache_between_scenarios,
         device=args.device,

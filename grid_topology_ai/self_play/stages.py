@@ -363,7 +363,8 @@ def run_generate(
     output_dir: str | Path,
     config: GenerationConfig,
     physics_config: PhysicsConfig | None = None,
-    base_seed: int,
+    mcts_seed: int,
+    action_seed: int,
     iteration: int,
 ) -> Path:
     """
@@ -383,7 +384,6 @@ def run_generate(
     )
 
     log_path = output_dir / "generate.log"
-    iteration_seed = int(base_seed) + int(iteration)
 
     request = GenerationRequest(
         raw_dir=Path(raw_dir),
@@ -392,7 +392,8 @@ def run_generate(
         checkpoint=Path(checkpoint),
         config=config,
         physics_config=physics_config,
-        seed=iteration_seed,
+        mcts_seed=int(mcts_seed),
+        action_seed=int(action_seed),
         clear_cache_between_scenarios=True,
         iteration=int(iteration),
     )

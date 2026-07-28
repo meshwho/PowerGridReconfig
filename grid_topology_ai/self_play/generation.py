@@ -41,7 +41,8 @@ class GenerationRequest:
     output_dir: Path
     checkpoint: Path | None
     config: GenerationConfig
-    seed: int
+    mcts_seed: int
+    action_seed: int
     clear_cache_between_scenarios: bool
     iteration: int = 1
     physics_config: PhysicsConfig | None = None
@@ -56,6 +57,42 @@ class GenerationRequest:
     min_gate_visit_fraction: float = 0.01
 
     def __post_init__(self) -> None:
+
+        for field_name in (
+            "mcts_seed",
+            "action_seed",
+        ):
+            value = getattr(
+                self,
+                field_name,
+            )
+
+            if (
+                isinstance(value, bool)
+                or not isinstance(
+                    value,
+                    (int, np.integer),
+                )
+            ):
+                raise ValueError(
+                    f"{field_name} must be a "
+                    "non-negative integer."
+                )
+
+            seed = int(value)
+
+            if seed < 0:
+                raise ValueError(
+                    f"{field_name} must be a "
+                    "non-negative integer."
+                )
+
+            object.__setattr__(
+                self,
+                field_name,
+                seed,
+            )
+
         if (
             isinstance(self.iteration, bool)
             or not isinstance(
@@ -157,6 +194,22 @@ def discounted_returns(rewards: list[float], gamma: float) -> list[float]:
         returns[i] = running
 
     return returns
+
+def _scenario_seed(
+    stream_seed: int,
+    scenario_id: int,
+) -> int:
+    sequence = np.random.SeedSequence(
+        [
+            int(stream_seed),
+            int(scenario_id),
+        ]
+    )
+    state = sequence.generate_state(
+        1,
+        dtype=np.uint64,
+    )
+    return int(state[0])
 
 def selection_temperature_for_step(
     config: GenerationConfig,
@@ -379,7 +432,14 @@ def generate_self_play_examples(request: GenerationRequest) -> Path:
         f"Temperature iters:  "
         f"{request.config.temperature_iterations}"
     )
-    print(f"Seed:               {request.seed}")
+    print(
+        f"MCTS stream seed:   "
+        f"{request.mcts_seed}"
+    )
+    print(
+        f"Action stream seed: "
+        f"{request.action_seed}"
+    )
     print(f"PF algorithm:   {request.resolved_physics_config.pf_alg}")
     print(f"Cache enabled:  {request.enable_cache}")
     print(
@@ -453,7 +513,7 @@ def generate_self_play_examples(request: GenerationRequest) -> Path:
         use_root_dirichlet_noise=request.config.use_root_noise,
         root_dirichlet_alpha=request.root_dirichlet_alpha,
         root_exploration_fraction=request.root_exploration_fraction,
-        random_seed=request.seed,
+        random_seed=request.mcts_seed,
     )
 
     evaluator = None
@@ -467,7 +527,6 @@ def generate_self_play_examples(request: GenerationRequest) -> Path:
         )
         print("\nNeural evaluator loaded.")
 
-    rng = np.random.default_rng(request.seed)
     planner = MCTSPlanner(
         config=mcts_config,
         evaluator=evaluator,
@@ -490,6 +549,31 @@ def generate_self_play_examples(request: GenerationRequest) -> Path:
 
             if evaluator is not None:
                 evaluator.clear_cache()
+
+        scenario_mcts_seed = _scenario_seed(
+            request.mcts_seed,
+            int(scenario_id),
+        )
+        scenario_action_seed = _scenario_seed(
+            request.action_seed,
+            int(scenario_id),
+        )
+
+        planner.reset_rng(
+            scenario_mcts_seed
+        )
+        action_rng = np.random.default_rng(
+            scenario_action_seed
+        )
+
+        print(
+            f"MCTS seed:          "
+            f"{scenario_mcts_seed}"
+        )
+        print(
+            f"Action sample seed: "
+            f"{scenario_action_seed}"
+        )
 
         env = TopologySwitchingEnv(
             adapter=adapter,
@@ -535,7 +619,7 @@ def generate_self_play_examples(request: GenerationRequest) -> Path:
             action_decision = _select_generation_action(
                 search_result=search_result,
                 temperature=effective_temperature,
-                rng=rng,
+                rng=action_rng,
                 use_continuation_gate=request.config.use_continuation_gate,
                 min_hard_improvement=request.min_hard_improvement,
                 min_soft_improvement=request.min_soft_improvement,
@@ -581,6 +665,18 @@ def generate_self_play_examples(request: GenerationRequest) -> Path:
                     "action_mask": action_mask,
                     "scenario_id": scenario_id,
                     "step": step,
+                    "mcts_stream_seed": int(
+                        request.mcts_seed
+                    ),
+                    "action_sampling_stream_seed": int(
+                        request.action_seed
+                    ),
+                    "scenario_mcts_seed": int(
+                        scenario_mcts_seed
+                    ),
+                    "scenario_action_sampling_seed": int(
+                        scenario_action_seed
+                    ),
                     "self_play_iteration": int(
                         request.iteration
                     ),
@@ -686,6 +782,22 @@ def generate_self_play_examples(request: GenerationRequest) -> Path:
                     "source": "mcts_self_play",
                     "scenario_id": int(scenario_id),
                     "step": int(item["step"]),
+                    "mcts_stream_seed": int(
+                        item["mcts_stream_seed"]
+                    ),
+                    "action_sampling_stream_seed": int(
+                        item[
+                            "action_sampling_stream_seed"
+                        ]
+                    ),
+                    "scenario_mcts_seed": int(
+                        item["scenario_mcts_seed"]
+                    ),
+                    "scenario_action_sampling_seed": int(
+                        item[
+                            "scenario_action_sampling_seed"
+                        ]
+                    ),
                     "self_play_iteration": int(
                         item["self_play_iteration"]
                     ),

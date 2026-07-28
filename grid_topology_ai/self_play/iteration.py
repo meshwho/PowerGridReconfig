@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 from grid_topology_ai.config import SelfPlayConfig
@@ -43,7 +44,52 @@ _MATCHING_EVALUATION_FIELDS = (
         "git_dirty",
     )
 
+@dataclass(frozen=True, slots=True)
+class _SelfPlaySeeds:
+    scenario_sampling: int
+    mcts: int
+    action_sampling: int
 
+
+def _seed_from_sequence(
+    sequence: np.random.SeedSequence,
+) -> int:
+    state = sequence.generate_state(
+        1,
+        dtype=np.uint64,
+    )
+    return int(state[0])
+
+
+def _self_play_seeds(
+    *,
+    base_seed: int,
+    iteration: int,
+) -> _SelfPlaySeeds:
+    root_sequence = np.random.SeedSequence(
+        [
+            int(base_seed),
+            int(iteration),
+        ]
+    )
+
+    (
+        scenario_sequence,
+        mcts_sequence,
+        action_sequence,
+    ) = root_sequence.spawn(3)
+
+    return _SelfPlaySeeds(
+        scenario_sampling=_seed_from_sequence(
+            scenario_sequence
+        ),
+        mcts=_seed_from_sequence(
+            mcts_sequence
+        ),
+        action_sampling=_seed_from_sequence(
+            action_sequence
+        ),
+    )
 
 @dataclass(frozen=True, slots=True)
 class IterationRequest:
@@ -291,10 +337,15 @@ def run_self_play_iteration(
 
     iteration_seed = int(config.seed) + iteration
 
+    self_play_seeds = _self_play_seeds(
+        base_seed=int(config.seed),
+        iteration=iteration,
+    )
+
     scenario_ids = sample_from_pool(
         pool_metadata=request.pool_metadata,
         n=config.n_scenarios_per_iteration,
-        seed=iteration_seed,
+        seed=self_play_seeds.scenario_sampling,
     )
 
     selected_ids_path = iter_dir / "selected_scenario_ids.txt"
@@ -315,7 +366,8 @@ def run_self_play_iteration(
         output_dir=iter_dir / "raw",
         config=config.generation,
         physics_config=config.physics,
-        base_seed=config.seed,
+        mcts_seed=self_play_seeds.mcts,
+        action_seed=self_play_seeds.action_sampling,
         iteration=iteration,
     )
 
@@ -540,6 +592,15 @@ def run_self_play_iteration(
             "n_raw_examples": raw_examples_count,
             "n_new_examples_loaded": len(new_examples),
             "train_batch_metadata": train_batch_metadata,
+            "scenario_sampling_seed": int(
+                self_play_seeds.scenario_sampling
+            ),
+            "mcts_seed": int(
+                self_play_seeds.mcts
+            ),
+            "action_sampling_seed": int(
+                self_play_seeds.action_sampling
+            ),
             "training_seed": int(iteration_seed),
             "validation_fraction": float(config.training.validation_fraction),
             "train_validation_split": split_metadata,

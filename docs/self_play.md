@@ -108,6 +108,22 @@ After either cutoff, action selection uses temperature `0.0` and
 therefore deterministic argmax. Setting either cutoff to zero disables
 temperature-based sampling and preserves the previous behavior.
 
+### 5.4 Independent random streams
+
+Each self-play iteration expands the configured base seed and
+one-based iteration number through `numpy.random.SeedSequence`.
+Separate child streams are used for:
+
+- scenario sampling;
+- MCTS exploration and root noise;
+- action sampling from the behavior policy.
+
+Generation derives scenario-specific MCTS and action-sampling seeds
+from the corresponding stream seed and scenario ID. Reordering
+scenarios therefore does not change the random stream assigned to a
+particular scenario, and action sampling does not consume random values
+from MCTS.
+
 ## 6. MCTS target versus executed action
 
 The policy target is the MCTS visit distribution. The continuation gate may alter the executed action for safety or episode-control semantics, but it does not rewrite the MCTS visit target.
