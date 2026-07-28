@@ -28,6 +28,11 @@ def _search_result(policy: dict[int, float]) -> SimpleNamespace:
                 2: _Action(22),
             }
         ),
+        root_legal_action_count=5,
+        root_considered_action_count=2,
+        root_visited_action_count=2,
+        root_action_coverage=0.4,
+        root_visited_action_coverage=0.4,
     )
 
 
@@ -272,5 +277,10 @@ def test_generation_records_analysis_without_override(
     assert metadata["execution_action_source"] == "policy_target_sampling"
     assert metadata["continuation_recommended_action_id"] == 2
     assert metadata["selected_action_allowed_by_continuation"] is False
+    assert metadata["mcts_legal_action_count"] == 5
+    assert metadata["mcts_considered_action_count"] == 2
+    assert metadata["mcts_visited_action_count"] == 2
+    assert metadata["mcts_action_coverage"] == pytest.approx(0.4)
+    assert metadata["mcts_visited_action_coverage"] == pytest.approx(0.4)
     assert "raw_selected_action_id" not in metadata
     assert "gate_overrode_mcts_selection" not in metadata

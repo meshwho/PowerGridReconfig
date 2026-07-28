@@ -98,6 +98,11 @@ class _FakePlanner:
             policy={1: 1.0},
             visit_counts={1: 3},
             root=SimpleNamespace(actions_by_id={1: action}),
+            root_legal_action_count=4,
+            root_considered_action_count=2,
+            root_visited_action_count=1,
+            root_action_coverage=0.5,
+            root_visited_action_coverage=0.25,
         )
 
 

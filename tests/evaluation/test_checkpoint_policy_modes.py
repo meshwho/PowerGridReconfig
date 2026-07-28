@@ -73,6 +73,11 @@ class _Planner:
             best_action_id=1,
             policy={1: 0.7, 2: 0.3},
             root=SimpleNamespace(actions_by_id=actions),
+            root_legal_action_count=5,
+            root_considered_action_count=2,
+            root_visited_action_count=2,
+            root_action_coverage=0.4,
+            root_visited_action_coverage=0.4,
         )
 
 
@@ -125,6 +130,12 @@ def test_constrained_episode_executes_action_from_constrained_policy(
     assert row["actions"] == "[2]"
     assert row["constraint_changed_policy"] is True
     assert row["constraint_exhausted"] is False
+    assert row["mcts_searches"] == 1
+    assert row["mcts_root_legal_action_counts_json"] == "[5]"
+    assert row["mcts_root_considered_action_counts_json"] == "[2]"
+    assert row["mcts_root_visited_action_counts_json"] == "[2]"
+    assert row["mcts_mean_action_coverage"] == pytest.approx(0.4)
+    assert row["mcts_mean_visited_action_coverage"] == pytest.approx(0.4)
 
 
 def test_empty_constrained_support_terminates_without_action_fallback(
@@ -156,3 +167,5 @@ def test_empty_constrained_support_terminates_without_action_fallback(
     assert row["done"] is True
     assert row["solved"] is False
     assert row["termination_reason"] == "constraint_exhausted"
+    assert row["mcts_searches"] == 1
+    assert row["mcts_min_action_coverage"] == pytest.approx(0.4)
