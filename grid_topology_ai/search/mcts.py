@@ -180,6 +180,12 @@ class MCTSNode:
         default_factory=dict
     )
 
+    # Effective PUCT weights. Root Dirichlet noise modifies these
+    # without changing the retained legal action ranking.
+    selection_scores: dict[int, float] = field(
+        default_factory=dict
+    )
+
     # Tail actions that still require one trial.
     forced_exploration_action_ids: list[int] = field(
         default_factory=list
@@ -274,6 +280,14 @@ class MCTSPlanner:
                 enable_cache=True,
                 physics_config=self.physics_config,
             )
+
+    def reset_rng(
+        self,
+        random_seed: int | None,
+    ) -> None:
+        self.rng = np.random.default_rng(
+            random_seed
+        )
 
     def search(
         self,
@@ -398,27 +412,85 @@ class MCTSPlanner:
 
         return float(count) / float(legal_count)
 
-    def _add_root_dirichlet_noise(self, root: MCTSNode) -> None:
-        if not self.config.use_root_dirichlet_noise or not root.action_priors:
+    def _add_root_dirichlet_noise(
+            self,
+            root: MCTSNode,
+    ) -> None:
+        if (
+                not self.config.use_root_dirichlet_noise
+                or not root.action_priors
+        ):
             return
-        action_ids = list(root.action_priors)
-        alpha = float(self.config.root_dirichlet_alpha)
-        epsilon = float(self.config.root_exploration_fraction)
+
+        action_ids = list(
+            root.action_priors
+        )
+        alpha = float(
+            self.config.root_dirichlet_alpha
+        )
+        epsilon = float(
+            self.config.root_exploration_fraction
+        )
+
         if alpha <= 0.0 or epsilon <= 0.0:
             return
-        noise = self.rng.dirichlet(alpha=[alpha for _ in action_ids])
-        for action_id, noise_value in zip(action_ids, noise, strict=True):
-            old_prior = float(root.action_priors[action_id])
-            root.action_priors[action_id] = (
-                (1.0 - epsilon) * old_prior
-                + epsilon * float(noise_value)
+
+        noise = self.rng.dirichlet(
+            alpha=[
+                alpha
+                for _ in action_ids
+            ]
+        )
+
+        noisy_priors: dict[int, float] = {}
+
+        for action_id, noise_value in zip(
+                action_ids,
+                noise,
+                strict=True,
+        ):
+            old_prior = float(
+                root.action_priors[action_id]
             )
-        total = sum(root.action_priors.values())
-        if total > 0.0:
-            root.action_priors = {
-                action_id: prior / total
-                for action_id, prior in root.action_priors.items()
-            }
+            noisy_priors[action_id] = (
+                    (1.0 - epsilon) * old_prior
+                    + epsilon * float(noise_value)
+            )
+
+        total = sum(
+            noisy_priors.values()
+        )
+
+        if total <= 0.0:
+            return
+
+        noisy_priors = {
+            action_id: prior / total
+            for action_id, prior
+            in noisy_priors.items()
+        }
+
+        active_score_sum = sum(
+            float(
+                root.selection_scores.get(
+                    action_id,
+                    root.action_scores[action_id],
+                )
+            )
+            for action_id in action_ids
+        )
+
+        if active_score_sum <= 0.0:
+            active_score_sum = 1.0
+
+        for action_id, prior in (
+                noisy_priors.items()
+        ):
+            root.selection_scores[action_id] = (
+                    prior * active_score_sum
+            )
+
+        root.action_priors = noisy_priors
 
     def _should_include_stop_action(self, state: GridFMState) -> bool:
         return stop_allowed_for_policy(
@@ -505,6 +577,7 @@ class MCTSPlanner:
         node.action_priors.pop(action_id, None)
         node.actions_by_id.pop(action_id, None)
         node.action_scores.pop(action_id, None)
+        node.selection_scores.pop(action_id, None)
 
         node.ranked_actions = [
             action
@@ -539,7 +612,10 @@ class MCTSPlanner:
 
         active_scores = {
             action_id: float(
-                node.action_scores[action_id]
+                node.selection_scores.get(
+                    action_id,
+                    node.action_scores[action_id],
+                )
             )
             for action_id in actions_by_id
         }
@@ -1007,6 +1083,9 @@ class MCTSPlanner:
 
         node.ranked_actions = ranked_actions
         node.action_scores = action_scores
+        node.selection_scores = dict(
+            action_scores
+        )
 
         exploration_actions = (
             self._choose_exploration_actions(

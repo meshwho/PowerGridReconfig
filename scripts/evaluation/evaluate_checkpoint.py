@@ -70,6 +70,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--depth", type=int, default=4)
     parser.add_argument("--max-steps", type=int, default=5)
     parser.add_argument("--top-k", type=int, default=30)
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=42,
+        help=(
+            "Base seed used to derive deterministic "
+            "per-scenario MCTS exploration seeds."
+        ),
+    )
     parser.add_argument("--gamma", type=float, default=0.95)
     parser.add_argument("--c-puct", type=float, default=2.0)
     parser.add_argument("--prior-exponent", type=float, default=0.5)
@@ -218,6 +227,7 @@ def main(argv: list[str] | None = None) -> int:
         depth=args.depth,
         max_steps=args.max_steps,
         top_k=args.top_k,
+        random_seed=args.seed,
         gamma=args.gamma,
         c_puct=args.c_puct,
         prior_exponent=args.prior_exponent,

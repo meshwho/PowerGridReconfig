@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import hashlib
 import traceback
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 try:
@@ -55,6 +57,29 @@ analyze_root_branches = make_do_nothing_action = None
 _RUNTIME_DEPENDENCIES_LOADED = False
 _WORKER_CONTEXT: dict[str, Any] | None = None
 
+def _evaluation_search_seed(
+    *,
+    base_seed: int,
+    scenario_id: int,
+    policy_mode: PolicyMode,
+    step: int,
+) -> int:
+    payload = (
+        f"{int(base_seed)}:"
+        f"{int(scenario_id)}:"
+        f"{policy_mode.value}:"
+        f"{int(step)}"
+    ).encode("utf-8")
+
+    digest = hashlib.sha256(
+        payload
+    ).digest()
+
+    return int.from_bytes(
+        digest[:8],
+        byteorder="little",
+        signed=False,
+    )
 
 @dataclass(frozen=True, slots=True)
 class EvaluationRequest:
@@ -256,6 +281,9 @@ def init_worker_context(
         exploration_quota=int(
             task_config["exploration_quota"]
         ),
+        random_seed=int(
+            task_config["random_seed"]
+        ),
         gamma=float(task_config["gamma"]),
         c_puct=float(task_config["c_puct"]),
         include_stop_action=True,
@@ -307,6 +335,7 @@ def run_episode(
     planner: Any,
     max_steps: int,
     gamma: float,
+    random_seed: int,
     use_continuation_gate: bool,
     min_hard_improvement: float,
     min_soft_improvement: float,
@@ -336,10 +365,24 @@ def run_episode(
     trace = EvaluationEpisodeTrace()
     discount = 1.0
 
-    for _ in range(max_steps):
+    for step in range(max_steps):
         if env.done:
             break
-        result = planner.search_from_env(env)
+
+        search_seed = _evaluation_search_seed(
+            base_seed=random_seed,
+            scenario_id=scenario_id,
+            policy_mode=mode,
+            step=step,
+        )
+
+        planner.reset_rng(
+            search_seed
+        )
+
+        result = planner.search_from_env(
+            env
+        )
 
         trace.root_legal_action_counts.append(
             int(result.root_legal_action_count)
@@ -434,6 +477,9 @@ def run_episode_from_worker_context(
             planner=context["planner"],
             max_steps=int(task["max_steps"]),
             gamma=float(task["gamma"]),
+            random_seed=int(
+                task["random_seed"]
+            ),
             use_continuation_gate=mode is PolicyMode.CONSTRAINED,
             min_hard_improvement=float(task["min_hard_improvement"]),
             min_soft_improvement=float(task["min_soft_improvement"]),
@@ -516,6 +562,9 @@ def _make_task_config(request: EvaluationRequest) -> dict[str, Any]:
         "widening_coefficient": float(config.widening_coefficient),
         "widening_exponent": float(config.widening_exponent),
         "exploration_quota": int(config.exploration_quota),
+        "random_seed": int(
+            config.random_seed
+        ),
         "gamma": float(config.gamma),
         "c_puct": float(config.c_puct),
         "prior_exponent": float(config.prior_exponent),

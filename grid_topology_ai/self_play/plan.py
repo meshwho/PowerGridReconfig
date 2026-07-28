@@ -153,6 +153,7 @@ def render_execution_plan(
             f"  widening coefficient:     {config.evaluation.widening_coefficient}",
             f"  widening exponent:        {config.evaluation.widening_exponent}",
             f"  exploration quota:        {config.evaluation.exploration_quota}",
+            f"  random seed:              {config.evaluation.random_seed}",
             f"  device:                   {config.evaluation.device}",
             "",
             "Acceptance:",

@@ -23,6 +23,7 @@ class EvaluationConfig:
     pf_alg: int = 3
     widening_coefficient: float = 2.0
     widening_exponent: float = 0.5
+    random_seed: int = 42
     gamma: float = 0.95
     c_puct: float = 2.0
     prior_exponent: float = 0.5
@@ -64,6 +65,19 @@ class EvaluationConfig:
         require_non_negative(
             "evaluation.exploration_quota",
             exploration_quota,
+        )
+        random_seed = coerce_exact_int(
+            "evaluation.random_seed",
+            self.random_seed,
+        )
+        object.__setattr__(
+            self,
+            "random_seed",
+            random_seed,
+        )
+        require_non_negative(
+            "evaluation.random_seed",
+            random_seed,
         )
         object.__setattr__(self, "pf_alg", pf_alg)
         require_choice(
@@ -174,6 +188,13 @@ class EvaluationConfig:
                 data.get(
                     "exploration_quota",
                     2,
+                ),
+            ),
+            random_seed=coerce_exact_int(
+                "evaluation.random_seed",
+                data.get(
+                    "random_seed",
+                    42,
                 ),
             ),
             gamma=float(data.get("gamma", 0.95)),
