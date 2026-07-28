@@ -83,9 +83,25 @@ class MCTSNode:
     total_value: float = 0.0
     neural_value: float | None = None
     is_expanded: bool = False
-    action_priors: dict[int, float] = field(default_factory=dict)
-    actions_by_id: dict[int, GridFMAction] = field(default_factory=dict)
-    children: dict[int, "MCTSNode"] = field(default_factory=dict)
+
+    # Complete legal action order retained for later widening.
+    ranked_actions: list[GridFMAction] = field(
+        default_factory=list
+    )
+    action_scores: dict[int, float] = field(
+        default_factory=dict
+    )
+
+    # Only actions currently available to PUCT.
+    action_priors: dict[int, float] = field(
+        default_factory=dict
+    )
+    actions_by_id: dict[int, GridFMAction] = field(
+        default_factory=dict
+    )
+    children: dict[int, "MCTSNode"] = field(
+        default_factory=dict
+    )
 
     @property
     def mean_value(self) -> float:
@@ -282,8 +298,10 @@ class MCTSPlanner:
             if child is None:
                 child = self._create_child(node, action_id)
                 if child is None:
-                    node.action_priors.pop(action_id, None)
-                    node.actions_by_id.pop(action_id, None)
+                    self._discard_action(
+                        node,
+                        action_id,
+                    )
                     leaf_value = self._leaf_value(node)
                     break
                 node.children[action_id] = child
@@ -299,22 +317,109 @@ class MCTSPlanner:
         root.visit_count += 1
         self._backup(path, leaf_value)
 
-    def _expand_node(self, node: MCTSNode) -> None:
-        if node.done or node.depth >= self.config.max_depth:
+    @staticmethod
+    def _extend_unique_actions(
+        target: list[GridFMAction],
+        source: list[GridFMAction],
+        seen_action_ids: set[int],
+    ) -> None:
+        for action in source:
+            action_id = int(action.action_id)
+
+            if action_id in seen_action_ids:
+                continue
+
+            target.append(action)
+            seen_action_ids.add(action_id)
+
+    @staticmethod
+    def _discard_action(
+        node: MCTSNode,
+        action_id: int,
+    ) -> None:
+        action_id = int(action_id)
+
+        node.children.pop(action_id, None)
+        node.action_priors.pop(action_id, None)
+        node.actions_by_id.pop(action_id, None)
+        node.action_scores.pop(action_id, None)
+
+        node.ranked_actions = [
+            action
+            for action in node.ranked_actions
+            if int(action.action_id) != action_id
+        ]
+
+    @staticmethod
+    def _set_active_actions(
+        node: MCTSNode,
+        actions: list[GridFMAction],
+    ) -> None:
+        actions_by_id: dict[int, GridFMAction] = {}
+
+        for action in actions:
+            action_id = int(action.action_id)
+
+            if action_id not in actions_by_id:
+                actions_by_id[action_id] = action
+
+        if not actions_by_id:
+            node.actions_by_id = {}
+            node.action_priors = {}
+            return
+
+        active_scores = {
+            action_id: float(
+                node.action_scores[action_id]
+            )
+            for action_id in actions_by_id
+        }
+
+        score_sum = sum(active_scores.values())
+
+        if score_sum <= 0.0:
+            uniform = 1.0 / len(active_scores)
+            action_priors = {
+                action_id: uniform
+                for action_id in active_scores
+            }
+        else:
+            action_priors = {
+                action_id: score / score_sum
+                for action_id, score in active_scores.items()
+            }
+
+        node.actions_by_id = actions_by_id
+        node.action_priors = action_priors
+
+    def _expand_node(
+            self,
+            node: MCTSNode,
+    ) -> None:
+        if (
+                node.done
+                or node.depth >= self.config.max_depth
+        ):
             node.is_expanded = True
             return
+
         state = node.env.current_state
+
         if state is None:
             node.is_expanded = True
             return
 
         valid_actions = node.env.valid_actions()
         action_mask = node.env.valid_action_mask()
+
         neural_policy = None
+
         if self.evaluator is not None:
-            neural_policy, neural_value = self.evaluator.evaluate(
-                state=state,
-                action_mask=action_mask,
+            neural_policy, neural_value = (
+                self.evaluator.evaluate(
+                    state=state,
+                    action_mask=action_mask,
+                )
             )
             node.neural_value = require_bounded_utility(
                 neural_value,
@@ -329,133 +434,239 @@ class MCTSPlanner:
         switch_actions = [
             action
             for action in valid_actions
-            if action.action_type == "switch_off_branch"
+            if action.action_type
+               == "switch_off_branch"
         ]
-        selected: list[GridFMAction] = []
-        if self._should_include_stop_action(state):
-            selected.extend(stop_actions)
+
+        active_stop_actions = (
+            stop_actions
+            if self._should_include_stop_action(state)
+            else []
+        )
+
+        ranked_switches: list[GridFMAction]
+        initial_switches: list[GridFMAction]
 
         if neural_policy is not None:
             switch_by_policy = sorted(
                 switch_actions,
-                key=lambda action: float(neural_policy[action.action_id]),
+                key=lambda action: float(
+                    neural_policy[action.action_id]
+                ),
                 reverse=True,
             )
             switch_by_loading = sorted(
                 switch_actions,
                 key=lambda action: float(
-                    state.branch_features[action.branch_pos, self.loading_idx]
+                    state.branch_features[
+                        action.branch_pos,
+                        self.loading_idx,
+                    ]
                 ),
                 reverse=True,
             )
-            selected_switches: list[GridFMAction] = []
-            seen_action_ids: set[int] = set()
 
-            if self.config.use_dc_screening and self.dc_screener is not None:
+            initial_switches = []
+            initial_seen: set[int] = set()
+
+            if (
+                    self.config.use_dc_screening
+                    and self.dc_screener is not None
+            ):
                 dc_pool: list[GridFMAction] = []
                 dc_pool_seen: set[int] = set()
+
                 if self.config.dc_candidate_pool <= 0:
                     pool_from_policy = switch_by_policy
                     pool_from_loading = switch_by_loading
                 else:
                     pool_from_policy = switch_by_policy[
-                        : self.config.dc_candidate_pool
-                    ]
+                                       : self.config.dc_candidate_pool
+                                       ]
                     loading_pool_k = max(
                         self.config.dc_keep_loading_actions,
                         self.config.dc_candidate_pool // 4,
                     )
-                    pool_from_loading = switch_by_loading[:loading_pool_k]
+                    pool_from_loading = switch_by_loading[
+                                        :loading_pool_k
+                                        ]
 
-                for action in [*pool_from_policy, *pool_from_loading]:
-                    if action.action_id in dc_pool_seen:
-                        continue
-                    dc_pool.append(action)
-                    dc_pool_seen.add(action.action_id)
+                self._extend_unique_actions(
+                    dc_pool,
+                    pool_from_policy,
+                    dc_pool_seen,
+                )
+                self._extend_unique_actions(
+                    dc_pool,
+                    pool_from_loading,
+                    dc_pool_seen,
+                )
 
-                dc_ranked = self.dc_screener.screen_actions(
+                dc_ranked = self.dc_screener.rank_actions(
                     state=state,
                     actions=dc_pool,
                     backend=node.env.backend,
                     neural_policy=neural_policy,
-                    top_k=self.config.dc_top_k_actions,
                 )
-                for action in dc_ranked:
-                    if action.action_id not in seen_action_ids:
-                        selected_switches.append(action)
-                        seen_action_ids.add(action.action_id)
-                for action in switch_by_policy[
+
+                if self.config.dc_top_k_actions > 0:
+                    dc_ranked = dc_ranked[
+                                : self.config.dc_top_k_actions
+                                ]
+
+                self._extend_unique_actions(
+                    initial_switches,
+                    dc_ranked,
+                    initial_seen,
+                )
+                self._extend_unique_actions(
+                    initial_switches,
+                    switch_by_policy[
                     : self.config.dc_keep_policy_actions
-                ]:
-                    if action.action_id not in seen_action_ids:
-                        selected_switches.append(action)
-                        seen_action_ids.add(action.action_id)
-                for action in switch_by_loading[
+                    ],
+                    initial_seen,
+                )
+                self._extend_unique_actions(
+                    initial_switches,
+                    switch_by_loading[
                     : self.config.dc_keep_loading_actions
-                ]:
-                    if action.action_id not in seen_action_ids:
-                        selected_switches.append(action)
-                        seen_action_ids.add(action.action_id)
+                    ],
+                    initial_seen,
+                )
             else:
-                for action in switch_by_policy[: self.config.top_k_actions]:
-                    if action.action_id not in seen_action_ids:
-                        selected_switches.append(action)
-                        seen_action_ids.add(action.action_id)
-                loading_backup_k = max(5, self.config.top_k_actions // 4)
-                for action in switch_by_loading[:loading_backup_k]:
-                    if action.action_id not in seen_action_ids:
-                        selected_switches.append(action)
-                        seen_action_ids.add(action.action_id)
-            selected.extend(selected_switches)
+                self._extend_unique_actions(
+                    initial_switches,
+                    switch_by_policy[
+                    : self.config.top_k_actions
+                    ],
+                    initial_seen,
+                )
+
+                loading_backup_k = max(
+                    5,
+                    self.config.top_k_actions // 4,
+                )
+                self._extend_unique_actions(
+                    initial_switches,
+                    switch_by_loading[
+                    :loading_backup_k
+                    ],
+                    initial_seen,
+                )
+
+            ranked_switches = []
+            ranked_seen: set[int] = set()
+
+            # Preserve the existing shortlist order first.
+            self._extend_unique_actions(
+                ranked_switches,
+                initial_switches,
+                ranked_seen,
+            )
+
+            # Retain the complete legal tail instead of
+            # permanently pruning it.
+            self._extend_unique_actions(
+                ranked_switches,
+                switch_by_policy,
+                ranked_seen,
+            )
+            self._extend_unique_actions(
+                ranked_switches,
+                switch_by_loading,
+                ranked_seen,
+            )
         else:
-            switch_actions = sorted(
+            ranked_switches = sorted(
                 switch_actions,
                 key=lambda action: float(
-                    state.branch_features[action.branch_pos, self.loading_idx]
+                    state.branch_features[
+                        action.branch_pos,
+                        self.loading_idx,
+                    ]
                 ),
                 reverse=True,
             )
-            if self.config.top_k_actions > 0:
-                switch_actions = switch_actions[: self.config.top_k_actions]
-            selected.extend(switch_actions)
 
-        if not selected:
+            if self.config.top_k_actions > 0:
+                initial_switches = ranked_switches[
+                                   : self.config.top_k_actions
+                                   ]
+            else:
+                initial_switches = list(
+                    ranked_switches
+                )
+
+        ranked_actions: list[GridFMAction] = []
+        ranked_seen: set[int] = set()
+
+        self._extend_unique_actions(
+            ranked_actions,
+            active_stop_actions,
+            ranked_seen,
+        )
+        self._extend_unique_actions(
+            ranked_actions,
+            ranked_switches,
+            ranked_seen,
+        )
+
+        active_actions: list[GridFMAction] = []
+        active_seen: set[int] = set()
+
+        self._extend_unique_actions(
+            active_actions,
+            active_stop_actions,
+            active_seen,
+        )
+        self._extend_unique_actions(
+            active_actions,
+            initial_switches,
+            active_seen,
+        )
+
+        if not ranked_actions:
             node.is_expanded = True
             return
 
-        raw_scores: dict[int, float] = {}
-        for action in selected:
-            node.actions_by_id[action.action_id] = action
+        action_scores: dict[int, float] = {}
+
+        for action in ranked_actions:
+            action_id = int(action.action_id)
+
             if neural_policy is not None:
-                raw_scores[action.action_id] = max(
-                    float(neural_policy[action.action_id]),
+                action_scores[action_id] = max(
+                    float(neural_policy[action_id]),
                     1e-8,
                 )
             elif action.action_type == "do_nothing":
-                raw_scores[action.action_id] = self.config.stop_prior
+                action_scores[action_id] = float(
+                    self.config.stop_prior
+                )
             else:
                 loading = float(
-                    state.branch_features[action.branch_pos, self.loading_idx]
+                    state.branch_features[
+                        action.branch_pos,
+                        self.loading_idx,
+                    ]
                 )
                 base_score = max(
                     loading - 80.0,
                     self.config.min_switch_prior_score,
                 )
-                raw_scores[action.action_id] = (
-                    base_score ** self.config.prior_exponent
+                action_scores[action_id] = (
+                        base_score
+                        ** self.config.prior_exponent
                 )
 
-        score_sum = sum(raw_scores.values())
-        if score_sum <= 0.0:
-            uniform = 1.0 / len(raw_scores)
-            node.action_priors = {
-                action_id: uniform for action_id in raw_scores
-            }
-        else:
-            node.action_priors = {
-                action_id: score / score_sum
-                for action_id, score in raw_scores.items()
-            }
+        node.ranked_actions = ranked_actions
+        node.action_scores = action_scores
+
+        self._set_active_actions(
+            node,
+            active_actions,
+        )
+
         node.is_expanded = True
 
     def _select_action_id(self, node: MCTSNode) -> int | None:

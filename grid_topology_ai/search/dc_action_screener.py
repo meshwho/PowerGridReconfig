@@ -84,28 +84,48 @@ class DCActionScreener:
         }
 
     def screen_actions(
-        self,
-        *,
-        state: GridFMState,
-        actions: list[GridFMAction],
-        backend: GridFMPowerFlowBackend,
-        neural_policy: np.ndarray | None = None,
-        top_k: int | None = None,
+            self,
+            *,
+            state: GridFMState,
+            actions: list[GridFMAction],
+            backend: GridFMPowerFlowBackend,
+            neural_policy: np.ndarray | None = None,
+            top_k: int | None = None,
     ) -> list[GridFMAction]:
         """
-        Rank actions using DC PF and return the best ones.
-
-        actions:
-            switch_off_branch actions only.
+        Rank switch actions and return the requested prefix.
         """
+        ranked = self.rank_actions(
+            state=state,
+            actions=actions,
+            backend=backend,
+            neural_policy=neural_policy,
+        )
 
-        if not actions:
-            return []
-
-        effective_top_k = self.top_k if top_k is None else int(top_k)
+        effective_top_k = (
+            self.top_k
+            if top_k is None
+            else int(top_k)
+        )
 
         if effective_top_k <= 0:
-            effective_top_k = len(actions)
+            return ranked
+
+        return ranked[:effective_top_k]
+
+    def rank_actions(
+            self,
+            *,
+            state: GridFMState,
+            actions: list[GridFMAction],
+            backend: GridFMPowerFlowBackend,
+            neural_policy: np.ndarray | None = None,
+    ) -> list[GridFMAction]:
+        """
+        Return every switch action ordered by its DC score.
+        """
+        if not actions:
+            return []
 
         scored: list[DCActionScore] = []
 
@@ -132,7 +152,10 @@ class DCActionScreener:
             )
         )
 
-        return [item.action for item in scored[:effective_top_k]]
+        return [
+            item.action
+            for item in scored
+        ]
 
     def score_action(
         self,
