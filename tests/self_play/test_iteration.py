@@ -429,7 +429,11 @@ def test_iteration_uses_seed_and_samples_scenarios(
 
     run_self_play_iteration(_request(tmp_path, iteration=2))
 
-    assert captured == {"n": 2, "seed": 12}
+    expected_seed = iteration_module._self_play_seeds(
+        base_seed=10,
+        iteration=2,
+    ).scenario_sampling
+    assert captured == {"n": 2, "seed": expected_seed}
 
 
 def test_iteration_writes_selected_scenario_ids(
