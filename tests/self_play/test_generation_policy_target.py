@@ -213,7 +213,10 @@ def test_generation_records_analysis_without_override(
 
     class _Planner:
         def __init__(self, **kwargs):
-            pass
+            self.random_seed = None
+
+        def reset_rng(self, random_seed):
+            self.random_seed = random_seed
 
         def search_from_env(self, env):
             return _search_result({1: 0.7, 2: 0.3})
@@ -261,7 +264,8 @@ def test_generation_records_analysis_without_override(
                 use_continuation_gate=True,
                 selection_temperature=0.0,
             ),
-            seed=7,
+            mcts_seed=7,
+            action_seed=8,
             clear_cache_between_scenarios=False,
         )
     )
@@ -282,5 +286,9 @@ def test_generation_records_analysis_without_override(
     assert metadata["mcts_visited_action_count"] == 2
     assert metadata["mcts_action_coverage"] == pytest.approx(0.4)
     assert metadata["mcts_visited_action_coverage"] == pytest.approx(0.4)
+    assert metadata["mcts_stream_seed"] == 7
+    assert metadata["action_sampling_stream_seed"] == 8
+    assert metadata["scenario_mcts_seed"] == generation._scenario_seed(7, 1)
+    assert metadata["scenario_action_sampling_seed"] == generation._scenario_seed(8, 1)
     assert "raw_selected_action_id" not in metadata
     assert "gate_overrode_mcts_selection" not in metadata
