@@ -2,10 +2,13 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 
+from grid_topology_ai.action_space import GridFMAction
 from grid_topology_ai.evaluation import checkpoint
 from grid_topology_ai.evaluation.policy_comparison import PolicyMode
+from grid_topology_ai.search.mcts import MCTSConfig, MCTSNode, MCTSPlanner
 from grid_topology_ai.termination import TerminationReason
 
 
@@ -64,6 +67,12 @@ class _Env:
 
 
 class _Planner:
+    def __init__(self) -> None:
+        self.random_seeds: list[int | None] = []
+
+    def reset_rng(self, random_seed: int | None) -> None:
+        self.random_seeds.append(random_seed)
+
     def search_from_env(self, env: _Env):
         actions = {
             1: _Action(1, 11),
@@ -107,6 +116,7 @@ def test_constrained_episode_executes_action_from_constrained_policy(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _patch_runtime(monkeypatch, allowed_action_ids=(2,))
+    planner = _Planner()
 
     row = checkpoint.run_episode(
         scenario_id=1,
@@ -114,9 +124,10 @@ def test_constrained_episode_executes_action_from_constrained_policy(
         backend=object(),
         action_space=object(),
         reward_fn=object(),
-        planner=_Planner(),
+        planner=planner,
         max_steps=2,
         gamma=0.95,
+        random_seed=73,
         use_continuation_gate=True,
         min_hard_improvement=0.0,
         min_soft_improvement=0.0,
@@ -125,6 +136,14 @@ def test_constrained_episode_executes_action_from_constrained_policy(
         policy_mode=PolicyMode.CONSTRAINED,
     )
 
+    assert planner.random_seeds == [
+        checkpoint._evaluation_search_seed(
+            base_seed=73,
+            scenario_id=1,
+            policy_mode=PolicyMode.CONSTRAINED,
+            step=0,
+        )
+    ]
     assert _Env.executed_action_ids == [2]
     assert row["policy_mode"] == "constrained"
     assert row["actions"] == "[2]"
@@ -142,6 +161,7 @@ def test_empty_constrained_support_terminates_without_action_fallback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _patch_runtime(monkeypatch, allowed_action_ids=())
+    planner = _Planner()
 
     row = checkpoint.run_episode(
         scenario_id=2,
@@ -149,9 +169,10 @@ def test_empty_constrained_support_terminates_without_action_fallback(
         backend=object(),
         action_space=object(),
         reward_fn=object(),
-        planner=_Planner(),
+        planner=planner,
         max_steps=2,
         gamma=0.95,
+        random_seed=91,
         use_continuation_gate=True,
         min_hard_improvement=0.0,
         min_soft_improvement=0.0,
@@ -160,6 +181,14 @@ def test_empty_constrained_support_terminates_without_action_fallback(
         policy_mode=PolicyMode.CONSTRAINED,
     )
 
+    assert planner.random_seeds == [
+        checkpoint._evaluation_search_seed(
+            base_seed=91,
+            scenario_id=2,
+            policy_mode=PolicyMode.CONSTRAINED,
+            step=0,
+        )
+    ]
     assert _Env.executed_action_ids == []
     assert row["actions"] == "[]"
     assert row["constraint_exhausted"] is True
@@ -169,3 +198,99 @@ def test_empty_constrained_support_terminates_without_action_fallback(
     assert row["termination_reason"] == "constraint_exhausted"
     assert row["mcts_searches"] == 1
     assert row["mcts_min_action_coverage"] == pytest.approx(0.4)
+
+
+def test_evaluation_search_seed_is_stable_and_context_specific() -> None:
+    baseline = checkpoint._evaluation_search_seed(
+        base_seed=42,
+        scenario_id=7,
+        policy_mode=PolicyMode.UNGATED,
+        step=0,
+    )
+
+    assert baseline == checkpoint._evaluation_search_seed(
+        base_seed=42,
+        scenario_id=7,
+        policy_mode=PolicyMode.UNGATED,
+        step=0,
+    )
+    assert len(
+        {
+            baseline,
+            checkpoint._evaluation_search_seed(
+                base_seed=43,
+                scenario_id=7,
+                policy_mode=PolicyMode.UNGATED,
+                step=0,
+            ),
+            checkpoint._evaluation_search_seed(
+                base_seed=42,
+                scenario_id=8,
+                policy_mode=PolicyMode.UNGATED,
+                step=0,
+            ),
+            checkpoint._evaluation_search_seed(
+                base_seed=42,
+                scenario_id=7,
+                policy_mode=PolicyMode.CONSTRAINED,
+                step=0,
+            ),
+            checkpoint._evaluation_search_seed(
+                base_seed=42,
+                scenario_id=7,
+                policy_mode=PolicyMode.UNGATED,
+                step=1,
+            ),
+        }
+    ) == 5
+
+
+def test_root_noise_survives_progressive_widening() -> None:
+    actions = [
+        GridFMAction(
+            action_id=index,
+            action_type="switch_off_branch",
+            branch_id=100 + index,
+            branch_pos=index - 1,
+        )
+        for index in range(1, 4)
+    ]
+    planner = MCTSPlanner(
+        MCTSConfig(
+            top_k_actions=2,
+            widening_coefficient=1.0,
+            widening_exponent=1.0,
+            exploration_quota=0,
+            use_root_dirichlet_noise=True,
+            root_exploration_fraction=1.0,
+        )
+    )
+    node = MCTSNode(
+        env=SimpleNamespace(done=False, solved=False),  # type: ignore[arg-type]
+        depth=0,
+        visit_count=1,
+        is_expanded=True,
+        ranked_actions=actions,
+        action_scores={1: 4.0, 2: 2.0, 3: 1.0},
+        selection_scores={1: 4.0, 2: 2.0, 3: 1.0},
+    )
+    planner._set_active_actions(node, actions[:2])
+    planner.rng = SimpleNamespace(  # type: ignore[assignment]
+        dirichlet=lambda alpha: np.asarray([0.25, 0.75], dtype=float)
+    )
+
+    planner._add_root_dirichlet_noise(node)
+
+    assert node.selection_scores[1] == pytest.approx(1.5)
+    assert node.selection_scores[2] == pytest.approx(4.5)
+    assert planner._widen_node(node) is True
+    assert node.selection_scores == pytest.approx(
+        {1: 1.5, 2: 4.5, 3: 1.0}
+    )
+    assert node.action_priors == pytest.approx(
+        {
+            1: 1.5 / 7.0,
+            2: 4.5 / 7.0,
+            3: 1.0 / 7.0,
+        }
+    )
