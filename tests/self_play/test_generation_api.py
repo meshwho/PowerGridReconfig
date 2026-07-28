@@ -88,8 +88,15 @@ class _FakeMCTSConfig:
 
 
 class _FakePlanner:
+    reset_seeds: list[int] = []
+
     def __init__(self, **kwargs: object) -> None:
         self.kwargs = kwargs
+
+    def reset_rng(self, random_seed: int | None) -> None:
+        if random_seed is None:
+            raise AssertionError("generation must use a concrete scenario seed")
+        self.reset_seeds.append(int(random_seed))
 
     def search_from_env(self, env: _FakeEnv) -> SimpleNamespace:
         action = _FakeAction()
@@ -193,6 +200,7 @@ def fake_generation_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
     _FakeCache.clear_calls = 0
     _FakeCache.instances = []
     _FakeMCTSConfig.last_kwargs = None
+    _FakePlanner.reset_seeds = []
 
     monkeypatch.setattr(generation, "GridFMAdapter", _FakeCache)
     monkeypatch.setattr(generation, "GridFMPowerFlowBackend", _FakeCache)
@@ -230,7 +238,8 @@ def _request(tmp_path: Path, **kwargs: object) -> GenerationRequest:
         "output_dir": tmp_path / "out",
         "checkpoint": None,
         "config": GenerationConfig(max_steps=1),
-        "seed": 42,
+        "mcts_seed": 42,
+        "action_seed": 43,
         "clear_cache_between_scenarios": False,
     }
     values.update(kwargs)
@@ -258,7 +267,7 @@ def test_generation_request_is_frozen_and_slotted(tmp_path: Path) -> None:
     request = _request(tmp_path)
 
     with pytest.raises(FrozenInstanceError):
-        request.seed = 1  # type: ignore[misc]
+        request.mcts_seed = 1  # type: ignore[misc]
 
     assert not hasattr(request, "__dict__")
 
@@ -296,14 +305,23 @@ def test_generation_preserves_scenario_order(
     assert _FakeEnv.seen_scenarios == [3, 1, 2]
 
 
-def test_generation_uses_request_seed(
+def test_generation_uses_mcts_seed(
     tmp_path: Path,
     fake_generation_runtime: None,
 ) -> None:
-    generate_self_play_examples(_request(tmp_path, seed=123))
+    generate_self_play_examples(
+        _request(
+            tmp_path,
+            mcts_seed=123,
+            action_seed=456,
+        )
+    )
 
     assert _FakeMCTSConfig.last_kwargs is not None
     assert _FakeMCTSConfig.last_kwargs["random_seed"] == 123
+    assert _FakePlanner.reset_seeds == [
+        generation._scenario_seed(123, 1)
+    ]
 
 
 def test_generation_uses_typed_config(
@@ -384,7 +402,8 @@ def test_missing_transitions_csv_raises(tmp_path: Path) -> None:
         output_dir=tmp_path / "out",
         checkpoint=None,
         config=GenerationConfig(),
-        seed=42,
+        mcts_seed=42,
+        action_seed=43,
         clear_cache_between_scenarios=False,
     )
 
