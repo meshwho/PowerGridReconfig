@@ -125,4 +125,13 @@ def test_example_writer_save_preserves_csv_schema(tmp_path: Path) -> None:
         "physics_config_fingerprint",
         "visit_counts_json",
         "mcts_policy_json",
+        "selection_temperature",
+        "selection_mode",
+        "policy_target_entropy",
+        "policy_target_normalized_entropy",
+        "mcts_legal_action_count",
+        "mcts_considered_action_count",
+        "mcts_visited_action_count",
+        "mcts_action_coverage",
+        "mcts_visited_action_coverage",
     ]
