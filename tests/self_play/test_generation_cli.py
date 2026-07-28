@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from grid_topology_ai.self_play.generation import GenerationRequest
+from grid_topology_ai.self_play.iteration import _self_play_seeds
 from scripts.self_play import generate as generate_cli
 
 
@@ -61,11 +62,16 @@ def test_cli_builds_generation_request(
     ) == 0
 
     request = captured[0]
+    expected_seeds = _self_play_seeds(
+        base_seed=123,
+        iteration=1,
+    )
     assert request.raw_dir == raw_dir
     assert request.transitions_csv == transitions_csv
     assert request.output_dir == tmp_path / "out"
     assert request.checkpoint == checkpoint
-    assert request.seed == 123
+    assert request.mcts_seed == expected_seeds.mcts
+    assert request.action_seed == expected_seeds.action_sampling
     assert request.device == "cuda"
     assert request.enable_cache is False
     assert request.clear_cache_between_scenarios is True
