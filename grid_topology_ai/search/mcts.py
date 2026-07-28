@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from math import sqrt
+from math import floor, isfinite, sqrt
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -38,6 +38,8 @@ class MCTSConfig:
     num_simulations: int = 100
     max_depth: int = 4
     top_k_actions: int = 30
+    widening_coefficient: float = 2.0
+    widening_exponent: float = 0.5
     gamma: float = 0.95
     c_puct: float = 1.5
 
@@ -63,6 +65,62 @@ class MCTSConfig:
     dc_policy_weight: float = 0.0
     dc_failure_penalty: float = 1_000_000_000.0
     dc_max_depth: int = 0
+
+    def __post_init__(self) -> None:
+        if isinstance(
+            self.widening_coefficient,
+            bool,
+        ):
+            raise ValueError(
+                "widening_coefficient must be a finite "
+                "non-negative number."
+            )
+
+        if isinstance(
+            self.widening_exponent,
+            bool,
+        ):
+            raise ValueError(
+                "widening_exponent must be a finite "
+                "number in (0, 1]."
+            )
+
+        coefficient = float(
+            self.widening_coefficient
+        )
+        exponent = float(
+            self.widening_exponent
+        )
+
+        if (
+            not isfinite(coefficient)
+            or coefficient < 0.0
+        ):
+            raise ValueError(
+                "widening_coefficient must be a finite "
+                "non-negative number."
+            )
+
+        if (
+            not isfinite(exponent)
+            or exponent <= 0.0
+            or exponent > 1.0
+        ):
+            raise ValueError(
+                "widening_exponent must be a finite "
+                "number in (0, 1]."
+            )
+
+        object.__setattr__(
+            self,
+            "widening_coefficient",
+            coefficient,
+        )
+        object.__setattr__(
+            self,
+            "widening_exponent",
+            exponent,
+        )
 
 
 @dataclass
@@ -289,6 +347,8 @@ class MCTSPlanner:
                 leaf_value = self._leaf_value(node)
                 break
 
+            self._widen_node(node)
+
             action_id = self._select_action_id(node)
             if action_id is None:
                 leaf_value = self._leaf_value(node)
@@ -391,6 +451,114 @@ class MCTSPlanner:
 
         node.actions_by_id = actions_by_id
         node.action_priors = action_priors
+
+
+    def _target_switch_width(
+        self,
+        node: MCTSNode,
+    ) -> int:
+        ranked_switches = [
+            action
+            for action in node.ranked_actions
+            if action.action_type
+            == "switch_off_branch"
+        ]
+
+        total_switches = len(ranked_switches)
+
+        if total_switches == 0:
+            return 0
+
+        if self.config.top_k_actions <= 0:
+            return total_switches
+
+        current_width = sum(
+            1
+            for action in ranked_switches
+            if int(action.action_id)
+            in node.actions_by_id
+        )
+
+        initial_width = min(
+            int(self.config.top_k_actions),
+            total_switches,
+        )
+
+        visits = max(
+            int(node.visit_count),
+            0,
+        )
+
+        if visits == 0:
+            growth = 0
+        else:
+            growth = floor(
+                self.config.widening_coefficient
+                * (
+                    visits
+                    ** self.config.widening_exponent
+                )
+            )
+
+        return min(
+            total_switches,
+            max(
+                current_width,
+                initial_width + growth,
+            ),
+        )
+
+    def _widen_node(
+        self,
+        node: MCTSNode,
+    ) -> bool:
+        if (
+            not node.is_expanded
+            or not node.ranked_actions
+        ):
+            return False
+
+        ranked_switches = [
+            action
+            for action in node.ranked_actions
+            if action.action_type
+            == "switch_off_branch"
+        ]
+
+        active_switch_count = sum(
+            1
+            for action in ranked_switches
+            if int(action.action_id)
+            in node.actions_by_id
+        )
+
+        target_width = self._target_switch_width(
+            node
+        )
+
+        if target_width <= active_switch_count:
+            return False
+
+        active_stop_actions = [
+            action
+            for action in node.ranked_actions
+            if (
+                action.action_type == "do_nothing"
+                and int(action.action_id)
+                in node.actions_by_id
+            )
+        ]
+
+        self._set_active_actions(
+            node,
+            [
+                *active_stop_actions,
+                *ranked_switches[:target_width],
+            ],
+        )
+
+        return True
+
 
     def _expand_node(
             self,

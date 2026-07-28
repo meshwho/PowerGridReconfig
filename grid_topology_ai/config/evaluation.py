@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-
+import math
 from grid_topology_ai.config._mapping import ConfigMapping
 from grid_topology_ai.config._validation import (
     coerce_exact_int,
@@ -19,7 +19,8 @@ class EvaluationConfig:
     max_steps: int = 5
     top_k: int = 30
     pf_alg: int = 3
-
+    widening_coefficient: float = 2.0
+    widening_exponent: float = 0.5
     gamma: float = 0.95
     c_puct: float = 2.0
     prior_exponent: float = 0.5
@@ -87,6 +88,64 @@ class EvaluationConfig:
             raise ValueError(
                 "evaluation.output_json_name must not be empty."
             )
+        if isinstance(
+            self.widening_coefficient,
+            bool,
+        ):
+            raise ValueError(
+                "evaluation.widening_coefficient must "
+                "be a finite non-negative number."
+            )
+
+        if isinstance(
+            self.widening_exponent,
+            bool,
+        ):
+            raise ValueError(
+                "evaluation.widening_exponent must "
+                "be a finite number in (0, 1]."
+            )
+
+        widening_coefficient = float(
+            self.widening_coefficient
+        )
+        widening_exponent = float(
+            self.widening_exponent
+        )
+
+        if (
+            not math.isfinite(
+                widening_coefficient
+            )
+            or widening_coefficient < 0.0
+        ):
+            raise ValueError(
+                "evaluation.widening_coefficient must "
+                "be a finite non-negative number."
+            )
+
+        if (
+            not math.isfinite(
+                widening_exponent
+            )
+            or widening_exponent <= 0.0
+            or widening_exponent > 1.0
+        ):
+            raise ValueError(
+                "evaluation.widening_exponent must "
+                "be a finite number in (0, 1]."
+            )
+
+        object.__setattr__(
+            self,
+            "widening_coefficient",
+            widening_coefficient,
+        )
+        object.__setattr__(
+            self,
+            "widening_exponent",
+            widening_exponent,
+        )
 
     @classmethod
     def from_mapping(
@@ -101,6 +160,18 @@ class EvaluationConfig:
             pf_alg=coerce_exact_int(
                 "evaluation.pf_alg",
                 data.get("pf_alg", 3),
+            ),
+            widening_coefficient=float(
+                data.get(
+                    "widening_coefficient",
+                    2.0,
+                )
+            ),
+            widening_exponent=float(
+                data.get(
+                    "widening_exponent",
+                    0.5,
+                )
             ),
             gamma=float(data.get("gamma", 0.95)),
             c_puct=float(data.get("c_puct", 2.0)),

@@ -276,7 +276,18 @@ def generate_self_play_examples(request: GenerationRequest) -> Path:
     print(f"Simulations:    {request.config.simulations}")
     print(f"Search depth:   {request.config.depth}")
     print(f"Max steps:      {request.config.max_steps}")
-    print(f"Top-K actions:  {request.config.top_k}")
+    print(
+        "Initial action width: "
+        f"{request.config.top_k}"
+    )
+    print(
+        "Widening coefficient: "
+        f"{request.config.widening_coefficient}"
+    )
+    print(
+        "Widening exponent:    "
+        f"{request.config.widening_exponent}"
+    )
     print(f"Gamma:          {request.config.gamma}")
     print(f"C_PUCT:         {request.config.c_puct}")
     print(f"Prior exponent: {request.config.prior_exponent}")
@@ -333,6 +344,12 @@ def generate_self_play_examples(request: GenerationRequest) -> Path:
         num_simulations=request.config.simulations,
         max_depth=request.config.depth,
         top_k_actions=request.config.top_k,
+        widening_coefficient=(
+            request.config.widening_coefficient
+        ),
+        widening_exponent=(
+            request.config.widening_exponent
+        ),
         gamma=request.config.gamma,
         c_puct=request.config.c_puct,
         include_stop_action=True,
@@ -531,6 +548,12 @@ def generate_self_play_examples(request: GenerationRequest) -> Path:
                     "mcts_simulations": int(request.config.simulations),
                     "mcts_depth": int(request.config.depth),
                     "mcts_top_k": int(request.config.top_k),
+                    "mcts_widening_coefficient": float(
+                        request.config.widening_coefficient
+                    ),
+                    "mcts_widening_exponent": float(
+                        request.config.widening_exponent
+                    ),
                     "pf_alg": request.resolved_physics_config.pf_alg,
                     "use_continuation_gate": bool(
                         request.config.use_continuation_gate

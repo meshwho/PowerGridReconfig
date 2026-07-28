@@ -243,6 +243,16 @@ def init_worker_context(
         num_simulations=int(task_config["simulations"]),
         max_depth=int(task_config["depth"]),
         top_k_actions=int(task_config["top_k"]),
+        widening_coefficient=float(
+            task_config[
+                "widening_coefficient"
+            ]
+        ),
+        widening_exponent=float(
+            task_config[
+                "widening_exponent"
+            ]
+        ),
         gamma=float(task_config["gamma"]),
         c_puct=float(task_config["c_puct"]),
         include_stop_action=True,
@@ -481,6 +491,8 @@ def _make_task_config(request: EvaluationRequest) -> dict[str, Any]:
         "depth": int(config.depth),
         "max_steps": int(config.max_steps),
         "top_k": int(config.top_k),
+        "widening_coefficient": float(config.widening_coefficient),
+        "widening_exponent": float(config.widening_exponent),
         "gamma": float(config.gamma),
         "c_puct": float(config.c_puct),
         "prior_exponent": float(config.prior_exponent),

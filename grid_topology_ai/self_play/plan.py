@@ -128,6 +128,8 @@ def render_execution_plan(
             f"  simulations:              {config.generation.simulations}",
             f"  depth:                    {config.generation.depth}",
             f"  top_k:                    {config.generation.top_k}",
+            f"  widening coefficient:     {config.generation.widening_coefficient}",
+            f"  widening exponent:        {config.generation.widening_exponent}",
             f"  gamma:                    {config.generation.gamma}",
             f"  use_root_noise:           {config.generation.use_root_noise}",
             f"  use_continuation_gate:    {config.generation.use_continuation_gate}",
