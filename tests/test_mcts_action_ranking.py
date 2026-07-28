@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from typing import Any
 
 import numpy as np
 import pytest
@@ -109,12 +108,16 @@ def _expand(
     config: MCTSConfig,
     policy: np.ndarray | None = None,
     include_stop: bool = False,
+    dc_ranker: _DCRanker | None = None,
 ) -> tuple[MCTSPlanner, MCTSNode]:
     evaluator = None if policy is None else _Evaluator(policy)
     planner = MCTSPlanner(config, evaluator=evaluator)  # type: ignore[arg-type]
     planner._should_include_stop_action = (  # type: ignore[method-assign]
         lambda state: include_stop
     )
+
+    if dc_ranker is not None:
+        planner.dc_screener = dc_ranker  # type: ignore[assignment]
 
     node = MCTSNode(
         env=_FakeEnv(actions, loadings),  # type: ignore[arg-type]
@@ -188,8 +191,9 @@ def test_dc_candidate_pool_does_not_prune_the_legal_tail() -> None:
     actions = _switch_actions(10)
     policy = np.zeros(11, dtype=float)
     policy[1:] = np.linspace(1.0, 0.1, 10)
+    ranker = _DCRanker()
 
-    planner, node = _expand(
+    _, node = _expand(
         actions=actions,
         loadings=[10, 20, 30, 40, 50, 60, 70, 80, 90, 100],
         config=MCTSConfig(
@@ -201,11 +205,8 @@ def test_dc_candidate_pool_does_not_prune_the_legal_tail() -> None:
             dc_keep_loading_actions=1,
         ),
         policy=policy,
+        dc_ranker=ranker,
     )
-
-    ranker = _DCRanker()
-    planner.dc_screener = ranker  # type: ignore[assignment]
-    planner._expand_node(node)
 
     assert ranker.seen_action_ids == [1, 2, 3, 4, 10]
     assert list(node.actions_by_id) == [10, 4, 1]
