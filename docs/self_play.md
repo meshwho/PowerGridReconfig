@@ -58,6 +58,21 @@ Each iteration samples scenario ids from the fixed pool. Sampling may prioritize
 
 Generation uses the current accepted checkpoint, configured MCTS settings, raw states, and `PF_ALG`. The canonical pilot value is `PF_ALG=3`.
 
+### 5.1 Progressive widening
+
+`top_k` is the initial number of switch actions exposed to PUCT, not a permanent pruning limit. Each node retains the complete neural/DC/loading ranking and activates more legal switch actions as its visit count grows.
+
+The active switch width is:
+
+```text
+top_k + floor(
+    widening_coefficient
+    * visit_count ** widening_exponent
+)
+```
+
+The result is capped by the number of legal switch actions. Existing wider shortlists are never reduced, stop actions do not consume switch slots, and `widening_coefficient: 0` disables growth.
+
 ## 6. MCTS target versus executed action
 
 The policy target is the MCTS visit distribution. The continuation gate may alter the executed action for safety or episode-control semantics, but it does not rewrite the MCTS visit target.

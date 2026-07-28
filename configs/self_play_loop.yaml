@@ -100,6 +100,9 @@ evaluation:
   depth: 4
   max_steps: 5
   top_k: 30
+  # top_k is the initial switch-action width, not a hard limit.
+  widening_coefficient: 2.0
+  widening_exponent: 0.5
   gamma: 0.95
   c_puct: 2.0
   prior_exponent: 0.5

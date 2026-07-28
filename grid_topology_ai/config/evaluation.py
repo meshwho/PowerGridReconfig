@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 import math
+from dataclasses import dataclass
+
 from grid_topology_ai.config._mapping import ConfigMapping
 from grid_topology_ai.config._validation import (
     coerce_exact_int,
@@ -88,35 +89,24 @@ class EvaluationConfig:
             raise ValueError(
                 "evaluation.output_json_name must not be empty."
             )
-        if isinstance(
-            self.widening_coefficient,
-            bool,
-        ):
+
+        if isinstance(self.widening_coefficient, bool):
             raise ValueError(
                 "evaluation.widening_coefficient must "
                 "be a finite non-negative number."
             )
 
-        if isinstance(
-            self.widening_exponent,
-            bool,
-        ):
+        if isinstance(self.widening_exponent, bool):
             raise ValueError(
                 "evaluation.widening_exponent must "
                 "be a finite number in (0, 1]."
             )
 
-        widening_coefficient = float(
-            self.widening_coefficient
-        )
-        widening_exponent = float(
-            self.widening_exponent
-        )
+        widening_coefficient = float(self.widening_coefficient)
+        widening_exponent = float(self.widening_exponent)
 
         if (
-            not math.isfinite(
-                widening_coefficient
-            )
+            not math.isfinite(widening_coefficient)
             or widening_coefficient < 0.0
         ):
             raise ValueError(
@@ -125,9 +115,7 @@ class EvaluationConfig:
             )
 
         if (
-            not math.isfinite(
-                widening_exponent
-            )
+            not math.isfinite(widening_exponent)
             or widening_exponent <= 0.0
             or widening_exponent > 1.0
         ):
@@ -162,16 +150,10 @@ class EvaluationConfig:
                 data.get("pf_alg", 3),
             ),
             widening_coefficient=float(
-                data.get(
-                    "widening_coefficient",
-                    2.0,
-                )
+                data.get("widening_coefficient", 2.0)
             ),
             widening_exponent=float(
-                data.get(
-                    "widening_exponent",
-                    0.5,
-                )
+                data.get("widening_exponent", 0.5)
             ),
             gamma=float(data.get("gamma", 0.95)),
             c_puct=float(data.get("c_puct", 2.0)),

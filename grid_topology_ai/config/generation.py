@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 import math
+from dataclasses import dataclass
+
 from grid_topology_ai.config._mapping import ConfigMapping
 from grid_topology_ai.config._validation import (
     coerce_exact_int,
@@ -62,35 +63,24 @@ class GenerationConfig:
             self.stop_policy,
             {"never", "solved_only", "no_hard_overloads", "always"},
         )
-        if isinstance(
-            self.widening_coefficient,
-            bool,
-        ):
+
+        if isinstance(self.widening_coefficient, bool):
             raise ValueError(
                 "generation.widening_coefficient must "
                 "be a finite non-negative number."
             )
 
-        if isinstance(
-            self.widening_exponent,
-            bool,
-        ):
+        if isinstance(self.widening_exponent, bool):
             raise ValueError(
                 "generation.widening_exponent must "
                 "be a finite number in (0, 1]."
             )
 
-        widening_coefficient = float(
-            self.widening_coefficient
-        )
-        widening_exponent = float(
-            self.widening_exponent
-        )
+        widening_coefficient = float(self.widening_coefficient)
+        widening_exponent = float(self.widening_exponent)
 
         if (
-            not math.isfinite(
-                widening_coefficient
-            )
+            not math.isfinite(widening_coefficient)
             or widening_coefficient < 0.0
         ):
             raise ValueError(
@@ -99,9 +89,7 @@ class GenerationConfig:
             )
 
         if (
-            not math.isfinite(
-                widening_exponent
-            )
+            not math.isfinite(widening_exponent)
             or widening_exponent <= 0.0
             or widening_exponent > 1.0
         ):
@@ -137,9 +125,13 @@ class GenerationConfig:
             depth=int(data.get("depth", 4)),
             max_steps=int(data.get("max_steps", 5)),
             top_k=int(data.get("top_k", 30)),
+            widening_coefficient=float(
+                data.get("widening_coefficient", 2.0)
+            ),
+            widening_exponent=float(
+                data.get("widening_exponent", 0.5)
+            ),
             gamma=float(data.get("gamma", 0.95)),
-            widening_coefficient=float(data.get("widening_coefficient",2.0,)),
-            widening_exponent=float(data.get("widening_exponent",0.5,)),
             c_puct=float(data.get("c_puct", 2.0)),
             prior_exponent=float(data.get("prior_exponent", 0.5)),
             selection_temperature=float(data.get("selection_temperature", 0.0)),
