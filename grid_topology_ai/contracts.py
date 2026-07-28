@@ -12,9 +12,9 @@ if TYPE_CHECKING:
 # Version 4 makes MCTS backup and the value head optimize the same discounted
 # terminal utility. Version 3 checkpoints were searched with shaped returns.
 OUTCOME_VALUE_TARGET_CONTRACT_VERSION = 4
-# Version 5 adds requested-scenario denominator metrics required by strict
-# fail-closed candidate acceptance.
-EVALUATION_METRICS_CONTRACT_VERSION = 5
+# Version 6 adds MCTS legal-action coverage diagnostics to evaluation
+# rows and aggregated metrics.
+EVALUATION_METRICS_CONTRACT_VERSION = 6
 CHECKPOINT_CONTRACT_VERSION = 5
 REPLAY_BUFFER_SCHEMA_VERSION = 4
 PHYSICS_CONFIG_CONTRACT_VERSION = 1

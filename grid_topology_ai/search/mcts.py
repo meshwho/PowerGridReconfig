@@ -226,6 +226,13 @@ class MCTSResult:
     principal_rewards: list[float]
     principal_return: float
     principal_final_metrics: dict[str, Any]
+
+    root_legal_action_count: int
+    root_considered_action_count: int
+    root_visited_action_count: int
+    root_action_coverage: float
+    root_visited_action_coverage: float
+
     config: MCTSConfig
 
 
@@ -298,6 +305,32 @@ class MCTSPlanner:
             action_id: child.visit_count
             for action_id, child in root.children.items()
         }
+
+        root_legal_action_count = len(
+            root.ranked_actions
+        )
+        root_considered_action_count = len(
+            root.actions_by_id
+        )
+        root_visited_action_count = sum(
+            1
+            for child in root.children.values()
+            if child.visit_count > 0
+        )
+
+        root_action_coverage = (
+            self._action_coverage_rate(
+                root_considered_action_count,
+                root_legal_action_count,
+            )
+        )
+        root_visited_action_coverage = (
+            self._action_coverage_rate(
+                root_visited_action_count,
+                root_legal_action_count,
+            )
+        )
+
         total_visits = sum(visit_counts.values())
         policy = (
             {
@@ -337,8 +370,33 @@ class MCTSPlanner:
             principal_rewards=principal_rewards,
             principal_return=principal_return,
             principal_final_metrics=final_metrics,
+            root_legal_action_count=(
+                root_legal_action_count
+            ),
+            root_considered_action_count=(
+                root_considered_action_count
+            ),
+            root_visited_action_count=(
+                root_visited_action_count
+            ),
+            root_action_coverage=(
+                root_action_coverage
+            ),
+            root_visited_action_coverage=(
+                root_visited_action_coverage
+            ),
             config=self.config,
         )
+
+    @staticmethod
+    def _action_coverage_rate(
+        count: int,
+        legal_count: int,
+    ) -> float:
+        if legal_count <= 0:
+            return 0.0
+
+        return float(count) / float(legal_count)
 
     def _add_root_dirichlet_noise(self, root: MCTSNode) -> None:
         if not self.config.use_root_dirichlet_noise or not root.action_priors:

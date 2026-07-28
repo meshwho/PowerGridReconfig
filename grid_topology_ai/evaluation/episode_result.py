@@ -22,6 +22,21 @@ class EvaluationEpisodeTrace:
     raw_policies: list[dict[int, float]] = field(default_factory=list)
     executed_policies: list[dict[int, float]] = field(default_factory=list)
     allowed_action_ids: list[list[int]] = field(default_factory=list)
+    root_legal_action_counts: list[int] = field(
+        default_factory=list
+    )
+    root_considered_action_counts: list[int] = field(
+        default_factory=list
+    )
+    root_visited_action_counts: list[int] = field(
+        default_factory=list
+    )
+    root_action_coverages: list[float] = field(
+        default_factory=list
+    )
+    root_visited_action_coverages: list[float] = field(
+        default_factory=list
+    )
     total_reward: float = 0.0
     discounted_return: float = 0.0
     constraint_changed_policy_steps: int = 0
@@ -31,6 +46,22 @@ class EvaluationEpisodeTrace:
     def constraint_exhausted(self) -> bool:
         return self.empty_constrained_support_count > 0
 
+def _mean_or_none(
+    values: list[float],
+) -> float | None:
+    if not values:
+        return None
+
+    return float(sum(values) / len(values))
+
+
+def _min_or_none(
+    values: list[float],
+) -> float | None:
+    if not values:
+        return None
+
+    return float(min(values))
 
 def build_evaluation_episode_row(
     *,
@@ -72,6 +103,44 @@ def build_evaluation_episode_row(
             sort_keys=True,
         ),
         "allowed_action_ids_json": json.dumps(trace.allowed_action_ids),
+        "mcts_searches": len(
+            trace.root_legal_action_counts
+        ),
+        "mcts_root_legal_action_counts_json": (
+            json.dumps(
+                trace.root_legal_action_counts
+            )
+        ),
+        "mcts_root_considered_action_counts_json": (
+            json.dumps(
+                trace.root_considered_action_counts
+            )
+        ),
+        "mcts_root_visited_action_counts_json": (
+            json.dumps(
+                trace.root_visited_action_counts
+            )
+        ),
+        "mcts_mean_action_coverage": (
+            _mean_or_none(
+                trace.root_action_coverages
+            )
+        ),
+        "mcts_min_action_coverage": (
+            _min_or_none(
+                trace.root_action_coverages
+            )
+        ),
+        "mcts_mean_visited_action_coverage": (
+            _mean_or_none(
+                trace.root_visited_action_coverages
+            )
+        ),
+        "mcts_min_visited_action_coverage": (
+            _min_or_none(
+                trace.root_visited_action_coverages
+            )
+        ),
         "constraint_changed_policy": bool(
             trace.constraint_changed_policy_steps
         ),

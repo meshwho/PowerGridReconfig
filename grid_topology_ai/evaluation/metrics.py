@@ -112,6 +112,18 @@ def _safe_mean(series: pd.Series) -> float | None:
 
     return float(value)
 
+def _safe_min(
+    series: pd.Series,
+) -> float | None:
+    if len(series) == 0:
+        return None
+
+    value = series.min()
+
+    if pd.isna(value):
+        return None
+
+    return float(value)
 
 def build_evaluation_metrics(
     df: pd.DataFrame,
@@ -153,6 +165,47 @@ def build_evaluation_metrics(
     requested_count = int(requested_scenarios)
     failed_scenarios = int(len(failed_results))
     solve_count = int(physically_secure.sum())
+
+    action_coverage = (
+        pd.to_numeric(
+            df["mcts_mean_action_coverage"],
+            errors="coerce",
+        )
+        if "mcts_mean_action_coverage"
+        in df.columns
+        else pd.Series(dtype=float)
+    )
+    minimum_action_coverage = (
+        pd.to_numeric(
+            df["mcts_min_action_coverage"],
+            errors="coerce",
+        )
+        if "mcts_min_action_coverage"
+        in df.columns
+        else pd.Series(dtype=float)
+    )
+    visited_action_coverage = (
+        pd.to_numeric(
+            df[
+                "mcts_mean_visited_action_coverage"
+            ],
+            errors="coerce",
+        )
+        if "mcts_mean_visited_action_coverage"
+        in df.columns
+        else pd.Series(dtype=float)
+    )
+    minimum_visited_action_coverage = (
+        pd.to_numeric(
+            df[
+                "mcts_min_visited_action_coverage"
+            ],
+            errors="coerce",
+        )
+        if "mcts_min_visited_action_coverage"
+        in df.columns
+        else pd.Series(dtype=float)
+    )
 
     def rate(numerator: int, denominator: int) -> float:
         if denominator == 0:
@@ -245,6 +298,24 @@ def build_evaluation_metrics(
             requested_count,
         ),
         "avg_steps": _safe_mean(df["steps"]),
+        "avg_mcts_action_coverage": (
+            _safe_mean(action_coverage)
+        ),
+        "min_mcts_action_coverage": (
+            _safe_min(
+                minimum_action_coverage
+            )
+        ),
+        "avg_mcts_visited_action_coverage": (
+            _safe_mean(
+                visited_action_coverage
+            )
+        ),
+        "min_mcts_visited_action_coverage": (
+            _safe_min(
+                minimum_visited_action_coverage
+            )
+        ),
         "avg_steps_to_solve": _safe_mean(df.loc[solved, "steps"]),
         "avg_discounted_return": _safe_mean(df["discounted_return"]),
         "avg_final_loading_percent": _safe_mean(df["final_max_loading_percent"]),

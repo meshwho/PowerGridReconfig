@@ -504,6 +504,21 @@ def generate_self_play_examples(request: GenerationRequest) -> Path:
                         if getattr(search_result, "best_branch_id", None) is None
                         else int(search_result.best_branch_id)
                     ),
+                    "mcts_legal_action_count": int(
+                        search_result.root_legal_action_count
+                    ),
+                    "mcts_considered_action_count": int(
+                        search_result.root_considered_action_count
+                    ),
+                    "mcts_visited_action_count": int(
+                        search_result.root_visited_action_count
+                    ),
+                    "mcts_action_coverage": float(
+                        search_result.root_action_coverage
+                    ),
+                    "mcts_visited_action_coverage": float(
+                        search_result.root_visited_action_coverage
+                    ),
                     **continuation_metadata,
                 }
             )
@@ -516,6 +531,14 @@ def generate_self_play_examples(request: GenerationRequest) -> Path:
                 f"{continuation_metadata['continuation_recommended_action_id']}, "
                 f"continuation_reason="
                 f"{continuation_metadata['continuation_recommendation_reason']}, "
+                f"coverage="
+                f"{search_result.root_considered_action_count}/"
+                f"{search_result.root_legal_action_count} "
+                f"({search_result.root_action_coverage:.1%}), "
+                f"visited="
+                f"{search_result.root_visited_action_count}/"
+                f"{search_result.root_legal_action_count} "
+                f"({search_result.root_visited_action_coverage:.1%}), "
                 f"reward={step_result.reward:.4f}, "
                 f"done={step_result.done}, "
                 f"solved={step_result.solved}"
@@ -563,6 +586,25 @@ def generate_self_play_examples(request: GenerationRequest) -> Path:
                     ),
                     "mcts_exploration_quota": int(
                         request.config.exploration_quota
+                    ),
+                    "mcts_legal_action_count": int(
+                        item["mcts_legal_action_count"]
+                    ),
+                    "mcts_considered_action_count": int(
+                        item[
+                            "mcts_considered_action_count"
+                        ]
+                    ),
+                    "mcts_visited_action_count": int(
+                        item["mcts_visited_action_count"]
+                    ),
+                    "mcts_action_coverage": float(
+                        item["mcts_action_coverage"]
+                    ),
+                    "mcts_visited_action_coverage": float(
+                        item[
+                            "mcts_visited_action_coverage"
+                        ]
                     ),
                     "pf_alg": request.resolved_physics_config.pf_alg,
                     "use_continuation_gate": bool(

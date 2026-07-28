@@ -340,6 +340,25 @@ def run_episode(
         if env.done:
             break
         result = planner.search_from_env(env)
+
+        trace.root_legal_action_counts.append(
+            int(result.root_legal_action_count)
+        )
+        trace.root_considered_action_counts.append(
+            int(result.root_considered_action_count)
+        )
+        trace.root_visited_action_counts.append(
+            int(result.root_visited_action_count)
+        )
+        trace.root_action_coverages.append(
+            float(result.root_action_coverage)
+        )
+        trace.root_visited_action_coverages.append(
+            float(
+                result.root_visited_action_coverage
+            )
+        )
+
         if result.best_action_id is None:
             break
 

@@ -73,6 +73,23 @@ top_k + floor(
 
 The result is capped by the number of legal switch actions. Existing wider shortlists are never reduced, stop actions do not consume switch slots, and `widening_coefficient: 0` disables growth.
 
+### 5.2 MCTS action coverage
+
+Every root search reports two action-space coverage measures:
+
+- `action_coverage` is the fraction of legal root actions activated
+  for PUCT selection;
+- `visited_action_coverage` is the fraction of legal root actions
+  that received at least one simulation.
+
+The denominator is the complete retained legal root action ranking.
+The considered count includes actions activated by the initial
+shortlist, progressive widening, and the off-prior exploration quota.
+
+Self-play stores the counts and coverage values with every generated
+example. Evaluation stores per-search counts in the episode CSV and
+aggregates mean and minimum coverage values in the metrics JSON.
+
 ## 6. MCTS target versus executed action
 
 The policy target is the MCTS visit distribution. The continuation gate may alter the executed action for safety or episode-control semantics, but it does not rewrite the MCTS visit target.
