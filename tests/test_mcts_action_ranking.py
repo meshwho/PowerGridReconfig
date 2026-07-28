@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from types import SimpleNamespace
 
 import numpy as np
@@ -111,6 +112,9 @@ def _expand(
     dc_ranker: _DCRanker | None = None,
 ) -> tuple[MCTSPlanner, MCTSNode]:
     evaluator = None if policy is None else _Evaluator(policy)
+
+    # These tests cover ranking and initial shortlist construction only.
+    config = replace(config, exploration_quota=0)
     planner = MCTSPlanner(config, evaluator=evaluator)  # type: ignore[arg-type]
     planner._should_include_stop_action = (  # type: ignore[method-assign]
         lambda state: include_stop
