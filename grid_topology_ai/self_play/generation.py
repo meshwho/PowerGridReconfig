@@ -4,7 +4,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-
+import math
 import numpy as np
 import pandas as pd
 
@@ -210,6 +210,51 @@ def _scenario_seed(
         dtype=np.uint64,
     )
     return int(state[0])
+
+def _policy_entropy(
+    policy: dict[int, float],
+) -> tuple[float, float]:
+    probabilities = np.asarray(
+        [
+            float(probability)
+            for probability in policy.values()
+            if float(probability) > 0.0
+        ],
+        dtype=np.float64,
+    )
+
+    if probabilities.size == 0:
+        return 0.0, 0.0
+
+    total = float(probabilities.sum())
+
+    if not np.isfinite(total) or total <= 0.0:
+        raise ValueError(
+            "Policy probabilities must have a positive finite sum."
+        )
+
+    probabilities = probabilities / total
+
+    entropy = float(
+        -np.sum(
+            probabilities * np.log(probabilities)
+        )
+    )
+
+    if probabilities.size <= 1:
+        return entropy, 0.0
+
+    normalized_entropy = (
+        entropy
+        / math.log(int(probabilities.size))
+    )
+
+    normalized_entropy = min(
+        1.0,
+        max(0.0, float(normalized_entropy)),
+    )
+
+    return entropy, normalized_entropy
 
 def selection_temperature_for_step(
     config: GenerationConfig,
@@ -632,6 +677,10 @@ def generate_self_play_examples(request: GenerationRequest) -> Path:
             selected_action_id = action_decision.selected_action_id
             selected_branch_id = action_decision.selected_branch_id
             policy_target = action_decision.policy_target
+            (
+                policy_target_entropy,
+                policy_target_normalized_entropy,
+            ) = _policy_entropy(policy_target)
             continuation_analysis = action_decision.continuation_analysis
 
             require_action_in_policy_support(
@@ -682,6 +731,12 @@ def generate_self_play_examples(request: GenerationRequest) -> Path:
                     ),
                     "selection_temperature": float(
                         effective_temperature
+                    ),
+                    "policy_target_entropy": float(
+                        policy_target_entropy
+                    ),
+                    "policy_target_normalized_entropy": float(
+                        policy_target_normalized_entropy
                     ),
                     "selection_mode": selection_mode,
                     "selected_action_id": selected_action_id,
@@ -778,6 +833,35 @@ def generate_self_play_examples(request: GenerationRequest) -> Path:
                 termination_reason=final_reason,
                 visit_counts=item["visit_counts"],
                 mcts_policy=item["mcts_policy"],
+                selection_temperature=float(
+                    item["selection_temperature"]
+                ),
+                selection_mode=str(
+                    item["selection_mode"]
+                ),
+                policy_target_entropy=float(
+                    item["policy_target_entropy"]
+                ),
+                policy_target_normalized_entropy=float(
+                    item[
+                        "policy_target_normalized_entropy"
+                    ]
+                ),
+                mcts_legal_action_count=int(
+                    item["mcts_legal_action_count"]
+                ),
+                mcts_considered_action_count=int(
+                    item["mcts_considered_action_count"]
+                ),
+                mcts_visited_action_count=int(
+                    item["mcts_visited_action_count"]
+                ),
+                mcts_action_coverage=float(
+                    item["mcts_action_coverage"]
+                ),
+                mcts_visited_action_coverage=float(
+                    item["mcts_visited_action_coverage"]
+                ),
                 extra_metadata={
                     "source": "mcts_self_play",
                     "scenario_id": int(scenario_id),
@@ -803,6 +887,14 @@ def generate_self_play_examples(request: GenerationRequest) -> Path:
                     ),
                     "selection_temperature": float(
                         item["selection_temperature"]
+                    ),
+                    "policy_target_entropy": float(
+                        item["policy_target_entropy"]
+                    ),
+                    "policy_target_normalized_entropy": float(
+                        item[
+                            "policy_target_normalized_entropy"
+                        ]
                     ),
                     "selection_mode": str(
                         item["selection_mode"]

@@ -91,6 +91,128 @@ def _self_play_seeds(
         ),
     )
 
+_SELF_PLAY_EXPLORATION_NUMERIC_COLUMNS = (
+    "selection_temperature",
+    "policy_target_entropy",
+    "policy_target_normalized_entropy",
+    "mcts_legal_action_count",
+    "mcts_considered_action_count",
+    "mcts_visited_action_count",
+    "mcts_action_coverage",
+    "mcts_visited_action_coverage",
+)
+
+
+def _self_play_exploration_metrics(
+    examples: pd.DataFrame,
+) -> dict[str, int | float]:
+    required_columns = (
+        set(_SELF_PLAY_EXPLORATION_NUMERIC_COLUMNS)
+        | {"selection_mode"}
+    )
+    missing_columns = sorted(
+        required_columns - set(examples.columns)
+    )
+
+    if missing_columns:
+        raise ValueError(
+            "Self-play examples are missing exploration "
+            "diagnostic columns: "
+            + ", ".join(missing_columns)
+        )
+
+    if examples.empty:
+        raise ValueError(
+            "Cannot calculate self-play exploration metrics "
+            "from an empty dataframe."
+        )
+
+    numeric = examples[
+        list(_SELF_PLAY_EXPLORATION_NUMERIC_COLUMNS)
+    ].apply(
+        pd.to_numeric,
+        errors="coerce",
+    )
+
+    numeric_values = numeric.to_numpy(
+        dtype=np.float64
+    )
+
+    if (
+        numeric.isna().any().any()
+        or not np.isfinite(numeric_values).all()
+    ):
+        raise ValueError(
+            "Self-play exploration diagnostics must be finite."
+        )
+
+    selection_modes = (
+        examples["selection_mode"]
+        .astype(str)
+        .str.strip()
+    )
+    invalid_modes = sorted(
+        set(selection_modes)
+        - {"sample", "argmax"}
+    )
+
+    if invalid_modes:
+        raise ValueError(
+            "Unsupported self-play selection modes: "
+            + ", ".join(invalid_modes)
+        )
+
+    step_count = int(len(examples))
+    sampled_steps = int(
+        (selection_modes == "sample").sum()
+    )
+
+    return {
+        "steps": step_count,
+        "sampled_steps": sampled_steps,
+        "sample_fraction": float(
+            sampled_steps / step_count
+        ),
+        "mean_selection_temperature": float(
+            numeric["selection_temperature"].mean()
+        ),
+        "mean_policy_target_entropy": float(
+            numeric["policy_target_entropy"].mean()
+        ),
+        "mean_policy_target_normalized_entropy": float(
+            numeric[
+                "policy_target_normalized_entropy"
+            ].mean()
+        ),
+        "mean_mcts_legal_action_count": float(
+            numeric["mcts_legal_action_count"].mean()
+        ),
+        "mean_mcts_considered_action_count": float(
+            numeric[
+                "mcts_considered_action_count"
+            ].mean()
+        ),
+        "mean_mcts_visited_action_count": float(
+            numeric["mcts_visited_action_count"].mean()
+        ),
+        "mean_mcts_action_coverage": float(
+            numeric["mcts_action_coverage"].mean()
+        ),
+        "min_mcts_action_coverage": float(
+            numeric["mcts_action_coverage"].min()
+        ),
+        "mean_mcts_visited_action_coverage": float(
+            numeric[
+                "mcts_visited_action_coverage"
+            ].mean()
+        ),
+        "min_mcts_visited_action_coverage": float(
+            numeric[
+                "mcts_visited_action_coverage"
+            ].min()
+        ),
+    }
+
 @dataclass(frozen=True, slots=True)
 class IterationRequest:
     iteration: int
@@ -373,6 +495,14 @@ def run_self_play_iteration(
 
     raw_examples_count = _count_examples_csv(raw_examples_csv)
 
+    raw_examples_df = pd.read_csv(raw_examples_csv)
+
+    exploration_metrics = (
+        _self_play_exploration_metrics(
+            raw_examples_df
+        )
+    )
+
     new_examples = request.replay_buffer.add_and_save_from_csv(
         examples_csv=raw_examples_csv,
         iteration=iteration,
@@ -601,6 +731,9 @@ def run_self_play_iteration(
             "action_sampling_seed": int(
                 self_play_seeds.action_sampling
             ),
+            "self_play_exploration": (
+                exploration_metrics
+            ),
             "training_seed": int(iteration_seed),
             "validation_fraction": float(config.training.validation_fraction),
             "train_validation_split": split_metadata,
@@ -666,8 +799,6 @@ def run_self_play_iteration(
         best_metrics = dict(parent_metrics)
         save_json(best_metrics, paths.best_metrics)
 
-    raw_examples_df = pd.read_csv(raw_examples_csv)
-
     pool_metadata = update_and_save_pool_metadata(
         pool_metadata=request.pool_metadata,
         episode_results=raw_examples_df,
@@ -729,6 +860,9 @@ def run_self_play_iteration(
             ]
         ),
     }
+
+    for key, value in exploration_metrics.items():
+        row[f"self_play_{key}"] = value
 
     for key, value in candidate_metrics.items():
         row[f"candidate_{key}"] = value

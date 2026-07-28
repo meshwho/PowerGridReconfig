@@ -124,6 +124,24 @@ scenarios therefore does not change the random stream assigned to a
 particular scenario, and action sampling does not consume random values
 from MCTS.
 
+### 5.5 Exploration diagnostics
+
+Every production self-play example records the action-selection
+temperature and mode, policy-target entropy, normalized policy-target
+entropy, and MCTS root action coverage.
+
+Policy-target entropy is measured in nats. Normalized entropy divides
+the entropy by `log(k)`, where `k` is the number of actions with
+positive probability. It is defined as zero when `k <= 1`.
+
+At the end of each iteration, diagnostics are aggregated over the
+newly generated self-play steps. They are stored under
+`extra.self_play_exploration` in the iteration metadata and as
+`self_play_*` columns in `learning_curve.csv`.
+
+The aggregation uses current-iteration raw examples only. Replay
+examples from earlier iterations are not included.
+
 ## 6. MCTS target versus executed action
 
 The policy target is the MCTS visit distribution. The continuation gate may alter the executed action for safety or episode-control semantics, but it does not rewrite the MCTS visit target.
@@ -177,6 +195,8 @@ Dataset and state references are hashed in metadata so a run can be audited agai
 ## 17. Learning curve columns
 
 `learning_curve.csv` tracks iteration-level progress such as iteration index, candidate checkpoint, evaluation metrics, acceptance decision, and best metric state.
+It also records `self_play_*` exploration diagnostics so policy entropy
+and action coverage can be compared across iterations.
 
 ## 18. Failure recovery
 
