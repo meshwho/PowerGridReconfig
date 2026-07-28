@@ -172,8 +172,33 @@ class EvaluationRequest:
             float(self.dc_failure_penalty),
         ) < 0:
             raise ValueError("DC weights and penalties must be >= 0")
-        if int(self.dc_max_depth) < -1:
-            raise ValueError("dc_max_depth must be >= -1")
+        if (
+                isinstance(self.dc_max_depth, bool)
+                or not isinstance(
+            self.dc_max_depth,
+            (int, np.integer),
+        )
+        ):
+            raise ValueError(
+                "dc_max_depth must be -1 or a "
+                "non-negative integer."
+            )
+
+        dc_max_depth = int(
+            self.dc_max_depth
+        )
+
+        if dc_max_depth < -1:
+            raise ValueError(
+                "dc_max_depth must be -1 or a "
+                "non-negative integer."
+            )
+
+        object.__setattr__(
+            self,
+            "dc_max_depth",
+            dc_max_depth,
+        )
 
 
 def _ensure_runtime_dependencies() -> None:

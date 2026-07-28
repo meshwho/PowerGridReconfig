@@ -65,9 +65,41 @@ class MCTSConfig:
     dc_keep_loading_actions: int = 5
     dc_policy_weight: float = 0.0
     dc_failure_penalty: float = 1_000_000_000.0
+
+    # -1 enables DC screening at every depth.
+    # 0 enables it only at the root.
+    # A positive value enables it through that node depth.
     dc_max_depth: int = 0
 
     def __post_init__(self) -> None:
+
+        if (
+            isinstance(self.dc_max_depth, bool)
+            or not isinstance(
+                self.dc_max_depth,
+                (int, np.integer),
+            )
+        ):
+            raise ValueError(
+                "dc_max_depth must be -1 or a "
+                "non-negative integer."
+            )
+
+        dc_max_depth = int(
+            self.dc_max_depth
+        )
+
+        if dc_max_depth < -1:
+            raise ValueError(
+                "dc_max_depth must be -1 or a "
+                "non-negative integer."
+            )
+
+        object.__setattr__(
+            self,
+            "dc_max_depth",
+            dc_max_depth,
+        )
 
         if (
             isinstance(self.exploration_quota, bool)
@@ -813,6 +845,24 @@ class MCTSPlanner:
 
         return True
 
+    def _should_use_dc_screening(
+        self,
+        node: MCTSNode,
+    ) -> bool:
+        if (
+            not self.config.use_dc_screening
+            or self.dc_screener is None
+        ):
+            return False
+
+        max_depth = int(
+            self.config.dc_max_depth
+        )
+
+        return (
+            max_depth == -1
+            or int(node.depth) <= max_depth
+        )
 
     def _expand_node(
             self,
@@ -891,10 +941,10 @@ class MCTSPlanner:
             initial_switches = []
             initial_seen: set[int] = set()
 
-            if (
-                    self.config.use_dc_screening
-                    and self.dc_screener is not None
+            if self._should_use_dc_screening(
+                    node
             ):
+
                 dc_pool: list[GridFMAction] = []
                 dc_pool_seen: set[int] = set()
 
