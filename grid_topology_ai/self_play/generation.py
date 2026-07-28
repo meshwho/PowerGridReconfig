@@ -43,6 +43,7 @@ class GenerationRequest:
     config: GenerationConfig
     seed: int
     clear_cache_between_scenarios: bool
+    iteration: int = 1
     physics_config: PhysicsConfig | None = None
     scenario_ids: tuple[int, ...] | None = None
     device: str = "cpu"
@@ -53,6 +54,33 @@ class GenerationRequest:
     min_soft_improvement: float = 15.0
     min_gate_visits: int = 5
     min_gate_visit_fraction: float = 0.01
+
+    def __post_init__(self) -> None:
+        if (
+            isinstance(self.iteration, bool)
+            or not isinstance(
+                self.iteration,
+                (int, np.integer),
+            )
+        ):
+            raise ValueError(
+                "iteration must be a positive integer."
+            )
+
+        iteration = int(
+            self.iteration
+        )
+
+        if iteration <= 0:
+            raise ValueError(
+                "iteration must be a positive integer."
+            )
+
+        object.__setattr__(
+            self,
+            "iteration",
+            iteration,
+        )
 
     @property
     def resolved_physics_config(self) -> PhysicsConfig:
@@ -130,6 +158,40 @@ def discounted_returns(rewards: list[float], gamma: float) -> list[float]:
 
     return returns
 
+def selection_temperature_for_step(
+    config: GenerationConfig,
+    *,
+    iteration: int,
+    step: int,
+) -> float:
+    if iteration <= 0:
+        raise ValueError(
+            "iteration must be positive."
+        )
+
+    if step < 0:
+        raise ValueError(
+            "step must be non-negative."
+        )
+
+    if config.selection_temperature <= 0.0:
+        return 0.0
+
+    if (
+        config.temperature_iterations <= 0
+        or config.temperature_steps <= 0
+    ):
+        return 0.0
+
+    if iteration > config.temperature_iterations:
+        return 0.0
+
+    if step >= config.temperature_steps:
+        return 0.0
+
+    return float(
+        config.selection_temperature
+    )
 
 def _select_generation_action(
     *,
@@ -301,18 +363,44 @@ def generate_self_play_examples(request: GenerationRequest) -> Path:
     print(f"Use root noise: {request.config.use_root_noise}")
     print(f"Root alpha:     {request.root_dirichlet_alpha}")
     print(f"Root epsilon:   {request.root_exploration_fraction}")
-    print(f"Temperature:    {request.config.selection_temperature}")
-    print(f"Seed:           {request.seed}")
+    print(
+        f"Self-play iteration: "
+        f"{request.iteration}"
+    )
+    print(
+        f"Early temperature:  "
+        f"{request.config.selection_temperature}"
+    )
+    print(
+        f"Temperature steps:  "
+        f"{request.config.temperature_steps}"
+    )
+    print(
+        f"Temperature iters:  "
+        f"{request.config.temperature_iterations}"
+    )
+    print(f"Seed:               {request.seed}")
     print(f"PF algorithm:   {request.resolved_physics_config.pf_alg}")
     print(f"Cache enabled:  {request.enable_cache}")
     print(
         "Clear cache between scenarios: "
         f"{request.clear_cache_between_scenarios}"
     )
-    if request.config.selection_temperature <= 1e-8:
-        print("Action selection: deterministic argmax")
+    temperature_schedule_enabled = (
+            request.config.selection_temperature > 1e-8
+            and request.config.temperature_steps > 0
+            and request.config.temperature_iterations > 0
+    )
+
+    if temperature_schedule_enabled:
+        print(
+            "Action selection: scheduled early sampling, "
+            "then deterministic argmax"
+        )
     else:
-        print("Action selection: sampling from behavior policy")
+        print(
+            "Action selection: deterministic argmax"
+        )
     print(
         "Continuation analysis: "
         f"{request.config.use_continuation_gate}"
@@ -431,9 +519,22 @@ def generate_self_play_examples(request: GenerationRequest) -> Path:
                 print("MCTS returned no action. Stop episode.")
                 break
 
+            effective_temperature = (
+                selection_temperature_for_step(
+                    request.config,
+                    iteration=request.iteration,
+                    step=step,
+                )
+            )
+            selection_mode = (
+                "sample"
+                if effective_temperature > 1e-8
+                else "argmax"
+            )
+
             action_decision = _select_generation_action(
                 search_result=search_result,
-                temperature=request.config.selection_temperature,
+                temperature=effective_temperature,
                 rng=rng,
                 use_continuation_gate=request.config.use_continuation_gate,
                 min_hard_improvement=request.min_hard_improvement,
@@ -480,6 +581,13 @@ def generate_self_play_examples(request: GenerationRequest) -> Path:
                     "action_mask": action_mask,
                     "scenario_id": scenario_id,
                     "step": step,
+                    "self_play_iteration": int(
+                        request.iteration
+                    ),
+                    "selection_temperature": float(
+                        effective_temperature
+                    ),
+                    "selection_mode": selection_mode,
                     "selected_action_id": selected_action_id,
                     "selected_branch_id": selected_branch_id,
                     "step_reward": float(step_result.reward),
@@ -527,6 +635,9 @@ def generate_self_play_examples(request: GenerationRequest) -> Path:
                 f"Step {step:02d}: "
                 f"action={selected_action_id}, "
                 f"branch={selected_branch_id}, "
+                f"temperature="
+                f"{effective_temperature:.4f}, "
+                f"selection={selection_mode}, "
                 f"continuation_recommendation="
                 f"{continuation_metadata['continuation_recommended_action_id']}, "
                 f"continuation_reason="
@@ -575,6 +686,21 @@ def generate_self_play_examples(request: GenerationRequest) -> Path:
                     "source": "mcts_self_play",
                     "scenario_id": int(scenario_id),
                     "step": int(item["step"]),
+                    "self_play_iteration": int(
+                        item["self_play_iteration"]
+                    ),
+                    "selection_temperature": float(
+                        item["selection_temperature"]
+                    ),
+                    "selection_mode": str(
+                        item["selection_mode"]
+                    ),
+                    "temperature_steps": int(
+                        request.config.temperature_steps
+                    ),
+                    "temperature_iterations": int(
+                        request.config.temperature_iterations
+                    ),
                     "mcts_simulations": int(request.config.simulations),
                     "mcts_depth": int(request.config.depth),
                     "mcts_top_k": int(request.config.top_k),

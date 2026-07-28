@@ -90,6 +90,24 @@ Self-play stores the counts and coverage values with every generated
 example. Evaluation stores per-search counts in the episode CSV and
 aggregates mean and minimum coverage values in the metrics JSON.
 
+### 5.3 Action temperature schedule
+
+Root Dirichlet noise changes the MCTS search priors. Action
+temperature controls how the real self-play action is selected from
+the resulting root visit distribution. These are separate sources of
+exploration.
+
+A positive `selection_temperature` is used only when both conditions
+hold:
+
+- the one-based self-play iteration is not greater than
+  `temperature_iterations`;
+- the zero-based episode step is less than `temperature_steps`.
+
+After either cutoff, action selection uses temperature `0.0` and
+therefore deterministic argmax. Setting either cutoff to zero disables
+temperature-based sampling and preserves the previous behavior.
+
 ## 6. MCTS target versus executed action
 
 The policy target is the MCTS visit distribution. The continuation gate may alter the executed action for safety or episode-control semantics, but it does not rewrite the MCTS visit target.

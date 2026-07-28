@@ -128,8 +128,35 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=0.0,
         help=(
-            "Temperature for selecting actions from MCTS policy. "
-            "0.0 = deterministic argmax, >0 = sampling for exploration."
+            "Action-sampling temperature used during "
+            "the configured early iterations and steps."
+        ),
+    )
+    parser.add_argument(
+        "--temperature-steps",
+        type=int,
+        default=0,
+        help=(
+            "Number of early episode steps that use "
+            "the positive selection temperature."
+        ),
+    )
+    parser.add_argument(
+        "--temperature-iterations",
+        type=int,
+        default=0,
+        help=(
+            "Number of early self-play iterations that "
+            "use temperature-based action sampling."
+        ),
+    )
+    parser.add_argument(
+        "--iteration",
+        type=int,
+        default=1,
+        help=(
+            "One-based self-play iteration number used "
+            "to resolve the temperature schedule."
         ),
     )
     parser.add_argument(
@@ -213,7 +240,13 @@ def main(argv: list[str] | None = None) -> int:
         gamma=args.gamma,
         c_puct=args.c_puct,
         prior_exponent=args.prior_exponent,
-        selection_temperature=args.selection_temperature,
+        selection_temperature=(
+            args.selection_temperature
+        ),
+        temperature_steps=args.temperature_steps,
+        temperature_iterations=(
+            args.temperature_iterations
+        ),
         use_root_noise=args.use_root_noise,
         use_continuation_gate=args.use_continuation_gate,
         pf_alg=args.pf_alg,
@@ -226,6 +259,7 @@ def main(argv: list[str] | None = None) -> int:
         checkpoint=(None if args.checkpoint is None else Path(args.checkpoint)),
         config=config,
         seed=args.seed,
+        iteration=args.iteration,
         clear_cache_between_scenarios=args.clear_cache_between_scenarios,
         device=args.device,
         enable_cache=not args.disable_cache,

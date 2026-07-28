@@ -394,6 +394,7 @@ def run_generate(
         physics_config=physics_config,
         seed=iteration_seed,
         clear_cache_between_scenarios=True,
+        iteration=int(iteration),
     )
 
     with _working_directory(project_root):

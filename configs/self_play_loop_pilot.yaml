@@ -37,7 +37,9 @@ generation:
   c_puct: 2.0
   prior_exponent: 0.5
   use_root_noise: true
-  selection_temperature: 0.0
+  selection_temperature: 1.0
+  temperature_steps: 2
+  temperature_iterations: 3
   use_continuation_gate: true
   pf_alg: 3
   stop_policy: no_hard_overloads

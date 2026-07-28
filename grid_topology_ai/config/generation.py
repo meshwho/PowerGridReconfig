@@ -36,7 +36,12 @@ class GenerationConfig:
     gamma: float = 0.95
     c_puct: float = 2.0
     prior_exponent: float = 0.5
+
+    # Positive temperature is used only during the configured
+    # early self-play iterations and episode steps.
     selection_temperature: float = 0.0
+    temperature_steps: int = 0
+    temperature_iterations: int = 0
 
     use_root_noise: bool = True
     use_continuation_gate: bool = True
@@ -65,9 +70,63 @@ class GenerationConfig:
         require_fraction("generation.gamma", self.gamma)
         require_positive("generation.c_puct", self.c_puct)
         require_positive("generation.prior_exponent", self.prior_exponent)
+        if isinstance(
+                self.selection_temperature,
+                bool,
+        ):
+            raise ValueError(
+                "generation.selection_temperature must "
+                "be a finite non-negative number."
+            )
+
+        selection_temperature = float(
+            self.selection_temperature
+        )
+
+        if (
+                not math.isfinite(
+                    selection_temperature
+                )
+                or selection_temperature < 0.0
+        ):
+            raise ValueError(
+                "generation.selection_temperature must "
+                "be a finite non-negative number."
+            )
+
+        object.__setattr__(
+            self,
+            "selection_temperature",
+            selection_temperature,
+        )
+
+        temperature_steps = coerce_exact_int(
+            "generation.temperature_steps",
+            self.temperature_steps,
+        )
+        temperature_iterations = coerce_exact_int(
+            "generation.temperature_iterations",
+            self.temperature_iterations,
+        )
+
         require_non_negative(
-            "generation.selection_temperature",
-            self.selection_temperature,
+            "generation.temperature_steps",
+            temperature_steps,
+        )
+        require_non_negative(
+            "generation.temperature_iterations",
+            temperature_iterations,
+        )
+
+        object.__setattr__(
+            self,
+            "temperature_steps",
+            temperature_steps,
+        )
+        object.__setattr__(
+            self,
+            "temperature_iterations",
+            temperature_iterations,
         )
         pf_alg = coerce_exact_int("generation.pf_alg", self.pf_alg)
         object.__setattr__(self, "pf_alg", pf_alg)
@@ -156,6 +215,20 @@ class GenerationConfig:
             c_puct=float(data.get("c_puct", 2.0)),
             prior_exponent=float(data.get("prior_exponent", 0.5)),
             selection_temperature=float(data.get("selection_temperature", 0.0)),
+            temperature_steps=coerce_exact_int(
+                "generation.temperature_steps",
+                data.get(
+                    "temperature_steps",
+                    0,
+                ),
+            ),
+            temperature_iterations=coerce_exact_int(
+                "generation.temperature_iterations",
+                data.get(
+                    "temperature_iterations",
+                    0,
+                ),
+            ),
             use_root_noise=bool(data.get("use_root_noise", True)),
             use_continuation_gate=bool(data.get("use_continuation_gate", True)),
             pf_alg=coerce_exact_int("generation.pf_alg", data.get("pf_alg", 3)),
