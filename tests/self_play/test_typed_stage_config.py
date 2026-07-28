@@ -84,13 +84,16 @@ def test_run_generate_uses_generation_request(
         checkpoint=tmp_path / "best.pt",
         output_dir=tmp_path / "generated",
         config=config,
-        base_seed=100,
+        mcts_seed=101,
+        action_seed=202,
         iteration=3,
     )
 
     request = captured[0]
     assert request.config is config
-    assert request.seed == 103
+    assert request.mcts_seed == 101
+    assert request.action_seed == 202
+    assert request.iteration == 3
     assert request.checkpoint == tmp_path / "best.pt"
     assert request.raw_dir == tmp_path / "raw"
     assert request.output_dir == tmp_path / "generated"
@@ -239,7 +242,8 @@ def test_stage_output_logs_exception_and_restores_streams(
             checkpoint=tmp_path / "best.pt",
             output_dir=tmp_path / "generated",
             config=GenerationConfig(),
-            base_seed=1,
+            mcts_seed=1,
+            action_seed=2,
             iteration=1,
         )
 
