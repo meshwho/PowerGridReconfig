@@ -185,3 +185,49 @@ def supply_terminal_episode_seed(
         )
 
     yield
+
+
+@pytest.fixture(autouse=True)
+def adapt_legacy_iteration_exploration_fixtures(
+    request: pytest.FixtureRequest,
+    monkeypatch: pytest.MonkeyPatch,
+) -> Iterator[None]:
+    """Keep compact iteration fakes focused on orchestration behavior."""
+
+    if request.node.path.name != "test_iteration.py":
+        yield
+        return
+
+    original = iteration_module._self_play_exploration_metrics
+    required_columns = {
+        *iteration_module._SELF_PLAY_EXPLORATION_NUMERIC_COLUMNS,
+        "selection_mode",
+    }
+
+    def exploration_metrics(examples):
+        if required_columns.issubset(examples.columns):
+            return original(examples)
+
+        return {
+            "steps": int(len(examples)),
+            "sampled_steps": 0,
+            "sample_fraction": 0.0,
+            "mean_selection_temperature": 0.0,
+            "mean_policy_target_entropy": 0.0,
+            "mean_policy_target_normalized_entropy": 0.0,
+            "mean_mcts_legal_action_count": 0.0,
+            "mean_mcts_considered_action_count": 0.0,
+            "mean_mcts_visited_action_count": 0.0,
+            "mean_mcts_action_coverage": 0.0,
+            "min_mcts_action_coverage": 0.0,
+            "mean_mcts_visited_action_coverage": 0.0,
+            "min_mcts_visited_action_coverage": 0.0,
+        }
+
+    monkeypatch.setattr(
+        iteration_module,
+        "_self_play_exploration_metrics",
+        exploration_metrics,
+    )
+
+    yield
