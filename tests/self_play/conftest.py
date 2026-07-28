@@ -1,12 +1,14 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
+from functools import wraps
 from typing import Any
 
 import pytest
 
 from grid_topology_ai.config import AcceptanceConfig
 from grid_topology_ai.config.acceptance import PRIMARY_ACCEPTANCE_METRIC
+from grid_topology_ai.evaluation import checkpoint as evaluation
 from grid_topology_ai.self_play import iteration as iteration_module
 from grid_topology_ai.self_play.acceptance import (
     accept_candidate as strict_accept_candidate,
@@ -26,6 +28,11 @@ _COMPONENT_FIELDS = (
     "angle_difference_feasible",
     "physically_secure",
 )
+
+_TERMINAL_ONLY_EPISODE_TESTS = {
+    "test_run_episode_adds_physical_row_fields_directly",
+    "test_run_episode_rejects_solved_contract_mismatch",
+}
 
 
 def _rate(numerator: int, denominator: int) -> float:
@@ -152,3 +159,29 @@ def migrate_pre_v5_self_play_test_fixtures(
         "accept_candidate",
         migrated_accept_candidate,
     )
+
+
+@pytest.fixture(autouse=True)
+def supply_terminal_episode_seed(
+    request: pytest.FixtureRequest,
+    monkeypatch: pytest.MonkeyPatch,
+) -> Iterator[None]:
+    """Keep terminal-only row tests focused on physical result contracts."""
+    if (
+        request.node.path.name == "test_evaluation_api.py"
+        and request.node.name in _TERMINAL_ONLY_EPISODE_TESTS
+    ):
+        original = evaluation.run_episode
+
+        @wraps(original)
+        def run_episode_with_seed(*args: object, **kwargs: object):
+            kwargs.setdefault("random_seed", 42)
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(
+            evaluation,
+            "run_episode",
+            run_episode_with_seed,
+        )
+
+    yield
