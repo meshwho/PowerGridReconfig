@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import math
-from dataclasses import dataclass
-from typing import Literal
+from collections import Counter
 
 import networkx as nx
 import numpy as np
@@ -11,88 +9,22 @@ from grid_topology_ai.data_adapter import (
     BRANCH_FEATURE_COLUMNS,
     GridFMState,
 )
-from collections import Counter
+from grid_topology_ai.topology_actions import (
+    ActionSlot,
+    ActionSpaceConfig,
+    ActionType,
+    GridFMAction,
+    build_branch_action_slots,
+)
 
-ActionType = Literal["do_nothing", "switch_off_branch"]
+__all__ = [
+    "ActionSlot",
+    "ActionSpaceConfig",
+    "ActionType",
+    "GridFMAction",
+    "GridFMActionSpace",
+]
 
-@dataclass(frozen=True, slots=True)
-class ActionSpaceConfig:
-    require_connected_after_switch: bool = True
-    min_loading_for_switch_percent: float = 0.0
-    enable_cache: bool = True
-
-    def __post_init__(self) -> None:
-        if not isinstance(
-            self.require_connected_after_switch,
-            bool,
-        ):
-            raise ValueError(
-                "require_connected_after_switch must be a boolean."
-            )
-
-        if not isinstance(
-            self.enable_cache,
-            bool,
-        ):
-            raise ValueError(
-                "enable_cache must be a boolean."
-            )
-
-        threshold = self.min_loading_for_switch_percent
-
-        if isinstance(threshold, bool):
-            raise ValueError(
-                "min_loading_for_switch_percent must be "
-                "a finite non-negative number."
-            )
-
-        try:
-            threshold = float(threshold)
-        except (TypeError, ValueError):
-            raise ValueError(
-                "min_loading_for_switch_percent must be "
-                "a finite non-negative number."
-            ) from None
-
-        if (
-            not math.isfinite(threshold)
-            or threshold < 0.0
-        ):
-            raise ValueError(
-                "min_loading_for_switch_percent must be "
-                "a finite non-negative number."
-            )
-
-        object.__setattr__(
-            self,
-            "min_loading_for_switch_percent",
-            threshold,
-        )
-
-@dataclass(frozen=True)
-class GridFMAction:
-    """
-    One topology switching action.
-
-    action_id:
-        Integer action ID used by RL / neural network.
-
-    action_type:
-        "do_nothing" or "switch_off_branch".
-
-    branch_id:
-        Original GridFM branch idx.
-        For do_nothing, branch_id is None.
-
-    branch_pos:
-        Position of this branch in state.branch_features / state.edge_index.
-        For do_nothing, branch_pos is None.
-    """
-
-    action_id: int
-    action_type: ActionType
-    branch_id: int | None = None
-    branch_pos: int | None = None
 
 
 class GridFMActionSpace:
@@ -392,34 +324,64 @@ class GridFMActionSpace:
             self._loading_signature(state),
         )
 
-    def build_all_actions(self, state: GridFMState) -> list[GridFMAction]:
+    def build_action_slots(
+        self,
+        state: GridFMState,
+    ) -> tuple[ActionSlot, ...]:
         """
-        Build the full fixed action list for one state.
+        Return the stable policy layout for the grid.
 
-        Action indexing convention:
-            action_id = 0              -> do nothing
-            action_id = 1 + branch_pos -> switch off branch at branch_pos
-
-        This convention is very useful later for neural network policy output:
-            policy_logits shape = [1 + num_branches]
+        The slot layout depends on branch identity and order,
+        not on the current branch status.
         """
 
-        actions: list[GridFMAction] = [
-            GridFMAction(
-                action_id=0,
-                action_type="do_nothing",
-                branch_id=None,
-                branch_pos=None,
-            )
-        ]
+        return build_branch_action_slots(
+            state.branch_ids
+        )
 
-        for branch_pos, branch_id in enumerate(state.branch_ids):
+    def build_all_actions(
+            self,
+            state: GridFMState,
+    ) -> list[GridFMAction]:
+        """
+        Build executable actions for the current state.
+
+        The policy layout is supplied by ActionSlot. This
+        compatibility stage still emits switch-off actions
+        only; bidirectional status changes are added next.
+        """
+
+        actions: list[GridFMAction] = []
+
+        for slot in self.build_action_slots(state):
+            if slot.kind == "stop":
+                actions.append(
+                    GridFMAction(
+                        action_id=slot.action_id,
+                        action_type="do_nothing",
+                        branch_id=None,
+                        branch_pos=None,
+                    )
+                )
+                continue
+
+            if slot.kind != "branch_status":
+                raise RuntimeError(
+                    "Unsupported action slot kind: "
+                    f"{slot.kind!r}."
+                )
+
+            assert slot.target_id is not None
+            assert slot.target_pos is not None
+
             actions.append(
                 GridFMAction(
-                    action_id=1 + branch_pos,
-                    action_type="switch_off_branch",
-                    branch_id=int(branch_id),
-                    branch_pos=int(branch_pos),
+                    action_id=slot.action_id,
+                    action_type=(
+                        "switch_off_branch"
+                    ),
+                    branch_id=slot.target_id,
+                    branch_pos=slot.target_pos,
                 )
             )
 
