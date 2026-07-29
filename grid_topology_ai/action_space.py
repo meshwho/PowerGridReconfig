@@ -98,24 +98,30 @@ class GridFMActionSpace:
         return self._config
 
     @property
+    def require_connected_after_switch(
+            self,
+    ) -> bool:
+        return (
+            self._config.require_connected_after_switch
+        )
+
+    @property
     def min_loading_for_switch_percent(
-        self,
+            self,
     ) -> float:
         return (
             self._config.min_loading_for_switch_percent
         )
 
     @property
-    def enable_cache(self) -> bool:
-        return self._config.enable_cache
+    def closeable_branch_ids(
+            self,
+    ) -> tuple[int, ...]:
+        return self._config.closeable_branch_ids
 
     @property
-    def require_connected_after_switch(
-        self,
-    ) -> bool:
-        return (
-            self._config.require_connected_after_switch
-        )
+    def enable_cache(self) -> bool:
+        return self._config.enable_cache
 
     @property
     def min_loading_for_switch_percent(
