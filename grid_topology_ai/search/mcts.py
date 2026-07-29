@@ -8,7 +8,7 @@ import numpy as np
 
 from grid_topology_ai.action_space import GridFMAction
 from grid_topology_ai.config.physics import DEFAULT_PHYSICS_CONFIG, PhysicsConfig
-from grid_topology_ai.data_adapter import GridFMState
+from grid_topology_ai.data_adapter import BRANCH_FEATURE_COLUMNS, GridFMState
 from grid_topology_ai.environment import TopologyStepResult, TopologySwitchingEnv
 from grid_topology_ai.physical_objective import (
     assess_physical_state,
@@ -319,6 +319,7 @@ class MCTSPlanner:
             raise ValueError("heuristic_utility_scale must be finite and > 0")
         require_bounded_utility(config.fpu_value, context="MCTS fpu_value")
 
+        self.loading_idx = BRANCH_FEATURE_COLUMNS.index("loading_percent")
         self.rng = np.random.default_rng(config.random_seed)
 
         self.dc_screener = None
@@ -462,6 +463,25 @@ class MCTSPlanner:
             return 0.0
 
         return float(count) / float(legal_count)
+
+    def _loading_priority(
+        self,
+        state: GridFMState,
+        action: GridFMAction,
+    ) -> float | None:
+        if (
+            action.kind != "set_branch_status"
+            or action.target_status != 0
+            or action.branch_pos is None
+        ):
+            return None
+
+        return float(
+            state.branch_features[
+                action.branch_pos,
+                self.loading_idx,
+            ]
+        )
 
     def _add_root_dirichlet_noise(
             self,
@@ -855,8 +875,7 @@ class MCTSPlanner:
         ranked_switches = [
             action
             for action in node.ranked_actions
-            if action.action_type
-            == "switch_off_branch"
+            if action.kind != "stop"
         ]
 
         target_width = self._target_switch_width(
@@ -990,11 +1009,9 @@ class MCTSPlanner:
         unscored_switches: list[GridFMAction] = []
 
         for action in switch_actions:
-            loading = (
-                node.env.action_space.loading_priority(
-                    state,
-                    action,
-                )
+            loading = self._loading_priority(
+                state,
+                action,
             )
 
             if loading is None:
@@ -1208,11 +1225,9 @@ class MCTSPlanner:
                     self.config.stop_prior
                 )
             else:
-                loading = (
-                    node.env.action_space.loading_priority(
-                        state,
-                        action,
-                    )
+                loading = self._loading_priority(
+                    state,
+                    action,
                 )
 
                 base_score = float(
