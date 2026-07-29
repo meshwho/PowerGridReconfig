@@ -33,9 +33,10 @@ class GridFMActionSpace:
     """
     Action space for GridFM topology switching.
 
-    Current MVP:
+        Current topology actions:
         - do nothing
-        - switch off one active branch
+        - open one active branch
+        - close one explicitly allowed inactive branch
 
     Important:
     This class does not run power flow.
@@ -660,6 +661,30 @@ class GridFMActionSpace:
             ] = list(valid)
 
         return valid
+
+    def loading_priority(
+        self,
+        state: GridFMState,
+        action: GridFMAction,
+    ) -> float | None:
+        """
+        Return branch loading for opening-action heuristics.
+        """
+        if action.kind != "set_branch_status":
+            return None
+
+        if (
+            action.target_status != 0
+            or action.branch_pos is None
+        ):
+            return None
+
+        return float(
+            state.branch_features[
+                action.branch_pos,
+                self._loading_column_idx,
+            ]
+        )
 
     def invalid_actions(self, state: GridFMState) -> list[GridFMAction]:
         """

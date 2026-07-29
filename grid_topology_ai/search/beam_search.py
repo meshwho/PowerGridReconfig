@@ -105,7 +105,6 @@ class BeamSearchPlanner:
 
     def __init__(self, config: BeamSearchConfig):
         self.config = config
-        self.loading_idx = BRANCH_FEATURE_COLUMNS.index("loading_percent")
 
     def search(
         self,
@@ -186,15 +185,16 @@ class BeamSearchPlanner:
             config=self.config,
         )
 
-    def _candidate_actions(self, env: TopologySwitchingEnv) -> list[GridFMAction]:
+    def _candidate_actions(
+            self,
+            env: TopologySwitchingEnv,
+    ) -> list[GridFMAction]:
         """
-        Select candidate actions from the current environment state.
+        Select candidate actions from the current state.
 
-        We include:
-            - optional stop/do_nothing;
-            - top-K switch-off actions by current loading.
+        Loading-based top-K applies only to branch openings.
+        Actions without a loading score are always retained.
         """
-
         state = env.current_state
 
         if state is None:
@@ -205,32 +205,60 @@ class BeamSearchPlanner:
         stop_actions = [
             action
             for action in valid_actions
-            if action.action_type == "do_nothing"
+            if action.kind == "stop"
         ]
-
-        switch_actions = [
+        topology_actions = [
             action
             for action in valid_actions
-            if action.action_type == "switch_off_branch"
+            if action.kind != "stop"
         ]
 
-        switch_actions = sorted(
-            switch_actions,
-            key=lambda action: float(
-                state.branch_features[action.branch_pos, self.loading_idx]
-            ),
+        loading_priorities: dict[int, float] = {}
+        always_keep: list[GridFMAction] = []
+
+        for action in topology_actions:
+            loading = env.action_space.loading_priority(
+                state,
+                action,
+            )
+
+            if loading is None:
+                always_keep.append(action)
+                continue
+
+            loading_priorities[
+                int(action.action_id)
+            ] = float(loading)
+
+        loading_actions = sorted(
+            [
+                action
+                for action in topology_actions
+                if int(action.action_id)
+                   in loading_priorities
+            ],
+            key=lambda action: loading_priorities[
+                int(action.action_id)
+            ],
             reverse=True,
         )
 
+        always_keep.sort(
+            key=lambda action: int(action.action_id)
+        )
+
         if self.config.top_k_actions > 0:
-            switch_actions = switch_actions[: self.config.top_k_actions]
+            loading_actions = loading_actions[
+                              : self.config.top_k_actions
+                              ]
 
         selected: list[GridFMAction] = []
 
         if self.config.include_stop_action:
             selected.extend(stop_actions)
 
-        selected.extend(switch_actions)
+        selected.extend(loading_actions)
+        selected.extend(always_keep)
 
         return selected
 

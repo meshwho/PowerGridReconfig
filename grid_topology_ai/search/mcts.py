@@ -8,7 +8,7 @@ import numpy as np
 
 from grid_topology_ai.action_space import GridFMAction
 from grid_topology_ai.config.physics import DEFAULT_PHYSICS_CONFIG, PhysicsConfig
-from grid_topology_ai.data_adapter import BRANCH_FEATURE_COLUMNS, GridFMState
+from grid_topology_ai.data_adapter import GridFMState
 from grid_topology_ai.environment import TopologyStepResult, TopologySwitchingEnv
 from grid_topology_ai.physical_objective import (
     assess_physical_state,
@@ -193,8 +193,7 @@ class MCTSNode:
     depth: int
     prior: float = 1.0
 
-    action_id_from_parent: int | None = None
-    branch_id_from_parent: int | None = None
+    action_from_parent: GridFMAction | None = None
     # Diagnostic potential shaping only; never used in backup or selection.
     reward_from_parent: float = 0.0
     step_result_from_parent: TopologyStepResult | None = None
@@ -233,6 +232,27 @@ class MCTSNode:
     children: dict[int, "MCTSNode"] = field(
         default_factory=dict
     )
+
+    @property
+    def action_id_from_parent(self) -> int | None:
+        if self.action_from_parent is None:
+            return None
+
+        return int(
+            self.action_from_parent.action_id
+        )
+
+    @property
+    def branch_id_from_parent(self) -> int | None:
+        if (
+            self.action_from_parent is None
+            or self.action_from_parent.branch_id is None
+        ):
+            return None
+
+        return int(
+            self.action_from_parent.branch_id
+        )
 
     @property
     def mean_value(self) -> float:
@@ -299,7 +319,6 @@ class MCTSPlanner:
             raise ValueError("heuristic_utility_scale must be finite and > 0")
         require_bounded_utility(config.fpu_value, context="MCTS fpu_value")
 
-        self.loading_idx = BRANCH_FEATURE_COLUMNS.index("loading_percent")
         self.rng = np.random.default_rng(config.random_seed)
 
         self.dc_screener = None
@@ -773,8 +792,7 @@ class MCTSPlanner:
         ranked_switches = [
             action
             for action in node.ranked_actions
-            if action.action_type
-            == "switch_off_branch"
+            if action.kind != "stop"
         ]
 
         total_switches = len(ranked_switches)
@@ -960,14 +978,49 @@ class MCTSPlanner:
         stop_actions = [
             action
             for action in valid_actions
-            if action.action_type == "do_nothing"
+            if action.kind == "stop"
         ]
         switch_actions = [
             action
             for action in valid_actions
-            if action.action_type
-               == "switch_off_branch"
+            if action.kind != "stop"
         ]
+
+        loading_priorities: dict[int, float] = {}
+        unscored_switches: list[GridFMAction] = []
+
+        for action in switch_actions:
+            loading = (
+                node.env.action_space.loading_priority(
+                    state,
+                    action,
+                )
+            )
+
+            if loading is None:
+                unscored_switches.append(action)
+                continue
+
+            loading_priorities[
+                int(action.action_id)
+            ] = float(loading)
+
+        switch_by_loading = sorted(
+            [
+                action
+                for action in switch_actions
+                if int(action.action_id)
+                   in loading_priorities
+            ],
+            key=lambda action: loading_priorities[
+                int(action.action_id)
+            ],
+            reverse=True,
+        )
+
+        unscored_switches.sort(
+            key=lambda action: int(action.action_id)
+        )
 
         ranked_switches: list[GridFMAction]
         initial_switches: list[GridFMAction]
@@ -980,17 +1033,6 @@ class MCTSPlanner:
                 ),
                 reverse=True,
             )
-            switch_by_loading = sorted(
-                switch_actions,
-                key=lambda action: float(
-                    state.branch_features[
-                        action.branch_pos,
-                        self.loading_idx,
-                    ]
-                ),
-                reverse=True,
-            )
-
             initial_switches = []
             initial_seen: set[int] = set()
 
@@ -1102,21 +1144,18 @@ class MCTSPlanner:
                 ranked_seen,
             )
         else:
-            ranked_switches = sorted(
-                switch_actions,
-                key=lambda action: float(
-                    state.branch_features[
-                        action.branch_pos,
-                        self.loading_idx,
-                    ]
-                ),
-                reverse=True,
-            )
+            ranked_switches = [
+                *switch_by_loading,
+                *unscored_switches,
+            ]
 
             if self.config.top_k_actions > 0:
-                initial_switches = ranked_switches[
-                                   : self.config.top_k_actions
-                                   ]
+                initial_switches = [
+                    *switch_by_loading[
+                     : self.config.top_k_actions
+                     ],
+                    *unscored_switches,
+                ]
             else:
                 initial_switches = list(
                     ranked_switches
@@ -1164,21 +1203,28 @@ class MCTSPlanner:
                     float(neural_policy[action_id]),
                     1e-8,
                 )
-            elif action.action_type == "do_nothing":
+            elif action.kind == "stop":
                 action_scores[action_id] = float(
                     self.config.stop_prior
                 )
             else:
-                loading = float(
-                    state.branch_features[
-                        action.branch_pos,
-                        self.loading_idx,
-                    ]
+                loading = (
+                    node.env.action_space.loading_priority(
+                        state,
+                        action,
+                    )
                 )
-                base_score = max(
-                    loading - 80.0,
-                    self.config.min_switch_prior_score,
+
+                base_score = float(
+                    self.config.min_switch_prior_score
                 )
+
+                if loading is not None:
+                    base_score = max(
+                        float(loading) - 80.0,
+                        base_score,
+                    )
+
                 action_scores[action_id] = (
                         base_score
                         ** self.config.prior_exponent
@@ -1255,10 +1301,7 @@ class MCTSPlanner:
             env=child_env,
             depth=parent.depth + 1,
             prior=parent.action_priors.get(action_id, 0.0),
-            action_id_from_parent=int(action_id),
-            branch_id_from_parent=(
-                None if action.branch_id is None else int(action.branch_id)
-            ),
+            action_from_parent=action,
             reward_from_parent=float(step_result.reward),
             step_result_from_parent=step_result,
         )

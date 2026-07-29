@@ -370,7 +370,6 @@ class ImpactBeamSearchPlanner:
         self.config = config
         self.physics_config = physics_config or DEFAULT_PHYSICS_CONFIG
 
-        self.loading_idx = BRANCH_FEATURE_COLUMNS.index("loading_percent")
         self.status_idx = BRANCH_FEATURE_COLUMNS.index("br_status")
 
         self.evaluated_actions = 0
@@ -666,57 +665,89 @@ class ImpactBeamSearchPlanner:
         return evaluated_children
 
     def _candidate_actions(
-        self,
-        env: TopologySwitchingEnv,
+            self,
+            env: TopologySwitchingEnv,
     ) -> list[GridFMAction]:
         """
-        Cheap candidate prefilter.
+        Build the cheap candidate pool.
 
-        Important:
-            This function does not decide which action is good.
-            It only decides which actions are worth expensive power-flow evaluation.
-
-        Default behavior:
-            - stop action is allowed only if no hard overload exists;
-            - switch actions are prefiltered by current loading;
-            - actual ranking happens only after power-flow simulation.
+        Loading-based prefiltering applies only to branch
+        openings. Other topology actions remain available for
+        the actual power-flow impact evaluation.
         """
-
         state = env.current_state
 
         if state is None:
             return []
 
         valid_actions = env.valid_actions()
+        num_hard = int(
+            state.metrics.get(
+                "num_hard_overloaded_branches",
+                0,
+            )
+        )
 
-        num_hard = int(state.metrics.get("num_hard_overloaded_branches", 0))
+        stop_actions = [
+            action
+            for action in valid_actions
+            if action.kind == "stop"
+        ]
+        topology_actions = [
+            action
+            for action in valid_actions
+            if action.kind != "stop"
+        ]
 
-        stop_actions: list[GridFMAction] = []
-        switch_actions: list[GridFMAction] = []
+        loading_priorities: dict[int, float] = {}
+        always_keep: list[GridFMAction] = []
 
-        for action in valid_actions:
-            if action.action_type == "do_nothing":
-                stop_actions.append(action)
-            elif action.action_type == "switch_off_branch":
-                switch_actions.append(action)
+        for action in topology_actions:
+            loading = env.action_space.loading_priority(
+                state,
+                action,
+            )
 
-        switch_actions = sorted(
-            switch_actions,
-            key=lambda action: float(
-                state.branch_features[action.branch_pos, self.loading_idx]
-            ),
+            if loading is None:
+                always_keep.append(action)
+                continue
+
+            loading_priorities[
+                int(action.action_id)
+            ] = float(loading)
+
+        loading_actions = sorted(
+            [
+                action
+                for action in topology_actions
+                if int(action.action_id)
+                   in loading_priorities
+            ],
+            key=lambda action: loading_priorities[
+                int(action.action_id)
+            ],
             reverse=True,
         )
 
+        always_keep.sort(
+            key=lambda action: int(action.action_id)
+        )
+
         if self.config.candidate_pool_size > 0:
-            switch_actions = switch_actions[: self.config.candidate_pool_size]
+            loading_actions = loading_actions[
+                              : self.config.candidate_pool_size
+                              ]
 
         selected: list[GridFMAction] = []
 
-        if self.config.include_stop_action and num_hard == 0:
+        if (
+                self.config.include_stop_action
+                and num_hard == 0
+        ):
             selected.extend(stop_actions)
 
-        selected.extend(switch_actions)
+        selected.extend(loading_actions)
+        selected.extend(always_keep)
 
         return selected
 
@@ -757,8 +788,10 @@ class ImpactBeamSearchPlanner:
         if not step_result.power_flow_success or step_result.next_state is None:
             impact_score = -float(self.config.failure_penalty)
 
-            if action.action_type == "switch_off_branch":
-                impact_score -= float(self.config.switch_penalty)
+            if action.kind != "stop":
+                impact_score -= float(
+                    self.config.switch_penalty
+                )
 
             discounted = (float(self.config.gamma) ** node.depth) * impact_score
 
@@ -792,8 +825,10 @@ class ImpactBeamSearchPlanner:
 
         impact_score = float(before_safety - after_safety)
 
-        if action.action_type == "switch_off_branch":
-            impact_score -= float(self.config.switch_penalty)
+        if action.kind != "stop":
+            impact_score -= float(
+                self.config.switch_penalty
+            )
 
         if bool(step_result.solved):
             impact_score += float(self.config.solved_bonus)

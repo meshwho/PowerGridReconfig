@@ -29,6 +29,9 @@ class GridFMTransitionRecord:
 
     action_id: int
     action_type: str
+    action_kind: str
+    target_id: int | None
+    target_status: int | None
     branch_id: int | None
     branch_pos: int | None
 
@@ -211,35 +214,67 @@ class GridFMTransitionGenerator:
             - evaluate all valid switch-off actions or top-K by loading.
         """
 
-        valid_actions = self.action_space.valid_actions(state)
+        valid_actions = self.action_space.valid_actions(
+            state
+        )
 
         do_nothing_actions = [
-            action for action in valid_actions if action.action_type == "do_nothing"
+            action
+            for action in valid_actions
+            if action.kind == "stop"
         ]
-
-        switch_actions = [
-            action for action in valid_actions if action.action_type == "switch_off_branch"
+        topology_actions = [
+            action
+            for action in valid_actions
+            if action.kind != "stop"
         ]
 
         if max_switch_actions is not None:
-            loading_idx = BRANCH_FEATURE_COLUMNS.index("loading_percent")
+            loading_priorities: dict[int, float] = {}
+            always_keep: list[GridFMAction] = []
 
-            switch_actions = sorted(
-                switch_actions,
-                key=lambda action: float(
-                    state.branch_features[action.branch_pos, loading_idx]
-                ),
+            for action in topology_actions:
+                loading = self.action_space.loading_priority(
+                    state,
+                    action,
+                )
+
+                if loading is None:
+                    always_keep.append(action)
+                    continue
+
+                loading_priorities[
+                    int(action.action_id)
+                ] = float(loading)
+
+            loading_actions = sorted(
+                [
+                    action
+                    for action in topology_actions
+                    if int(action.action_id)
+                       in loading_priorities
+                ],
+                key=lambda action: loading_priorities[
+                    int(action.action_id)
+                ],
                 reverse=True,
             )
 
-            switch_actions = switch_actions[:max_switch_actions]
+            always_keep.sort(
+                key=lambda action: int(action.action_id)
+            )
+
+            topology_actions = [
+                *loading_actions[:max_switch_actions],
+                *always_keep,
+            ]
 
         selected: list[GridFMAction] = []
 
         if include_do_nothing:
             selected.extend(do_nothing_actions)
 
-        selected.extend(switch_actions)
+        selected.extend(topology_actions)
 
         return selected
 
@@ -253,7 +288,7 @@ class GridFMTransitionGenerator:
         Apply one action, run power flow, compute reward, return transition record.
         """
 
-        if action.action_type == "do_nothing":
+        if action.kind == "stop":
             # For do_nothing we intentionally do not rerun PYPOWER.
             # The next state is identical to the current state.
             # This prevents tiny backend differences from creating fake reward.
@@ -273,15 +308,15 @@ class GridFMTransitionGenerator:
                 message="Do nothing.",
             )
 
-        result = self.backend.run_power_flow(
-            scenario_id=state.scenario_id,
-            switched_off_branch_id=action.branch_id,
+        result = self.backend.run_power_flow_from_state(
+            state=state,
+            action=action,
         )
 
         reward = self.reward_fn.compute(
             before_state=state,
             after_state=result.next_state,
-            action_is_switching=True,
+            action_is_switching=(action.kind != "stop"),
             power_flow_success=result.success,
         )
 
@@ -312,6 +347,17 @@ class GridFMTransitionGenerator:
             scenario_id=int(state.scenario_id),
             action_id=int(action.action_id),
             action_type=str(action.action_type),
+            action_kind=str(action.kind),
+            target_id=(
+                None
+                if action.target_id is None
+                else int(action.target_id)
+            ),
+            target_status=(
+                None
+                if action.target_status is None
+                else int(action.target_status)
+            ),
             branch_id=None if action.branch_id is None else int(action.branch_id),
             branch_pos=None if action.branch_pos is None else int(action.branch_pos),
             power_flow_success=bool(power_flow_success),
