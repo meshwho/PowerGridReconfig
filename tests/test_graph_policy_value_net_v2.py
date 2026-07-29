@@ -174,7 +174,7 @@ def test_graph_policy_value_net_v2_rejects_wrong_edge_mask_shape():
         )
 
 
-def test_graph_policy_value_net_v2_rejects_valid_action_for_inactive_edge():
+def test_policy_can_select_a_closeable_inactive_branch():
     model = GraphPolicyValueNetV2(
         num_bus_features=3,
         num_branch_features=4,
@@ -192,11 +192,15 @@ def test_graph_policy_value_net_v2_rejects_valid_action_for_inactive_edge():
     edge_active_mask = torch.tensor([[True, False, True]])
     action_mask = torch.tensor([[True, True, True, True]])
 
-    with pytest.raises(ValueError, match="physically inactive branch action"):
-        model(
-            bus_features=bus_features,
-            branch_features=branch_features,
-            edge_index=edge_index,
-            edge_active_mask=edge_active_mask,
-            action_mask=action_mask,
-        )
+    policy_logits, value = model(
+        bus_features=bus_features,
+        branch_features=branch_features,
+        edge_index=edge_index,
+        edge_active_mask=edge_active_mask,
+        action_mask=action_mask,
+    )
+
+    # Action 2 controls the physically inactive second branch. It remains a
+    # legal policy action because closing a tie-line is not message passing.
+    assert torch.isfinite(policy_logits[0, 2])
+    assert torch.isfinite(value).all()
