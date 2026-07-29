@@ -279,14 +279,14 @@ def test_final_mask_preserves_operational_switch_filter() -> None:
 
 
 def test_expand_rejects_action_id_outside_final_mask() -> None:
-    invalid_action = GridFMAction(
+    invalid_action = SimpleNamespace(
         action_id=3,
         action_type="switch_off_branch",
         branch_id=103,
         branch_pos=0,
     )
     env = _FakeEnv(
-        actions=[invalid_action],
+        actions=[invalid_action],  # type: ignore[list-item]
         operational_mask=np.asarray(
             [True, True, True],
             dtype=bool,
