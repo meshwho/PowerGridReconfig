@@ -531,6 +531,41 @@ class MCTSPlanner:
             include_stop_action=self.config.include_stop_action,
         )
 
+    def _mcts_action_mask(
+        self,
+        *,
+        state: GridFMState,
+        operational_mask: np.ndarray,
+    ) -> np.ndarray:
+        """
+        Apply search-specific legality to the operational mask.
+
+        The action space decides structural and operational
+        validity. MCTS additionally decides whether the stop
+        action is legal under the configured stop policy.
+        """
+
+        mask = np.asarray(
+            operational_mask,
+            dtype=bool,
+        ).copy()
+
+        if mask.ndim != 1:
+            raise ValueError(
+                "MCTS action mask must be one-dimensional."
+            )
+
+        if mask.size == 0:
+            raise ValueError(
+                "MCTS action mask must contain the stop action."
+            )
+
+        mask[0] = self._should_include_stop_action(
+            state
+        )
+
+        return mask
+
     def _run_one_simulation(self, root: MCTSNode) -> None:
         node = root
         path: list[MCTSNode] = []
@@ -881,8 +916,32 @@ class MCTSPlanner:
             node.is_expanded = True
             return
 
-        valid_actions = node.env.valid_actions()
-        action_mask = node.env.valid_action_mask()
+        operational_mask = (
+            node.env.operational_action_mask()
+        )
+
+        action_mask = self._mcts_action_mask(
+            state=state,
+            operational_mask=operational_mask,
+        )
+
+        valid_actions: list[GridFMAction] = []
+
+        for action in node.env.valid_actions():
+            action_id = int(action.action_id)
+
+            if (
+                action_id < 0
+                or action_id >= action_mask.size
+            ):
+                raise RuntimeError(
+                    "Environment returned action_id "
+                    f"{action_id} outside action mask of "
+                    f"size {action_mask.size}."
+                )
+
+            if bool(action_mask[action_id]):
+                valid_actions.append(action)
 
         neural_policy = None
 
@@ -909,12 +968,6 @@ class MCTSPlanner:
             if action.action_type
                == "switch_off_branch"
         ]
-
-        active_stop_actions = (
-            stop_actions
-            if self._should_include_stop_action(state)
-            else []
-        )
 
         ranked_switches: list[GridFMAction]
         initial_switches: list[GridFMAction]
@@ -1074,7 +1127,7 @@ class MCTSPlanner:
 
         self._extend_unique_actions(
             ranked_actions,
-            active_stop_actions,
+            stop_actions,
             ranked_seen,
         )
         self._extend_unique_actions(
@@ -1088,7 +1141,7 @@ class MCTSPlanner:
 
         self._extend_unique_actions(
             active_actions,
-            active_stop_actions,
+            stop_actions,
             active_seen,
         )
         self._extend_unique_actions(
