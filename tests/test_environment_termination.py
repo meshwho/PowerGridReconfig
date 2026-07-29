@@ -143,15 +143,28 @@ class FakeBackend:
     def run_power_flow_from_state(
         self,
         state,
-        switched_off_branch_id,
+        switched_off_branch_id=None,
+        *,
+        action=None,
     ):
+        branch_id = switched_off_branch_id
+        target_status = 0 if switched_off_branch_id is not None else None
+
+        if action is not None:
+            branch_id = action.branch_id
+            target_status = action.target_status
+
         return GridFMPowerFlowResult(
             success=self.success,
             scenario_id=int(state.scenario_id),
-            switched_off_branch_id=switched_off_branch_id,
+            switched_off_branch_id=(
+                branch_id if target_status == 0 else None
+            ),
             next_state=self.next_state,
             raw_result=None,
             message="fake power flow",
+            switched_branch_id=branch_id,
+            target_status=target_status,
         )
 
 
