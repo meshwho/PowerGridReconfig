@@ -149,16 +149,42 @@ class TopologySwitchingEnv:
 
         return self.action_space.valid_actions(self.current_state)
 
-    def valid_action_mask(self):
+    def structural_action_mask(self):
         """
-        Return valid action mask for the current state.
+        Return the structural action mask for the current state.
         """
 
         self._require_active_episode()
 
         assert self.current_state is not None
 
-        return self.action_space.valid_action_mask(self.current_state)
+        return (
+            self.action_space.structural_action_mask(
+                self.current_state
+            )
+        )
+
+    def operational_action_mask(self):
+        """
+        Return the operational action mask for the current state.
+        """
+
+        self._require_active_episode()
+
+        assert self.current_state is not None
+
+        return (
+            self.action_space.operational_action_mask(
+                self.current_state
+            )
+        )
+
+    def valid_action_mask(self):
+        """
+        Compatibility alias for the operational action mask.
+        """
+
+        return self.operational_action_mask()
 
     def action_by_id(self, action_id: int) -> GridFMAction:
         """

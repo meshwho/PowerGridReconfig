@@ -148,9 +148,10 @@ class GridFMActionSpace:
             )
         )
 
-        self._valid_action_mask_cache: dict[tuple, np.ndarray] = {}
-        self._valid_actions_cache: dict[tuple, list[GridFMAction]] = {}
-        self._connectivity_mask_cache: dict[tuple, np.ndarray] = {}
+        self._structural_action_mask_cache: dict[tuple, np.ndarray,] = {}
+        self._operational_action_mask_cache: dict[tuple, np.ndarray,] = {}
+        self._valid_actions_cache: dict[tuple,list[GridFMAction],] = {}
+        self._connectivity_mask_cache: dict[tuple,np.ndarray,] = {}
         self.cache_hits = 0
         self.cache_misses = 0
 
@@ -179,21 +180,41 @@ class GridFMActionSpace:
         return self._config.enable_cache
 
     def clear_cache(self) -> None:
-        self._valid_action_mask_cache.clear()
+        self._structural_action_mask_cache.clear()
+        self._operational_action_mask_cache.clear()
         self._valid_actions_cache.clear()
+        self._connectivity_mask_cache.clear()
+
         self.cache_hits = 0
         self.cache_misses = 0
-        self._connectivity_mask_cache.clear()
 
     def cache_info(self) -> dict:
         total = self.cache_hits + self.cache_misses
-        hit_rate = self.cache_hits / total if total > 0 else 0.0
+        hit_rate = (
+            self.cache_hits / total
+            if total > 0
+            else 0.0
+        )
 
         return {
             "enabled": self.enable_cache,
-            "mask_cache_size": len(self._valid_action_mask_cache),
-            "valid_actions_cache_size": len(self._valid_actions_cache),
-            "connectivity_cache_size": len(self._connectivity_mask_cache),
+            # Compatibility field: valid_action_mask() remains
+            # the operational mask.
+            "mask_cache_size": len(
+                self._operational_action_mask_cache
+            ),
+            "structural_mask_cache_size": len(
+                self._structural_action_mask_cache
+            ),
+            "operational_mask_cache_size": len(
+                self._operational_action_mask_cache
+            ),
+            "valid_actions_cache_size": len(
+                self._valid_actions_cache
+            ),
+            "connectivity_cache_size": len(
+                self._connectivity_mask_cache
+            ),
             "hits": self.cache_hits,
             "misses": self.cache_misses,
             "hit_rate": hit_rate,
@@ -223,7 +244,7 @@ class GridFMActionSpace:
             result[branch_pos] = True means removing this branch does not create islands.
         """
 
-        cache_key = ("connectivity", self._make_cache_key(state))
+        cache_key = ("connectivity", self._structural_cache_key(state))
 
         if self.enable_cache and cache_key in self._connectivity_mask_cache:
             return self._connectivity_mask_cache[cache_key].copy()
@@ -300,20 +321,19 @@ class GridFMActionSpace:
 
         return connectivity_ok
 
-    def _make_cache_key(
-            self,
-            state: GridFMState,
+    def _structural_cache_key(
+        self,
+        state: GridFMState,
     ) -> tuple:
         """
-        Build the cache key for the current action-space
-        configuration and grid topology.
+        Cache key for topology-only action validity.
 
-        Operational loading values will be separated into
-        their own cache layer in the mask-layer refactor.
+        Loading values and the loading threshold do not affect
+        structural validity.
         """
 
         return (
-            self._config,
+            "structural",
             int(state.scenario_id),
             tuple(
                 int(branch_id)
@@ -321,6 +341,55 @@ class GridFMActionSpace:
                     state.outaged_branch_ids
                 )
             ),
+            bool(
+                self.require_connected_after_switch
+            ),
+        )
+
+    def _loading_signature(
+        self,
+        state: GridFMState,
+    ) -> tuple[float, ...] | None:
+        """
+        Return loading values used by the operational filter.
+
+        With a disabled loading threshold, operational validity
+        is independent of branch loading.
+        """
+
+        if (
+            self.min_loading_for_switch_percent
+            <= 0.0
+        ):
+            return None
+
+        loading_values = state.branch_features[
+            :,
+            self._loading_column_idx,
+        ]
+
+        return tuple(
+            float(value)
+            for value in loading_values
+        )
+
+    def _make_cache_key(
+        self,
+        state: GridFMState,
+    ) -> tuple:
+        """
+        Cache key for operational action validity.
+
+        This key includes both immutable action-space
+        configuration and the loading values read by the
+        operational filter.
+        """
+
+        return (
+            "operational",
+            self._config,
+            self._structural_cache_key(state),
+            self._loading_signature(state),
         )
 
     def build_all_actions(self, state: GridFMState) -> list[GridFMAction]:
@@ -356,63 +425,186 @@ class GridFMActionSpace:
 
         return actions
 
-    def valid_action_mask(self, state: GridFMState) -> np.ndarray:
-        cache_key = self._make_cache_key(state)
+    def structural_action_mask(
+            self,
+            state: GridFMState,
+    ) -> np.ndarray:
+        """
+        Return structurally valid actions.
 
-        if self.enable_cache and cache_key in self._valid_action_mask_cache:
+        Structural validity includes:
+
+        - the fixed stop action;
+        - branch activity;
+        - optional connectivity preservation.
+
+        It does not include the branch-loading filter.
+        """
+
+        cache_key = self._structural_cache_key(
+            state
+        )
+
+        if (
+                self.enable_cache
+                and cache_key
+                in self._structural_action_mask_cache
+        ):
             self.cache_hits += 1
-            return self._valid_action_mask_cache[cache_key].copy()
+            return (
+                self._structural_action_mask_cache[
+                    cache_key
+                ].copy()
+            )
 
         if self.enable_cache:
             self.cache_misses += 1
 
         num_branches = len(state.branch_ids)
 
-        mask = np.zeros(1 + num_branches, dtype=bool)
+        mask = np.zeros(
+            1 + num_branches,
+            dtype=bool,
+        )
 
-        # do_nothing is structurally legal.
+        # Stop/do-nothing exists structurally.
         mask[0] = True
 
         if self.require_connected_after_switch:
-            connectivity_ok = self._switch_connectivity_mask(state)
+            connectivity_ok = (
+                self._switch_connectivity_mask(
+                    state
+                )
+            )
         else:
-            connectivity_ok = np.ones(num_branches, dtype=bool)
+            connectivity_ok = np.ones(
+                num_branches,
+                dtype=bool,
+            )
 
         for branch_pos in range(num_branches):
             action_id = 1 + branch_pos
 
-            if not self._is_branch_active(state, branch_pos):
-                mask[action_id] = False
+            if not self._is_branch_active(
+                    state,
+                    branch_pos,
+            ):
                 continue
 
-            if not self._passes_loading_filter(state, branch_pos):
-                mask[action_id] = False
+            if (
+                    self.require_connected_after_switch
+                    and not bool(
+                connectivity_ok[branch_pos]
+            )
+            ):
                 continue
-
-            if self.require_connected_after_switch:
-                if not bool(connectivity_ok[branch_pos]):
-                    mask[action_id] = False
-                    continue
 
             mask[action_id] = True
 
         if self.enable_cache:
-            self._valid_action_mask_cache[cache_key] = mask.copy()
+            self._structural_action_mask_cache[
+                cache_key
+            ] = mask.copy()
 
         return mask
 
-    def valid_actions(self, state):
-        cache_key = self._make_cache_key(state)
+    def operational_action_mask(
+        self,
+        state: GridFMState,
+    ) -> np.ndarray:
+        """
+        Return actions allowed by structural and operational
+        action-space constraints.
 
-        if self.enable_cache and cache_key in self._valid_actions_cache:
+        The loading threshold is an operational candidate
+        filter and applies only to branch-switch actions.
+        """
+
+        cache_key = self._make_cache_key(
+            state
+        )
+
+        if (
+            self.enable_cache
+            and cache_key
+            in self._operational_action_mask_cache
+        ):
             self.cache_hits += 1
-            return list(self._valid_actions_cache[cache_key])
+            return (
+                self._operational_action_mask_cache[
+                    cache_key
+                ].copy()
+            )
 
         if self.enable_cache:
             self.cache_misses += 1
 
-        all_actions = self.build_all_actions(state)
-        mask = self.valid_action_mask(state)
+        mask = self.structural_action_mask(
+            state
+        )
+
+        for branch_pos in range(
+            len(state.branch_ids)
+        ):
+            action_id = 1 + branch_pos
+
+            if not bool(mask[action_id]):
+                continue
+
+            if not self._passes_loading_filter(
+                state,
+                branch_pos,
+            ):
+                mask[action_id] = False
+
+        if self.enable_cache:
+            self._operational_action_mask_cache[
+                cache_key
+            ] = mask.copy()
+
+        return mask
+
+    def valid_action_mask(
+        self,
+        state: GridFMState,
+    ) -> np.ndarray:
+        """
+        Compatibility alias for the operational action mask.
+        """
+
+        return self.operational_action_mask(
+            state
+        )
+
+    def valid_actions(
+            self,
+            state: GridFMState,
+    ) -> list[GridFMAction]:
+        cache_key = self._make_cache_key(
+            state
+        )
+
+        if (
+                self.enable_cache
+                and cache_key
+                in self._valid_actions_cache
+        ):
+            self.cache_hits += 1
+            return list(
+                self._valid_actions_cache[
+                    cache_key
+                ]
+            )
+
+        if self.enable_cache:
+            self.cache_misses += 1
+
+        all_actions = self.build_all_actions(
+            state
+        )
+        mask = self.operational_action_mask(
+            state
+        )
 
         valid = [
             action
@@ -421,7 +613,9 @@ class GridFMActionSpace:
         ]
 
         if self.enable_cache:
-            self._valid_actions_cache[cache_key] = list(valid)
+            self._valid_actions_cache[
+                cache_key
+            ] = list(valid)
 
         return valid
 
@@ -433,7 +627,7 @@ class GridFMActionSpace:
         """
 
         all_actions = self.build_all_actions(state)
-        mask = self.valid_action_mask(state)
+        mask = self.operational_action_mask(state)
 
         return [
             action
