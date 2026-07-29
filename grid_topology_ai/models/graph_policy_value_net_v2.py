@@ -736,17 +736,6 @@ class GraphPolicyValueNetV2(nn.Module):
                 f"but model expects {self.num_actions}."
             )
 
-        if action_mask is not None:
-            invalid_physical_actions = (
-                action_mask[:, 1:] & ~edge_active_mask
-            )
-
-            if bool(invalid_physical_actions.any()):
-                raise ValueError(
-                    "action_mask marks a physically inactive branch action "
-                    "as valid."
-                )
-
         edge_index = self._normalize_edge_index(
             edge_index=edge_index,
             num_nodes=num_nodes,

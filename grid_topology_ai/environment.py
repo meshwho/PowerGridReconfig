@@ -92,6 +92,7 @@ class TopologySwitchingEnv:
         self.done: bool = False
         self.solved: bool = False
         self.switched_branch_ids: list[int] = []
+        self.applied_actions: list[GridFMAction] = []
         self.termination_reason: TerminationReason | None = None
 
     def reset(self, scenario_id: int) -> GridFMState:
@@ -109,6 +110,7 @@ class TopologySwitchingEnv:
         self.done = False
         self.solved = False
         self.switched_branch_ids = []
+        self.applied_actions = []
         self.termination_reason = None
 
         initial_result = self.backend.run_power_flow(
@@ -209,21 +211,26 @@ class TopologySwitchingEnv:
 
         return action
 
-    def action_by_branch_id(self, branch_id: int) -> GridFMAction:
+    def action_by_branch_id(
+            self,
+            branch_id: int,
+    ) -> GridFMAction:
         """
-        Find a valid switch_off_branch action by original branch ID.
+        Find the valid branch-status action for a branch.
         """
 
         for action in self.valid_actions():
             if (
-                action.action_type == "switch_off_branch"
-                and action.branch_id == int(branch_id)
+                    action.kind
+                    == "set_branch_status"
+                    and action.branch_id
+                    == int(branch_id)
             ):
                 return action
 
         raise ValueError(
-            f"Branch {branch_id} is not a valid switch-off action "
-            f"in the current state."
+            f"Branch {branch_id} has no valid "
+            "status-change action in the current state."
         )
 
     def step(self, action: GridFMAction | int) -> TopologyStepResult:
@@ -235,17 +242,35 @@ class TopologySwitchingEnv:
 
         self._require_active_episode()
 
-        assert self.current_state is not None
+        if isinstance(action, int):
+            action = self.action_by_id(action)
+        else:
+            canonical_action = self.action_by_id(
+                int(action.action_id)
+            )
+
+            if action != canonical_action:
+                raise ValueError(
+                    "Topology action is stale or does "
+                    "not match the current state."
+                )
+
+            action = canonical_action
 
         if isinstance(action, int):
             action = self.action_by_id(action)
+        else:
+            canonical_action = self.action_by_id(
+                int(action.action_id)
+            )
 
-        if action.action_type == "do_nothing":
-            return self._step_do_nothing(action)
-        if action.action_type == "switch_off_branch":
-            return self._step_switch_off_branch(action)
+            if action != canonical_action:
+                raise ValueError(
+                    "Topology action is stale or does "
+                    "not match the current state."
+                )
 
-        raise ValueError(f"Unsupported action type: {action.action_type}")
+            action = canonical_action
 
     def clone(self) -> "TopologySwitchingEnv":
         """
@@ -270,6 +295,7 @@ class TopologySwitchingEnv:
         cloned.done = self.done
         cloned.solved = self.solved
         cloned.switched_branch_ids = list(self.switched_branch_ids)
+        cloned.applied_actions = list(self.applied_actions)
         cloned.termination_reason = self.termination_reason
 
         return cloned
@@ -328,18 +354,22 @@ class TopologySwitchingEnv:
             info=self._info(),
         )
 
-    def _step_switch_off_branch(self, action: GridFMAction) -> TopologyStepResult:
+    def _step_branch_status(self, action: GridFMAction) -> TopologyStepResult:
+
         """
-        Switch off one branch and run power flow from the current state.
+        Set one branch status and run power flow from the
+        current physical state.
         """
 
         assert self.current_state is not None
 
         before_state = self.current_state
 
-        power_flow_result = self.backend.run_power_flow_from_state(
-            state=before_state,
-            switched_off_branch_id=action.branch_id,
+        power_flow_result = (
+            self.backend.run_power_flow_from_state(
+                state=before_state,
+                action=action,
+            )
         )
 
         reward_breakdown = self.reward_fn.compute(
@@ -350,6 +380,8 @@ class TopologySwitchingEnv:
         )
 
         self.step_count += 1
+
+        self.applied_actions.append(action)
 
         if action.branch_id is not None:
             self.switched_branch_ids.append(int(action.branch_id))
@@ -420,6 +452,29 @@ class TopologySwitchingEnv:
                 self.termination_reason
             ),
             "switched_branch_ids": list(self.switched_branch_ids),
+            "applied_actions": [
+                {
+                    "action_id": int(
+                        action.action_id
+                    ),
+                    "action_type": str(
+                        action.action_type
+                    ),
+                    "branch_id": (
+                        None
+                        if action.branch_id is None
+                        else int(action.branch_id)
+                    ),
+                    "target_status": (
+                        None
+                        if action.target_status is None
+                        else int(
+                            action.target_status
+                        )
+                    ),
+                }
+                for action in self.applied_actions
+            ],
         }
 
     def _require_active_episode(self) -> None:

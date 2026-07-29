@@ -78,6 +78,11 @@ from grid_topology_ai.physical_objective import (
     OVERLOAD_LIMIT_PERCENT,
     assess_physical_state,
 )
+from grid_topology_ai.topology_actions import (
+    GridFMAction,
+)
+
+
 
 def pf_algorithm_name(pf_alg: int) -> str:
     names = {
@@ -102,6 +107,8 @@ class GridFMPowerFlowResult:
     raw_result: dict[str, Any] | None
     message: str
     failure_kind: PowerFlowFailureKind | None = None
+    switched_branch_id: int | None = None
+    target_status: int | None = None
 
 
 class GridFMPowerFlowBackend:
@@ -228,28 +235,127 @@ class GridFMPowerFlowBackend:
                     f"Power-flow result contains NaN or infinity in {name}."
                 )
 
+    @staticmethod
+    def _resolve_branch_status_action(
+        *,
+        action: GridFMAction | None,
+        switched_off_branch_id: int | None,
+    ) -> tuple[int | None, int | None]:
+        if (
+            action is not None
+            and switched_off_branch_id is not None
+        ):
+            raise ValueError(
+                "Pass either action or "
+                "switched_off_branch_id, not both."
+            )
+
+        if action is None:
+            if switched_off_branch_id is None:
+                return None, None
+
+            return (
+                int(switched_off_branch_id),
+                0,
+            )
+
+        if action.kind != "set_branch_status":
+            raise ValueError(
+                "Power-flow backend accepts only "
+                "branch-status topology actions."
+            )
+
+        if (
+            action.branch_id is None
+            or action.target_status is None
+        ):
+            raise ValueError(
+                "Branch-status action is missing its "
+                "branch target or target_status."
+            )
+
+        return (
+            int(action.branch_id),
+            int(action.target_status),
+        )
+
+    @staticmethod
+    def _apply_branch_status(
+        branch_df: pd.DataFrame,
+        *,
+        branch_id: int,
+        target_status: int,
+        context: str,
+    ) -> None:
+        if target_status not in (0, 1):
+            raise ValueError(
+                "target_status must be either 0 or 1."
+            )
+
+        mask = (
+            branch_df["idx"].astype(int)
+            == int(branch_id)
+        )
+
+        match_count = int(mask.sum())
+
+        if match_count != 1:
+            raise ValueError(
+                f"Expected exactly one branch id "
+                f"{branch_id} in {context}, found "
+                f"{match_count}."
+            )
+
+        current_status = int(
+            float(
+                branch_df.loc[
+                    mask,
+                    "br_status",
+                ].iloc[0]
+            )
+            > 0.5
+        )
+
+        if current_status == target_status:
+            raise ValueError(
+                f"Branch id {branch_id} already has "
+                f"status {target_status} in {context}."
+            )
+
+        branch_df.loc[
+            mask,
+            "br_status",
+        ] = float(target_status)
+
     def _make_cache_key_from_state(
             self,
             state: GridFMState,
-            switched_off_branch_id: int | None,
+            *,
+            action: GridFMAction | None = None,
+            switched_off_branch_id: int | None = None,
     ) -> tuple:
-        """
-        Build cache key for static topology-switching power flow.
+        branch_id, target_status = (
+            self._resolve_branch_status_action(
+                action=action,
+                switched_off_branch_id=(
+                    switched_branch_id
+                    if target_status == 0
+                    else None
+                ),
+            )
+        )
 
-        For the current MVP, loads and generation are fixed inside a scenario.
-        Therefore the solved state is determined by:
-            scenario_id
-            pf algorithm
-            sorted outaged branch IDs after applying the action
+        outaged = {
+            int(branch_id)
+            for branch_id
+            in state.outaged_branch_ids
+        }
 
-        Later, when redispatch or time-varying load is added, this key must also
-        include load/generation fingerprints.
-        """
-
-        outaged = set(int(x) for x in state.outaged_branch_ids)
-
-        if switched_off_branch_id is not None:
-            outaged.add(int(switched_off_branch_id))
+        if branch_id is not None:
+            if target_status == 0:
+                outaged.add(branch_id)
+            else:
+                outaged.discard(branch_id)
 
         return (
             int(state.scenario_id),
@@ -383,10 +489,15 @@ class GridFMPowerFlowBackend:
         return ppc, frames
 
     def _build_ppc_from_state(
-        self,
-        state: GridFMState,
-        switched_off_branch_id: int | None,
-    ) -> tuple[dict[str, Any], dict[str, pd.DataFrame]]:
+            self,
+            state: GridFMState,
+            switched_off_branch_id: int | None = None,
+            *,
+            action: GridFMAction | None = None,
+    ) -> tuple[
+        dict[str, Any],
+        dict[str, pd.DataFrame],
+    ]:
         """
         Convert an already modified GridFMState into PYPOWER ppc format.
 
@@ -410,23 +521,27 @@ class GridFMPowerFlowBackend:
 
         gen_df = gen_df.sort_values("idx").reset_index(drop=True)
 
-        if switched_off_branch_id is not None:
-            mask = branch_df["idx"].astype(int) == int(switched_off_branch_id)
+        branch_id, target_status = (
+            self._resolve_branch_status_action(
+                action=action,
+                switched_off_branch_id=(
+                    switched_off_branch_id
+                ),
+            )
+        )
 
-            if not mask.any():
-                raise ValueError(
-                    f"Branch id {switched_off_branch_id} not found "
-                    f"in current state for scenario {state.scenario_id}."
-                )
+        if branch_id is not None:
+            assert target_status is not None
 
-            current_status = float(branch_df.loc[mask, "br_status"].iloc[0])
-
-            if current_status <= 0:
-                raise ValueError(
-                    f"Branch id {switched_off_branch_id} is already out of service."
-                )
-
-            branch_df.loc[mask, "br_status"] = 0.0
+            self._apply_branch_status(
+                branch_df,
+                branch_id=branch_id,
+                target_status=target_status,
+                context=(
+                    "current state for scenario "
+                    f"{state.scenario_id}"
+                ),
+            )
 
         ppc = {
             "version": "2",
@@ -503,9 +618,11 @@ class GridFMPowerFlowBackend:
         return branch_df
 
     def run_power_flow_from_state(
-        self,
-        state: GridFMState,
-        switched_off_branch_id: int | None = None,
+            self,
+            state: GridFMState,
+            switched_off_branch_id: int | None = None,
+            *,
+            action: GridFMAction | None = None,
     ) -> GridFMPowerFlowResult:
         """
         Run AC power flow from an already modified GridFMState.
@@ -527,9 +644,21 @@ class GridFMPowerFlowBackend:
         from the original scenario.
         """
 
+        switched_branch_id, target_status = (
+            self._resolve_branch_status_action(
+                action=action,
+                switched_off_branch_id=(
+                    switched_off_branch_id
+                ),
+            )
+        )
+
         cache_key = self._make_cache_key_from_state(
             state=state,
-            switched_off_branch_id=switched_off_branch_id,
+            action=action,
+            switched_off_branch_id=(
+                switched_off_branch_id
+            ),
         )
 
         if self.enable_cache and cache_key in self._cache:
@@ -558,7 +687,12 @@ class GridFMPowerFlowBackend:
         try:
             ppc, frames = self._build_ppc_from_state(
                 state=state,
-                switched_off_branch_id=switched_off_branch_id,
+                action=action,
+                switched_off_branch_id=(
+                    switched_branch_id
+                    if target_status == 0
+                    else None
+                ),
             )
 
             result_ppc, metrics = self._solve_ppc(
@@ -586,6 +720,8 @@ class GridFMPowerFlowBackend:
                     ),
                     message=f"Power flow returned an unusable state: {exc}",
                     failure_kind=PowerFlowFailureKind.INVALID_PHYSICAL_STATE,
+                    switched_branch_id=switched_branch_id,
+                    target_status=target_status,
                 )
 
             result = GridFMPowerFlowResult(
@@ -595,6 +731,8 @@ class GridFMPowerFlowBackend:
                 next_state=next_state,
                 raw_result=result_ppc if self.store_raw_result else None,
                 message="Power flow converged.",
+                switched_branch_id=switched_branch_id,
+                target_status=target_status,
             )
 
             if self.enable_cache:
@@ -608,6 +746,8 @@ class GridFMPowerFlowBackend:
                 switched_off_branch_id=switched_off_branch_id, next_state=None,
                 raw_result=None, message=str(exc),
                 failure_kind=PowerFlowFailureKind.NOT_CONVERGED,
+                switched_branch_id=switched_branch_id,
+                target_status=target_status,
             )
         except InvalidPhysicalState as exc:
             return GridFMPowerFlowResult(
@@ -615,6 +755,8 @@ class GridFMPowerFlowBackend:
                 switched_off_branch_id=switched_off_branch_id, next_state=None,
                 raw_result=None, message=str(exc),
                 failure_kind=PowerFlowFailureKind.INVALID_PHYSICAL_STATE,
+                switched_branch_id=switched_branch_id,
+                target_status=target_status,
             )
 
     def _build_bus_matrix(self, bus_df: pd.DataFrame) -> np.ndarray:

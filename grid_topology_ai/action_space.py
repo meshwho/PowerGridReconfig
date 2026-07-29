@@ -15,6 +15,8 @@ from grid_topology_ai.topology_actions import (
     ActionType,
     GridFMAction,
     build_branch_action_slots,
+    ActionKind,
+    branch_status_signature,
 )
 
 __all__ = [
@@ -46,6 +48,7 @@ class GridFMActionSpace:
             self,
             require_connected_after_switch: bool = True,
             min_loading_for_switch_percent: float = 0.0,
+            closeable_branch_ids: tuple[int, ...] = (),
             enable_cache: bool = True,
     ):
         """
@@ -72,6 +75,9 @@ class GridFMActionSpace:
                 min_loading_for_switch_percent
             ),
             enable_cache=enable_cache,
+            closeable_branch_ids=(
+                closeable_branch_ids
+            ),
         )
 
         self._loading_column_idx = (
@@ -79,6 +85,12 @@ class GridFMActionSpace:
                 "loading_percent"
             )
         )
+
+        @property
+        def closeable_branch_ids(
+                self,
+        ) -> tuple[int, ...]:
+            return self._config.closeable_branch_ids
 
         self._structural_action_mask_cache: dict[tuple, np.ndarray,] = {}
         self._operational_action_mask_cache: dict[tuple, np.ndarray,] = {}
@@ -254,28 +266,24 @@ class GridFMActionSpace:
         return connectivity_ok
 
     def _structural_cache_key(
-        self,
-        state: GridFMState,
+            self,
+            state: GridFMState,
     ) -> tuple:
         """
-        Cache key for topology-only action validity.
-
-        Loading values and the loading threshold do not affect
-        structural validity.
+        Cache key for topology-dependent action validity.
         """
 
         return (
             "structural",
             int(state.scenario_id),
-            tuple(
-                int(branch_id)
-                for branch_id in sorted(
-                    state.outaged_branch_ids
-                )
+            branch_status_signature(
+                state.branch_ids,
+                state.branch_status,
             ),
             bool(
                 self.require_connected_after_switch
             ),
+            self.closeable_branch_ids,
         )
 
     def _loading_signature(
@@ -324,6 +332,29 @@ class GridFMActionSpace:
             self._loading_signature(state),
         )
 
+    def _require_known_closeable_branches(
+        self,
+        state: GridFMState,
+    ) -> None:
+        if not self.closeable_branch_ids:
+            return
+
+        known_branch_ids = {
+            int(branch_id)
+            for branch_id in state.branch_ids
+        }
+        unknown_branch_ids = sorted(
+            set(self.closeable_branch_ids)
+            - known_branch_ids
+        )
+
+        if unknown_branch_ids:
+            raise ValueError(
+                "closeable_branch_ids contains branches "
+                "that are absent from the current grid: "
+                f"{unknown_branch_ids}."
+            )
+
     def build_action_slots(
         self,
         state: GridFMState,
@@ -344,11 +375,11 @@ class GridFMActionSpace:
             state: GridFMState,
     ) -> list[GridFMAction]:
         """
-        Build executable actions for the current state.
+        Build one executable action per stable policy slot.
 
-        The policy layout is supplied by ActionSlot. This
-        compatibility stage still emits switch-off actions
-        only; bidirectional status changes are added next.
+        An active branch produces an opening command.
+        An inactive branch produces a closing command, but
+        legality is still decided by the action mask.
         """
 
         actions: list[GridFMAction] = []
@@ -359,8 +390,6 @@ class GridFMActionSpace:
                     GridFMAction(
                         action_id=slot.action_id,
                         action_type="do_nothing",
-                        branch_id=None,
-                        branch_pos=None,
                     )
                 )
                 continue
@@ -374,14 +403,24 @@ class GridFMActionSpace:
             assert slot.target_id is not None
             assert slot.target_pos is not None
 
+            is_active = self._is_branch_active(
+                state,
+                slot.target_pos,
+            )
+
             actions.append(
                 GridFMAction(
                     action_id=slot.action_id,
                     action_type=(
                         "switch_off_branch"
+                        if is_active
+                        else "switch_on_branch"
                     ),
                     branch_id=slot.target_id,
                     branch_pos=slot.target_pos,
+                    target_status=(
+                        0 if is_active else 1
+                    ),
                 )
             )
 
@@ -392,16 +431,16 @@ class GridFMActionSpace:
             state: GridFMState,
     ) -> np.ndarray:
         """
-        Return structurally valid actions.
+        Return structurally valid topology actions.
 
-        Structural validity includes:
-
-        - the fixed stop action;
-        - branch activity;
-        - optional connectivity preservation.
-
-        It does not include the branch-loading filter.
+        Opening an active branch may be restricted by
+        connectivity. Closing is allowed only for explicitly
+        configured normally-open branches.
         """
+
+        self._require_known_closeable_branches(
+            state
+        )
 
         cache_key = self._structural_cache_key(
             state
@@ -422,14 +461,11 @@ class GridFMActionSpace:
         if self.enable_cache:
             self.cache_misses += 1
 
-        num_branches = len(state.branch_ids)
-
+        actions = self.build_all_actions(state)
         mask = np.zeros(
-            1 + num_branches,
+            len(actions),
             dtype=bool,
         )
-
-        # Stop/do-nothing exists structurally.
         mask[0] = True
 
         if self.require_connected_after_switch:
@@ -440,28 +476,49 @@ class GridFMActionSpace:
             )
         else:
             connectivity_ok = np.ones(
-                num_branches,
+                len(state.branch_ids),
                 dtype=bool,
             )
 
-        for branch_pos in range(num_branches):
-            action_id = 1 + branch_pos
+        closeable = set(
+            self.closeable_branch_ids
+        )
 
-            if not self._is_branch_active(
+        for action in actions[1:]:
+            assert action.branch_id is not None
+            assert action.branch_pos is not None
+            assert action.target_status is not None
+
+            if action.target_status == 0:
+                if not self._is_branch_active(
+                        state,
+                        action.branch_pos,
+                ):
+                    continue
+
+                if (
+                        self.require_connected_after_switch
+                        and not bool(
+                    connectivity_ok[
+                        action.branch_pos
+                    ]
+                )
+                ):
+                    continue
+
+                mask[action.action_id] = True
+                continue
+
+            if self._is_branch_active(
                     state,
-                    branch_pos,
+                    action.branch_pos,
             ):
                 continue
 
-            if (
-                    self.require_connected_after_switch
-                    and not bool(
-                connectivity_ok[branch_pos]
-            )
-            ):
+            if action.branch_id not in closeable:
                 continue
 
-            mask[action_id] = True
+            mask[action.action_id] = True
 
         if self.enable_cache:
             self._structural_action_mask_cache[
@@ -505,19 +562,30 @@ class GridFMActionSpace:
             state
         )
 
-        for branch_pos in range(
-            len(state.branch_ids)
-        ):
-            action_id = 1 + branch_pos
+        actions = self.build_all_actions(
+            state
+        )
 
-            if not bool(mask[action_id]):
+        for action in actions[1:]:
+            if not bool(
+                    mask[action.action_id]
+            ):
                 continue
 
-            if not self._passes_loading_filter(
+            assert action.branch_pos is not None
+            assert action.target_status is not None
+
+            # Loading is meaningful only for opening an
+            # active branch. An inactive tie-line normally
+            # has zero flow before it is closed.
+            if (
+                    action.target_status == 0
+                    and not self._passes_loading_filter(
                 state,
-                branch_pos,
+                action.branch_pos,
+            )
             ):
-                mask[action_id] = False
+                mask[action.action_id] = False
 
         if self.enable_cache:
             self._operational_action_mask_cache[
