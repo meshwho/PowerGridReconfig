@@ -17,7 +17,7 @@ from grid_topology_ai.pypower_backend import GridFMPowerFlowBackend
 @dataclass(frozen=True)
 class DCActionScore:
     """
-    DC screening score for one switch action.
+    DC screening score for one topology action.
 
     Lower penalty is better.
     """
@@ -39,11 +39,11 @@ class DCActionScreener:
 
     Important:
     - This is not a final safety validator.
-    - It only ranks / filters candidate topology actions.
+    - It only ranks supported candidate topology actions.
     - AC power flow is still used by env.step() and final evaluation.
 
-    Therefore this module should not change correctness of final solved/handoff
-    decisions. It only changes which switch actions MCTS expands first.
+    Unsupported action kinds must remain available to the search through its
+    normal policy or fallback ranking; they are never rejected here.
     """
 
     def __init__(
@@ -83,18 +83,25 @@ class DCActionScreener:
             "hit_rate": hit_rate,
         }
 
+    @staticmethod
+    def supports(action: GridFMAction) -> bool:
+        return (
+            action.kind == "set_branch_status"
+            and action.branch_id is not None
+            and action.target_status in (0, 1)
+        )
+
     def screen_actions(
-            self,
-            *,
-            state: GridFMState,
-            actions: list[GridFMAction],
-            backend: GridFMPowerFlowBackend,
-            neural_policy: np.ndarray | None = None,
-            top_k: int | None = None,
+        self,
+        *,
+        state: GridFMState,
+        actions: list[GridFMAction],
+        backend: GridFMPowerFlowBackend,
+        neural_policy: np.ndarray | None = None,
+        top_k: int | None = None,
     ) -> list[GridFMAction]:
-        """
-        Rank switch actions and return the requested prefix.
-        """
+        """Rank supported actions and return the requested prefix."""
+
         ranked = self.rank_actions(
             state=state,
             actions=actions,
@@ -114,33 +121,25 @@ class DCActionScreener:
         return ranked[:effective_top_k]
 
     def rank_actions(
-            self,
-            *,
-            state: GridFMState,
-            actions: list[GridFMAction],
-            backend: GridFMPowerFlowBackend,
-            neural_policy: np.ndarray | None = None,
+        self,
+        *,
+        state: GridFMState,
+        actions: list[GridFMAction],
+        backend: GridFMPowerFlowBackend,
+        neural_policy: np.ndarray | None = None,
     ) -> list[GridFMAction]:
-        """
-        Return every switch action ordered by its DC score.
-        """
-        if not actions:
-            return []
+        """Return every supported action ordered by its DC score."""
 
-        scored: list[DCActionScore] = []
-
-        for action in actions:
-            if action.action_type != "switch_off_branch":
-                continue
-
-            scored.append(
-                self.score_action(
-                    state=state,
-                    action=action,
-                    backend=backend,
-                    neural_policy=neural_policy,
-                )
+        scored = [
+            self.score_action(
+                state=state,
+                action=action,
+                backend=backend,
+                neural_policy=neural_policy,
             )
+            for action in actions
+            if self.supports(action)
+        ]
 
         scored.sort(
             key=lambda item: (
@@ -152,10 +151,7 @@ class DCActionScreener:
             )
         )
 
-        return [
-            item.action
-            for item in scored
-        ]
+        return [item.action for item in scored]
 
     def score_action(
         self,
@@ -165,12 +161,17 @@ class DCActionScreener:
         backend: GridFMPowerFlowBackend,
         neural_policy: np.ndarray | None = None,
     ) -> DCActionScore:
-        if action.branch_id is None:
-            raise ValueError("DCActionScreener can score only branch switch actions.")
+        if not self.supports(action):
+            raise ValueError(
+                "DCActionScreener supports only branch-status actions."
+            )
 
         policy_prior = 0.0
 
-        if neural_policy is not None and 0 <= action.action_id < len(neural_policy):
+        if (
+            neural_policy is not None
+            and 0 <= action.action_id < len(neural_policy)
+        ):
             policy_prior = float(neural_policy[action.action_id])
 
         cache_key = self._make_cache_key(
@@ -190,7 +191,7 @@ class DCActionScreener:
         try:
             ppc, _frames = backend._build_ppc_from_state(
                 state=state,
-                switched_off_branch_id=int(action.branch_id),
+                action=action,
             )
 
             ppopt = ppoption(
@@ -250,11 +251,13 @@ class DCActionScreener:
 
         flow_abs = np.maximum(np.abs(pf), np.abs(pt))
         loading = np.zeros_like(flow_abs, dtype=float)
-        loading[active_mask] = 100.0 * flow_abs[active_mask] / rate_a[active_mask]
+        loading[active_mask] = (
+            100.0 * flow_abs[active_mask] / rate_a[active_mask]
+        )
 
         active_loading = loading[active_mask]
-
         max_loading = float(np.max(active_loading))
+
         overload_threshold = (
             self.physics_config.overload_limit_percent
             + self.physics_config.thermal_tolerance_percent
@@ -263,6 +266,7 @@ class DCActionScreener:
             self.physics_config.hard_overload_limit_percent
             + self.physics_config.thermal_tolerance_percent
         )
+
         overload_vector = np.where(
             active_loading > overload_threshold,
             active_loading - self.physics_config.overload_limit_percent,
@@ -276,19 +280,19 @@ class DCActionScreener:
 
         total_overload = float(np.sum(overload_vector))
         hard_overload = float(np.sum(hard_vector))
-
         num_overloaded = int(np.sum(active_loading > overload_threshold))
         num_hard_overloaded = int(
             np.sum(active_loading > hard_overload_threshold)
         )
+
         max_overload_excess = (
             max_loading - self.physics_config.overload_limit_percent
             if max_loading > overload_threshold
             else 0.0
         )
 
-        # Similar idea to MCTS state penalty, but without voltage terms
-        # because DC PF does not model voltage magnitudes/reactive power.
+        # DC PF does not model voltage magnitudes or reactive power. This score
+        # is only a fast thermal ranking before the authoritative AC transition.
         penalty = (
             2.0 * total_overload
             + 5.0 * hard_overload
@@ -298,7 +302,6 @@ class DCActionScreener:
         )
 
         if self.policy_weight > 0.0 and policy_prior > 0.0:
-            # Small tie-breaker: prefer actions the neural model also likes.
             penalty -= self.policy_weight * log(policy_prior + 1e-12)
 
         return DCActionScore(
@@ -306,10 +309,10 @@ class DCActionScreener:
             success=True,
             penalty=float(penalty),
             max_loading_percent=float(max_loading),
-            num_overloaded=int(num_overloaded),
-            num_hard_overloaded=int(num_hard_overloaded),
-            total_overload=float(total_overload),
-            hard_overload=float(hard_overload),
+            num_overloaded=num_overloaded,
+            num_hard_overloaded=num_hard_overloaded,
+            total_overload=total_overload,
+            hard_overload=hard_overload,
             policy_prior=float(policy_prior),
         )
 
@@ -339,17 +342,15 @@ class DCActionScreener:
         backend: GridFMPowerFlowBackend,
         policy_prior: float,
     ) -> tuple:
-        outaged = set(int(x) for x in state.outaged_branch_ids)
-
-        if action.branch_id is not None:
-            outaged.add(int(action.branch_id))
+        del policy_prior
 
         return (
-            int(state.scenario_id),
-            round(float(backend.base_mva), 6),
-            tuple(sorted(outaged)),
+            "dc_action",
+            backend._make_cache_key_from_state(
+                state,
+                action=action,
+            ),
+            action.kind,
             int(action.action_id),
-            int(action.branch_id) if action.branch_id is not None else -1,
-            # Policy prior is intentionally not included.
-            # DC physical score does not depend on neural policy.
+            int(action.target_status),
         )
