@@ -86,12 +86,6 @@ class GridFMActionSpace:
             )
         )
 
-        @property
-        def closeable_branch_ids(
-                self,
-        ) -> tuple[int, ...]:
-            return self._config.closeable_branch_ids
-
         self._structural_action_mask_cache: dict[tuple, np.ndarray,] = {}
         self._operational_action_mask_cache: dict[tuple, np.ndarray,] = {}
         self._valid_actions_cache: dict[tuple,list[GridFMAction],] = {}
@@ -102,6 +96,18 @@ class GridFMActionSpace:
     @property
     def config(self) -> ActionSpaceConfig:
         return self._config
+
+    @property
+    def min_loading_for_switch_percent(
+        self,
+    ) -> float:
+        return (
+            self._config.min_loading_for_switch_percent
+        )
+
+    @property
+    def enable_cache(self) -> bool:
+        return self._config.enable_cache
 
     @property
     def require_connected_after_switch(
