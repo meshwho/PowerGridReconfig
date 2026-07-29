@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Literal
 
@@ -14,6 +15,59 @@ from collections import Counter
 
 ActionType = Literal["do_nothing", "switch_off_branch"]
 
+@dataclass(frozen=True, slots=True)
+class ActionSpaceConfig:
+    require_connected_after_switch: bool = True
+    min_loading_for_switch_percent: float = 0.0
+    enable_cache: bool = True
+
+    def __post_init__(self) -> None:
+        if not isinstance(
+            self.require_connected_after_switch,
+            bool,
+        ):
+            raise ValueError(
+                "require_connected_after_switch must be a boolean."
+            )
+
+        if not isinstance(
+            self.enable_cache,
+            bool,
+        ):
+            raise ValueError(
+                "enable_cache must be a boolean."
+            )
+
+        threshold = self.min_loading_for_switch_percent
+
+        if isinstance(threshold, bool):
+            raise ValueError(
+                "min_loading_for_switch_percent must be "
+                "a finite non-negative number."
+            )
+
+        try:
+            threshold = float(threshold)
+        except (TypeError, ValueError):
+            raise ValueError(
+                "min_loading_for_switch_percent must be "
+                "a finite non-negative number."
+            ) from None
+
+        if (
+            not math.isfinite(threshold)
+            or threshold < 0.0
+        ):
+            raise ValueError(
+                "min_loading_for_switch_percent must be "
+                "a finite non-negative number."
+            )
+
+        object.__setattr__(
+            self,
+            "min_loading_for_switch_percent",
+            threshold,
+        )
 
 @dataclass(frozen=True)
 class GridFMAction:
@@ -78,15 +132,51 @@ class GridFMActionSpace:
             Cache valid actions and valid masks for repeated MCTS states.
         """
 
-        self.require_connected_after_switch = bool(require_connected_after_switch)
-        self.min_loading_for_switch_percent = float(min_loading_for_switch_percent)
-        self.enable_cache = bool(enable_cache)
+        self._config = ActionSpaceConfig(
+            require_connected_after_switch=(
+                require_connected_after_switch
+            ),
+            min_loading_for_switch_percent=(
+                min_loading_for_switch_percent
+            ),
+            enable_cache=enable_cache,
+        )
+
+        self._loading_column_idx = (
+            BRANCH_FEATURE_COLUMNS.index(
+                "loading_percent"
+            )
+        )
 
         self._valid_action_mask_cache: dict[tuple, np.ndarray] = {}
         self._valid_actions_cache: dict[tuple, list[GridFMAction]] = {}
         self._connectivity_mask_cache: dict[tuple, np.ndarray] = {}
         self.cache_hits = 0
         self.cache_misses = 0
+
+    @property
+    def config(self) -> ActionSpaceConfig:
+        return self._config
+
+    @property
+    def require_connected_after_switch(
+        self,
+    ) -> bool:
+        return (
+            self._config.require_connected_after_switch
+        )
+
+    @property
+    def min_loading_for_switch_percent(
+        self,
+    ) -> float:
+        return (
+            self._config.min_loading_for_switch_percent
+        )
+
+    @property
+    def enable_cache(self) -> bool:
+        return self._config.enable_cache
 
     def clear_cache(self) -> None:
         self._valid_action_mask_cache.clear()
@@ -210,18 +300,27 @@ class GridFMActionSpace:
 
         return connectivity_ok
 
-    def _make_cache_key(self, state) -> tuple:
+    def _make_cache_key(
+            self,
+            state: GridFMState,
+    ) -> tuple:
         """
-        Valid actions depend only on topology for the current topology-switching stage.
+        Build the cache key for the current action-space
+        configuration and grid topology.
 
-        Later, if we add redispatch constraints or dynamic limits, this key may need
-        to include more information.
+        Operational loading values will be separated into
+        their own cache layer in the mask-layer refactor.
         """
 
         return (
+            self._config,
             int(state.scenario_id),
-            tuple(int(x) for x in sorted(state.outaged_branch_ids)),
-            bool(self.require_connected_after_switch),
+            tuple(
+                int(branch_id)
+                for branch_id in sorted(
+                    state.outaged_branch_ids
+                )
+            ),
         )
 
     def build_all_actions(self, state: GridFMState) -> list[GridFMAction]:
@@ -359,7 +458,7 @@ class GridFMActionSpace:
         if self.min_loading_for_switch_percent <= 0:
             return True
 
-        loading = float(state.branch_features[branch_pos, self.loading_column_idx])
+        loading = float(state.branch_features[branch_pos, self._loading_column_idx,])
 
         return loading >= self.min_loading_for_switch_percent
 
