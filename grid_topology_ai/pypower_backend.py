@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any
 
 import pandas as pd
@@ -21,6 +22,7 @@ from grid_topology_ai.physical_constraints import (
 )
 from grid_topology_ai.power_flow_errors import PowerFlowNotConverged
 from grid_topology_ai.power_flow_state_builder import PowerFlowStateBuilder
+from grid_topology_ai.topology_actions import GridFMAction
 
 
 # Preserve the public module path used by pickled results and type displays.
@@ -64,6 +66,84 @@ class GridFMPowerFlowBackend(_CoreGridFMPowerFlowBackend):
                 "Adapter and power-flow backend must use the same "
                 "PhysicsConfig fingerprint."
             )
+
+    def _make_cache_key_from_state(
+        self,
+        state: GridFMState,
+        switched_off_branch_id: int | None = None,
+        *,
+        action: GridFMAction | None = None,
+    ) -> tuple:
+        """Build a cache key from the topology after applying the action."""
+
+        branch_id, target_status = self._resolve_branch_status_action(
+            action=action,
+            switched_off_branch_id=switched_off_branch_id,
+        )
+
+        outaged = {
+            int(outaged_branch_id)
+            for outaged_branch_id in state.outaged_branch_ids
+        }
+
+        if branch_id is not None:
+            if target_status == 0:
+                outaged.add(branch_id)
+            else:
+                outaged.discard(branch_id)
+
+        return (
+            int(state.scenario_id),
+            self.physics_config.fingerprint(),
+            tuple(sorted(outaged)),
+        )
+
+    def _build_ppc_from_state(
+        self,
+        state: GridFMState,
+        switched_off_branch_id: int | None = None,
+        *,
+        action: GridFMAction | None = None,
+    ) -> tuple[dict[str, Any], dict[str, pd.DataFrame]]:
+        """Build a case from either the legacy ID or a topology action."""
+
+        if action is not None:
+            switched_off_branch_id = None
+
+        return super()._build_ppc_from_state(
+            state=state,
+            switched_off_branch_id=switched_off_branch_id,
+            action=action,
+        )
+
+    def run_power_flow_from_state(
+        self,
+        state: GridFMState,
+        switched_off_branch_id: int | None = None,
+        *,
+        action: GridFMAction | None = None,
+    ) -> GridFMPowerFlowResult:
+        """Run from a solved state while preserving both action APIs."""
+
+        branch_id, target_status = self._resolve_branch_status_action(
+            action=action,
+            switched_off_branch_id=switched_off_branch_id,
+        )
+
+        result = super().run_power_flow_from_state(
+            state=state,
+            switched_off_branch_id=switched_off_branch_id,
+            action=action,
+        )
+
+        return replace(
+            result,
+            switched_off_branch_id=(
+                branch_id if target_status == 0 else None
+            ),
+            switched_branch_id=branch_id,
+            target_status=target_status,
+        )
 
     def _solve_ppc(
         self,
