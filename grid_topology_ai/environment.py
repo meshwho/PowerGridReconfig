@@ -160,11 +160,7 @@ class TopologySwitchingEnv:
 
         assert self.current_state is not None
 
-        return (
-            self.action_space.structural_action_mask(
-                self.current_state
-            )
-        )
+        return self.action_space.structural_action_mask(self.current_state)
 
     def operational_action_mask(self):
         """
@@ -175,11 +171,7 @@ class TopologySwitchingEnv:
 
         assert self.current_state is not None
 
-        return (
-            self.action_space.operational_action_mask(
-                self.current_state
-            )
-        )
+        return self.action_space.operational_action_mask(self.current_state)
 
     def valid_action_mask(self):
         """
@@ -203,7 +195,6 @@ class TopologySwitchingEnv:
             raise ValueError(f"Invalid action_id: {action_id}")
 
         action = all_actions[action_id]
-
         mask = self.action_space.valid_action_mask(self.current_state)
 
         if not bool(mask[action_id]):
@@ -211,33 +202,31 @@ class TopologySwitchingEnv:
 
         return action
 
-    def action_by_branch_id(
-            self,
-            branch_id: int,
-    ) -> GridFMAction:
+    def action_by_branch_id(self, branch_id: int) -> GridFMAction:
         """
         Find the valid branch-status action for a branch.
         """
 
+        branch_id = int(branch_id)
+
         for action in self.valid_actions():
             if (
-                    action.kind
-                    == "set_branch_status"
-                    and action.branch_id
-                    == int(branch_id)
+                action.kind == "set_branch_status"
+                and action.branch_id == branch_id
             ):
                 return action
 
         raise ValueError(
-            f"Branch {branch_id} has no valid "
-            "status-change action in the current state."
+            f"Branch {branch_id} has no valid status-change action "
+            "in the current state."
         )
 
     def step(self, action: GridFMAction | int) -> TopologyStepResult:
         """
         Apply one action to the current state.
 
-        If action is int, it is interpreted as action_id.
+        Integer inputs are resolved through the current action mask. Action
+        objects are checked against the current state to reject stale commands.
         """
 
         self._require_active_episode()
@@ -245,32 +234,20 @@ class TopologySwitchingEnv:
         if isinstance(action, int):
             action = self.action_by_id(action)
         else:
-            canonical_action = self.action_by_id(
-                int(action.action_id)
-            )
-
+            canonical_action = self.action_by_id(int(action.action_id))
             if action != canonical_action:
                 raise ValueError(
-                    "Topology action is stale or does "
-                    "not match the current state."
+                    "Topology action is stale or does not match the current state."
                 )
-
             action = canonical_action
 
-        if isinstance(action, int):
-            action = self.action_by_id(action)
-        else:
-            canonical_action = self.action_by_id(
-                int(action.action_id)
-            )
+        if action.kind == "stop":
+            return self._step_do_nothing(action)
 
-            if action != canonical_action:
-                raise ValueError(
-                    "Topology action is stale or does "
-                    "not match the current state."
-                )
+        if action.kind == "set_branch_status":
+            return self._step_branch_status(action)
 
-            action = canonical_action
+        raise ValueError(f"Unsupported action kind: {action.kind!r}.")
 
     def clone(self) -> "TopologySwitchingEnv":
         """
@@ -355,21 +332,16 @@ class TopologySwitchingEnv:
         )
 
     def _step_branch_status(self, action: GridFMAction) -> TopologyStepResult:
-
         """
-        Set one branch status and run power flow from the
-        current physical state.
+        Set one branch status and run power flow from the current physical state.
         """
 
         assert self.current_state is not None
 
         before_state = self.current_state
-
-        power_flow_result = (
-            self.backend.run_power_flow_from_state(
-                state=before_state,
-                action=action,
-            )
+        power_flow_result = self.backend.run_power_flow_from_state(
+            state=before_state,
+            action=action,
         )
 
         reward_breakdown = self.reward_fn.compute(
@@ -380,7 +352,6 @@ class TopologySwitchingEnv:
         )
 
         self.step_count += 1
-
         self.applied_actions.append(action)
 
         if action.branch_id is not None:
@@ -454,12 +425,8 @@ class TopologySwitchingEnv:
             "switched_branch_ids": list(self.switched_branch_ids),
             "applied_actions": [
                 {
-                    "action_id": int(
-                        action.action_id
-                    ),
-                    "action_type": str(
-                        action.action_type
-                    ),
+                    "action_id": int(action.action_id),
+                    "action_type": str(action.action_type),
                     "branch_id": (
                         None
                         if action.branch_id is None
@@ -468,9 +435,7 @@ class TopologySwitchingEnv:
                     "target_status": (
                         None
                         if action.target_status is None
-                        else int(
-                            action.target_status
-                        )
+                        else int(action.target_status)
                     ),
                 }
                 for action in self.applied_actions
