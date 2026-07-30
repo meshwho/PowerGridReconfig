@@ -4,9 +4,9 @@
 
 PowerGridReconfig is a Python 3.11 research framework for emergency topology control in power-system simulations. The current system implements a pool-guided AlphaZero-like self-play loop for the case118 research setup: a fixed physical scenario pool is sampled, a model-guided neural MCTS planner generates replay, a graph policy-value checkpoint is fine-tuned, a fixed evaluation set is evaluated, and the candidate checkpoint is accepted or rejected.
 
-This is not a full classical AlphaZero system. The scenario pool is fixed, generation is model-guided, the continuation gate can change the executed action, replay accumulates across iterations, candidates are fine-tuned from checkpoints, evaluation is fixed, and acceptance/rejection is based on configured metrics.
+This is not a full classical AlphaZero system. The scenario pool is fixed, generation is model-guided, the continuation gate is diagnostic only, replay accumulates across iterations, candidates are fine-tuned from checkpoints, evaluation is fixed, and acceptance/rejection is based on configured metrics.
 
-For implementation details, see [docs/self_play.md](docs/self_play.md).
+For implementation details, see [docs/self_play.md](docs/self_play.md). The stable bidirectional branch-status policy and artifact compatibility rules are specified in [docs/topology_action_contract.md](docs/topology_action_contract.md).
 
 ## Current implemented pipeline
 
@@ -29,7 +29,9 @@ fixed physical scenario pool
 - Generation `PF_ALG` must equal evaluation `PF_ALG`.
 - The current canonical `PF_ALG` is `3`.
 - The MCTS visit distribution is the policy target.
-- The continuation gate can change the executed action, but it does not change the MCTS visit policy target.
+- The continuation gate records diagnostics but never rewrites the executed action or the MCTS visit policy target.
+- Every branch has one stable policy slot. Its executable direction is state-dependent: active means open, inactive and explicitly allowed means close.
+- Self-play, replay, checkpoints, and evaluation require exact topology-action configuration and ordered action-layout provenance.
 - `outcome_value_target` is required for graph training examples.
 - Feature normalization is part of the checkpoint contract.
 - Fine-tuning preserves normalization statistics from the parent checkpoint.
@@ -72,19 +74,38 @@ be classified or searched.
 
 ## Artifact compatibility
 
-The physical-objective, outcome/value-target, evaluation-metrics, checkpoint,
-and replay contracts are versioned. The current versions are all `2`. Examples
-and replay rows carry the physical and outcome versions; checkpoints carry all
-training-semantic versions; evaluation JSON contains the evaluation version
-and the nested physical contract. Consumers require exact versions.
+The current exact contract versions are:
 
-Artifacts produced under the former thermal-only solved definition are
-scientifically incompatible. They are rejected with a regeneration command;
-they are never relabeled or upgraded in place. Regenerate in this order:
+| Contract | Version |
+| --- | ---: |
+| physical objective | `3` |
+| outcome/value target | `4` |
+| evaluation metrics | `6` |
+| checkpoint | `6` |
+| replay buffer schema | `5` |
+| physics configuration | `1` |
+| topology action | `1` |
+
+Examples and replay rows carry physical, value-target, physics-configuration,
+and topology-action provenance. Checkpoints additionally carry the ordered
+`stop_plus_branch_status_v1` action layout and its fingerprint. Evaluation
+loads the topology-action configuration and layout from the checkpoint and
+requires an exact match before creating its runtime action space. Consumers
+fail closed on missing, old, reordered, or mismatched provenance.
+
+Artifacts produced under former solved semantics or before topology-action
+provenance are scientifically incompatible. They are never relabeled or
+upgraded in place. Regenerate in this order:
 
 ```bash
-# 1. Fresh episodes and outcome targets (the generator now writes both).
-python -m scripts.self_play.generate <POOL_RAW_DIR> --transitions <POOL_TRANSITIONS.csv> --output-dir <NEW_SELF_PLAY_DIR> --pf-alg 3
+# 1. Fresh episodes and outcome targets.
+# Repeat --closeable-branch-id for each verified normally-open/tie branch.
+python -m scripts.self_play.generate <POOL_RAW_DIR> \
+  --transitions <POOL_TRANSITIONS.csv> \
+  --output-dir <NEW_SELF_PLAY_DIR> \
+  --pf-alg 3 \
+  --require-connected-after-switch \
+  --min-loading-for-switch-percent 0.0
 
 # 2. Fresh checkpoint; do not initialize from a legacy checkpoint.
 python -m scripts.self_play.train_graph_baseline <NEW_EXAMPLES_CSV> --output <NEW_CHECKPOINT.pt> --device cpu
@@ -99,12 +120,22 @@ examples, replay chunks, checkpoints, or evaluation metrics.
 
 ## Action space
 
-The topology-control action space is:
+The topology-control policy layout is `stop_plus_branch_status_v1`:
 
 - `0` -> stop/handoff;
-- `1..N` -> branch opening actions.
+- `1 + branch_pos` -> the stable branch-status slot for `branch_ids[branch_pos]`.
 
-Handoff means the topology-control episode ends and the case is passed to an external or future redispatch layer. Production redispatch optimization is not implemented here.
+The command represented by a branch slot depends on the current state:
+
+- active branch -> `switch_off_branch`, `target_status=0`;
+- inactive branch listed in `closeable_branch_ids` -> `switch_on_branch`, `target_status=1`.
+
+`require_connected_after_switch` and `min_loading_for_switch_percent` constrain
+branch opening. The loading threshold never filters a permitted closure.
+Inactive branches not present in the explicit allowlist remain masked. Handoff
+means the topology-control episode ends and the case is passed to an external
+or future redispatch layer. Production redispatch optimization is not
+implemented here.
 
 ## Installation
 
@@ -163,11 +194,25 @@ The self-play YAML is organized into these sections:
 
 - `pool`: fixed scenario pool transitions and raw state directory.
 - `replay_buffer`: accumulated replay storage and sampling limits.
-- `generation`: neural MCTS generation settings, including `PF_ALG`.
+- `generation`: neural MCTS generation settings, including `PF_ALG` and the semantic topology-action settings.
 - `training`: graph policy-value fine-tuning settings.
 - `evaluation`: fixed evaluation transitions, raw states, checkpoint evaluation, and `PF_ALG`.
 - `acceptance`: candidate acceptance metric and thresholds.
 - `metadata`: run naming and reproducibility metadata.
+
+A generation block exposes the bidirectional action settings explicitly:
+
+```yaml
+generation:
+  require_connected_after_switch: true
+  min_loading_for_switch_percent: 0.0
+  # Populate only with verified normally-open/tie branch IDs.
+  closeable_branch_ids: []
+```
+
+`closeable_branch_ids: []` preserves opening-only behavior. Evaluation does not
+have an independent override: it loads the exact topology-action configuration
+and ordered layout from the checkpoint and rejects incompatible artifacts.
 
 ## Iteration artifacts
 
@@ -232,7 +277,9 @@ Before the first real run, prepare:
 - fixed evaluation raw state directory;
 - bootstrap evaluation metrics.
 
-Bootstrap evaluation metrics must be computed with the same `PF_ALG` configured for generation and evaluation.
+Bootstrap evaluation metrics must be computed with the same `PF_ALG` configured
+for generation and evaluation. The bootstrap checkpoint must also match the
+configured topology-action fingerprint and ordered action layout.
 
 ## Testing and CI
 
@@ -247,7 +294,7 @@ Local graph dataset integration tests are opt-in because they need prepared loca
 
 ## Current limitations
 
-- Actions are topology branch openings plus stop/handoff.
+- Topology actions are branch-status changes plus stop/handoff; inactive branches can be closed only when explicitly allowlisted.
 - The main research setup is one case118 configuration.
 - Scenarios come from a fixed pool rather than unrestricted environment generation.
 - There is no production redispatch optimizer.
@@ -261,4 +308,8 @@ Teacher generators remain useful for bootstrap datasets, baseline comparison, an
 
 ## Reproducibility
 
-Reproducibility relies on Python 3.11, pinned constraints, explicit seeds, artifact hashes, fixed evaluation data, checkpoint provenance, and CI checks. Checkpoints store selection metadata, normalization metadata, dataset metadata, and training configuration.
+Reproducibility relies on Python 3.11, pinned constraints, explicit seeds,
+artifact hashes, fixed evaluation data, checkpoint provenance, and CI checks.
+Checkpoints store selection metadata, normalization metadata, dataset metadata,
+physics configuration, topology-action configuration, the ordered action layout,
+and training configuration.
