@@ -11,6 +11,7 @@ from grid_topology_ai.config._validation import (
     require_non_negative,
     require_positive,
 )
+from grid_topology_ai.topology_actions import ActionSpaceConfig
 
 
 _LEGACY_TERMINAL_PENALTY_FIELDS = frozenset(
@@ -48,6 +49,10 @@ class GenerationConfig:
 
     pf_alg: int = 3
     stop_policy: str = "no_hard_overloads"
+
+    require_connected_after_switch: bool = True
+    min_loading_for_switch_percent: float = 0.0
+    closeable_branch_ids: tuple[int, ...] = ()
 
     def __post_init__(self) -> None:
         require_positive("generation.simulations", self.simulations)
@@ -182,6 +187,43 @@ class GenerationConfig:
             widening_exponent,
         )
 
+        action_space_config = ActionSpaceConfig(
+            require_connected_after_switch=(
+                self.require_connected_after_switch
+            ),
+            min_loading_for_switch_percent=(
+                self.min_loading_for_switch_percent
+            ),
+            closeable_branch_ids=self.closeable_branch_ids,
+        )
+        object.__setattr__(
+            self,
+            "require_connected_after_switch",
+            action_space_config.require_connected_after_switch,
+        )
+        object.__setattr__(
+            self,
+            "min_loading_for_switch_percent",
+            action_space_config.min_loading_for_switch_percent,
+        )
+        object.__setattr__(
+            self,
+            "closeable_branch_ids",
+            action_space_config.closeable_branch_ids,
+        )
+
+    @property
+    def action_space_config(self) -> ActionSpaceConfig:
+        return ActionSpaceConfig(
+            require_connected_after_switch=(
+                self.require_connected_after_switch
+            ),
+            min_loading_for_switch_percent=(
+                self.min_loading_for_switch_percent
+            ),
+            closeable_branch_ids=self.closeable_branch_ids,
+        )
+
     @classmethod
     def from_mapping(cls, data: ConfigMapping) -> "GenerationConfig":
         legacy_fields = sorted(_LEGACY_TERMINAL_PENALTY_FIELDS.intersection(data))
@@ -233,4 +275,16 @@ class GenerationConfig:
             use_continuation_gate=bool(data.get("use_continuation_gate", True)),
             pf_alg=coerce_exact_int("generation.pf_alg", data.get("pf_alg", 3)),
             stop_policy=str(data.get("stop_policy", "no_hard_overloads")),
+            require_connected_after_switch=data.get(
+                "require_connected_after_switch",
+                True,
+            ),
+            min_loading_for_switch_percent=data.get(
+                "min_loading_for_switch_percent",
+                0.0,
+            ),
+            closeable_branch_ids=data.get(
+                "closeable_branch_ids",
+                (),
+            ),
         )

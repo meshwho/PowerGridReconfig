@@ -182,6 +182,40 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Disable power flow/action/evaluator caches.",
     )
+    parser.add_argument(
+        "--closeable-branch-id",
+        dest="closeable_branch_ids",
+        action="append",
+        type=int,
+        default=None,
+        help=(
+            "Branch ID that may be closed when currently inactive. "
+            "Repeat the option for multiple normally-open or tie branches."
+        ),
+    )
+    parser.add_argument(
+        "--min-loading-for-switch-percent",
+        type=float,
+        default=0.0,
+        help=(
+            "Minimum loading percentage for branch-opening candidates. "
+            "This threshold does not filter branch-closing actions."
+        ),
+    )
+    connectivity = parser.add_mutually_exclusive_group()
+    connectivity.add_argument(
+        "--require-connected-after-switch",
+        dest="require_connected_after_switch",
+        action="store_true",
+        help="Mask branch openings that disconnect the active grid.",
+    )
+    connectivity.add_argument(
+        "--no-require-connected-after-switch",
+        dest="require_connected_after_switch",
+        action="store_false",
+        help="Allow branch openings even when the active grid disconnects.",
+    )
+    parser.set_defaults(require_connected_after_switch=True)
 
     continuation_gate = parser.add_mutually_exclusive_group()
     continuation_gate.add_argument(
@@ -282,6 +316,15 @@ def main(argv: list[str] | None = None) -> int:
         use_continuation_gate=args.use_continuation_gate,
         pf_alg=args.pf_alg,
         stop_policy=args.stop_policy,
+        require_connected_after_switch=(
+            args.require_connected_after_switch
+        ),
+        min_loading_for_switch_percent=(
+            args.min_loading_for_switch_percent
+        ),
+        closeable_branch_ids=tuple(
+            args.closeable_branch_ids or ()
+        ),
     )
     request = GenerationRequest(
         raw_dir=Path(args.raw_dir),

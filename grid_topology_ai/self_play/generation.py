@@ -456,6 +456,18 @@ def generate_self_play_examples(request: GenerationRequest) -> Path:
     print(f"C_PUCT:         {request.config.c_puct}")
     print(f"Prior exponent: {request.config.prior_exponent}")
     print(f"Stop policy:               {request.config.stop_policy}")
+    print(
+        "Require connected after switch: "
+        f"{request.config.require_connected_after_switch}"
+    )
+    print(
+        "Min loading for branch opening: "
+        f"{request.config.min_loading_for_switch_percent}"
+    )
+    print(
+        "Closeable branch IDs: "
+        f"{request.config.closeable_branch_ids}"
+    )
     print(f"Checkpoint:     {request.checkpoint}")
     print(f"Device:         {request.device}")
     print(f"Use root noise: {request.config.use_root_noise}")
@@ -528,8 +540,17 @@ def generate_self_play_examples(request: GenerationRequest) -> Path:
         physics_config=request.resolved_physics_config,
         enable_cache=request.enable_cache,
     )
+    topology_action_config = request.config.action_space_config
     action_space = GridFMActionSpace(
-        require_connected_after_switch=True,
+        require_connected_after_switch=(
+            topology_action_config.require_connected_after_switch
+        ),
+        min_loading_for_switch_percent=(
+            topology_action_config.min_loading_for_switch_percent
+        ),
+        closeable_branch_ids=(
+            topology_action_config.closeable_branch_ids
+        ),
         enable_cache=request.enable_cache,
     )
     reward_fn = GridFMReward(
@@ -570,6 +591,14 @@ def generate_self_play_examples(request: GenerationRequest) -> Path:
             enable_cache=request.enable_cache,
             physics_config=request.resolved_physics_config,
         )
+        if (
+            evaluator.topology_action_config.contract_fingerprint()
+            != action_space.config.contract_fingerprint()
+        ):
+            raise ValueError(
+                "Configured self-play topology action space does not match "
+                f"checkpoint {request.checkpoint}."
+            )
         print("\nNeural evaluator loaded.")
 
     planner = MCTSPlanner(
