@@ -5,6 +5,8 @@ from pathlib import Path
 from grid_topology_ai.config import EvaluationConfig, GenerationConfig, SelfPlayConfig
 from grid_topology_ai.evaluation import checkpoint as evaluation_checkpoint
 from grid_topology_ai.evaluation.checkpoint import EvaluationRequest
+from tests.topology_contract_helpers import topology_metadata
+
 
 
 def test_power_flow_algorithm_static_boundaries(tmp_path: Path, monkeypatch) -> None:
@@ -56,8 +58,20 @@ def test_power_flow_algorithm_static_boundaries(tmp_path: Path, monkeypatch) -> 
         def config_dict(self) -> dict[str, object]:
             return {"discount_factor": self.discount_factor}
 
-    monkeypatch.setattr(evaluation_checkpoint, "GridFMReward", FakeReward)
-    task_config = evaluation_checkpoint._make_task_config(request)
+    monkeypatch.setattr(
+        evaluation_checkpoint,
+        "GridFMReward",
+        FakeReward,
+    )
+    monkeypatch.setattr(
+        evaluation_checkpoint,
+        "_load_checkpoint_topology_action_provenance",
+        lambda checkpoint_path: topology_metadata(),
+    )
+
+    task_config = evaluation_checkpoint._make_task_config(
+        request
+    )
     assert task_config["pf_alg"] == 3
     assert task_config["reward_config"]["discount_factor"] == 0.95
 

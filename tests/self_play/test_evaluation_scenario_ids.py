@@ -8,6 +8,7 @@ import pytest
 from grid_topology_ai.config import EvaluationConfig
 from grid_topology_ai.evaluation import checkpoint as evaluation
 from grid_topology_ai.evaluation.checkpoint import EvaluationRequest
+from tests.topology_contract_helpers import topology_metadata
 
 
 class _FakeReward:
@@ -36,8 +37,19 @@ class _FakeCache:
 
 
 @pytest.fixture(autouse=True)
-def fake_reward(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr(evaluation, "GridFMReward", _FakeReward)
+def fake_reward(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(
+        evaluation,
+        "GridFMReward",
+        _FakeReward,
+    )
+    monkeypatch.setattr(
+        evaluation,
+        "_load_checkpoint_topology_action_provenance",
+        lambda checkpoint_path: topology_metadata(),
+    )
     evaluation._WORKER_CONTEXT = None
     yield
     evaluation._WORKER_CONTEXT = None

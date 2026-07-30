@@ -194,15 +194,35 @@ def test_generation_diagnostic_returns_use_transition_rewards_only() -> None:
 
 def test_evaluation_reward_uses_run_gamma_everywhere() -> None:
     worker_source = textwrap.dedent(
-        inspect.getsource(evaluation_checkpoint.init_worker_context)
+        inspect.getsource(
+            evaluation_checkpoint.init_worker_context
+        )
     )
     task_source = textwrap.dedent(
-        inspect.getsource(evaluation_checkpoint._make_task_config)
+        inspect.getsource(
+            evaluation_checkpoint._make_task_config
+        )
     )
 
-    assert 'discount_factor=float(task_config["gamma"])' in worker_source
-    assert "discount_factor=config.gamma" in task_source
-    assert '"reward_config": GridFMReward(' in task_source
+    compact_worker_source = "".join(
+        worker_source.split()
+    )
+    compact_task_source = "".join(
+        task_source.split()
+    )
+
+    assert (
+        'discount_factor=float(task_config["gamma"])'
+        in compact_worker_source
+    )
+    assert (
+        "discount_factor=config.gamma"
+        in compact_task_source
+    )
+    assert (
+        '"reward_config":GridFMReward('
+        in compact_task_source
+    )
 
 
 def test_unified_return_contract_versions_are_pinned() -> None:

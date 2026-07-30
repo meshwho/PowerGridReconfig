@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
-
+from tests.topology_contract_helpers import topology_metadata
 from grid_topology_ai.action_space import GridFMAction
 from grid_topology_ai.config.evaluation import EvaluationConfig
 from grid_topology_ai.config.generation import GenerationConfig
@@ -346,6 +346,12 @@ def test_evaluation_task_config_records_exploration_quota(
         "GridFMReward",
         _FakeReward,
     )
+    monkeypatch.setattr(
+        evaluation,
+        "_load_checkpoint_topology_action_provenance",
+        lambda checkpoint_path: topology_metadata(),
+    )
+
     request = EvaluationRequest(
         raw_dir=tmp_path / "raw",
         transitions_csv=tmp_path / "transitions.csv",
