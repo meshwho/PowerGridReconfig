@@ -4,6 +4,9 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from grid_topology_ai._pypower_backend_core import (
+    GridFMPowerFlowBackend as CoreGridFMPowerFlowBackend,
+)
 from grid_topology_ai.action_space import GridFMActionSpace
 from grid_topology_ai.data_adapter import BRANCH_FEATURE_COLUMNS
 from grid_topology_ai.pypower_backend import GridFMPowerFlowBackend
@@ -154,3 +157,45 @@ def test_backend_cache_key_uses_topology_after_the_action():
     assert close_key[-1] == ()
     assert open_key[-1] == (10,)
     assert close_key != open_key
+
+
+def test_core_backend_cache_key_supports_actions_and_legacy_ids():
+    backend = CoreGridFMPowerFlowBackend(
+        adapter=object(),  # type: ignore[arg-type]
+        enable_cache=False,
+    )
+    close_state = SimpleNamespace(
+        scenario_id=7,
+        outaged_branch_ids=[20],
+    )
+    open_state = SimpleNamespace(
+        scenario_id=7,
+        outaged_branch_ids=[],
+    )
+
+    close_key = backend._make_cache_key_from_state(
+        close_state,
+        action=GridFMAction(
+            action_id=2,
+            action_type="switch_on_branch",
+            branch_id=20,
+            branch_pos=1,
+        ),
+    )
+    open_key = backend._make_cache_key_from_state(
+        open_state,
+        action=GridFMAction(
+            action_id=1,
+            action_type="switch_off_branch",
+            branch_id=10,
+            branch_pos=0,
+        ),
+    )
+    legacy_key = backend._make_cache_key_from_state(
+        open_state,
+        switched_off_branch_id=20,
+    )
+
+    assert close_key[-1] == ()
+    assert open_key[-1] == (10,)
+    assert legacy_key[-1] == (20,)

@@ -337,11 +337,7 @@ class GridFMPowerFlowBackend:
         branch_id, target_status = (
             self._resolve_branch_status_action(
                 action=action,
-                switched_off_branch_id=(
-                    switched_branch_id
-                    if target_status == 0
-                    else None
-                ),
+                switched_off_branch_id=switched_off_branch_id,
             )
         )
 
