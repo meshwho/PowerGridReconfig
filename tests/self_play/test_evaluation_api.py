@@ -6,13 +6,39 @@ from pathlib import Path
 
 import pandas as pd
 import pytest
+import torch
 
 from grid_topology_ai.config import EvaluationConfig
 from grid_topology_ai.evaluation import checkpoint as evaluation
 from grid_topology_ai.evaluation.checkpoint import EvaluationRequest
 from grid_topology_ai.evaluation.metrics import compute_safety_score
 from grid_topology_ai.termination import TerminationReason
+from grid_topology_ai.contracts import (
+    topology_action_provenance,
+)
+from grid_topology_ai.topology_actions import (
+    ActionSpaceConfig,
+    build_branch_action_slots,
+)
 
+_TEST_ACTION_SPACE_CONFIG = ActionSpaceConfig(
+    require_connected_after_switch=False,
+    min_loading_for_switch_percent=12.5,
+    closeable_branch_ids=(7, 9),
+)
+
+_TEST_ACTION_LAYOUT = (
+    build_branch_action_slots(
+        (7, 9, 11)
+    )
+)
+
+_TEST_TOPOLOGY_PROVENANCE = (
+    topology_action_provenance(
+        _TEST_ACTION_SPACE_CONFIG,
+        _TEST_ACTION_LAYOUT,
+    )
+)
 
 class _FakeReward:
     def __init__(
@@ -57,7 +83,10 @@ def _write_inputs(tmp_path: Path, scenario_ids: list[int] | None = None) -> tupl
     ids = [1, 2, 3] if scenario_ids is None else scenario_ids
     pd.DataFrame({"scenario_id": ids}).to_csv(transitions, index=False)
     checkpoint = tmp_path / "checkpoint.pt"
-    checkpoint.write_bytes(b"checkpoint")
+    torch.save(
+        dict(_TEST_TOPOLOGY_PROVENANCE),
+        checkpoint,
+    )
     return raw_dir, transitions, checkpoint
 
 def test_evaluation_records_input_hashes(
@@ -101,7 +130,16 @@ def test_checkpoint_hash_changes_with_checkpoint_content(
     request = _request(tmp_path)
     first = evaluation.evaluate_checkpoint(request)
 
-    request.checkpoint.write_bytes(b"updated checkpoint")
+    payload = torch.load(
+        request.checkpoint,
+        map_location="cpu",
+        weights_only=False,
+    )
+    payload["test_marker"] = "updated"
+    torch.save(
+        payload,
+        request.checkpoint,
+    )
 
     second = evaluation.evaluate_checkpoint(request)
 
@@ -474,6 +512,173 @@ def test_task_config_uses_evaluation_config_and_request_values(tmp_path: Path) -
         "reward": "fake",
         "discount_factor": 0.91,
     }
+    for name, expected_value in (
+        _TEST_TOPOLOGY_PROVENANCE.items()
+    ):
+        assert task[name] == expected_value
+
+def test_task_config_rejects_checkpoint_without_topology_provenance(
+    tmp_path: Path,
+) -> None:
+    request = _request(tmp_path)
+
+    torch.save(
+        {},
+        request.checkpoint,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="topology-action contract",
+    ):
+        evaluation._make_task_config(
+            request
+        )
+
+
+def test_worker_uses_checkpoint_topology_action_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request = _request(tmp_path)
+    task_config = evaluation._make_task_config(
+        request
+    )
+    events: list[str] = []
+    captured_action_space_kwargs: dict[
+        str,
+        object,
+    ] = {}
+
+    class FakeRuntimeObject:
+        def __init__(
+            self,
+            *args: object,
+            **kwargs: object,
+        ) -> None:
+            self.args = args
+            self.kwargs = kwargs
+
+        def clear_cache(self) -> None:
+            pass
+
+        def cache_info(self) -> dict[str, int]:
+            return {"size": 0}
+
+    class FakeEvaluator(
+        FakeRuntimeObject
+    ):
+        def __init__(
+            self,
+            *args: object,
+            **kwargs: object,
+        ) -> None:
+            super().__init__(
+                *args,
+                **kwargs,
+            )
+            events.append("evaluator")
+            self.checkpoint = dict(
+                _TEST_TOPOLOGY_PROVENANCE
+            )
+            self.topology_action_config = (
+                _TEST_ACTION_SPACE_CONFIG
+            )
+            self.action_layout = (
+                _TEST_ACTION_LAYOUT
+            )
+
+    class FakeActionSpace(
+        FakeRuntimeObject
+    ):
+        def __init__(
+            self,
+            **kwargs: object,
+        ) -> None:
+            assert events == [
+                "evaluator"
+            ]
+            events.append(
+                "action_space"
+            )
+            captured_action_space_kwargs.update(
+                kwargs
+            )
+            super().__init__(
+                **kwargs
+            )
+
+    monkeypatch.setattr(
+        evaluation,
+        "_ensure_runtime_dependencies",
+        lambda: None,
+    )
+    monkeypatch.setattr(
+        evaluation,
+        "GridFMAdapter",
+        FakeRuntimeObject,
+    )
+    monkeypatch.setattr(
+        evaluation,
+        "GridFMPowerFlowBackend",
+        FakeRuntimeObject,
+    )
+    monkeypatch.setattr(
+        evaluation,
+        "NeuralPolicyValueEvaluator",
+        FakeEvaluator,
+    )
+    monkeypatch.setattr(
+        evaluation,
+        "GridFMActionSpace",
+        FakeActionSpace,
+    )
+    monkeypatch.setattr(
+        evaluation,
+        "MCTSConfig",
+        FakeRuntimeObject,
+    )
+    monkeypatch.setattr(
+        evaluation,
+        "MCTSPlanner",
+        FakeRuntimeObject,
+    )
+
+    evaluation.init_worker_context(
+        str(request.raw_dir),
+        str(request.checkpoint),
+        task_config,
+    )
+
+    assert events == [
+        "evaluator",
+        "action_space",
+    ]
+    assert (
+        captured_action_space_kwargs
+        == {
+            "require_connected_after_switch": False,
+            "min_loading_for_switch_percent": 12.5,
+            "closeable_branch_ids": (7, 9),
+            "enable_cache": True,
+        }
+    )
+
+    context = (
+        evaluation._require_worker_context()
+    )
+    assert (
+        context[
+            "topology_action_config"
+        ]
+        == _TEST_ACTION_SPACE_CONFIG
+    )
+    assert (
+        context["action_layout"]
+        == _TEST_ACTION_LAYOUT
+    )
+
+    evaluation._release_worker_context()
 
 
 def test_evaluate_checkpoint_uses_sequential_runner(

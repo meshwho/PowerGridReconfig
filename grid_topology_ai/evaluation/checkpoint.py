@@ -9,7 +9,7 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
-
+import torch
 try:
     from tqdm.auto import tqdm
 except ImportError:  # pragma: no cover
@@ -21,6 +21,8 @@ from grid_topology_ai.contracts import (
     EVALUATION_METRICS_CONTRACT_VERSION,
     physics_provenance,
     require_physics_provenance,
+    require_topology_action_provenance,
+    topology_action_provenance,
 )
 from grid_topology_ai.evaluation.episode_result import (
     EvaluationEpisodeTrace,
@@ -268,26 +270,67 @@ def init_worker_context(
         task_config,
         source="evaluation task",
     )
-    adapter = GridFMAdapter(Path(raw_dir_str), physics_config=physics)
-    cache = not bool(task_config["disable_cache"])
+    (
+        topology_action_config,
+        action_layout,
+    ) = require_topology_action_provenance(
+        task_config,
+        source="evaluation task",
+    )
+
+    checkpoint_path = Path(
+        checkpoint_path_str
+    )
+    adapter = GridFMAdapter(
+        Path(raw_dir_str),
+        physics_config=physics,
+    )
+    cache = not bool(
+        task_config["disable_cache"]
+    )
     backend = GridFMPowerFlowBackend(
         adapter=adapter,
         physics_config=physics,
         enable_cache=cache,
     )
-    action_space = GridFMActionSpace(
-        require_connected_after_switch=True,
-        enable_cache=cache,
-    )
-    reward_fn = GridFMReward(
-        physics_config=physics,
-        discount_factor=float(task_config["gamma"]),
-    )
+
     evaluator = NeuralPolicyValueEvaluator(
-        checkpoint_path=Path(checkpoint_path_str),
+        checkpoint_path=checkpoint_path,
         device=str(task_config["device"]),
         enable_cache=cache,
         physics_config=physics,
+    )
+
+    require_topology_action_provenance(
+        evaluator.checkpoint,
+        source=str(checkpoint_path),
+        expected_action_space_config=(
+            topology_action_config
+        ),
+        expected_action_layout=action_layout,
+    )
+
+    action_space = GridFMActionSpace(
+        require_connected_after_switch=(
+            topology_action_config
+            .require_connected_after_switch
+        ),
+        min_loading_for_switch_percent=(
+            topology_action_config
+            .min_loading_for_switch_percent
+        ),
+        closeable_branch_ids=(
+            topology_action_config
+            .closeable_branch_ids
+        ),
+        enable_cache=cache,
+    )
+
+    reward_fn = GridFMReward(
+        physics_config=physics,
+        discount_factor=float(
+            task_config["gamma"]
+        ),
     )
     search_config = MCTSConfig(
         num_simulations=int(task_config["simulations"]),
@@ -336,6 +379,10 @@ def init_worker_context(
             physics_config=physics,
         ),
         "physics_config": physics,
+        "topology_action_config": (
+            topology_action_config
+        ),
+        "action_layout": action_layout,
         "task_config": task_config,
         "processed_in_worker": 0,
     }
@@ -574,11 +621,49 @@ def chunk_list(values: list[int], batch_size: int) -> list[list[int]]:
     ]
 
 
+def _load_checkpoint_topology_action_provenance(
+    checkpoint_path: Path,
+) -> dict[str, object]:
+    checkpoint = torch.load(
+        checkpoint_path,
+        map_location="cpu",
+        weights_only=False,
+    )
+
+    if not isinstance(checkpoint, dict):
+        raise ValueError(
+            "Checkpoint payload must be a mapping: "
+            f"{checkpoint_path}"
+        )
+
+    (
+        action_space_config,
+        action_layout,
+    ) = require_topology_action_provenance(
+        checkpoint,
+        source=str(checkpoint_path),
+    )
+
+    return topology_action_provenance(
+        action_space_config,
+        action_layout,
+    )
+
+
 def _make_task_config(request: EvaluationRequest) -> dict[str, Any]:
     if GridFMReward is None:
         _ensure_runtime_dependencies()
+
     config = request.config
-    modes = evaluation_policy_modes(config.use_continuation_gate)
+    modes = evaluation_policy_modes(
+        config.use_continuation_gate
+    )
+    topology_provenance = (
+        _load_checkpoint_topology_action_provenance(
+            request.checkpoint
+        )
+    )
+
     return {
         "simulations": int(config.simulations),
         "depth": int(config.depth),
@@ -596,7 +681,10 @@ def _make_task_config(request: EvaluationRequest) -> dict[str, Any]:
         "stop_policy": str(request.stop_policy),
         "device": str(config.device),
         "pf_alg": request.resolved_physics_config.pf_alg,
-        **physics_provenance(request.resolved_physics_config),
+        **physics_provenance(
+            request.resolved_physics_config
+        ),
+        **topology_provenance,
         "disable_cache": bool(request.disable_cache),
         "use_continuation_gate": bool(config.use_continuation_gate),
         "evaluation_modes": [mode.value for mode in modes],
@@ -663,6 +751,16 @@ def _build_evaluation_run_info(
         ),
         "physics_config_fingerprint": str(
             task_config["physics_config_fingerprint"]
+        ),
+        "topology_action_config_fingerprint": str(
+            task_config[
+                "topology_action_config_fingerprint"
+            ]
+        ),
+        "action_layout_fingerprint": str(
+            task_config[
+                "action_layout_fingerprint"
+            ]
         ),
         "evaluation_metrics_contract_version": (
             EVALUATION_METRICS_CONTRACT_VERSION
