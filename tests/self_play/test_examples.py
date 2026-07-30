@@ -14,6 +14,10 @@ from grid_topology_ai.contracts import (
 )
 from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
 from grid_topology_ai.self_play.examples import ExampleWriter, SelfPlayExample
+from tests.topology_contract_helpers import (
+    TEST_ACTION_SPACE_CONFIG,
+    topology_csv_fields,
+)
 
 
 def test_example_writer_class_name_is_explicit() -> None:
@@ -24,6 +28,7 @@ def test_example_writer_uses_expected_artifact_names(tmp_path: Path) -> None:
     writer = ExampleWriter(
         tmp_path,
         physics_config=DEFAULT_PHYSICS_CONFIG,
+        action_space_config=TEST_ACTION_SPACE_CONFIG,
     )
 
     assert writer.states_dir == tmp_path / "states"
@@ -36,6 +41,7 @@ def test_example_writer_rejects_off_policy_selected_action(
     writer = ExampleWriter(
         tmp_path,
         physics_config=DEFAULT_PHYSICS_CONFIG,
+        action_space_config=TEST_ACTION_SPACE_CONFIG,
     )
     writer.state_store = SimpleNamespace(
         save_state=lambda **kwargs: pytest.fail(
@@ -67,8 +73,10 @@ def test_example_writer_save_preserves_csv_schema(tmp_path: Path) -> None:
     writer = ExampleWriter(
         tmp_path,
         physics_config=DEFAULT_PHYSICS_CONFIG,
+        action_space_config=TEST_ACTION_SPACE_CONFIG,
     )
     provenance = physics_provenance(DEFAULT_PHYSICS_CONFIG)
+    action_provenance = topology_csv_fields((3, 4))
     writer.examples.append(
         SelfPlayExample(
             state_id="state-1",
@@ -76,7 +84,7 @@ def test_example_writer_save_preserves_csv_schema(tmp_path: Path) -> None:
             scenario_id=1,
             step=0,
             selected_action_id=2,
-            selected_branch_id=3,
+            selected_branch_id=4,
             step_reward=1.0,
             final_return=1.0,
             discounted_return_from_step=1.0,
@@ -89,6 +97,29 @@ def test_example_writer_save_preserves_csv_schema(tmp_path: Path) -> None:
             ),
             physics_config_contract_version=int(
                 provenance["physics_config_contract_version"]
+            ),
+            topology_action_contract_version=int(
+                action_provenance[
+                    "topology_action_contract_version"
+                ]
+            ),
+            topology_action_config=str(
+                action_provenance[
+                    "topology_action_config"
+                ]
+            ),
+            topology_action_config_fingerprint=str(
+                action_provenance[
+                    "topology_action_config_fingerprint"
+                ]
+            ),
+            action_layout=str(
+                action_provenance["action_layout"]
+            ),
+            action_layout_fingerprint=str(
+                action_provenance[
+                    "action_layout_fingerprint"
+                ]
             ),
             physics_config=json.dumps(
                 provenance["physics_config"],
@@ -121,6 +152,11 @@ def test_example_writer_save_preserves_csv_schema(tmp_path: Path) -> None:
         "physical_objective_schema_version",
         "outcome_value_target_contract_version",
         "physics_config_contract_version",
+        "topology_action_contract_version",
+        "topology_action_config",
+        "topology_action_config_fingerprint",
+        "action_layout",
+        "action_layout_fingerprint",
         "physics_config",
         "physics_config_fingerprint",
         "visit_counts_json",

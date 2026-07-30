@@ -105,7 +105,6 @@ def test_mcts_backup_and_value_targets_share_terminal_utility(
 def test_mcts_backup_has_no_dense_reward_path() -> None:
     source = textwrap.dedent(inspect.getsource(MCTSPlanner._backup))
     tree = ast.parse(source)
-
     attribute_names = {
         node.attr
         for node in ast.walk(tree)
@@ -209,5 +208,5 @@ def test_evaluation_reward_uses_run_gamma_everywhere() -> None:
 def test_unified_return_contract_versions_are_pinned() -> None:
     assert VALUE_TARGET_MODE == "alphazero_discounted"
     assert OUTCOME_VALUE_TARGET_CONTRACT_VERSION == 4
-    assert CHECKPOINT_CONTRACT_VERSION == 5
-    assert REPLAY_BUFFER_SCHEMA_VERSION == 4
+    assert CHECKPOINT_CONTRACT_VERSION == 6
+    assert REPLAY_BUFFER_SCHEMA_VERSION == 5

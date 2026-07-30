@@ -152,7 +152,7 @@ def test_dataset_rejects_wrong_action_mask_length(tmp_path):
     examples_csv = tmp_path / "examples.csv"
     _write_examples_csv(examples_csv, state_path, {"0": 1.0})
 
-    with pytest.raises(ValueError, match="Expected num_actions = num_branches"):
+    with pytest.raises(ValueError, match="versioned action layout"):
         GraphSelfPlayDataset(
             examples_csv=examples_csv,
             normalize_features=False,
