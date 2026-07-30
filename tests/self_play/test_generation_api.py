@@ -132,6 +132,11 @@ class _FakeExampleWriter:
         "physics_config_contract_version",
         "physics_config",
         "physics_config_fingerprint",
+        "topology_action_contract_version",
+        "topology_action_config",
+        "topology_action_config_fingerprint",
+        "action_layout",
+        "action_layout_fingerprint",
         "visit_counts_json",
         "mcts_policy_json",
     ]
