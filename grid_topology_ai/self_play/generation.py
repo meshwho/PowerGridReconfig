@@ -580,6 +580,7 @@ def generate_self_play_examples(request: GenerationRequest) -> Path:
     example_writer = ExampleWriter(
         request.output_dir,
         physics_config=request.resolved_physics_config,
+        action_space_config=action_space.config,
     )
 
     total_examples = 0

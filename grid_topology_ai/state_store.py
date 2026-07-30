@@ -49,7 +49,7 @@ class GridFMStateStore:
         action_mask:
             Boolean array of valid actions.
             Shape:
-                [1 + num_branches]
+                [num_actions]
 
         extra_metadata:
             Optional additional metadata.

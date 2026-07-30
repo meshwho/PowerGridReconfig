@@ -15,9 +15,10 @@ OUTCOME_VALUE_TARGET_CONTRACT_VERSION = 4
 # Version 6 adds MCTS legal-action coverage diagnostics to evaluation
 # rows and aggregated metrics.
 EVALUATION_METRICS_CONTRACT_VERSION = 6
-CHECKPOINT_CONTRACT_VERSION = 5
-REPLAY_BUFFER_SCHEMA_VERSION = 4
+CHECKPOINT_CONTRACT_VERSION = 6
+REPLAY_BUFFER_SCHEMA_VERSION = 5
 PHYSICS_CONFIG_CONTRACT_VERSION = 1
+TOPOLOGY_ACTION_CONTRACT_VERSION = 1
 
 
 def require_exact_contract_version(
@@ -59,6 +60,166 @@ def physics_provenance(
         "physics_config": physics_config.to_dict(),
         "physics_config_fingerprint": physics_config.fingerprint(),
     }
+
+
+def topology_action_provenance(
+    action_space_config: object,
+    action_layout: object,
+) -> dict[str, object]:
+    from grid_topology_ai.topology_actions import (
+        action_layout_fingerprint,
+        action_layout_to_list,
+    )
+
+    config_payload = (
+        action_space_config.to_contract_dict()
+    )
+    layout_payload = action_layout_to_list(
+        action_layout
+    )
+
+    return {
+        "topology_action_contract_version": (
+            TOPOLOGY_ACTION_CONTRACT_VERSION
+        ),
+        "topology_action_config": config_payload,
+        "topology_action_config_fingerprint": (
+            action_space_config.contract_fingerprint()
+        ),
+        "action_layout": layout_payload,
+        "action_layout_fingerprint": (
+            action_layout_fingerprint(
+                action_layout
+            )
+        ),
+    }
+
+def require_topology_action_provenance(
+    payload: Mapping[str, object],
+    *,
+    source: str,
+    expected_action_space_config: object | None = None,
+    expected_action_layout: object | None = None,
+):
+    from grid_topology_ai.topology_actions import (
+        ActionSpaceConfig,
+        action_layout_fingerprint,
+        action_layout_from_value,
+    )
+
+    require_exact_contract_version(
+        payload.get(
+            "topology_action_contract_version"
+        ),
+        expected=TOPOLOGY_ACTION_CONTRACT_VERSION,
+        name="topology-action contract",
+        source=source,
+        regeneration_command=(
+            "regenerate the dataset and retrain the "
+            "policy-value checkpoint"
+        ),
+    )
+
+    required = (
+        "topology_action_config",
+        "topology_action_config_fingerprint",
+        "action_layout",
+        "action_layout_fingerprint",
+    )
+
+    missing = [
+        name
+        for name in required
+        if payload.get(name) is None
+    ]
+
+    if missing:
+        raise ValueError(
+            "Incomplete topology action provenance for "
+            f"{source}: missing {missing}."
+        )
+
+    raw_config = payload[
+        "topology_action_config"
+    ]
+
+    if isinstance(raw_config, str):
+        try:
+            raw_config = json.loads(raw_config)
+        except json.JSONDecodeError as exc:
+            raise ValueError(
+                "Invalid topology_action_config JSON "
+                f"for {source}."
+            ) from exc
+
+    observed_config = (
+        ActionSpaceConfig.from_contract_mapping(
+            raw_config
+        )
+    )
+
+    observed_config_fingerprint = payload[
+        "topology_action_config_fingerprint"
+    ]
+    canonical_config_fingerprint = (
+        observed_config.contract_fingerprint()
+    )
+
+    if (
+        observed_config_fingerprint
+        != canonical_config_fingerprint
+    ):
+        raise ValueError(
+            "Topology action config fingerprint "
+            f"mismatch for {source}."
+        )
+
+    observed_layout = action_layout_from_value(
+        payload["action_layout"]
+    )
+    canonical_layout_fingerprint = (
+        action_layout_fingerprint(
+            observed_layout
+        )
+    )
+
+    if (
+        payload["action_layout_fingerprint"]
+        != canonical_layout_fingerprint
+    ):
+        raise ValueError(
+            "Action layout fingerprint mismatch "
+            f"for {source}."
+        )
+
+    if (
+        expected_action_space_config is not None
+        and canonical_config_fingerprint
+        != expected_action_space_config
+        .contract_fingerprint()
+    ):
+        raise ValueError(
+            "Topology action config mismatch "
+            f"for {source}."
+        )
+
+    if expected_action_layout is not None:
+        expected_layout_fingerprint = (
+            action_layout_fingerprint(
+                expected_action_layout
+            )
+        )
+
+        if (
+            canonical_layout_fingerprint
+            != expected_layout_fingerprint
+        ):
+            raise ValueError(
+                "Action layout mismatch "
+                f"for {source}."
+            )
+
+    return observed_config, observed_layout
 
 
 def require_physics_provenance(
@@ -213,6 +374,12 @@ def require_checkpoint_contracts(
             "python -m scripts.self_play.train_graph_baseline ..."
         ),
     )
+
+    require_topology_action_provenance(
+        payload,
+        source=source,
+    )
+
     return require_physics_provenance(
         payload,
         source=source,

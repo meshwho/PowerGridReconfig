@@ -52,6 +52,11 @@ class SelfPlayExample:
     physical_objective_schema_version: int
     outcome_value_target_contract_version: int
     physics_config_contract_version: int
+    topology_action_contract_version: int
+    topology_action_config: str
+    topology_action_config_fingerprint: str
+    action_layout: str
+    action_layout_fingerprint: str
     physics_config: str
     physics_config_fingerprint: str
     visit_counts_json: str
@@ -75,6 +80,7 @@ class ExampleWriter:
         output_dir: str | Path,
         *,
         physics_config: PhysicsConfig,
+        action_space_config: ActionSpaceConfig,
     ):
         self.output_dir = Path(output_dir)
         self.physics_config = physics_config
@@ -84,6 +90,7 @@ class ExampleWriter:
         self.states_dir.mkdir(parents=True, exist_ok=True)
         self.state_store = GridFMStateStore(self.states_dir)
         self.examples: list[SelfPlayExample] = []
+        self.action_space_config = action_space_config
 
     def add_example(
         self,
@@ -132,6 +139,23 @@ class ExampleWriter:
         state_metadata["outcome_value_target_contract_version"] = (
             OUTCOME_VALUE_TARGET_CONTRACT_VERSION
         )
+
+        action_layout = (
+            build_branch_action_slots(
+                state.branch_ids
+            )
+        )
+        action_provenance = (
+            topology_action_provenance(
+                self.action_space_config,
+                action_layout,
+            )
+        )
+
+        state_metadata.update(
+            action_provenance
+        )
+
         state_path = self.state_store.save_state(
             state=state,
             state_id=state_id,
@@ -166,6 +190,37 @@ class ExampleWriter:
             ),
             physics_config_contract_version=int(
                 provenance["physics_config_contract_version"]
+            ),
+            topology_action_contract_version=int(
+                action_provenance[
+                    "topology_action_contract_version"
+                ]
+            ),
+            topology_action_config=json.dumps(
+                action_provenance[
+                    "topology_action_config"
+                ],
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            ),
+            topology_action_config_fingerprint=str(
+                action_provenance[
+                    "topology_action_config_fingerprint"
+                ]
+            ),
+            action_layout=json.dumps(
+                action_provenance[
+                    "action_layout"
+                ],
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            ),
+            action_layout_fingerprint=str(
+                action_provenance[
+                    "action_layout_fingerprint"
+                ]
             ),
             physics_config=json.dumps(
                 provenance["physics_config"],

@@ -10,12 +10,13 @@ from grid_topology_ai.data_adapter import (
     GridFMState,
 )
 from grid_topology_ai.topology_actions import (
+    ActionKind,
     ActionSlot,
     ActionSpaceConfig,
     ActionType,
     GridFMAction,
+    action_layout_fingerprint,
     build_branch_action_slots,
-    ActionKind,
     branch_status_signature,
 )
 
@@ -25,6 +26,7 @@ __all__ = [
     "ActionType",
     "GridFMAction",
     "GridFMActionSpace",
+    "ActionKind",
 ]
 
 
@@ -381,6 +383,14 @@ class GridFMActionSpace:
 
         return build_branch_action_slots(
             state.branch_ids
+        )
+
+    def action_layout_fingerprint(
+        self,
+        state: GridFMState,
+    ) -> str:
+        return action_layout_fingerprint(
+            self.build_action_slots(state)
         )
 
     def build_all_actions(

@@ -42,11 +42,16 @@ REQUIRED_EXAMPLE_COLUMNS: tuple[str, ...] = (
     "state_id",
     "physical_objective_schema_version",
     "physics_config_contract_version",
+    "topology_action_contract_version",
+    "topology_action_config",
+    "topology_action_config_fingerprint",
+    "action_layout",
+    "action_layout_fingerprint",
     "physics_config",
     "physics_config_fingerprint",
 ) + REQUIRED_OUTCOME_COLUMNS
 
-_REQUIRED_STATE_ARRAYS = ("bus_features", "branch_features", "edge_index", "action_mask")
+_REQUIRED_STATE_ARRAYS = ("bus_features", "branch_features", "edge_index", "action_mask", "branch_ids")
 
 
 class _GraphDimensions(NamedTuple):
@@ -68,6 +73,38 @@ def load_and_validate_examples_csv(path: str | Path) -> pd.DataFrame:
     validate_examples_dataframe(examples, source_path=path)
     return examples
 
+def validate_example_topology_action_contracts(
+    examples: pd.DataFrame,
+    *,
+    source_path: str | Path,
+):
+    source = Path(source_path)
+    observed_config = None
+    observed_layout = None
+
+    for index, row in examples.iterrows():
+        observed_config, observed_layout = (
+            require_topology_action_provenance(
+                row.to_dict(),
+                source=f"{source} row {index}",
+                expected_action_space_config=(
+                    observed_config
+                ),
+                expected_action_layout=(
+                    observed_layout
+                ),
+            )
+        )
+
+    if (
+        observed_config is None
+        or observed_layout is None
+    ):
+        raise ValueError(
+            f"Examples CSV is empty: {source}"
+        )
+
+    return observed_config, observed_layout
 
 def validate_examples_dataframe(examples: pd.DataFrame, *, source_path: str | Path) -> None:
     source = Path(source_path)
@@ -472,7 +509,7 @@ def _validate_npz_state(
         raise ValueError(f"{state_path}: branch_features must be non-empty 2D, got {branch_features.shape}")
     if edge_index.shape != (2, branch_features.shape[0]):
         raise ValueError(f"{state_path}: edge_index must have shape (2, num_branches), got {edge_index.shape}")
-    if action_mask.ndim != 1 or action_mask.shape[0] != branch_features.shape[0] + 1 or action_mask.shape[0] <= 0:
+    if action_mask.ndim != 1 or action_mask.shape[0] != len(action_layout) or action_mask.shape[0] <= 0:
         raise ValueError(f"{state_path}: action_mask must be 1D with num_branches + 1 entries, got {action_mask.shape}")
     if not bool(action_mask.any()):
         raise ValueError(f"{state_path}: action_mask must contain at least one valid action")
