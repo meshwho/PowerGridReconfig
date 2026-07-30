@@ -6,12 +6,21 @@ import numpy as np
 import torch
 
 from grid_topology_ai.config.physics import PhysicsConfig
-from grid_topology_ai.contracts import require_checkpoint_contracts
+from grid_topology_ai.contracts import (
+    require_checkpoint_contracts,
+    require_topology_action_provenance,
+)
 from grid_topology_ai.data_adapter import GridFMState
 from grid_topology_ai.models.graph_policy_value_net import GraphPolicyValueNet
 from grid_topology_ai.models.graph_policy_value_net_v2 import GraphPolicyValueNetV2
 from grid_topology_ai.models.self_play_dataset import SelfPlayDataset
 from grid_topology_ai.models.simple_policy_value_net import SimplePolicyValueNet
+from grid_topology_ai.topology_actions import (
+    STOP_PLUS_BRANCH_STATUS_POLICY_LAYOUT,
+    action_layout_fingerprint,
+    build_branch_action_slots,
+)
+
 
 
 class NeuralPolicyValueEvaluator:
@@ -62,6 +71,36 @@ class NeuralPolicyValueEvaluator:
             source=str(self.checkpoint_path),
             expected_physics_config=physics_config,
         )
+
+        (
+            self.topology_action_config,
+            self.action_layout,
+        ) = require_topology_action_provenance(
+            self.checkpoint,
+            source=str(self.checkpoint_path),
+        )
+
+        self.action_layout_fingerprint = (
+            action_layout_fingerprint(
+                self.action_layout
+            )
+        )
+
+        self.policy_layout = str(
+            self.checkpoint.get(
+                "policy_layout",
+                "",
+            )
+        )
+
+        if (
+            self.policy_layout
+            != STOP_PLUS_BRANCH_STATUS_POLICY_LAYOUT
+        ):
+            raise ValueError(
+                "Unsupported checkpoint policy layout: "
+                f"{self.policy_layout!r}."
+            )
 
         self.model_type = str(
             self.checkpoint.get("model_type", "simple_policy_value_net")
@@ -219,6 +258,27 @@ class NeuralPolicyValueEvaluator:
         value:
             Normalized scalar value in [-1, 1].
         """
+
+        current_layout = (
+            build_branch_action_slots(
+                state.branch_ids
+            )
+        )
+
+        current_layout_fingerprint = (
+            action_layout_fingerprint(
+                current_layout
+            )
+        )
+
+        if (
+            current_layout_fingerprint
+            != self.action_layout_fingerprint
+        ):
+            raise ValueError(
+                "State action layout does not match "
+                "the checkpoint action layout."
+            )
 
         cache_key = self._make_cache_key(
             state=state,

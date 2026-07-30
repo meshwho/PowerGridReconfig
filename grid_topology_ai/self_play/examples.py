@@ -11,6 +11,7 @@ from grid_topology_ai.config.physics import PhysicsConfig
 from grid_topology_ai.contracts import (
     OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
     physics_provenance,
+    topology_action_provenance,
 )
 from grid_topology_ai.data_adapter import GridFMState
 from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
@@ -23,6 +24,10 @@ from grid_topology_ai.termination import (
     TerminationReason,
     termination_reason_value,
     validate_outcome_invariants,
+)
+from grid_topology_ai.topology_actions import (
+    ActionSpaceConfig,
+    build_branch_action_slots,
 )
 
 

@@ -14,7 +14,13 @@ from grid_topology_ai.self_play.example_validation import (
     REQUIRED_EXAMPLE_COLUMNS,
     validate_example_contract_versions,
     validate_example_outcome_contracts,
+    validate_example_topology_action_contracts,
     validate_state_physics_provenance,
+    validate_state_topology_action_provenance,
+)
+from grid_topology_ai.topology_actions import (
+    action_layout_fingerprint,
+    require_branch_status_policy_layout,
 )
 
 
@@ -72,6 +78,25 @@ class GraphSelfPlayDataset(Dataset):
             source_path=self.examples_csv,
             expected_physics_config=physics_config,
         )
+        (
+            self.topology_action_config,
+            self.action_layout,
+        ) = validate_example_topology_action_contracts(
+            self.examples,
+            source_path=self.examples_csv,
+        )
+
+        self.action_layout_fingerprint = (
+            action_layout_fingerprint(
+                self.action_layout
+            )
+        )
+
+        self.policy_layout = (
+            require_branch_status_policy_layout(
+                self.action_layout
+            )
+        )
         validate_example_outcome_contracts(
             self.examples,
             source_path=self.examples_csv,
@@ -87,10 +112,14 @@ class GraphSelfPlayDataset(Dataset):
         self.num_branches = int(first_data["branch_features"].shape[0])
         self.num_actions = int(first_data["action_mask"].shape[0])
 
-        if self.num_actions != self.num_branches + 1:
+        if self.num_actions != len(
+                self.action_layout
+        ):
             raise ValueError(
-                f"Expected num_actions = num_branches + 1, got "
-                f"num_actions={self.num_actions}, num_branches={self.num_branches}"
+                "Action mask size does not match the "
+                "versioned action layout. "
+                f"Expected {len(self.action_layout)}, "
+                f"got {self.num_actions}."
             )
 
         if normalization_stats is not None:
@@ -263,6 +292,15 @@ class GraphSelfPlayDataset(Dataset):
                 state_path,
                 expected_physics_config=self.physics_config,
             )
+            validate_state_topology_action_provenance(
+                state_path,
+                expected_action_space_config=(
+                    self.topology_action_config
+                ),
+                expected_action_layout=(
+                    self.action_layout
+                ),
+            )
 
     def _load_npz_by_index(self, idx: int):
         row = self.examples.iloc[idx]
@@ -430,7 +468,9 @@ class GraphSelfPlayDataset(Dataset):
                 f"Expected {self.num_branches}, got {branch_features.shape[0]}"
             )
 
-        expected_num_actions = self.num_branches + 1
+        expected_num_actions = len(
+            self.action_layout
+        )
 
         if action_mask.shape[0] != expected_num_actions:
             raise ValueError(

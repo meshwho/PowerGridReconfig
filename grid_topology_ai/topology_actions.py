@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import math
+from collections.abc import Mapping
 from dataclasses import dataclass
 from numbers import Integral, Real
 from typing import Iterable, Literal
@@ -21,6 +24,23 @@ ActionType = Literal[
     "switch_off_branch",
     "switch_on_branch",
 ]
+
+STOP_PLUS_BRANCH_STATUS_POLICY_LAYOUT = (
+    "stop_plus_branch_status_v1"
+)
+
+
+def _fingerprint_json(value: object) -> str:
+    encoded = json.dumps(
+        value,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+
+    return hashlib.sha256(
+        encoded.encode("utf-8")
+    ).hexdigest()
 
 def _non_negative_int(
     name: str,
@@ -152,6 +172,64 @@ class ActionSlot:
         )
 
 
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "action_id": int(self.action_id),
+            "kind": str(self.kind),
+            "target_id": (
+                None
+                if self.target_id is None
+                else int(self.target_id)
+            ),
+            "target_pos": (
+                None
+                if self.target_pos is None
+                else int(self.target_pos)
+            ),
+        }
+
+    @classmethod
+    def from_mapping(
+        cls,
+        data: Mapping[str, object],
+    ) -> "ActionSlot":
+        if not isinstance(data, Mapping):
+            raise ValueError(
+                "Action slot must be a mapping."
+            )
+
+        required = {
+            "action_id",
+            "kind",
+            "target_id",
+            "target_pos",
+        }
+
+        unknown = set(data) - required
+
+        if unknown:
+            raise ValueError(
+                "Unknown action slot fields: "
+                f"{sorted(unknown)}."
+            )
+
+        missing = required - set(data)
+
+        if missing:
+            raise ValueError(
+                "Missing action slot fields: "
+                f"{sorted(missing)}."
+            )
+
+        return cls(
+            action_id=data["action_id"],
+            kind=data["kind"],
+            target_id=data["target_id"],
+            target_pos=data["target_pos"],
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class ActionSpaceConfig:
     require_connected_after_switch: bool = True
@@ -237,6 +315,81 @@ class ActionSpaceConfig:
             self,
             "closeable_branch_ids",
             tuple(sorted(closeable_branch_ids)),
+        )
+
+    def to_contract_dict(self) -> dict[str, object]:
+        return {
+            "require_connected_after_switch": bool(
+                self.require_connected_after_switch
+            ),
+            "min_loading_for_switch_percent": float(
+                self.min_loading_for_switch_percent
+            ),
+            "closeable_branch_ids": [
+                int(branch_id)
+                for branch_id in self.closeable_branch_ids
+            ],
+        }
+
+    @classmethod
+    def from_contract_mapping(
+        cls,
+        data: Mapping[str, object],
+    ) -> "ActionSpaceConfig":
+        if not isinstance(data, Mapping):
+            raise ValueError(
+                "Topology action config must be a mapping."
+            )
+
+        required = {
+            "require_connected_after_switch",
+            "min_loading_for_switch_percent",
+            "closeable_branch_ids",
+        }
+
+        unknown = set(data) - required
+
+        if unknown:
+            raise ValueError(
+                "Unknown topology action settings: "
+                f"{sorted(unknown)}."
+            )
+
+        missing = required - set(data)
+
+        if missing:
+            raise ValueError(
+                "Missing topology action settings: "
+                f"{sorted(missing)}."
+            )
+
+        closeable_branch_ids = data[
+            "closeable_branch_ids"
+        ]
+
+        if not isinstance(
+            closeable_branch_ids,
+            (list, tuple),
+        ):
+            raise ValueError(
+                "closeable_branch_ids must be a list."
+            )
+
+        return cls(
+            require_connected_after_switch=data[
+                "require_connected_after_switch"
+            ],
+            min_loading_for_switch_percent=data[
+                "min_loading_for_switch_percent"
+            ],
+            closeable_branch_ids=tuple(
+                closeable_branch_ids
+            ),
+        )
+
+    def contract_fingerprint(self) -> str:
+        return _fingerprint_json(
+            self.to_contract_dict()
         )
 
 
@@ -411,6 +564,94 @@ def build_branch_action_slots(
         )
 
     return tuple(slots)
+
+def action_layout_to_list(
+    action_layout: Iterable[ActionSlot],
+) -> list[dict[str, object]]:
+    slots = tuple(action_layout)
+
+    if not slots:
+        raise ValueError(
+            "Action layout must not be empty."
+        )
+
+    action_ids = [
+        int(slot.action_id)
+        for slot in slots
+    ]
+    expected_action_ids = list(
+        range(len(slots))
+    )
+
+    if action_ids != expected_action_ids:
+        raise ValueError(
+            "Action layout IDs must be contiguous and "
+            f"ordered from 0. Observed {action_ids}."
+        )
+
+    return [
+        slot.to_dict()
+        for slot in slots
+    ]
+
+
+def action_layout_from_value(
+    value: object,
+) -> tuple[ActionSlot, ...]:
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError as exc:
+            raise ValueError(
+                "Invalid action layout JSON."
+            ) from exc
+
+    if not isinstance(value, list):
+        raise ValueError(
+            "Action layout must be a list."
+        )
+
+    slots = tuple(
+        ActionSlot.from_mapping(item)
+        for item in value
+    )
+
+    action_layout_to_list(slots)
+
+    return slots
+
+
+def action_layout_fingerprint(
+    action_layout: Iterable[ActionSlot],
+) -> str:
+    return _fingerprint_json(
+        action_layout_to_list(action_layout)
+    )
+
+
+def require_branch_status_policy_layout(
+    action_layout: Iterable[ActionSlot],
+) -> str:
+    slots = tuple(action_layout)
+
+    action_layout_to_list(slots)
+
+    if slots[0].kind != "stop":
+        raise ValueError(
+            "The current policy head requires stop at "
+            "action_id 0."
+        )
+
+    if any(
+        slot.kind != "branch_status"
+        for slot in slots[1:]
+    ):
+        raise ValueError(
+            "The current policy head supports only "
+            "branch-status action slots."
+        )
+
+    return STOP_PLUS_BRANCH_STATUS_POLICY_LAYOUT
 
 def branch_status_signature(
     branch_ids: Iterable[int],

@@ -14,11 +14,18 @@ from grid_topology_ai.contracts import (
     OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
     require_exact_contract_version,
     require_physics_provenance,
+    require_topology_action_provenance,
 )
 from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
 from grid_topology_ai.termination import (
     parse_termination_reason,
     validate_outcome_invariants,
+)
+from grid_topology_ai.topology_actions import (
+    ActionSlot,
+    ActionSpaceConfig,
+    action_layout_fingerprint,
+    build_branch_action_slots,
 )
 from grid_topology_ai.value_targets import terminal_value_from_outcome
 
@@ -77,7 +84,10 @@ def validate_example_topology_action_contracts(
     examples: pd.DataFrame,
     *,
     source_path: str | Path,
-):
+) -> tuple[
+    ActionSpaceConfig,
+    tuple[ActionSlot, ...],
+]:
     source = Path(source_path)
     observed_config = None
     observed_layout = None
@@ -121,6 +131,14 @@ def validate_examples_dataframe(examples: pd.DataFrame, *, source_path: str | Pa
         source_path=source,
     )
 
+    (
+        action_space_config,
+        action_layout,
+    ) = validate_example_topology_action_contracts(
+        examples,
+        source_path=source,
+    )
+
     for column in REQUIRED_EXAMPLE_COLUMNS:
         for index, value in examples[column].items():
             if _is_missing_required_value(value):
@@ -151,6 +169,10 @@ def validate_examples_dataframe(examples: pd.DataFrame, *, source_path: str | Pa
         dims, action_mask = _validate_npz_state(
             state_path,
             expected_physics_config=physics_config,
+            expected_action_space_config=(
+                action_space_config
+            ),
+            expected_action_layout=action_layout,
         )
         if expected is None:
             expected = dims
@@ -478,11 +500,140 @@ def validate_state_physics_provenance(
         expected_physics_config=expected_physics_config,
     )
 
+def validate_state_topology_action_provenance(
+    state_path: str | Path,
+    *,
+    expected_action_space_config: ActionSpaceConfig,
+    expected_action_layout: tuple[ActionSlot, ...],
+) -> tuple[
+    ActionSpaceConfig,
+    tuple[ActionSlot, ...],
+]:
+    state_path = Path(state_path)
+
+    try:
+        with np.load(
+            state_path,
+            allow_pickle=False,
+        ) as data:
+            if "metadata_json" not in data.files:
+                raise ValueError(
+                    "State NPZ is missing required "
+                    f"metadata_json: {state_path}"
+                )
+
+            if "branch_ids" not in data.files:
+                raise ValueError(
+                    "State NPZ is missing required "
+                    f"branch_ids: {state_path}"
+                )
+
+            raw_metadata = np.asarray(
+                data["metadata_json"]
+            )
+            branch_ids = np.asarray(
+                data["branch_ids"]
+            )
+    except (OSError, EOFError) as exc:
+        raise ValueError(
+            f"Could not read NPZ state: {state_path}"
+        ) from exc
+
+    if raw_metadata.size != 1:
+        raise ValueError(
+            "State metadata_json must contain one "
+            f"JSON object: {state_path}"
+        )
+
+    try:
+        metadata = json.loads(
+            str(raw_metadata.item())
+        )
+    except (json.JSONDecodeError, ValueError) as exc:
+        raise ValueError(
+            f"Invalid state metadata_json: {state_path}"
+        ) from exc
+
+    if not isinstance(metadata, Mapping):
+        raise ValueError(
+            "State metadata_json must be an object: "
+            f"{state_path}"
+        )
+
+    (
+        observed_config,
+        observed_layout,
+    ) = require_topology_action_provenance(
+        metadata,
+        source=str(state_path),
+        expected_action_space_config=(
+            expected_action_space_config
+        ),
+        expected_action_layout=(
+            expected_action_layout
+        ),
+    )
+
+    if branch_ids.ndim != 1 or branch_ids.size == 0:
+        raise ValueError(
+            f"{state_path}: branch_ids must be "
+            f"non-empty 1D, got {branch_ids.shape}"
+        )
+
+    try:
+        branch_id_values = np.asarray(
+            branch_ids,
+            dtype=np.float64,
+        )
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"{state_path}: branch_ids must be numeric"
+        ) from exc
+
+    if not np.isfinite(branch_id_values).all():
+        raise ValueError(
+            f"{state_path}: branch_ids must be finite"
+        )
+
+    if not np.equal(
+        branch_id_values,
+        np.rint(branch_id_values),
+    ).all():
+        raise ValueError(
+            f"{state_path}: branch_ids must be "
+            "integer-valued"
+        )
+
+    if bool((branch_id_values < 0).any()):
+        raise ValueError(
+            f"{state_path}: branch_ids must be "
+            "non-negative"
+        )
+
+    branch_layout = build_branch_action_slots(
+        int(branch_id)
+        for branch_id in branch_id_values.tolist()
+    )
+
+    if (
+        action_layout_fingerprint(branch_layout)
+        != action_layout_fingerprint(
+            observed_layout
+        )
+    ):
+        raise ValueError(
+            f"{state_path}: branch_ids do not match "
+            "the action_layout metadata"
+        )
+
+    return observed_config, observed_layout
 
 def _validate_npz_state(
     state_path: Path,
     *,
     expected_physics_config: PhysicsConfig,
+    expected_action_space_config: ActionSpaceConfig,
+    expected_action_layout: tuple[ActionSlot, ...],
 ) -> tuple[_GraphDimensions, np.ndarray]:
     try:
         with np.load(state_path, allow_pickle=False) as data:
@@ -503,14 +654,40 @@ def _validate_npz_state(
         expected_physics_config=expected_physics_config,
     )
 
+    (
+        _,
+        state_action_layout,
+    ) = validate_state_topology_action_provenance(
+        state_path,
+        expected_action_space_config=(
+            expected_action_space_config
+        ),
+        expected_action_layout=(
+            expected_action_layout
+        ),
+    )
+
     if bus_features.ndim != 2 or bus_features.shape[0] <= 0:
         raise ValueError(f"{state_path}: bus_features must be non-empty 2D, got {bus_features.shape}")
     if branch_features.ndim != 2 or branch_features.shape[0] <= 0:
         raise ValueError(f"{state_path}: branch_features must be non-empty 2D, got {branch_features.shape}")
     if edge_index.shape != (2, branch_features.shape[0]):
         raise ValueError(f"{state_path}: edge_index must have shape (2, num_branches), got {edge_index.shape}")
-    if action_mask.ndim != 1 or action_mask.shape[0] != len(action_layout) or action_mask.shape[0] <= 0:
-        raise ValueError(f"{state_path}: action_mask must be 1D with num_branches + 1 entries, got {action_mask.shape}")
+    expected_num_actions = len(
+        state_action_layout
+    )
+
+    if (
+            action_mask.ndim != 1
+            or action_mask.shape[0]
+            != expected_num_actions
+            or action_mask.shape[0] <= 0
+    ):
+        raise ValueError(
+            f"{state_path}: action_mask must be 1D "
+            f"with {expected_num_actions} entries, "
+            f"got {action_mask.shape}"
+        )
     if not bool(action_mask.any()):
         raise ValueError(f"{state_path}: action_mask must contain at least one valid action")
     if not np.isfinite(bus_features).all() or not np.isfinite(branch_features).all() or not np.isfinite(edge_index).all():

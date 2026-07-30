@@ -17,11 +17,17 @@ from grid_topology_ai.contracts import (
     physics_provenance,
     require_exact_contract_version,
     require_physics_provenance,
+    require_topology_action_provenance,
+    topology_action_provenance,
 )
 from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
 from grid_topology_ai.self_play.example_validation import (
     load_and_validate_examples_csv,
     validate_example_outcome_contracts,
+)
+from grid_topology_ai.topology_actions import (
+    ActionSlot,
+    ActionSpaceConfig,
 )
 
 
@@ -112,27 +118,68 @@ def _require_replay_row_contracts(
     *,
     source: str,
     expected_physics_config: PhysicsConfig,
-) -> None:
+    expected_action_space_config: (
+        ActionSpaceConfig | None
+    ) = None,
+    expected_action_layout: (
+        tuple[ActionSlot, ...] | None
+    ) = None,
+) -> tuple[
+    ActionSpaceConfig,
+    tuple[ActionSlot, ...],
+]:
     require_exact_contract_version(
         row.get("physical_objective_schema_version"),
         expected=PHYSICAL_OBJECTIVE_SCHEMA_VERSION,
         name="physical-objective contract",
         source=source,
-        regeneration_command="python -m scripts.self_play.generate ...",
+        regeneration_command=(
+            "python -m scripts.self_play.generate ..."
+        ),
     )
+
     require_exact_contract_version(
-        row.get("outcome_value_target_contract_version"),
-        expected=OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
+        row.get(
+            "outcome_value_target_contract_version"
+        ),
+        expected=(
+            OUTCOME_VALUE_TARGET_CONTRACT_VERSION
+        ),
         name="outcome/value-target contract",
         source=source,
-        regeneration_command="python -m scripts.self_play.generate ...",
+        regeneration_command=(
+            "python -m scripts.self_play.generate ..."
+        ),
     )
+
     require_physics_provenance(
         row,
         source=source,
-        expected_physics_config=expected_physics_config,
+        expected_physics_config=(
+            expected_physics_config
+        ),
     )
-    validate_example_outcome_contracts(pd.DataFrame([row]), source_path=source)
+
+    (
+        action_space_config,
+        action_layout,
+    ) = require_topology_action_provenance(
+        row,
+        source=source,
+        expected_action_space_config=(
+            expected_action_space_config
+        ),
+        expected_action_layout=(
+            expected_action_layout
+        ),
+    )
+
+    validate_example_outcome_contracts(
+        pd.DataFrame([row]),
+        source_path=source,
+    )
+
+    return action_space_config, action_layout
 
 
 def _save_manifest(
@@ -232,6 +279,14 @@ class RollingReplayBuffer:
             expected_physics_config=self.physics_config,
         )
 
+        (
+            manifest_action_space_config,
+            manifest_action_layout,
+        ) = require_topology_action_provenance(
+            manifest,
+            source=str(self.manifest_path),
+        )
+
         files = manifest.get("files", [])
 
         if not isinstance(files, list):
@@ -257,8 +312,19 @@ class RollingReplayBuffer:
             for row_index, row in enumerate(rows):
                 _require_replay_row_contracts(
                     row,
-                    source=f"{relative_path} row {row_index}",
-                    expected_physics_config=self.physics_config,
+                    source=(
+                        f"{relative_path} "
+                        f"row {row_index}"
+                    ),
+                    expected_physics_config=(
+                        self.physics_config
+                    ),
+                    expected_action_space_config=(
+                        manifest_action_space_config
+                    ),
+                    expected_action_layout=(
+                        manifest_action_layout
+                    ),
                 )
             selected_chunks.append(rows)
             selected_count += len(rows)
@@ -303,15 +369,48 @@ class RollingReplayBuffer:
         mutation when ingesting production self-play CSV data.
         """
 
+        expected_action_space_config = None
+        expected_action_layout = None
+
+        if self.buffer:
+            (
+                expected_action_space_config,
+                expected_action_layout,
+            ) = require_topology_action_provenance(
+                self.buffer[0],
+                source="replay buffer",
+            )
+
         normalized: list[dict[str, Any]] = []
 
         for row in examples:
             item = _row_to_json_safe_dict(dict(row))
-            _require_replay_row_contracts(
+            (
+                row_action_space_config,
+                row_action_layout,
+            ) = _require_replay_row_contracts(
                 item,
-                source=f"replay iteration {iteration}",
-                expected_physics_config=self.physics_config,
+                source=(
+                    f"replay iteration {iteration}"
+                ),
+                expected_physics_config=(
+                    self.physics_config
+                ),
+                expected_action_space_config=(
+                    expected_action_space_config
+                ),
+                expected_action_layout=(
+                    expected_action_layout
+                ),
             )
+
+            if expected_action_space_config is None:
+                expected_action_space_config = (
+                    row_action_space_config
+                )
+                expected_action_layout = (
+                    row_action_layout
+                )
             item["replay_iteration"] = int(iteration)
             normalized.append(item)
 
@@ -358,15 +457,48 @@ class RollingReplayBuffer:
 
         iteration = int(iteration)
 
+        expected_action_space_config = None
+        expected_action_layout = None
+
+        if self.buffer:
+            (
+                expected_action_space_config,
+                expected_action_layout,
+            ) = require_topology_action_provenance(
+                self.buffer[0],
+                source="replay buffer",
+            )
+
         rows: list[dict[str, Any]] = []
 
         for row in examples:
             item = _row_to_json_safe_dict(dict(row))
-            _require_replay_row_contracts(
+            (
+                row_action_space_config,
+                row_action_layout,
+            ) = _require_replay_row_contracts(
                 item,
-                source=f"replay iteration {iteration}",
-                expected_physics_config=self.physics_config,
+                source=(
+                    f"replay iteration {iteration}"
+                ),
+                expected_physics_config=(
+                    self.physics_config
+                ),
+                expected_action_space_config=(
+                    expected_action_space_config
+                ),
+                expected_action_layout=(
+                    expected_action_layout
+                ),
             )
+
+            if expected_action_space_config is None:
+                expected_action_space_config = (
+                    row_action_space_config
+                )
+                expected_action_layout = (
+                    row_action_layout
+                )
             item["replay_iteration"] = iteration
             rows.append(item)
 
@@ -383,6 +515,20 @@ class RollingReplayBuffer:
         """
         Rebuild and save buffer_manifest.json from existing buffer_iter files.
         """
+
+        if not self.buffer:
+            raise ValueError(
+                "Cannot save replay manifest for an "
+                "empty buffer."
+            )
+
+        (
+            topology_action_config,
+            action_layout,
+        ) = require_topology_action_provenance(
+            self.buffer[0],
+            source="replay buffer",
+        )
 
         files: list[dict[str, Any]] = []
 
@@ -416,6 +562,10 @@ class RollingReplayBuffer:
                 OUTCOME_VALUE_TARGET_CONTRACT_VERSION
             ),
             **physics_provenance(self.physics_config),
+            **topology_action_provenance(
+                topology_action_config,
+                action_layout,
+            ),
             "config": asdict(self.config),
             "total_examples_on_disk": total_on_disk,
             "total_examples_loaded": int(len(self.buffer)),

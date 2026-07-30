@@ -15,6 +15,8 @@ from grid_topology_ai.contracts import (
     OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
     physics_provenance,
     require_checkpoint_contracts,
+    require_topology_action_provenance,
+    topology_action_provenance,
 )
 from grid_topology_ai.models.graph_self_play_dataset import GraphSelfPlayDataset
 from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
@@ -232,6 +234,10 @@ def build_dataset_metadata(
 
     return {
         **physics_provenance(dataset.physics_config),
+        **topology_action_provenance(
+            dataset.topology_action_config,
+            dataset.action_layout,
+        ),
         "examples_csv": str(examples_csv),
         "examples_csv_abs": str(examples_csv_abs),
         "examples_csv_sha256": sha256_file(examples_csv_abs),
@@ -301,6 +307,13 @@ def make_checkpoint(
             OUTCOME_VALUE_TARGET_CONTRACT_VERSION
         ),
         **physics_provenance(dataset.physics_config),
+        **topology_action_provenance(
+            dataset.topology_action_config,
+            dataset.action_layout,
+        ),
+        "policy_layout": str(
+            dataset.policy_layout
+        ),
         "model_type": str(getattr(model, "model_type", "graph_policy_value_net")),
         "model_state_dict": model_state_dict_cpu,
         "num_bus_features": int(dataset.num_bus_features),
@@ -382,6 +395,27 @@ def load_initial_checkpoint_into_model(
         source=str(checkpoint_path),
         expected_physics_config=dataset.physics_config,
     )
+
+    require_topology_action_provenance(
+        checkpoint,
+        source=str(checkpoint_path),
+        expected_action_space_config=(
+            dataset.topology_action_config
+        ),
+        expected_action_layout=(
+            dataset.action_layout
+        ),
+    )
+
+    if (
+        checkpoint.get("policy_layout")
+        != dataset.policy_layout
+    ):
+        raise ValueError(
+            "Initial checkpoint policy layout "
+            "does not match the dataset. "
+            f"Checkpoint: {checkpoint_path}"
+        )
 
     expected_model_type = (
         "graph_policy_value_net_v2"

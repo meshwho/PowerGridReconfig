@@ -32,6 +32,9 @@ from grid_topology_ai.training.metrics import (
     print_value_target_diagnostics,
     setup_live_logging,
 )
+from grid_topology_ai.topology_actions import (
+    STOP_PLUS_BRANCH_STATUS_POLICY_LAYOUT,
+)
 
 GraphModel = GraphPolicyValueNet | GraphPolicyValueNetV2
 
@@ -491,6 +494,29 @@ def _build_model(
     dataset: GraphSelfPlayDataset,
     device: torch.device,
 ) -> GraphModel:
+
+    if (
+        dataset.policy_layout
+        != STOP_PLUS_BRANCH_STATUS_POLICY_LAYOUT
+    ):
+        raise ValueError(
+            "Graph policy-value networks require "
+            "policy_layout="
+            "'stop_plus_branch_status_v1'."
+        )
+
+    expected_num_actions = (
+        dataset.num_branches + 1
+    )
+
+    if dataset.num_actions != expected_num_actions:
+        raise ValueError(
+            "The current branch policy head requires "
+            "num_actions = num_branches + 1. "
+            f"Expected {expected_num_actions}, "
+            f"got {dataset.num_actions}."
+        )
+
     if request.config.model_type == "graph_v2":
         return GraphPolicyValueNetV2(
             num_bus_features=dataset.num_bus_features,
@@ -655,6 +681,16 @@ def train_graph_policy_value_model(
             normalize_features=request.normalize_features,
             normalization_stats=effective_normalization_stats,
             physics_config=dataset.physics_config,
+        )
+
+    if (
+        val_dataset is not None
+        and val_dataset.action_layout_fingerprint
+        != dataset.action_layout_fingerprint
+    ):
+        raise ValueError(
+            "Training and validation action layouts "
+            "do not match."
         )
 
     validate_no_scenario_overlap(train_dataset=dataset, val_dataset=val_dataset)
