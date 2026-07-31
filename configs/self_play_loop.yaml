@@ -84,6 +84,13 @@ generation:
   pf_alg: 3
   stop_policy: no_hard_overloads
 
+  # Stable branch slots execute open/close according to current branch_status.
+  require_connected_after_switch: true
+  min_loading_for_switch_percent: 0.0
+  # Populate only with verified normally-open/tie branch IDs.
+  # An empty list preserves opening-only behavior.
+  closeable_branch_ids: []
+
 training:
   examples_per_iteration: 20000
   validation_fraction: 0.20

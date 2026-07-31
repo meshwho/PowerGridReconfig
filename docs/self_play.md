@@ -6,7 +6,7 @@ The loop reads a YAML configuration, resolves run directories, verifies artifact
 
 ## 2. Bootstrap initialization
 
-A run starts from a bootstrap checkpoint and bootstrap fixed-evaluation metrics. The metrics must include `pf_alg` provenance compatible with generation and evaluation settings. Both artifacts must also carry the current semantic contract versions; validation happens before a bootstrap checkpoint is copied to the canonical best path.
+A run starts from a bootstrap checkpoint and bootstrap fixed-evaluation metrics. The metrics must include `pf_alg` provenance compatible with generation and evaluation settings. Both artifacts must also carry the current semantic contract versions. The bootstrap checkpoint must match the configured topology-action fingerprint and ordered action layout before it is copied to the canonical best path.
 
 ## 2.1 Physical success and episode termination
 
@@ -58,7 +58,43 @@ Each iteration samples scenario ids from the fixed pool. Sampling may prioritize
 
 Generation uses the current accepted checkpoint, configured MCTS settings, raw states, and `PF_ALG`. The canonical pilot value is `PF_ALG=3`.
 
-### 5.1 Progressive widening
+### 5.1 Bidirectional topology-action configuration
+
+The graph policy layout is `stop_plus_branch_status_v1`. Policy index `0` is
+stop/handoff; policy index `1 + branch_pos` is the stable branch-status slot for
+`branch_ids[branch_pos]`. The slot identity does not change with the current
+status:
+
+- active branch -> `switch_off_branch`, `target_status=0`;
+- inactive branch -> `switch_on_branch`, `target_status=1`.
+
+A closure is legal only when the inactive branch ID is explicitly present in
+`closeable_branch_ids`. The generation block exposes the complete semantic
+action-space configuration:
+
+```yaml
+generation:
+  require_connected_after_switch: true
+  min_loading_for_switch_percent: 0.0
+  # Populate only with verified normally-open/tie branch IDs.
+  closeable_branch_ids: []
+```
+
+`require_connected_after_switch` and `min_loading_for_switch_percent` constrain
+opening actions only. The loading threshold never filters an allowed closure.
+An empty `closeable_branch_ids` list preserves opening-only behavior. The list is
+canonicalized and becomes part of the topology-action fingerprint written to
+examples, replay, and checkpoints.
+
+Evaluation does not define an independent topology-action override. It loads the
+exact action configuration and ordered layout from the checkpoint, reconstructs
+the runtime action space from that provenance, and rejects a mismatch before an
+episode is evaluated.
+
+See [topology_action_contract.md](topology_action_contract.md) for the serialized
+layout, fingerprints, and artifact compatibility rules.
+
+### 5.2 Progressive widening
 
 `top_k` is the initial number of switch actions exposed to PUCT, not a permanent pruning limit. Each node retains the complete neural/DC/loading ranking and activates more legal switch actions as its visit count grows.
 
@@ -73,7 +109,7 @@ top_k + floor(
 
 The result is capped by the number of legal switch actions. Existing wider shortlists are never reduced, stop actions do not consume switch slots, and `widening_coefficient: 0` disables growth.
 
-### 5.2 MCTS action coverage
+### 5.3 MCTS action coverage
 
 Every root search reports two action-space coverage measures:
 
@@ -90,7 +126,7 @@ Self-play stores the counts and coverage values with every generated
 example. Evaluation stores per-search counts in the episode CSV and
 aggregates mean and minimum coverage values in the metrics JSON.
 
-### 5.3 Action temperature schedule
+### 5.4 Action temperature schedule
 
 Root Dirichlet noise changes the MCTS search priors. Action
 temperature controls how the real self-play action is selected from
@@ -108,7 +144,7 @@ After either cutoff, action selection uses temperature `0.0` and
 therefore deterministic argmax. Setting either cutoff to zero disables
 temperature-based sampling and preserves the previous behavior.
 
-### 5.4 Independent random streams
+### 5.5 Independent random streams
 
 Each self-play iteration expands the configured base seed and
 one-based iteration number through `numpy.random.SeedSequence`.
@@ -124,7 +160,7 @@ scenarios therefore does not change the random stream assigned to a
 particular scenario, and action sampling does not consume random values
 from MCTS.
 
-### 5.5 Exploration diagnostics
+### 5.6 Exploration diagnostics
 
 Every production self-play example records the action-selection
 temperature and mode, policy-target entropy, normalized policy-target
@@ -144,11 +180,11 @@ examples from earlier iterations are not included.
 
 ## 6. MCTS target versus executed action
 
-The policy target is the MCTS visit distribution. The continuation gate may alter the executed action for safety or episode-control semantics, but it does not rewrite the MCTS visit target.
+The policy target is the MCTS visit distribution. The real self-play action is selected from that distribution according to the configured temperature schedule. Continuation analysis is diagnostic only: it records allowed/recommended actions and whether the selected action agrees, but it does not override the executed action or rewrite the policy target.
 
 ## 7. Replay buffer
 
-Generated examples are appended to replay. Replay accumulation allows later iterations to train on current and prior experience according to configured limits. Replay manifests and every replay row are checked against the current physical and outcome/value-target versions before loading or mutation.
+Generated examples are appended to replay. Replay accumulation allows later iterations to train on current and prior experience according to configured limits. Replay manifests and every replay row are checked against the current physical, outcome/value-target, physics-configuration, topology-action configuration, and ordered action-layout contracts before loading or mutation. Mixed topology configurations or layouts are rejected before the buffer is changed.
 
 ## 8. Train/validation split
 
@@ -166,6 +202,13 @@ The main candidate checkpoint records `checkpoint_selection_metric=validation_lo
 
 Candidate checkpoints are evaluated on the fixed evaluation transitions and raw states. This keeps acceptance comparable across iterations. `solve_count` and `solve_rate` count only physically secure outcomes and therefore equal `physically_secure_count` and `physically_secure_rate`. Thermal feasibility remains a separate diagnostic rate. Evaluation also records counts/rates for PF convergence, finite values, topology connectivity, thermal, voltage, generator P/Q, and angle feasibility, plus violation diagnostics.
 
+Before workers are initialized, evaluation loads the checkpoint's exact
+topology-action configuration and ordered layout. Each worker constructs
+`GridFMActionSpace` from that configuration and validates the evaluator
+checkpoint against the same fingerprints. A checkpoint without topology
+action provenance, or with a different allowlist/layout, is rejected rather
+than evaluated under different semantics.
+
 The regular evaluation set is a selection set: it is used after each iteration
 to decide whether a candidate checkpoint is promoted. The final test set is
 independent and is never used for training, self-play generation, candidate
@@ -178,7 +221,7 @@ Generation config, evaluation config, evaluation requests, and fixed metrics mus
 
 ## 13. Acceptance
 
-Acceptance compares candidate metrics with the best accepted metrics. The primary configured metric is usually `solve_rate`; thresholds and safety constraints decide whether the candidate replaces the best checkpoint. Candidate and best metrics must match both the configured `PF_ALG` and the current evaluation/physical semantic versions, so thermal-only historical metrics cannot influence checkpoint promotion.
+Acceptance compares candidate metrics with the best accepted metrics. The primary configured metric is usually `solve_rate`; thresholds and safety constraints decide whether the candidate replaces the best checkpoint. Candidate and best metrics must match the configured `PF_ALG`, current evaluation/physical semantic versions, topology-action configuration fingerprint, and ordered action-layout fingerprint. Historical metrics or checkpoints from different action semantics cannot influence promotion.
 
 ## 14. Atomic completion marker
 
@@ -204,42 +247,57 @@ For config or artifact validation failures, fix the referenced paths or metadata
 
 ## 19. Pilot workflow
 
-A pilot workflow is: prepare bootstrap artifacts, run `--validate-only`, run `--plan-only`, execute one iteration, inspect training and evaluation artifacts, then resume for additional iterations.
+A pilot workflow is: prepare bootstrap artifacts, set verified
+`closeable_branch_ids` in the pilot YAML when tie-line closing is intended, run
+`--validate-only`, run `--plan-only`, execute one iteration, inspect training and
+evaluation artifacts, then resume for additional iterations.
 
 ## 20. Bootstrap metrics recalculation rules
 
-Recompute bootstrap metrics whenever the fixed evaluation set, raw states, checkpoint, `PF_ALG`, evaluation settings, or metrics schema changes. Do not reuse metrics with missing, fractional, boolean, or mismatched `pf_alg` values.
+Recompute bootstrap metrics whenever the fixed evaluation set, raw states, checkpoint, `PF_ALG`, evaluation settings, topology-action configuration, ordered action layout, or metrics schema changes. Do not reuse metrics with missing, fractional, boolean, or mismatched `pf_alg` values or with incompatible topology provenance.
 
 ## 21. Semantic artifact versions and regeneration
 
-The current incompatible contract versions are:
+The current exact contract versions are:
 
-- `PHYSICAL_OBJECTIVE_SCHEMA_VERSION=2`;
-- `OUTCOME_VALUE_TARGET_CONTRACT_VERSION=2`;
-- `EVALUATION_METRICS_CONTRACT_VERSION=2`;
-- `CHECKPOINT_CONTRACT_VERSION=2`;
-- replay buffer schema `2`.
+| Contract | Version |
+| --- | ---: |
+| physical objective | `3` |
+| outcome/value target | `4` |
+| evaluation metrics | `6` |
+| checkpoint | `6` |
+| replay buffer schema | `5` |
+| physics configuration | `1` |
+| topology action | `1` |
 
-The version bump is intentional: former `solved` labels meant only
-thermal-feasible, so their value targets, trained weights, solve rates, and
-acceptance comparisons have different scientific meaning. Missing or old
-versions are rejected. `ensure_outcome_value_targets` refuses to stamp current
-targets onto legacy solved labels. User artifacts are not deleted automatically.
+The version boundaries are intentional. Former `solved` labels meant only
+thermal-feasible, and artifacts created before topology provenance did not
+record the exact branch identity/order or semantic action allowlist. Missing or
+old versions are rejected. `ensure_outcome_value_targets` refuses to stamp
+current targets onto legacy solved labels. User artifacts are not deleted
+automatically.
 
 Create a clean artifact chain in this order (replace angle-bracket paths):
 
 ```bash
-# Fresh physical episodes and versioned outcome targets.
-python -m scripts.self_play.generate <POOL_RAW_DIR> --transitions <POOL_TRANSITIONS.csv> --output-dir <NEW_SELF_PLAY_DIR> --pf-alg 3
+# Fresh physical episodes, topology provenance, and versioned outcome targets.
+# Repeat --closeable-branch-id for each verified normally-open/tie branch.
+python -m scripts.self_play.generate <POOL_RAW_DIR> \
+  --transitions <POOL_TRANSITIONS.csv> \
+  --output-dir <NEW_SELF_PLAY_DIR> \
+  --pf-alg 3 \
+  --require-connected-after-switch \
+  --min-loading-for-switch-percent 0.0
 
 # Fresh checkpoint, without a legacy --init-checkpoint.
 python -m scripts.self_play.train_graph_baseline <NEW_SELF_PLAY_DIR>/examples.csv --output <NEW_CHECKPOINT.pt> --device cpu
 
-# Fresh fixed evaluation and summary metrics.
+# Fresh fixed evaluation and summary metrics. Evaluation uses checkpoint topology provenance.
 python -m scripts.evaluation.evaluate_checkpoint <EVAL_RAW_DIR> --transitions <EVAL_TRANSITIONS.csv> --checkpoint <NEW_CHECKPOINT.pt> --pf-alg 3 --output-csv <NEW_EVAL_RESULTS.csv> --output-json <NEW_EVAL_METRICS.json>
 ```
 
 Archive the old replay/run directory, update `bootstrap_checkpoint` and
 `bootstrap_eval_metrics` in the YAML, and start a new run. Existing evaluation
 metrics cannot be compared across the version boundary, and a checkpoint trained
-on legacy targets cannot be used as a compatible parent.
+on legacy targets or a different topology-action layout cannot be used as a
+compatible parent.
