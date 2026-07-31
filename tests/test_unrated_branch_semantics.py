@@ -16,7 +16,6 @@ from grid_topology_ai.data_adapter import (
     BRANCH_FEATURE_COLUMNS,
     BUS_FEATURE_COLUMNS,
     GridFMAdapter,
-    UNRATED_LOADING_PERCENT,
 )
 from grid_topology_ai.physical_objective import assess_physical_state
 from grid_topology_ai.pypower_backend import GridFMPowerFlowBackend
@@ -91,7 +90,7 @@ def _completed_result(ppc: dict) -> dict:
     return result
 
 
-def test_adapter_encodes_active_unrated_branch_with_finite_sentinel() -> None:
+def test_adapter_encodes_unrated_branch_with_explicit_flag() -> None:
     frame = pd.DataFrame(
         {
             "pf": [500.0, 0.0],
@@ -110,11 +109,8 @@ def test_adapter_encodes_active_unrated_branch_with_finite_sentinel() -> None:
         ),
     )
 
-    assert result.loc[0, "loading_percent"] == pytest.approx(
-        UNRATED_LOADING_PERCENT
-    )
-    assert result.loc[0, "loading_percent"] != 0.0
-    assert result.loc[1, "loading_percent"] == pytest.approx(0.0)
+    assert result["loading_percent"].tolist() == pytest.approx([0.0, 0.0])
+    assert result["unlimited_rating"].tolist() == pytest.approx([1.0, 1.0])
 
 
 def test_slow_and_fast_paths_preserve_unrated_branch_semantics() -> None:
@@ -151,12 +147,11 @@ def test_slow_and_fast_paths_preserve_unrated_branch_semantics() -> None:
     )
 
     loading_column = BRANCH_FEATURE_COLUMNS.index("loading_percent")
+    unlimited_column = BRANCH_FEATURE_COLUMNS.index("unlimited_rating")
 
     for state in (slow, fast):
-        assert state.branch_features[0, loading_column] == pytest.approx(
-            UNRATED_LOADING_PERCENT
-        )
-        assert state.branch_features[0, loading_column] != 0.0
+        assert state.branch_features[0, loading_column] == pytest.approx(0.0)
+        assert state.branch_features[0, unlimited_column] == pytest.approx(1.0)
         assert state.metrics["num_unrated_active_branches"] == 1
         assert state.metrics["mean_loading_percent"] == pytest.approx(0.0)
         assert assess_physical_state(state.metrics).thermal_solved is True
