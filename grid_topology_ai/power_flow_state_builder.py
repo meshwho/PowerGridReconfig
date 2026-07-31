@@ -21,6 +21,7 @@ from grid_topology_ai.state_schema import (
     finite_feature_matrix,
     with_bus_generator_features,
 )
+from grid_topology_ai.state_topology import validate_state_topology
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,7 +55,6 @@ class PowerFlowStateBuilder:
         gen_df["p_mw"] = gen_res[:, PG]
         gen_df["q_mvar"] = gen_res[:, QG]
         gen_df["in_service"] = gen_res[:, GEN_STATUS]
-        bus_df = with_bus_generator_features(bus_df, gen_df)
 
         branch_df["br_status"] = branch_res[:, BR_STATUS]
         branch_df["rate_a"] = branch_res[:, RATE_A]
@@ -62,8 +62,19 @@ class PowerFlowStateBuilder:
         branch_df["qf"] = branch_res[:, QF]
         branch_df["pt"] = branch_res[:, PT]
         branch_df["qt"] = branch_res[:, QT]
+
+        topology = validate_state_topology(
+            scenario_id=scenario_id,
+            bus_df=bus_df,
+            branch_df=branch_df,
+            gen_df=gen_df,
+        )
+        bus_df = with_bus_generator_features(
+            topology.bus_df,
+            topology.gen_df,
+        )
         branch_df = GridFMAdapter._add_branch_loading(
-            branch_df,
+            topology.branch_df,
             physics_config=self.physics_config,
         )
 
@@ -81,6 +92,10 @@ class PowerFlowStateBuilder:
             scenario_id=scenario_id,
             bus_df=bus_df,
             branch_df=branch_df,
+            bus_ids=topology.bus_ids,
+            edge_index=topology.edge_index,
+            branch_ids=topology.branch_ids,
+            branch_status=topology.branch_status,
             physical_metrics=metrics,
         )
 
@@ -131,11 +146,12 @@ class PowerFlowStateBuilder:
         scenario_id: int,
         bus_df: pd.DataFrame,
         branch_df: pd.DataFrame,
+        bus_ids: np.ndarray,
+        edge_index: np.ndarray,
+        branch_ids: np.ndarray,
+        branch_status: np.ndarray,
         physical_metrics: Mapping[str, object],
     ) -> GridFMState:
-        bus_df = bus_df.sort_values("bus").reset_index(drop=True)
-        branch_df = branch_df.sort_values("idx").reset_index(drop=True)
-
         bus_features = finite_feature_matrix(
             bus_df,
             BUS_FEATURE_COLUMNS,
@@ -147,7 +163,6 @@ class PowerFlowStateBuilder:
             label="branch",
         )
 
-        branch_status = branch_df["br_status"].to_numpy(dtype=np.float32)
         rated = branch_df[
             (branch_df["br_status"] > 0.0)
             & (branch_df["rate_a"] > 0.0)
@@ -170,14 +185,18 @@ class PowerFlowStateBuilder:
 
         return GridFMState(
             scenario_id=int(scenario_id),
-            load_scenario_idx=float(bus_df["load_scenario_idx"].iloc[0]),
+            load_scenario_idx=float(
+                bus_df["load_scenario_idx"].iloc[0]
+            ),
             bus_features=bus_features,
             branch_features=branch_features,
-            edge_index=branch_df[["from_bus", "to_bus"]]
-            .to_numpy(dtype=np.int64)
-            .T,
-            branch_ids=branch_df["idx"].to_numpy(dtype=np.int64),
+            edge_index=edge_index,
+            branch_ids=branch_ids,
             branch_status=branch_status,
             metrics=metrics,
-            outaged_branch_ids=[int(value) for value in outaged["idx"]],
+            outaged_branch_ids=[
+                int(value)
+                for value in outaged["idx"].to_numpy(dtype=np.int64)
+            ],
+            bus_ids=bus_ids,
         )

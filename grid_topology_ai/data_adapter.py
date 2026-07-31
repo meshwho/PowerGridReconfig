@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
@@ -9,10 +9,16 @@ from grid_topology_ai._data_adapter_core import *  # noqa: F401,F403
 from grid_topology_ai._data_adapter_core import (
     GridFMAdapter as _CoreGridFMAdapter,
 )
+from grid_topology_ai._data_adapter_core import (
+    GridFMState as _CoreGridFMState,
+)
 from grid_topology_ai.config.physics import (
     DEFAULT_PHYSICS_CONFIG,
     PhysicsConfig,
     ZeroRateAPolicy,
+)
+from grid_topology_ai.physical_constraints import (
+    calculate_physical_metrics_from_frames,
 )
 from grid_topology_ai.power_flow_errors import InvalidPhysicalState
 from grid_topology_ai.state_schema import (
@@ -26,11 +32,20 @@ from grid_topology_ai.state_schema import (
     with_branch_rating_features,
     with_bus_generator_features,
 )
+from grid_topology_ai.state_topology import validate_state_topology
 
 
 # Retained as a public compatibility constant. Schema v2 no longer stores this
 # sentinel in branch features; consumers must use ``unlimited_rating``.
 UNRATED_LOADING_PERCENT = -1.0
+
+
+@dataclass(frozen=True)
+class GridFMState(_CoreGridFMState):
+    """A graph state with original bus IDs stored beside contiguous edges."""
+
+    bus_ids: np.ndarray | None = None
+
 
 # Preserve the public module path used by pickled states and type displays.
 GridFMState.__module__ = __name__
@@ -40,12 +55,15 @@ class GridFMAdapter(_CoreGridFMAdapter):
     """GridFM adapter that emits the versioned state feature schema."""
 
     def _validate_required_columns(self) -> None:
-        super()._validate_required_columns()
+        try:
+            super()._validate_required_columns()
+        except ValueError as exc:
+            raise InvalidPhysicalState(str(exc)) from exc
 
         required_bus = {"min_vm_pu", "max_vm_pu"}
         missing_bus = required_bus - set(self.bus_df.columns)
         if missing_bus:
-            raise ValueError(
+            raise InvalidPhysicalState(
                 f"Missing bus columns: {sorted(missing_bus)}"
             )
 
@@ -196,43 +214,96 @@ class GridFMAdapter(_CoreGridFMAdapter):
         return summary
 
     def build_state(self, scenario_id: int) -> GridFMState:
-        """Build an initial state using schema-v2 bus and branch features."""
+        """Build a schema-v2 state with validated contiguous graph indices."""
 
-        state = super().build_state(scenario_id)
         bus = self.bus_df[
             self.bus_df["scenario"] == scenario_id
-        ].sort_values("bus")
+        ].copy()
         branch = self.branch_df[
             self.branch_df["scenario"] == scenario_id
-        ].sort_values("idx")
+        ].copy()
         gen = self.gen_df[
             self.gen_df["scenario"] == scenario_id
-        ].sort_values("idx")
+        ].copy()
 
-        bus = with_bus_generator_features(bus, gen)
-        branch = with_branch_rating_features(branch)
+        if bus.empty:
+            raise ValueError(
+                f"Scenario {scenario_id} not found in bus_data."
+            )
+        if branch.empty:
+            raise ValueError(
+                f"Scenario {scenario_id} not found in branch_data."
+            )
+        if gen.empty:
+            raise ValueError(
+                f"Scenario {scenario_id} not found in gen_data."
+            )
 
-        rated = branch[
-            (branch["br_status"] > 0.0) & (branch["rate_a"] > 0.0)
-        ]
-        metrics = dict(state.metrics)
-        metrics["mean_loading_percent"] = (
-            float(rated["loading_percent"].mean())
-            if len(rated)
-            else 0.0
+        topology = validate_state_topology(
+            scenario_id=scenario_id,
+            bus_df=bus,
+            branch_df=branch,
+            gen_df=gen,
+        )
+        bus = with_bus_generator_features(
+            topology.bus_df,
+            topology.gen_df,
+        )
+        branch = with_branch_rating_features(
+            topology.branch_df,
         )
 
-        return replace(
-            state,
-            bus_features=finite_feature_matrix(
-                bus,
-                BUS_FEATURE_COLUMNS,
-                label="bus",
+        bus_features = finite_feature_matrix(
+            bus,
+            BUS_FEATURE_COLUMNS,
+            label="bus",
+        )
+        branch_features = finite_feature_matrix(
+            branch,
+            BRANCH_FEATURE_COLUMNS,
+            label="branch",
+        )
+
+        rated = branch[
+            (branch["br_status"] > 0.0)
+            & (branch["rate_a"] > 0.0)
+        ]
+        outaged = branch[branch["br_status"] <= 0.0]
+
+        physical_metrics = calculate_physical_metrics_from_frames(
+            bus_df=bus,
+            branch_df=branch,
+            gen_df=topology.gen_df,
+            power_flow_converged=False,
+            physics_config=self.physics_config,
+        )
+        metrics = {
+            "num_buses": int(len(bus)),
+            "num_branches": int(len(branch)),
+            "num_generators": int(len(topology.gen_df)),
+            "mean_loading_percent": (
+                float(rated["loading_percent"].mean())
+                if len(rated)
+                else 0.0
             ),
-            branch_features=finite_feature_matrix(
-                branch,
-                BRANCH_FEATURE_COLUMNS,
-                label="branch",
-            ),
+            "min_vm_pu": float(bus["Vm"].min()),
+            "max_vm_pu": float(bus["Vm"].max()),
+            "num_outaged_branches": int(len(outaged)),
+            **physical_metrics,
+        }
+
+        return GridFMState(
+            scenario_id=int(scenario_id),
+            load_scenario_idx=float(bus["load_scenario_idx"].iloc[0]),
+            bus_features=bus_features,
+            branch_features=branch_features,
+            edge_index=topology.edge_index,
+            branch_ids=topology.branch_ids,
+            branch_status=topology.branch_status,
             metrics=metrics,
+            outaged_branch_ids=[
+                int(value)
+                for value in outaged["idx"].to_numpy(dtype=np.int64)
+            ],
+            bus_ids=topology.bus_ids,
         )
