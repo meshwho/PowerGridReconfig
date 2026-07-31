@@ -13,7 +13,9 @@ from grid_topology_ai.pypower_backend import GridFMPowerFlowBackend
 from grid_topology_ai.reward import GridFMReward
 from grid_topology_ai.search.continuation_gate import analyze_root_branches
 from grid_topology_ai.search.mcts import MCTSConfig, MCTSPlanner
-
+from scripts.topology_action_cli import (
+    action_space_kwargs,
+)
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -28,7 +30,10 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         nargs="*",
         default=[],
-        help="Branches to switch off before running root MCTS analysis.",
+        help=(
+            "Branch IDs whose currently valid status-change actions "
+            "are applied before root MCTS analysis."
+        ),
     )
 
     parser.add_argument("--checkpoint", type=str, required=True)
@@ -118,6 +123,18 @@ def main() -> None:
         DEFAULT_PHYSICS_CONFIG,
         pf_alg=args.pf_alg,
     )
+
+    evaluator = NeuralPolicyValueEvaluator(
+        checkpoint_path=args.checkpoint,
+        device=args.device,
+        enable_cache=True,
+        physics_config=physics_config,
+    )
+
+    topology_action_config = (
+        evaluator.topology_action_config
+    )
+
     adapter = GridFMAdapter(
         raw_dir,
         physics_config=physics_config,
@@ -130,8 +147,10 @@ def main() -> None:
     )
 
     action_space = GridFMActionSpace(
-        require_connected_after_switch=True,
-        enable_cache=True,
+        **action_space_kwargs(
+            topology_action_config,
+            enable_cache=True,
+        )
     )
 
     reward_fn = GridFMReward(physics_config=physics_config)
@@ -183,13 +202,6 @@ def main() -> None:
         f"overloaded={env.current_state.metrics['num_overloaded_branches']} | "
         f"hard={env.current_state.metrics['num_hard_overloaded_branches']} | "
         f"outaged={env.current_state.outaged_branch_ids}"
-    )
-
-    evaluator = NeuralPolicyValueEvaluator(
-        checkpoint_path=args.checkpoint,
-        device=args.device,
-        enable_cache=True,
-        physics_config=physics_config,
     )
 
     config = MCTSConfig(

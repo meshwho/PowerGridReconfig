@@ -1,5 +1,10 @@
 from __future__ import annotations
-
+from scripts.topology_action_cli import (
+    action_space_kwargs,
+    add_topology_action_arguments,
+    topology_action_config_from_args,
+    topology_action_overrides_present,
+)
 import argparse
 import time
 from dataclasses import replace
@@ -191,6 +196,8 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    add_topology_action_arguments(parser)
+
     return parser
 
 
@@ -243,9 +250,51 @@ def main() -> None:
         physics_config=physics_config,
         enable_cache=not args.disable_cache,
     )
+
+    evaluator = None
+
+    if args.checkpoint is not None:
+        evaluator = NeuralPolicyValueEvaluator(
+            checkpoint_path=args.checkpoint,
+            device=args.device,
+            enable_cache=not args.disable_cache,
+            physics_config=physics_config,
+        )
+
+        checkpoint_action_config = (
+            evaluator.topology_action_config
+        )
+
+        if topology_action_overrides_present(args):
+            requested_action_config = (
+                topology_action_config_from_args(
+                    args,
+                    base=checkpoint_action_config,
+                )
+            )
+
+            if (
+                    requested_action_config.contract_fingerprint()
+                    != checkpoint_action_config.contract_fingerprint()
+            ):
+                raise ValueError(
+                    "Topology action CLI settings do not match "
+                    f"checkpoint {args.checkpoint}."
+                )
+
+        topology_action_config = (
+            checkpoint_action_config
+        )
+    else:
+        topology_action_config = (
+            topology_action_config_from_args(args)
+        )
+
     action_space = GridFMActionSpace(
-        require_connected_after_switch=True,
-        enable_cache=not args.disable_cache,
+        **action_space_kwargs(
+            topology_action_config,
+            enable_cache=not args.disable_cache,
+        )
     )
     reward_fn = GridFMReward(
         physics_config=physics_config,
@@ -276,17 +325,8 @@ def main() -> None:
         stop_policy=args.stop_policy,
     )
 
-    evaluator = None
 
-    if args.checkpoint is not None:
-        evaluator = NeuralPolicyValueEvaluator(
-            checkpoint_path=args.checkpoint,
-            device=args.device,
-            enable_cache=not args.disable_cache,
-            physics_config=physics_config,
-        )
-
-        print("\nNeural evaluator loaded.")
+    print("\nNeural evaluator loaded.")
 
     planner = MCTSPlanner(
         config=config,
@@ -500,6 +540,19 @@ def main() -> None:
         print(evaluator.cache_info())
     print("\nAction space cache:")
     print(action_space.cache_info())
+
+    print(
+        "Require connected:    "
+        f"{topology_action_config.require_connected_after_switch}"
+    )
+    print(
+        "Min opening loading:  "
+        f"{topology_action_config.min_loading_for_switch_percent}"
+    )
+    print(
+        "Closeable branches:   "
+        f"{topology_action_config.closeable_branch_ids}"
+    )
 
     episode_elapsed = time.perf_counter() - episode_start_time
 
