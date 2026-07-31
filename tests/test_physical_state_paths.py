@@ -1,22 +1,29 @@
+from __future__ import annotations
+
+import copy
 from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
 from pypower.idx_brch import PF, PT, QF, QT, RATE_A
-
-from grid_topology_ai.data_adapter import (
-    BRANCH_FEATURE_COLUMNS,
-    BUS_FEATURE_COLUMNS,
-)
-from grid_topology_ai.physical_objective import assess_physical_state
-from grid_topology_ai.pypower_backend import GridFMPowerFlowBackend
-from grid_topology_ai.power_flow_errors import InvalidPhysicalState
-
-import copy
-
 from pypower.idx_bus import VM
 
 import grid_topology_ai.pypower_backend as backend_module
+from grid_topology_ai.config.physics import (
+    DEFAULT_PHYSICS_CONFIG,
+    PhysicsConfig,
+    ZeroRateAPolicy,
+)
+from grid_topology_ai.data_adapter import (
+    BRANCH_FEATURE_COLUMNS,
+    BUS_FEATURE_COLUMNS,
+    GridFMAdapter,
+)
+from grid_topology_ai.physical_objective import assess_physical_state
+from grid_topology_ai.power_flow_errors import InvalidPhysicalState
+from grid_topology_ai.pypower_backend import GridFMPowerFlowBackend
+from grid_topology_ai.state_builder import GridFMStateBuilder
+
 
 def _adapter() -> SimpleNamespace:
     buses = []
@@ -73,6 +80,19 @@ def _adapter() -> SimpleNamespace:
         gen_df=pd.DataFrame([gen]),
     )
 
+
+def _real_adapter(
+    physics_config: PhysicsConfig = DEFAULT_PHYSICS_CONFIG,
+) -> GridFMAdapter:
+    source = _adapter()
+    adapter = object.__new__(GridFMAdapter)
+    adapter.bus_df = source.bus_df.copy()
+    adapter.branch_df = source.branch_df.copy()
+    adapter.gen_df = source.gen_df.copy()
+    adapter.physics_config = physics_config
+    return adapter
+
+
 def _completed_result(ppc: dict) -> dict:
     result = copy.deepcopy(ppc)
     result["branch"] = np.pad(
@@ -84,7 +104,6 @@ def _completed_result(ppc: dict) -> dict:
     result["branch"][0, PT] = -50.0
     result["branch"][0, QT] = 0.0
     return result
-
 
 
 def test_slow_fast_and_cache_paths_preserve_identical_assessment() -> None:
@@ -127,6 +146,102 @@ def test_slow_fast_and_cache_paths_preserve_identical_assessment() -> None:
     )
 
 
+def test_initial_slow_and_fast_states_share_one_representation() -> None:
+    physics_config = PhysicsConfig(
+        zero_rate_a_policy=ZeroRateAPolicy.UNLIMITED,
+    )
+    adapter = _real_adapter(physics_config)
+    adapter.branch_df.loc[0, ["pf", "qf", "pt", "qt"]] = [
+        500.0,
+        0.0,
+        -500.0,
+        0.0,
+    ]
+    adapter.branch_df.loc[0, "rate_a"] = 0.0
+
+    initial = adapter.build_state(1)
+    backend = GridFMPowerFlowBackend(
+        adapter=adapter,
+        physics_config=physics_config,
+    )
+    ppc, frames = backend._build_ppc(1, None)
+    result = _completed_result(ppc)
+    result["branch"][0, PF] = 500.0
+    result["branch"][0, PT] = -500.0
+    result["branch"][0, RATE_A] = 0.0
+
+    slow = backend._build_state_from_pypower_result(
+        scenario_id=1,
+        result_ppc=result,
+        original_frames=frames,
+    )
+    fast = backend._build_state_from_pypower_result_fast(
+        scenario_id=1,
+        result_ppc=result,
+        previous_state=slow,
+        original_frames=frames,
+    )
+
+    for state in (initial, slow, fast):
+        assert state.bus_features.shape[1] == len(BUS_FEATURE_COLUMNS)
+        assert state.branch_features.shape[1] == len(BRANCH_FEATURE_COLUMNS)
+        np.testing.assert_array_equal(state.bus_ids, [10, 20])
+        np.testing.assert_array_equal(state.edge_index, [[0], [1]])
+        np.testing.assert_array_equal(state.branch_ids, [7])
+        np.testing.assert_array_equal(state.branch_status, [1.0])
+
+    np.testing.assert_array_equal(initial.bus_features, slow.bus_features)
+    np.testing.assert_array_equal(initial.branch_features, slow.branch_features)
+    np.testing.assert_array_equal(slow.bus_features, fast.bus_features)
+    np.testing.assert_array_equal(slow.branch_features, fast.branch_features)
+
+    unlimited_index = BRANCH_FEATURE_COLUMNS.index("unlimited_rating")
+    p_up_index = BUS_FEATURE_COLUMNS.index("gen_p_up_margin_mw")
+    assert initial.branch_features[0, unlimited_index] == 1.0
+    assert initial.bus_features[0, p_up_index] == 50.0
+
+
+def test_canonical_builder_calculates_metrics_once_per_state() -> None:
+    calls: list[str] = []
+
+    def frame_metrics(**_kwargs: object) -> dict[str, object]:
+        calls.append("frames")
+        return {"metric_source": "frames"}
+
+    def result_metrics(
+        *_args: object,
+        **_kwargs: object,
+    ) -> dict[str, object]:
+        calls.append("result")
+        return {"metric_source": "result"}
+
+    source = _adapter()
+    builder = GridFMStateBuilder(
+        frame_metrics_calculator=frame_metrics,
+        result_metrics_calculator=result_metrics,
+    )
+    initial = builder.build_from_frames(
+        scenario_id=1,
+        bus_df=source.bus_df,
+        branch_df=source.branch_df,
+        gen_df=source.gen_df,
+        power_flow_converged=False,
+    )
+    assert calls == ["frames"]
+    assert initial.metrics["metric_source"] == "frames"
+
+    backend = GridFMPowerFlowBackend(adapter=source)
+    ppc, frames = backend._build_ppc(1, None)
+    solved = builder.build_from_pypower_result(
+        scenario_id=1,
+        result_ppc=_completed_result(ppc),
+        original_frames=frames,
+    )
+
+    assert calls == ["frames", "result"]
+    assert solved.metrics["metric_source"] == "result"
+
+
 def test_fast_builder_rejects_float32_overflow_in_active_branch_features() -> None:
     backend = GridFMPowerFlowBackend(adapter=_adapter())
     ppc, frames = backend._build_ppc(1, None)
@@ -135,7 +250,9 @@ def test_fast_builder_rejects_float32_overflow_in_active_branch_features() -> No
     result["branch"][0, PF] = 1e39
     result["branch"][0, PT] = -1e39
     previous = backend._build_state_from_pypower_result(
-        scenario_id=1, result_ppc=_completed_result(ppc), original_frames=frames
+        scenario_id=1,
+        result_ppc=_completed_result(ppc),
+        original_frames=frames,
     )
     with np.testing.assert_raises(InvalidPhysicalState):
         backend._build_state_from_pypower_result_fast(
@@ -144,6 +261,7 @@ def test_fast_builder_rejects_float32_overflow_in_active_branch_features() -> No
             previous_state=previous,
             original_frames=frames,
         )
+
 
 def test_slow_and_fast_builders_reject_rate_a_underflow() -> None:
     backend = GridFMPowerFlowBackend(adapter=_adapter())
@@ -182,6 +300,7 @@ def test_slow_and_fast_builders_reject_rate_a_underflow() -> None:
             original_frames=damaged_frames,
         )
 
+
 def test_initial_power_flow_rejects_non_finite_result(
     monkeypatch,
 ) -> None:
@@ -206,6 +325,7 @@ def test_initial_power_flow_rejects_non_finite_result(
     assert result.success is False
     assert result.next_state is None
     assert "non-finite" in result.message
+
 
 def test_state_power_flow_rejects_non_finite_result(
     monkeypatch,
