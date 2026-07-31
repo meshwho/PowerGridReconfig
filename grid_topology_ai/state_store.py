@@ -8,20 +8,11 @@ import numpy as np
 
 from grid_topology_ai.data_adapter import GridFMState
 from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
+from grid_topology_ai.state_schema import state_feature_schema_provenance
 
 
 class GridFMStateStore:
-    """
-    Save GridFMState objects as compressed NPZ files.
-
-    One NPZ file = one graph state.
-
-    This file will later be used by:
-    - supervised policy pretraining;
-    - value function training;
-    - GNN / GAT model;
-    - MCTS / AlphaZero-style pipeline.
-    """
+    """Save one validated graph state per compressed NPZ file."""
 
     def __init__(self, output_dir: str | Path):
         self.output_dir = Path(output_dir)
@@ -34,51 +25,35 @@ class GridFMStateStore:
         action_mask: np.ndarray | None = None,
         extra_metadata: dict[str, Any] | None = None,
     ) -> Path:
-        """
-        Save one state as .npz.
-
-        Parameters
-        ----------
-        state:
-            GridFMState object.
-
-        state_id:
-            Name of the saved state file, for example:
-                scenario_000007
-
-        action_mask:
-            Boolean array of valid actions.
-            Shape:
-                [num_actions]
-
-        extra_metadata:
-            Optional additional metadata.
-        """
-
         output_path = self.output_dir / f"{state_id}.npz"
 
         if action_mask is None:
             action_mask_array = np.array([], dtype=np.int8)
         else:
-            action_mask_array = action_mask.astype(np.int8)
+            action_mask_array = np.asarray(action_mask, dtype=np.int8)
 
-        metadata = {
-            "scenario_id": int(state.scenario_id),
-            "load_scenario_idx": float(state.load_scenario_idx),
-            "outaged_branch_ids": [int(x) for x in state.outaged_branch_ids],
-            "physical_objective_schema_version": (
-                PHYSICAL_OBJECTIVE_SCHEMA_VERSION
-            ),
-        }
-
-        if extra_metadata is not None:
-            metadata.update(extra_metadata)
+        bus_ids = self._validated_bus_ids(state)
+        metadata = dict(extra_metadata or {})
+        metadata.update(
+            {
+                "scenario_id": int(state.scenario_id),
+                "load_scenario_idx": float(state.load_scenario_idx),
+                "outaged_branch_ids": [
+                    int(value) for value in state.outaged_branch_ids
+                ],
+                "physical_objective_schema_version": (
+                    PHYSICAL_OBJECTIVE_SCHEMA_VERSION
+                ),
+                **state_feature_schema_provenance(),
+            }
+        )
 
         np.savez_compressed(
             output_path,
             bus_features=state.bus_features.astype(np.float32),
             branch_features=state.branch_features.astype(np.float32),
             edge_index=state.edge_index.astype(np.int64),
+            bus_ids=bus_ids,
             branch_ids=state.branch_ids.astype(np.int64),
             branch_status=state.branch_status.astype(np.float32),
             action_mask=action_mask_array,
@@ -87,3 +62,33 @@ class GridFMStateStore:
         )
 
         return output_path
+
+    @staticmethod
+    def _validated_bus_ids(state: GridFMState) -> np.ndarray:
+        if state.bus_ids is None:
+            raise ValueError(
+                "GridFMState.bus_ids is required when saving schema-v2 states."
+            )
+
+        try:
+            values = np.asarray(state.bus_ids, dtype=np.float64)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("GridFMState.bus_ids must be numeric.") from exc
+
+        expected_shape = (int(state.bus_features.shape[0]),)
+        if values.shape != expected_shape:
+            raise ValueError(
+                "GridFMState.bus_ids shape mismatch: expected "
+                f"{expected_shape}, observed {values.shape}."
+            )
+        if not np.isfinite(values).all():
+            raise ValueError("GridFMState.bus_ids must contain finite values.")
+        if not np.equal(values, np.rint(values)).all():
+            raise ValueError(
+                "GridFMState.bus_ids must contain integer-valued IDs."
+            )
+
+        bus_ids = values.astype(np.int64)
+        if np.unique(bus_ids).size != bus_ids.size:
+            raise ValueEror("GridFMState.bus_ids must be unique.")
+        return bus_ids

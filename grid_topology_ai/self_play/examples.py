@@ -33,19 +33,11 @@ from grid_topology_ai.topology_actions import (
 
 @dataclass(frozen=True)
 class SelfPlayExample:
-    """One on-policy AlphaZero-style self-play example.
-
-    ``mcts_policy_json`` is the policy-head target. ``step_reward``,
-    ``final_return``, and ``discounted_return_from_step`` are diagnostic
-    potential-shaping fields only. The value-head target is the separately
-    derived ``outcome_value_target`` under the discounted terminal-utility
-    contract.
-    """
+    """One on-policy AlphaZero-style self-play example."""
 
     state_id: str
     state_path: str
     scenario_id: int
-    step: int
     selected_action_id: int
     selected_branch_id: int | None
     step_reward: float
@@ -56,6 +48,10 @@ class SelfPlayExample:
     termination_reason: str | None
     physical_objective_schema_version: int
     outcome_value_target_contract_version: int
+    state_feature_schema_version: int
+    state_feature_schema_fingerprint: str
+    edge_index_semantics: str
+    bus_id_semantics: str
     physics_config_contract_version: int
     topology_action_contract_version: int
     topology_action_config: str
@@ -145,21 +141,12 @@ class ExampleWriter:
             OUTCOME_VALUE_TARGET_CONTRACT_VERSION
         )
 
-        action_layout = (
-            build_branch_action_slots(
-                state.branch_ids
-            )
+        action_layout = build_branch_action_slots(state.branch_ids)
+        action_provenance = topology_action_provenance(
+            self.action_space_config,
+            action_layout,
         )
-        action_provenance = (
-            topology_action_provenance(
-                self.action_space_config,
-                action_layout,
-            )
-        )
-
-        state_metadata.update(
-            action_provenance
-        )
+        state_metadata.update(action_provenance)
 
         state_path = self.state_store.save_state(
             state=state,
@@ -193,18 +180,24 @@ class ExampleWriter:
             outcome_value_target_contract_version=(
                 OUTCOME_VALUE_TARGET_CONTRACT_VERSION
             ),
+            state_feature_schema_version=int(
+                provenance["state_feature_schema_version"]
+            ),
+            state_feature_schema_fingerprint=str(
+                provenance["state_feature_schema_fingerprint"]
+            ),
+            edge_index_semantics=str(
+                provenance["edge_index_semantics"]
+            ),
+            bus_id_semantics=str(provenance["bus_id_semantics"]),
             physics_config_contract_version=int(
                 provenance["physics_config_contract_version"]
             ),
             topology_action_contract_version=int(
-                action_provenance[
-                    "topology_action_contract_version"
-                ]
+                action_provenance["topology_action_contract_version"]
             ),
             topology_action_config=json.dumps(
-                action_provenance[
-                    "topology_action_config"
-                ],
+                action_provenance["topology_action_config"],
                 sort_keys=True,
                 separators=(",", ":"),
                 allow_nan=False,
@@ -215,17 +208,13 @@ class ExampleWriter:
                 ]
             ),
             action_layout=json.dumps(
-                action_provenance[
-                    "action_layout"
-                ],
+                action_provenance["action_layout"],
                 sort_keys=True,
                 separators=(",", ":"),
                 allow_nan=False,
             ),
             action_layout_fingerprint=str(
-                action_provenance[
-                    "action_layout_fingerprint"
-                ]
+                action_provenance["action_layout_fingerprint"]
             ),
             physics_config=json.dumps(
                 provenance["physics_config"],
@@ -237,7 +226,10 @@ class ExampleWriter:
                 provenance["physics_config_fingerprint"]
             ),
             visit_counts_json=json.dumps(
-                {str(key): int(value) for key, value in visit_counts.items()}
+                {
+                    str(key): int(value)
+                    for key, value in visit_counts.items()
+                }
             ),
             mcts_policy_json=json.dumps(
                 {
@@ -251,9 +243,7 @@ class ExampleWriter:
                 else float(selection_temperature)
             ),
             selection_mode=(
-                None
-                if selection_mode is None
-                else str(selection_mode)
+                None if selection_mode is None else str(selection_mode)
             ),
             policy_target_entropy=(
                 None
@@ -294,8 +284,10 @@ class ExampleWriter:
         self.examples.append(example)
 
     def save(self) -> Path:
-        """Save all examples to CSV."""
+        """Save all examples to CSV.("""
 
-        df = pd.DataFrame([asdict(example) for example in self.examples])
-        df.to_csv(self.examples_path, index=False)
+        frame = pd.DataFrame(
+            [asdict(example) for example in self.examples]
+        )
+        frame.to_csv(self.examples_path, index=False)
         return self.examples_path

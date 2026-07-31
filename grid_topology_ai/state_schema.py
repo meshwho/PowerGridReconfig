@@ -11,6 +11,8 @@ from grid_topology_ai.power_flow_errors import InvalidPhysicalState
 
 
 STATE_FEATURE_SCHEMA_VERSION = 2
+EDGE_INDEX_SEMANTICS = "contiguous_bus_positions"
+BUS_ID_SEMANTICS = "original_bus_ids"
 
 BUS_FEATURE_COLUMNS = [
     "Pd",
@@ -95,6 +97,8 @@ def state_feature_schema_provenance() -> dict[str, object]:
         "state_feature_schema_fingerprint": (
             state_feature_schema_fingerprint()
         ),
+        "edge_index_semantics": EDGE_INDEX_SEMANTICS,
+        "bus_id_semantics": BUS_ID_SEMANTICS,
     }
 
 
