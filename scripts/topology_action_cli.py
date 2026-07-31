@@ -28,7 +28,6 @@ def add_topology_action_arguments(
             "This threshold never filters permitted closures."
         ),
     )
-
     connectivity = parser.add_mutually_exclusive_group()
     connectivity.add_argument(
         "--require-connected-after-switch",
@@ -42,9 +41,7 @@ def add_topology_action_arguments(
         action="store_false",
         help="Allow openings that disconnect the active grid.",
     )
-    parser.set_defaults(
-        require_connected_after_switch=None,
-    )
+    parser.set_defaults(require_connected_after_switch=None)
 
 
 def topology_action_overrides_present(
@@ -64,12 +61,7 @@ def topology_action_config_from_args(
     *,
     base: ActionSpaceConfig | None = None,
 ) -> ActionSpaceConfig:
-    base_config = (
-        ActionSpaceConfig()
-        if base is None
-        else base
-    )
-
+    base_config = ActionSpaceConfig() if base is None else base
     return ActionSpaceConfig(
         require_connected_after_switch=(
             base_config.require_connected_after_switch
@@ -95,14 +87,20 @@ def action_space_kwargs(
     enable_cache: bool,
 ) -> dict[str, object]:
     return {
-        "require_connected_after_switch": (
-            config.require_connected_after_switch
-        ),
-        "min_loading_for_switch_percent": (
-            config.min_loading_for_switch_percent
-        ),
-        "closeable_branch_ids": (
-            config.closeable_branch_ids
-        ),
+        "require_connected_after_switch": config.require_connected_after_switch,
+        "min_loading_for_switch_percent": config.min_loading_for_switch_percent,
+        "closeable_branch_ids": config.closeable_branch_ids,
         "enable_cache": bool(enable_cache),
     }
+
+
+def print_topology_action_config(config: ActionSpaceConfig) -> None:
+    print(
+        "Require connected after switch: "
+        f"{config.require_connected_after_switch}"
+    )
+    print(
+        "Minimum opening loading:         "
+        f"{config.min_loading_for_switch_percent}"
+    )
+    print(f"Closeable branch IDs:            {config.closeable_branch_ids}")
