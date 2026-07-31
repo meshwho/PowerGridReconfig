@@ -15,11 +15,21 @@ from grid_topology_ai.config.physics import (
     ZeroRateAPolicy,
 )
 from grid_topology_ai.power_flow_errors import InvalidPhysicalState
+from grid_topology_ai.state_schema import (
+    BRANCH_FEATURE_COLUMNS,
+    BUS_FEATURE_COLUMNS,
+    STATE_FEATURE_SCHEMA_VERSION,
+    finite_feature_matrix,
+    state_feature_schema_fingerprint,
+    state_feature_schema_payload,
+    state_feature_schema_provenance,
+    with_branch_rating_features,
+    with_bus_generator_features,
+)
 
 
-# Active branches with RATE_A == 0 have no thermal denominator. Store a
-# finite sentinel instead of a false zero-percent loading so feature consumers
-# can distinguish "unrated" from "rated and unloaded".
+# Retained as a public compatibility constant. Schema v2 no longer stores this
+# sentinel in branch features; consumers must use ``unlimited_rating``.
 UNRATED_LOADING_PERCENT = -1.0
 
 # Preserve the public module path used by pickled states and type displays.
@@ -27,24 +37,27 @@ GridFMState.__module__ = __name__
 
 
 class GridFMAdapter(_CoreGridFMAdapter):
-    """GridFM adapter with explicit semantics for active unrated branches."""
+    """GridFM adapter that emits the versioned state feature schema."""
+
+    def _validate_required_columns(self) -> None:
+        super()._validate_required_columns()
+
+        required_bus = {"min_vm_pu", "max_vm_pu"}
+        missing_bus = required_bus - set(self.bus_df.columns)
+        if missing_bus:
+            raise ValueError(
+                f"Missing bus columns: {sorted(missing_bus)}"
+            )
 
     @staticmethod
     def _add_branch_loading(
         branch_df: pd.DataFrame,
         physics_config: PhysicsConfig | None = None,
     ) -> pd.DataFrame:
-        """
-        Add validated MVA-flow and loading columns.
-
-        Encoding:
-        - active rated branch: actual loading percentage;
-        - active unrated branch: ``UNRATED_LOADING_PERCENT``;
-        - inactive branch: ``0.0``.
-        """
+        """Add validated apparent-power, loading, and rating features."""
 
         config = physics_config or DEFAULT_PHYSICS_CONFIG
-        df = branch_df
+        df = branch_df.copy()
 
         try:
             pf = df["pf"].to_numpy(dtype=np.float64)
@@ -78,15 +91,14 @@ class GridFMAdapter(_CoreGridFMAdapter):
             raise InvalidPhysicalState(
                 "Branch status must contain only 0 or 1."
             )
+        if np.any(rate_a < 0.0):
+            raise InvalidPhysicalState(
+                "Branch RATE_A must be non-negative."
+            )
 
         active = status > 0.0
         rated = active & (rate_a > 0.0)
         unlimited = active & (rate_a == 0.0)
-
-        if np.any(active & (rate_a < 0.0)):
-            raise InvalidPhysicalState(
-                "Active branch RATE_A must be non-negative."
-            )
 
         if (
             config.zero_rate_a_policy is ZeroRateAPolicy.ERROR
@@ -109,12 +121,8 @@ class GridFMAdapter(_CoreGridFMAdapter):
             )
 
         loading = np.zeros_like(s_max, dtype=np.float64)
-        loading[unlimited] = UNRATED_LOADING_PERCENT
-
         with np.errstate(over="ignore", divide="ignore", invalid="ignore"):
-            loading[rated] = (
-                s_max[rated] / rate_a[rated] * 100.0
-            )
+            loading[rated] = s_max[rated] / rate_a[rated] * 100.0
 
         if not np.isfinite(loading[rated]).all():
             raise InvalidPhysicalState(
@@ -130,7 +138,6 @@ class GridFMAdapter(_CoreGridFMAdapter):
         }
 
         converted: dict[str, np.ndarray] = {}
-
         for name, values in float32_features.items():
             with np.errstate(over="ignore", under="ignore", invalid="ignore"):
                 feature = values.astype(np.float32)
@@ -139,7 +146,6 @@ class GridFMAdapter(_CoreGridFMAdapter):
                 raise InvalidPhysicalState(
                     f"Branch feature {name} cannot be represented in float32."
                 )
-
             if name == "rate_a" and np.any(
                 (values > 0.0) & (feature == 0.0)
             ):
@@ -153,11 +159,10 @@ class GridFMAdapter(_CoreGridFMAdapter):
         df["s_to_mva"] = converted["s_to_mva"]
         df["s_max_mva"] = converted["s_max_mva"]
         df["loading_percent"] = converted["loading_percent"]
-
-        return df
+        return with_branch_rating_features(df)
 
     def build_summary(self) -> pd.DataFrame:
-        """Build scenario summaries using only active rated loading values."""
+        """Build summaries using only active thermally rated branches."""
 
         summary = super().build_summary()
 
@@ -191,20 +196,43 @@ class GridFMAdapter(_CoreGridFMAdapter):
         return summary
 
     def build_state(self, scenario_id: int) -> GridFMState:
-        """Build a state whose loading aggregate excludes unrated branches."""
+        """Build an initial state using schema-v2 bus and branch features."""
 
         state = super().build_state(scenario_id)
+        bus = self.bus_df[
+            self.bus_df["scenario"] == scenario_id
+        ].sort_values("bus")
         branch = self.branch_df[
             self.branch_df["scenario"] == scenario_id
-        ]
+        ].sort_values("idx")
+        gen = self.gen_df[
+            self.gen_df["scenario"] == scenario_id
+        ].sort_values("idx")
+
+        bus = with_bus_generator_features(bus, gen)
+        branch = with_branch_rating_features(branch)
+
         rated = branch[
             (branch["br_status"] > 0.0) & (branch["rate_a"] > 0.0)
         ]
-        mean_loading = (
+        metrics = dict(state.metrics)
+        metrics["mean_loading_percent"] = (
             float(rated["loading_percent"].mean())
             if len(rated)
             else 0.0
         )
-        metrics = dict(state.metrics)
-        metrics["mean_loading_percent"] = mean_loading
-        return replace(state, metrics=metrics)
+
+        return replace(
+            state,
+            bus_features=finite_feature_matrix(
+                bus,
+                BUS_FEATURE_COLUMNS,
+                label="bus",
+            ),
+            branch_features=finite_feature_matrix(
+                branch,
+                BRANCH_FEATURE_COLUMNS,
+                label="branch",
+            ),
+            metrics=metrics,
+        )

@@ -10,21 +10,22 @@ from pypower.idx_bus import VA, VM
 from pypower.idx_gen import GEN_STATUS, PG, QG
 
 from grid_topology_ai.config.physics import PhysicsConfig
-from grid_topology_ai.data_adapter import (
-    BRANCH_FEATURE_COLUMNS,
-    BUS_FEATURE_COLUMNS,
-    GridFMAdapter,
-    GridFMState,
-)
+from grid_topology_ai.data_adapter import GridFMAdapter, GridFMState
 from grid_topology_ai.physical_constraints import (
     calculate_physical_metrics_from_result,
 )
 from grid_topology_ai.power_flow_errors import InvalidPhysicalState
+from grid_topology_ai.state_schema import (
+    BRANCH_FEATURE_COLUMNS,
+    BUS_FEATURE_COLUMNS,
+    finite_feature_matrix,
+    with_bus_generator_features,
+)
 
 
 @dataclass(frozen=True, slots=True)
 class PowerFlowStateBuilder:
-    """Build every solved GridFM state through one canonical representation path."""
+    """Build every solved GridFM state through one representation path."""
 
     physics_config: PhysicsConfig
 
@@ -53,7 +54,7 @@ class PowerFlowStateBuilder:
         gen_df["p_mw"] = gen_res[:, PG]
         gen_df["q_mvar"] = gen_res[:, QG]
         gen_df["in_service"] = gen_res[:, GEN_STATUS]
-        self._update_bus_generation(bus_df, gen_df)
+        bus_df = with_bus_generator_features(bus_df, gen_df)
 
         branch_df["br_status"] = branch_res[:, BR_STATUS]
         branch_df["rate_a"] = branch_res[:, RATE_A]
@@ -75,6 +76,7 @@ class PowerFlowStateBuilder:
                 physics_config=self.physics_config,
             )
         )
+
         return self._to_state(
             scenario_id=scenario_id,
             bus_df=bus_df,
@@ -124,20 +126,6 @@ class PowerFlowStateBuilder:
             )
 
     @staticmethod
-    def _update_bus_generation(
-        bus_df: pd.DataFrame,
-        gen_df: pd.DataFrame,
-    ) -> None:
-        bus_df["Pg"] = 0.0
-        bus_df["Qg"] = 0.0
-        generation = gen_df.groupby("bus", sort=False)[["p_mw", "q_mvar"]].sum()
-
-        for bus_id, values in generation.iterrows():
-            mask = bus_df["bus"].astype(int) == int(bus_id)
-            bus_df.loc[mask, "Pg"] = float(values["p_mw"])
-            bus_df.loc[mask, "Qg"] = float(values["q_mvar"])
-
-    @staticmethod
     def _to_state(
         *,
         scenario_id: int,
@@ -148,12 +136,12 @@ class PowerFlowStateBuilder:
         bus_df = bus_df.sort_values("bus").reset_index(drop=True)
         branch_df = branch_df.sort_values("idx").reset_index(drop=True)
 
-        bus_features = PowerFlowStateBuilder._finite_float32_features(
+        bus_features = finite_feature_matrix(
             bus_df,
             BUS_FEATURE_COLUMNS,
             label="bus",
         )
-        branch_features = PowerFlowStateBuilder._finite_float32_features(
+        branch_features = finite_feature_matrix(
             branch_df,
             BRANCH_FEATURE_COLUMNS,
             label="branch",
@@ -193,19 +181,3 @@ class PowerFlowStateBuilder:
             metrics=metrics,
             outaged_branch_ids=[int(value) for value in outaged["idx"]],
         )
-
-    @staticmethod
-    def _finite_float32_features(
-        frame: pd.DataFrame,
-        columns: list[str],
-        *,
-        label: str,
-    ) -> np.ndarray:
-        with np.errstate(over="ignore", under="ignore", invalid="ignore"):
-            features = frame[columns].to_numpy(dtype=np.float32)
-
-        if not np.isfinite(features).all():
-            raise InvalidPhysicalState(
-                f"{label.capitalize()} features cannot be represented in float32."
-            )
-        return features
