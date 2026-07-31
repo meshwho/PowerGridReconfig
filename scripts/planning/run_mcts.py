@@ -25,7 +25,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--scenario", type=int, default=7)
     parser.add_argument("--simulations", type=int, default=100)
     parser.add_argument("--depth", type=int, default=4)
-    parser.add_argument("--top-k", type=int, default=30)
+    parser.add_argument(
+        "--top-k",
+        type=int,
+        default=30,
+        help=(
+            "Initial number of switch actions exposed to PUCT at each node. "
+            "Progressive widening may activate additional legal actions."
+        ),
+    )
     parser.add_argument("--widening-coefficient", type=float, default=2.0)
     parser.add_argument("--widening-exponent", type=float, default=0.5)
     parser.add_argument("--exploration-quota", type=int, default=2)
