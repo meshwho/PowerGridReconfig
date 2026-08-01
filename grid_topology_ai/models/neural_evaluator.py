@@ -15,12 +15,14 @@ from grid_topology_ai.models.graph_policy_value_net import GraphPolicyValueNet
 from grid_topology_ai.models.graph_policy_value_net_v2 import GraphPolicyValueNetV2
 from grid_topology_ai.models.self_play_dataset import SelfPlayDataset
 from grid_topology_ai.models.simple_policy_value_net import SimplePolicyValueNet
+from grid_topology_ai.state_fingerprint import (
+    physical_state_fingerprint,
+)
 from grid_topology_ai.topology_actions import (
     STOP_PLUS_BRANCH_STATUS_POLICY_LAYOUT,
     action_layout_fingerprint,
     build_branch_action_slots,
 )
-
 
 
 class NeuralPolicyValueEvaluator:
@@ -227,19 +229,20 @@ class NeuralPolicyValueEvaluator:
         state: GridFMState,
         action_mask: np.ndarray,
     ) -> tuple:
-        """
-        Cache key for neural evaluations.
+        """Build a cache key from the complete model input contract."""
 
-        branch_status is included because the same scenario can appear in
-        different topology states after several switching actions.
-        """
+        mask = np.asarray(
+            action_mask,
+            dtype=np.bool_,
+        )
 
         return (
             self.model_type,
-            int(state.scenario_id),
-            tuple(int(x) for x in sorted(state.outaged_branch_ids)),
-            state.branch_status.astype(np.int8).tobytes(),
-            action_mask.astype(bool).tobytes(),
+            self.physics_config.fingerprint(),
+            self.action_layout_fingerprint,
+            physical_state_fingerprint(state),
+            mask.shape,
+            mask.tobytes(order="C"),
         )
 
     def evaluate(
