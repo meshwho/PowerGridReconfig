@@ -1,5 +1,3 @@
-from types import SimpleNamespace
-
 import numpy as np
 import pandas as pd
 import pytest
@@ -8,37 +6,69 @@ from grid_topology_ai._pypower_backend_core import (
     GridFMPowerFlowBackend as CoreGridFMPowerFlowBackend,
 )
 from grid_topology_ai.action_space import GridFMActionSpace
-from grid_topology_ai.data_adapter import BRANCH_FEATURE_COLUMNS
+from grid_topology_ai.data_adapter import (
+    BRANCH_FEATURE_COLUMNS,
+    BUS_FEATURE_COLUMNS,
+    GridFMState,
+)
 from grid_topology_ai.pypower_backend import GridFMPowerFlowBackend
 from grid_topology_ai.topology_actions import GridFMAction
 
 
 _LOADING_INDEX = BRANCH_FEATURE_COLUMNS.index("loading_percent")
+_BRANCH_STATUS_INDEX = BRANCH_FEATURE_COLUMNS.index("br_status")
+
+_VM_INDEX = BUS_FEATURE_COLUMNS.index("Vm")
+_MIN_VM_INDEX = BUS_FEATURE_COLUMNS.index("min_vm_pu")
+_MAX_VM_INDEX = BUS_FEATURE_COLUMNS.index("max_vm_pu")
 
 
 def _state(
     *,
     branch_status: tuple[int, int],
     loadings: tuple[float, float] = (50.0, 0.0),
-):
+    scenario_id: int = 1,
+) -> GridFMState:
+    bus_features = np.zeros(
+        (2, len(BUS_FEATURE_COLUMNS)),
+        dtype=np.float32,
+    )
+    bus_features[:, _VM_INDEX] = 1.0
+    bus_features[:, _MIN_VM_INDEX] = 0.95
+    bus_features[:, _MAX_VM_INDEX] = 1.05
+
+    status_array = np.asarray(branch_status, dtype=np.float32)
+
     branch_features = np.zeros(
         (2, len(BRANCH_FEATURE_COLUMNS)),
         dtype=np.float32,
     )
-    branch_features[:, _LOADING_INDEX] = loadings
+    branch_features[:, _LOADING_INDEX] = np.asarray(
+        loadings,
+        dtype=np.float32,
+    )
+    branch_features[:, _BRANCH_STATUS_INDEX] = status_array
 
-    return SimpleNamespace(
-        scenario_id=1,
-        outaged_branch_ids=tuple(
-            branch_id
-            for branch_id, status in zip((10, 20), branch_status)
-            if status == 0
-        ),
-        branch_ids=np.asarray([10, 20], dtype=np.int64),
-        branch_status=np.asarray(branch_status, dtype=np.int64),
+    branch_ids = np.asarray([10, 20], dtype=np.int64)
+
+    return GridFMState(
+        scenario_id=scenario_id,
+        load_scenario_idx=0.0,
+        bus_features=bus_features,
         branch_features=branch_features,
-        bus_features=np.zeros((2, 1), dtype=np.float32),
-        edge_index=np.asarray([[0, 0], [1, 1]], dtype=np.int64),
+        edge_index=np.asarray(
+            [[0, 0], [1, 1]],
+            dtype=np.int64,
+        ),
+        branch_ids=branch_ids,
+        branch_status=status_array,
+        metrics={},
+        outaged_branch_ids=[
+            int(branch_id)
+            for branch_id, status in zip(branch_ids, status_array)
+            if status == 0.0
+        ],
+        bus_ids=np.asarray([100, 200], dtype=np.int64),
     )
 
 
@@ -123,10 +153,7 @@ def test_backend_cache_key_uses_topology_after_the_action():
         enable_cache=False,
     )
 
-    close_state = SimpleNamespace(
-        scenario_id=7,
-        outaged_branch_ids=[20],
-    )
+
     close_action = GridFMAction(
         action_id=2,
         action_type="switch_on_branch",
@@ -134,10 +161,16 @@ def test_backend_cache_key_uses_topology_after_the_action():
         branch_pos=1,
     )
 
-    open_state = SimpleNamespace(
+    close_state = _state(
         scenario_id=7,
-        outaged_branch_ids=[],
+        branch_status=(1, 0),
     )
+
+    open_state = _state(
+        scenario_id=7,
+        branch_status=(1, 1),
+    )
+
     open_action = GridFMAction(
         action_id=1,
         action_type="switch_off_branch",
@@ -164,13 +197,14 @@ def test_core_backend_cache_key_supports_actions_and_legacy_ids():
         adapter=object(),  # type: ignore[arg-type]
         enable_cache=False,
     )
-    close_state = SimpleNamespace(
+    close_state = _state(
         scenario_id=7,
-        outaged_branch_ids=[20],
+        branch_status=(1, 0),
     )
-    open_state = SimpleNamespace(
+
+    open_state = _state(
         scenario_id=7,
-        outaged_branch_ids=[],
+        branch_status=(1, 1),
     )
 
     close_key = backend._make_cache_key_from_state(
