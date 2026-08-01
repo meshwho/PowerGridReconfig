@@ -72,6 +72,80 @@ GridFM parquet rows do not carry trustworthy PF convergence provenance, so
 environment reset performs a no-op AC power flow before the initial state can
 be classified or searched.
 
+## State feature schema
+
+Graph states use the versioned state feature schema `v2`. The schema is shared
+by initial states and states reconstructed from PYPOWER results.
+
+Bus features contain 24 ordered columns:
+
+```text
+Pd
+Qd
+Pg
+Qg
+Vm
+Va
+PQ
+PV
+REF
+vn_kv
+GS
+BS
+min_vm_pu
+max_vm_pu
+gen_online_count
+gen_available
+gen_p_min_mw
+gen_p_max_mw
+gen_q_min_mvar
+gen_q_max_mvar
+gen_p_down_margin_mw
+gen_p_up_margin_mw
+gen_q_down_margin_mvar
+gen_q_up_margin_mvar
+
+
+Generator values and limits are aggregated by bus using active generators only.
+Offline generators do not contribute to generation, availability, limits, or
+headroom. Negative margins are preserved because they represent an actual
+limit violation rather than missing data.
+
+Branch features contain 16 ordered columns:
+
+pf
+qf
+pt
+qt
+r
+x
+b
+tap
+shift
+rate_a
+br_status
+s_from_mva
+s_to_mva
+s_max_mva
+loading_percent
+unlimited_rating
+
+RATE_A=0 is represented explicitly by unlimited_rating=1. Its
+loading_percent is stored as 0; consumers must use unlimited_rating
+instead of interpreting a sentinel loading value.
+
+bus_ids stores the original GridFM bus identifiers. edge_index never stores
+raw bus identifiers: it stores contiguous zero-based bus positions in the range
+0 <= index < number_of_buses.
+
+State construction fails closed for non-finite values, duplicate identifiers,
+unknown branch endpoints, generators attached to unknown buses, invalid binary
+statuses, and inverted voltage or generator limits.
+
+The exact schema version, ordered feature columns, schema fingerprint,
+edge_index semantics, and bus-ID semantics are stored in state NPZ files,
+self-play rows, replay metadata, and graph checkpoints.
+
 ## Artifact compatibility
 
 The current exact contract versions are:
@@ -80,22 +154,30 @@ The current exact contract versions are:
 | --- | ---: |
 | physical objective | `3` |
 | outcome/value target | `4` |
+| state feature schema | `2` |
 | evaluation metrics | `6` |
-| checkpoint | `6` |
-| replay buffer schema | `5` |
+| checkpoint | `7` |
+| replay buffer schema | `6` |
 | physics configuration | `1` |
 | topology action | `1` |
 
-Examples and replay rows carry physical, value-target, physics-configuration,
-and topology-action provenance. Checkpoints additionally carry the ordered
-`stop_plus_branch_status_v1` action layout and its fingerprint. Evaluation
-loads the topology-action configuration and layout from the checkpoint and
-requires an exact match before creating its runtime action space. Consumers
-fail closed on missing, old, reordered, or mismatched provenance.
+State NPZ files, examples, replay rows, and checkpoints carry exact
+state-feature schema provenance, including the schema version, fingerprint,
+ordered bus and branch columns, contiguous `edge_index` semantics, and original
+bus-ID semantics.
 
-Artifacts produced under former solved semantics or before topology-action
-provenance are scientifically incompatible. They are never relabeled or
-upgraded in place. Regenerate in this order:
+Examples and replay rows also carry physical, value-target,
+physics-configuration, and topology-action provenance. Checkpoints additionally
+carry the ordered `stop_plus_branch_status_v1` action layout and its
+fingerprint. Evaluation loads the topology-action configuration and layout from
+the checkpoint and requires an exact match before creating its runtime action
+space. Consumers fail closed on missing, old, reordered, or mismatched
+provenance.
+
+Artifacts produced under former solved semantics, before topology-action
+provenance, or before state feature schema `v2` are scientifically
+incompatible. They are never relabeled or upgraded in place. Regenerate states,
+self-play examples, replay, and checkpoints in this order:
 
 ```bash
 # 1. Fresh episodes and outcome targets.
