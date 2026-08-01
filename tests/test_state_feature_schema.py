@@ -46,6 +46,12 @@ EXPECTED_BUS_FEATURE_COLUMNS = [
     "gen_p_up_margin_mw",
     "gen_q_down_margin_mvar",
     "gen_q_up_margin_mvar",
+    "gen_min_p_down_margin_mw",
+    "gen_min_p_up_margin_mw",
+    "gen_min_q_down_margin_mvar",
+    "gen_min_q_up_margin_mvar",
+    "gen_p_limit_violation_count",
+    "gen_q_limit_violation_count",
 ]
 
 EXPECTED_BRANCH_FEATURE_COLUMNS = [
@@ -121,20 +127,20 @@ def _generator_frame() -> pd.DataFrame:
     )
 
 
-def test_schema_v2_has_stable_feature_order_and_fingerprint() -> None:
-    assert STATE_FEATURE_SCHEMA_VERSION == 2
+def test_schema_v3_has_stable_feature_order_and_fingerprint() -> None:
+    assert STATE_FEATURE_SCHEMA_VERSION == 3
     assert BUS_FEATURE_COLUMNS == EXPECTED_BUS_FEATURE_COLUMNS
     assert BRANCH_FEATURE_COLUMNS == EXPECTED_BRANCH_FEATURE_COLUMNS
 
     payload = state_feature_schema_payload()
     assert payload == {
-        "state_feature_schema_version": 2,
+        "state_feature_schema_version": 3,
         "bus_feature_columns": EXPECTED_BUS_FEATURE_COLUMNS,
         "branch_feature_columns": EXPECTED_BRANCH_FEATURE_COLUMNS,
     }
     assert (
         state_feature_schema_fingerprint()
-        == "f2e37c394cee5a36cdccde98aaf67b79c416667857809a5bd6576399984fdad2"
+        == "4ecbbc19d6085176a254427d34c719fa29c2d721abb0537b36ad881065eb1930"
     )
     assert state_feature_schema_provenance() == {
         **payload,
@@ -146,7 +152,7 @@ def test_schema_v2_has_stable_feature_order_and_fingerprint() -> None:
     }
 
 
-def test_bus_features_include_voltage_limits_and_generator_margins() -> None:
+def test_bus_features_include_aggregate_and_individual_generator_margins() -> None:
     enriched = with_bus_generator_features(
         _bus_frame(),
         _generator_frame(),
@@ -166,9 +172,24 @@ def test_bus_features_include_voltage_limits_and_generator_margins() -> None:
     assert bus_10["gen_q_down_margin_mvar"] == pytest.approx(20.0)
     assert bus_10["gen_q_up_margin_mvar"] == pytest.approx(45.0)
 
+    # Aggregated margins can hide violations between generators on one bus.
+    # The minimum directional margins preserve the worst individual unit.
+    assert bus_10["gen_min_p_down_margin_mw"] == pytest.approx(30.0)
+    assert bus_10["gen_min_p_up_margin_mw"] == pytest.approx(-20.0)
+    assert bus_10["gen_min_q_down_margin_mvar"] == pytest.approx(-10.0)
+    assert bus_10["gen_min_q_up_margin_mvar"] == pytest.approx(-5.0)
+    assert bus_10["gen_p_limit_violation_count"] == pytest.approx(1.0)
+    assert bus_10["gen_q_limit_violation_count"] == pytest.approx(2.0)
+
     bus_20 = enriched.loc[enriched["bus"] == 20].iloc[0]
     assert bus_20["gen_online_count"] == pytest.approx(0.0)
     assert bus_20["gen_available"] == pytest.approx(0.0)
+    assert bus_20["gen_min_p_down_margin_mw"] == pytest.approx(0.0)
+    assert bus_20["gen_min_p_up_margin_mw"] == pytest.approx(0.0)
+    assert bus_20["gen_min_q_down_margin_mvar"] == pytest.approx(0.0)
+    assert bus_20["gen_min_q_up_margin_mvar"] == pytest.approx(0.0)
+    assert bus_20["gen_p_limit_violation_count"] == pytest.approx(0.0)
+    assert bus_20["gen_q_limit_violation_count"] == pytest.approx(0.0)
 
     features = finite_feature_matrix(
         enriched,
