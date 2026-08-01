@@ -186,7 +186,7 @@ def test_positive_target_for_unsolved_episode_is_rejected(
     )
 
 
-def test_zero_target_for_handoff_is_accepted(
+def test_negative_target_for_handoff_is_accepted(
     tmp_path: Path,
 ) -> None:
     row = valid_row(write_state(tmp_path / "s.npz"))
@@ -196,7 +196,7 @@ def test_zero_target_for_handoff_is_accepted(
             "done": True,
             "termination_reason": "handoff_to_redispatch",
             "outcome_class": "handoff_to_redispatch",
-            "outcome_value_target": 0.0,
+            "outcome_value_target": -(0.95**3),
             "outcome_gamma": 0.95,
             "outcome_steps_to_terminal": 3,
         }
@@ -470,7 +470,7 @@ def test_public_outcome_validator_accepts_independent_scenario_iterations() -> N
             "solved": False,
             "termination_reason": "handoff_to_redispatch",
             "outcome_class": "handoff_to_redispatch",
-            "outcome_value_target": 0.0,
+            "outcome_value_target": -0.95,
             "outcome_gamma": 0.95,
         }
     )
@@ -505,7 +505,7 @@ def test_outcome_validator_rejects_legacy_outcome_version(tmp_path: Path) -> Non
 
 
 def test_outcome_validator_reports_unknown_reason_with_context(tmp_path: Path) -> None:
-    row = valid_row(write_state(tmp_path / "state.npz"))
+    row = valid_row(write_state(tmp_path / "s.npz"))
     row.update(solved=False, termination_reason="unknown")
     with pytest.raises(
         ValueError,
@@ -517,7 +517,7 @@ def test_outcome_validator_reports_unknown_reason_with_context(tmp_path: Path) -
 
 
 def test_outcome_validator_reports_contradiction_with_context(tmp_path: Path) -> None:
-    row = valid_row(write_state(tmp_path / "state.npz"))
+    row = valid_row(write_state(tmp_path / "s.npz"))
     row.update(solved=False, termination_reason="solved")
     with pytest.raises(ValueError, match=r"row 0.*source.csv.*Contradictory outcome"):
         validate_example_outcome_contracts(
@@ -531,7 +531,7 @@ def test_outcome_validator_reports_contradiction_with_context(tmp_path: Path) ->
 def test_outcome_validator_requires_strict_booleans(
     tmp_path: Path, column: str, value: object
 ) -> None:
-    row = valid_row(write_state(tmp_path / "state.npz"))
+    row = valid_row(write_state(tmp_path / "s.npz"))
     row[column] = value
     with pytest.raises(ValueError, match=column):
         validate_example_outcome_contracts(

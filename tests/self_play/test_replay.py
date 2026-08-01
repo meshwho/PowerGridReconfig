@@ -35,11 +35,11 @@ def rows(prefix: str, count: int) -> list[dict[str, object]]:
             "physics_config_fingerprint": provenance[
                 "physics_config_fingerprint"
             ],
-            "outcome_value_target": 0.0,
+            "outcome_value_target": -0.95,
             "solved": False,
             "done": True,
             "termination_reason": TerminationReason.HANDOFF_TO_REDISPATCH_TEACHER.value,
-            "outcome_class": TerminationReason.HANDOFF_TO_REDISPATCH.value,
+            "outcome_class": TerminationReason.HANDOFF_TO_REDISPATCH_TEACHER.value,
             "outcome_steps_to_terminal": 1,
             "outcome_value_target_mode": "alphazero_discounted",
             "outcome_gamma": 0.95,
@@ -408,4 +408,4 @@ def test_valid_semantic_replay_roundtrip(tmp_path: Path) -> None:
     source.save_manifest()
     loaded = RollingReplayBuffer(save_dir=save_dir)
     assert len(loaded.buffer) == 1
-    assert loaded.buffer[0]["outcome_value_target"] == 0.0
+    assert loaded.buffer[0]["outcome_value_target"] == -0.95
