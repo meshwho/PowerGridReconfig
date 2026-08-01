@@ -25,6 +25,14 @@ from grid_topology_ai.return_contract import (
 from grid_topology_ai.termination import TerminationReason
 
 
+_IDENTITY_FIELDS = (
+    "run_id",
+    "iteration",
+    "episode_id",
+    "scenario_id",
+)
+
+
 def _require_bool(value: object, *, field: str) -> bool:
     if not isinstance(value, (bool, np.bool_)):
         raise ValueError(
@@ -136,9 +144,24 @@ def _require_group_key(
             f"Group key {key!r} must be hashable, got {value!r}"
         ) from exc
 
+    if key in {"run_id", "episode_id"}:
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(
+                f"{key} must be a non-empty string, got {value!r}"
+            )
+        return value.strip()
+
+    if key == "iteration" and (
+        not isinstance(value, Integral)
+        or int(value) <= 0
+    ):
+        raise ValueError(
+            "iteration must be a positive integer, "
+            f"got {value!r}"
+        )
+
     if key == "scenario_id" and (
         not isinstance(value, Integral)
-        or isinstance(value, (bool, np.bool_))
         or int(value) < 0
     ):
         raise ValueError(
@@ -170,7 +193,7 @@ def _require_step(row: Mapping[str, object]) -> int:
 def add_outcome_value_targets_to_rows(
     rows: list[dict[str, object]],
     gamma: float,
-    group_keys: tuple[str, ...] = ("scenario_id",),
+    group_keys: tuple[str, ...] = ("episode_id",),
 ) -> None:
     """Atomically derive discounted terminal-utility targets."""
 
@@ -189,6 +212,13 @@ def add_outcome_value_targets_to_rows(
             "group_keys must be a non-empty tuple of unique field names"
         )
 
+    if (
+        group_keys == ("scenario_id",)
+        and rows
+        and all("episode_id" in row for row in rows)
+    ):
+        group_keys = ("episode_id",)
+
     groups: dict[
         tuple[object, ...],
         list[tuple[int, dict[str, object]]],
@@ -202,6 +232,10 @@ def add_outcome_value_targets_to_rows(
                 "Cannot derive current outcome value targets from "
                 "legacy solved labels."
             )
+
+        for field in _IDENTITY_FIELDS:
+            _require_group_key(row, field)
+
         key = tuple(
             _require_group_key(row, name)
             for name in group_keys
@@ -221,6 +255,20 @@ def add_outcome_value_targets_to_rows(
                 f"Duplicate step in episode group {key!r}"
             )
         indexed_rows.sort(key=lambda item: item[0])
+        if steps and sorted(steps) != list(range(len(steps))):
+            raise ValueError(
+                f"Episode group {key!r} must use contiguous steps from 0"
+            )
+
+        for field in _IDENTITY_FIELDS:
+            values = {
+                _require_group_key(row, field)
+                for _, row in indexed_rows
+            }
+            if len(values) != 1:
+                raise ValueError(
+                    f"Mixed {field} values in episode group {key!r}"
+                )
 
         expected_solved: bool | None = None
         expected_reason: TerminationReason | None = None

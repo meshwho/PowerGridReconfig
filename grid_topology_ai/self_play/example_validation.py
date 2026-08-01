@@ -25,12 +25,19 @@ _EVIDENCE_COLUMNS: tuple[str, ...] = (
     "terminal_outcome_evidence_schema_version",
     "terminal_outcome_evidence_json",
 )
+_IDENTITY_COLUMNS: tuple[str, ...] = (
+    "run_id",
+    "iteration",
+    "episode_id",
+)
 
 REQUIRED_OUTCOME_COLUMNS: tuple[str, ...] = (
     _core.REQUIRED_OUTCOME_COLUMNS + _EVIDENCE_COLUMNS
 )
 REQUIRED_EXAMPLE_COLUMNS: tuple[str, ...] = (
-    _core.REQUIRED_EXAMPLE_COLUMNS + _EVIDENCE_COLUMNS
+    _core.REQUIRED_EXAMPLE_COLUMNS
+    + _EVIDENCE_COLUMNS
+    + _IDENTITY_COLUMNS
 )
 
 
@@ -90,6 +97,7 @@ def validate_examples_dataframe(
                     f"at row {index}. File: {source}"
                 )
 
+    _validate_episode_identity(examples, source=source)
     validate_example_outcome_contracts(
         examples,
         source_path=source,
@@ -194,6 +202,56 @@ def validate_examples_dataframe(
             index=index,
             source=source,
         )
+
+
+def _validate_episode_identity(
+    examples: pd.DataFrame,
+    *,
+    source: Path,
+) -> None:
+    for index, row in examples.iterrows():
+        for column in ("run_id", "episode_id"):
+            value = row[column]
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(
+                    f"{column} must be a non-empty string at row "
+                    f"{index}. File: {source}"
+                )
+        iteration = _core._require_integer(
+            row["iteration"],
+            column="iteration",
+            index=index,
+            source=source,
+        )
+        if iteration <= 0:
+            raise ValueError(
+                f"iteration must be > 0 at row {index}. File: {source}"
+            )
+
+    for episode_id, group in examples.groupby(
+        "episode_id",
+        sort=False,
+    ):
+        for column in ("run_id", "iteration", "scenario_id"):
+            if group[column].nunique(dropna=False) != 1:
+                raise ValueError(
+                    f"Episode {episode_id!r} contains mixed {column} "
+                    f"values. File: {source}"
+                )
+        steps = sorted(
+            _core._require_integer(
+                value,
+                column="step",
+                index=index,
+                source=source,
+            )
+            for index, value in group["step"].items()
+        )
+        if steps != list(range(len(steps))):
+            raise ValueError(
+                f"Episode {episode_id!r} must use contiguous steps "
+                f"from 0. File: {source}"
+            )
 
 
 def validate_example_outcome_contracts(

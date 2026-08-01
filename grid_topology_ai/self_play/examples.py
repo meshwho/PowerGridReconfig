@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import uuid
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -41,6 +42,9 @@ class SelfPlayExample:
 
     state_id: str
     state_path: str
+    run_id: str
+    iteration: int
+    episode_id: str
     scenario_id: int
     step: int
     selected_action_id: int
@@ -101,6 +105,8 @@ class ExampleWriter:
         self.state_store = GridFMStateStore(self.states_dir)
         self.examples: list[SelfPlayExample] = []
         self.action_space_config = action_space_config
+        self.run_id = uuid.uuid4().hex
+        self._episode_ids: dict[int, str] = {}
 
     def add_example(
         self,
@@ -132,6 +138,29 @@ class ExampleWriter:
         extra_metadata: dict[str, Any] | None = None,
     ) -> None:
         """Save one strictly on-policy self-play example."""
+
+        metadata = dict(extra_metadata or {})
+        iteration_value = metadata.get(
+            "self_play_iteration",
+            metadata.get("iteration", 1),
+        )
+        if isinstance(iteration_value, bool):
+            raise ValueError("iteration must be a positive integer.")
+        try:
+            iteration = int(iteration_value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "iteration must be a positive integer."
+            ) from exc
+        if iteration <= 0:
+            raise ValueError("iteration must be a positive integer.")
+
+        scenario_id = int(scenario_id)
+        step = int(step)
+        if step == 0 or scenario_id not in self._episode_ids:
+            self._episode_ids[scenario_id] = uuid.uuid4().hex
+        episode_id = self._episode_ids[scenario_id]
+        state_id = f"{episode_id}_step_{step:03d}"
 
         policy_context = f"self-play example {state_id!r}"
         normalized_policy = normalize_policy(
@@ -173,7 +202,14 @@ class ExampleWriter:
         evidence_mapping = terminal_outcome_evidence.to_dict()
 
         provenance = physics_provenance(self.physics_config)
-        state_metadata = dict(extra_metadata or {})
+        state_metadata = metadata
+        state_metadata.update(
+            {
+                "run_id": self.run_id,
+                "iteration": iteration,
+                "episode_id": episode_id,
+            }
+        )
         state_metadata.update(provenance)
         state_metadata["outcome_value_target_contract_version"] = (
             OUTCOME_VALUE_TARGET_CONTRACT_VERSION
@@ -200,8 +236,11 @@ class ExampleWriter:
         example = SelfPlayExample(
             state_id=state_id,
             state_path=str(state_path),
-            scenario_id=int(scenario_id),
-            step=int(step),
+            run_id=self.run_id,
+            iteration=iteration,
+            episode_id=episode_id,
+            scenario_id=scenario_id,
+            step=step,
             selected_action_id=int(selected_action_id),
             selected_branch_id=(
                 None
