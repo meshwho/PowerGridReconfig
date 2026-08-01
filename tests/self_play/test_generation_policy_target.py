@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 
 from grid_topology_ai.self_play import generation
+from tests.outcome_evidence_helpers import terminal_evidence
 
 
 class _Action:
@@ -169,9 +170,16 @@ def test_generation_records_analysis_without_override(
     class _Writer:
         states_dir = tmp_path / "states"
 
-        def __init__(self, output_dir, *, physics_config):
+        def __init__(
+            self,
+            output_dir,
+            *,
+            physics_config,
+            action_space_config,
+        ):
             self.output_dir = output_dir
             self.physics_config = physics_config
+            self.action_space_config = action_space_config
 
         def add_example(self, **kwargs):
             captured.append(kwargs)
@@ -186,28 +194,31 @@ def test_generation_records_analysis_without_override(
     )
 
     class _Env:
-        done = False
-        solved = False
-        termination_reason = "solved"
-        current_state = object()
-
         def __init__(self, **kwargs):
-            pass
+            self.done = False
+            self.solved = False
+            self.termination_reason = None
+            self.terminal_outcome_evidence = None
+            self.current_state = object()
 
         def reset(self, scenario_id):
-            pass
+            return None
 
         def valid_action_mask(self):
             return [True, True, True]
 
         def step(self, action):
             executed.append(action)
+            evidence = terminal_evidence("solved")
             self.done = True
             self.solved = True
+            self.termination_reason = evidence.termination_reason
+            self.terminal_outcome_evidence = evidence
             return SimpleNamespace(
                 reward=0.0,
                 done=True,
                 solved=True,
+                terminal_outcome_evidence=evidence,
                 info={"termination_reason": "solved"},
             )
 
@@ -223,24 +234,39 @@ def test_generation_records_analysis_without_override(
 
     class _Noop:
         def __init__(self, *args, **kwargs):
-            pass
+            self.config = SimpleNamespace()
 
         def cache_info(self):
             return {}
 
         def clear_cache(self):
-            pass
+            return None
 
     transitions = tmp_path / "transitions.csv"
-    transitions.write_text("scenario_id\n1\n", encoding="utf-8")
-    monkeypatch.setattr(generation, "_ensure_runtime_dependencies", lambda: None)
+    transitions.write_text(
+        "scenario_id\n1\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        generation,
+        "_ensure_runtime_dependencies",
+        lambda: None,
+    )
     monkeypatch.setattr(generation, "GridFMAdapter", _Noop)
-    monkeypatch.setattr(generation, "GridFMPowerFlowBackend", _Noop)
+    monkeypatch.setattr(
+        generation,
+        "GridFMPowerFlowBackend",
+        _Noop,
+    )
     monkeypatch.setattr(generation, "GridFMActionSpace", _Noop)
     monkeypatch.setattr(generation, "GridFMReward", _Noop)
     monkeypatch.setattr(generation, "MCTSConfig", _Noop)
     monkeypatch.setattr(generation, "MCTSPlanner", _Planner)
-    monkeypatch.setattr(generation, "TopologySwitchingEnv", _Env)
+    monkeypatch.setattr(
+        generation,
+        "TopologySwitchingEnv",
+        _Env,
+    )
     monkeypatch.setattr(generation, "ExampleWriter", _Writer)
     monkeypatch.setattr(
         generation,
@@ -273,6 +299,9 @@ def test_generation_records_analysis_without_override(
     assert executed[0].branch_id == 11
     assert captured[0]["mcts_policy"] == {1: 1.0}
     assert captured[0]["selected_action_id"] == 1
+    assert captured[0]["terminal_outcome_evidence"] == terminal_evidence(
+        "solved"
+    )
 
     metadata = captured[0]["extra_metadata"]
     assert metadata["policy_target_source"] == (
@@ -289,6 +318,8 @@ def test_generation_records_analysis_without_override(
     assert metadata["mcts_stream_seed"] == 7
     assert metadata["action_sampling_stream_seed"] == 8
     assert metadata["scenario_mcts_seed"] == generation._scenario_seed(7, 1)
-    assert metadata["scenario_action_sampling_seed"] == generation._scenario_seed(8, 1)
+    assert metadata[
+        "scenario_action_sampling_seed"
+    ] == generation._scenario_seed(8, 1)
     assert "raw_selected_action_id" not in metadata
     assert "gate_overrode_mcts_selection" not in metadata

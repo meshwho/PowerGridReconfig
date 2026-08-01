@@ -15,6 +15,9 @@ from grid_topology_ai.contracts import (
     OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
     physics_provenance,
 )
+from grid_topology_ai.outcome_contract import (
+    TERMINAL_OUTCOME_EVIDENCE_SCHEMA_VERSION,
+)
 from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
 from grid_topology_ai.self_play import generation
 from grid_topology_ai.self_play.generation import (
@@ -22,6 +25,7 @@ from grid_topology_ai.self_play.generation import (
     generate_self_play_examples,
 )
 from grid_topology_ai.termination import TerminationReason
+from tests.outcome_evidence_helpers import terminal_evidence
 
 
 class _FakeAction:
@@ -32,17 +36,18 @@ class _FakeStepResult:
     reward = 1.0
     done = True
     solved = True
+    terminal_outcome_evidence = terminal_evidence("solved")
     info = {"termination_reason": TerminationReason.SOLVED}
 
 
 class _FakeEnv:
     seen_scenarios: list[int] = []
-    seen_seeds: list[int] = []
 
     def __init__(self, **kwargs: Any) -> None:
         self.done = False
         self.solved = False
         self.termination_reason = None
+        self.terminal_outcome_evidence = None
         self.current_state = object()
         self.kwargs = kwargs
 
@@ -56,6 +61,7 @@ class _FakeEnv:
         self.done = True
         self.solved = True
         self.termination_reason = TerminationReason.SOLVED
+        self.terminal_outcome_evidence = terminal_evidence("solved")
         return _FakeStepResult()
 
     def action_by_id(self, action_id: int) -> _FakeAction:
@@ -70,6 +76,7 @@ class _FakeCache:
         self.args = args
         self.kwargs = kwargs
         self.clear_calls = 0
+        self.config = SimpleNamespace()
         self.instances.append(self)
 
     def clear_cache(self) -> None:
@@ -95,7 +102,9 @@ class _FakePlanner:
 
     def reset_rng(self, random_seed: int | None) -> None:
         if random_seed is None:
-            raise AssertionError("generation must use a concrete scenario seed")
+            raise AssertionError(
+                "generation must use a concrete scenario seed"
+            )
         self.reset_seeds.append(int(random_seed))
 
     def search_from_env(self, env: _FakeEnv) -> SimpleNamespace:
@@ -127,6 +136,8 @@ class _FakeExampleWriter:
         "solved",
         "done",
         "termination_reason",
+        "terminal_outcome_evidence_schema_version",
+        "terminal_outcome_evidence_json",
         "physical_objective_schema_version",
         "outcome_value_target_contract_version",
         "state_feature_schema_version",
@@ -152,15 +163,18 @@ class _FakeExampleWriter:
         output_dir: Path,
         *,
         physics_config: PhysicsConfig,
+        action_space_config: object,
     ) -> None:
         self.output_dir = Path(output_dir)
         self.physics_config = physics_config
+        self.action_space_config = action_space_config
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.states_dir = self.output_dir / "states"
         self.rows: list[dict[str, object]] = []
 
     def add_example(self, **kwargs: object) -> None:
         provenance = physics_provenance(self.physics_config)
+        evidence = kwargs["terminal_outcome_evidence"]
         self.rows.append(
             {
                 "state_id": kwargs["state_id"],
@@ -177,10 +191,14 @@ class _FakeExampleWriter:
                 "solved": kwargs["solved"],
                 "done": kwargs["done"],
                 "termination_reason": kwargs["termination_reason"],
+                "terminal_outcome_evidence_schema_version": (
+                    TERMINAL_OUTCOME_EVIDENCE_SCHEMA_VERSION
+                ),
+                "terminal_outcome_evidence_json": evidence.to_json(),
                 "physical_objective_schema_version": (
                     PHYSICAL_OBJECTIVE_SCHEMA_VERSION
                 ),
-                                "outcome_value_target_contract_version": (
+                "outcome_value_target_contract_version": (
                     OUTCOME_VALUE_TARGET_CONTRACT_VERSION
                 ),
                 "state_feature_schema_version": int(
@@ -223,12 +241,17 @@ class _FakeExampleWriter:
 
     def save(self) -> Path:
         path = self.output_dir / "examples.csv"
-        pd.DataFrame(self.rows, columns=self.COLUMNS).to_csv(path, index=False)
+        pd.DataFrame(
+            self.rows,
+            columns=self.COLUMNS,
+        ).to_csv(path, index=False)
         return path
 
 
 @pytest.fixture
-def fake_generation_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
+def fake_generation_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     _FakeEnv.seen_scenarios = []
     _FakeCache.clear_calls = 0
     _FakeCache.instances = []
@@ -236,15 +259,35 @@ def fake_generation_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
     _FakePlanner.reset_seeds = []
 
     monkeypatch.setattr(generation, "GridFMAdapter", _FakeCache)
-    monkeypatch.setattr(generation, "GridFMPowerFlowBackend", _FakeCache)
+    monkeypatch.setattr(
+        generation,
+        "GridFMPowerFlowBackend",
+        _FakeCache,
+    )
     monkeypatch.setattr(generation, "GridFMActionSpace", _FakeCache)
     monkeypatch.setattr(generation, "GridFMReward", _FakeCache)
-    monkeypatch.setattr(generation, "TopologySwitchingEnv", _FakeEnv)
-    monkeypatch.setattr(generation, "NeuralPolicyValueEvaluator", _FakeCache)
+    monkeypatch.setattr(
+        generation,
+        "TopologySwitchingEnv",
+        _FakeEnv,
+    )
+    monkeypatch.setattr(
+        generation,
+        "NeuralPolicyValueEvaluator",
+        _FakeCache,
+    )
     monkeypatch.setattr(generation, "MCTSConfig", _FakeMCTSConfig)
     monkeypatch.setattr(generation, "MCTSPlanner", _FakePlanner)
-    monkeypatch.setattr(generation, "ExampleWriter", _FakeExampleWriter)
-    monkeypatch.setattr(generation, "make_do_nothing_action", lambda: object())
+    monkeypatch.setattr(
+        generation,
+        "ExampleWriter",
+        _FakeExampleWriter,
+    )
+    monkeypatch.setattr(
+        generation,
+        "make_do_nothing_action",
+        lambda: object(),
+    )
     monkeypatch.setattr(
         generation,
         "analyze_root_branches",
@@ -261,10 +304,16 @@ def fake_generation_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
-def _request(tmp_path: Path, **kwargs: object) -> GenerationRequest:
+def _request(
+    tmp_path: Path,
+    **kwargs: object,
+) -> GenerationRequest:
     transitions_csv = tmp_path / "transitions.csv"
     if not transitions_csv.exists():
-        transitions_csv.write_text("scenario_id\n1\n", encoding="utf-8")
+        transitions_csv.write_text(
+            "scenario_id\n1\n",
+            encoding="utf-8",
+        )
     values = {
         "raw_dir": tmp_path / "raw",
         "transitions_csv": transitions_csv,
@@ -285,9 +334,9 @@ def test_generation_module_excludes_legacy_terminal_helpers() -> None:
 
 
 def test_runtime_loader_uses_explicit_loaded_flag() -> None:
-    source = Path("grid_topology_ai/self_play/generation.py").read_text(
-        encoding="utf-8"
-    )
+    source = Path(
+        "grid_topology_ai/self_play/generation.py"
+    ).read_text(encoding="utf-8")
 
     assert "_RUNTIME_DEPENDENCIES_LOADED" in source
     assert "if GridFMActionSpace is not None" not in source
@@ -317,6 +366,9 @@ def test_generate_self_play_examples_creates_output(
     assert row["step_reward"] == pytest.approx(1.0)
     assert row["final_return"] == pytest.approx(1.0)
     assert row["discounted_return_from_step"] == pytest.approx(1.0)
+    assert row["terminal_outcome_evidence_json"] == terminal_evidence(
+        "solved"
+    ).to_json()
 
 
 def test_generation_preserves_scenario_order(
@@ -404,7 +456,9 @@ def test_generation_uses_typed_config(
         if "discount_factor" in instance.kwargs
     ]
     assert len(reward_instances) == 1
-    assert reward_instances[0].kwargs["discount_factor"] == pytest.approx(0.91)
+    assert reward_instances[0].kwargs[
+        "discount_factor"
+    ] == pytest.approx(0.91)
 
 
 def test_clear_cache_between_scenarios(
@@ -423,7 +477,11 @@ def test_clear_cache_between_scenarios(
 
     _FakeCache.clear_calls = 0
     generate_self_play_examples(
-        _request(tmp_path, output_dir=tmp_path / "out2", scenario_ids=(1, 2))
+        _request(
+            tmp_path,
+            output_dir=tmp_path / "out2",
+            scenario_ids=(1, 2),
+        )
     )
     assert _FakeCache.clear_calls == 0
 
@@ -450,7 +508,9 @@ def test_output_schema_matches_existing_generation_schema(
 ) -> None:
     examples_csv = generate_self_play_examples(_request(tmp_path))
 
-    assert list(pd.read_csv(examples_csv).columns) == _FakeExampleWriter.COLUMNS
+    assert list(pd.read_csv(examples_csv).columns) == (
+        _FakeExampleWriter.COLUMNS
+    )
 
 
 def test_empty_scenario_selection_preserves_old_behavior(
@@ -458,7 +518,10 @@ def test_empty_scenario_selection_preserves_old_behavior(
     fake_generation_runtime: None,
 ) -> None:
     transitions_csv = tmp_path / "transitions.csv"
-    transitions_csv.write_text("scenario_id\n", encoding="utf-8")
+    transitions_csv.write_text(
+        "scenario_id\n",
+        encoding="utf-8",
+    )
 
     examples_csv = generate_self_play_examples(
         _request(tmp_path, transitions_csv=transitions_csv)
