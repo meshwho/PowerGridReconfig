@@ -10,6 +10,7 @@ from grid_topology_ai.contracts import physics_provenance
 from grid_topology_ai.models.graph_self_play_dataset import GraphSelfPlayDataset
 from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
 from grid_topology_ai.value_targets import add_outcome_value_targets_to_rows
+from tests.outcome_evidence_helpers import terminal_evidence_fields
 
 
 def _current(rows):
@@ -29,6 +30,9 @@ def _current(rows):
         row["physics_config_fingerprint"] = provenance[
             "physics_config_fingerprint"
         ]
+        row.update(
+            terminal_evidence_fields(row["termination_reason"])
+        )
     return rows
 
 

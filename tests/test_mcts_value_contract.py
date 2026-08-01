@@ -14,6 +14,7 @@ from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSIO
 from grid_topology_ai.search.mcts import MCTSConfig, MCTSNode, MCTSPlanner
 from grid_topology_ai.termination import TerminationReason
 from grid_topology_ai.value_targets import add_outcome_value_targets_to_rows
+from tests.outcome_evidence_helpers import terminal_evidence_fields
 
 
 def _node(
@@ -83,6 +84,9 @@ def test_mcts_terminal_leaf_uses_same_outcome_utility_as_value_targets() -> None
 
 def test_value_targets_equal_mcts_discounted_terminal_backup() -> None:
     gamma = 0.5
+    evidence_fields = terminal_evidence_fields(
+        TerminationReason.SOLVED
+    )
     rows: list[dict[str, object]] = [
         {
             "scenario_id": 1,
@@ -93,6 +97,7 @@ def test_value_targets_equal_mcts_discounted_terminal_backup() -> None:
             "physical_objective_schema_version": (
                 PHYSICAL_OBJECTIVE_SCHEMA_VERSION
             ),
+            **evidence_fields,
         },
         {
             "scenario_id": 1,
@@ -103,6 +108,7 @@ def test_value_targets_equal_mcts_discounted_terminal_backup() -> None:
             "physical_objective_schema_version": (
                 PHYSICAL_OBJECTIVE_SCHEMA_VERSION
             ),
+            **evidence_fields,
         },
     ]
     add_outcome_value_targets_to_rows(rows, gamma=gamma)
@@ -123,7 +129,10 @@ def test_neural_value_outside_terminal_utility_range_is_rejected() -> None:
         def evaluate(self, *, state, action_mask):
             return [1.0], 50.0
 
-    planner = MCTSPlanner(MCTSConfig(), evaluator=_Evaluator())  # type: ignore[arg-type]
+    planner = MCTSPlanner(  # type: ignore[arg-type]
+        MCTSConfig(),
+        evaluator=_Evaluator(),
+    )
     node = _node()
     node.env.current_state = object()
     node.env.valid_action_mask = lambda: [True]

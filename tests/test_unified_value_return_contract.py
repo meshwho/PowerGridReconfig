@@ -24,6 +24,7 @@ from grid_topology_ai.search.mcts import MCTSConfig, MCTSNode, MCTSPlanner
 from grid_topology_ai.self_play import generation
 from grid_topology_ai.termination import TerminationReason
 from grid_topology_ai.value_targets import add_outcome_value_targets_to_rows
+from tests.outcome_evidence_helpers import terminal_evidence_fields
 
 
 def _node(*, reward: float = 0.0) -> MCTSNode:
@@ -57,6 +58,7 @@ def test_mcts_backup_and_value_targets_share_terminal_utility(
     utility, _ = terminal_utility_from_outcome(solved, reason)
     assert utility == expected_utility
 
+    evidence_fields = terminal_evidence_fields(reason)
     rows: list[dict[str, object]] = [
         {
             "scenario_id": 1,
@@ -65,6 +67,7 @@ def test_mcts_backup_and_value_targets_share_terminal_utility(
             "done": True,
             "termination_reason": reason.value,
             "physical_objective_schema_version": PHYSICAL_OBJECTIVE_SCHEMA_VERSION,
+            **evidence_fields,
         },
         {
             "scenario_id": 1,
@@ -73,12 +76,16 @@ def test_mcts_backup_and_value_targets_share_terminal_utility(
             "done": True,
             "termination_reason": reason.value,
             "physical_objective_schema_version": PHYSICAL_OBJECTIVE_SCHEMA_VERSION,
+            **evidence_fields,
         },
     ]
     add_outcome_value_targets_to_rows(rows, gamma=gamma)
 
     path = [_node(reward=10_000.0), _node(reward=-10_000.0)]
-    MCTSPlanner(MCTSConfig(gamma=gamma))._backup(path, leaf_value=utility)
+    MCTSPlanner(MCTSConfig(gamma=gamma))._backup(
+        path,
+        leaf_value=utility,
+    )
 
     assert rows[0]["outcome_value_target"] == pytest.approx(
         discounted_terminal_utility(
@@ -204,25 +211,15 @@ def test_evaluation_reward_uses_run_gamma_everywhere() -> None:
         )
     )
 
-    compact_worker_source = "".join(
-        worker_source.split()
-    )
-    compact_task_source = "".join(
-        task_source.split()
-    )
+    compact_worker_source = "".join(worker_source.split())
+    compact_task_source = "".join(task_source.split())
 
     assert (
         'discount_factor=float(task_config["gamma"])'
         in compact_worker_source
     )
-    assert (
-        "discount_factor=config.gamma"
-        in compact_task_source
-    )
-    assert (
-        '"reward_config":GridFMReward('
-        in compact_task_source
-    )
+    assert "discount_factor=config.gamma" in compact_task_source
+    assert '"reward_config":GridFMReward(' in compact_task_source
 
 
 def test_unified_return_contract_versions_are_pinned() -> None:
