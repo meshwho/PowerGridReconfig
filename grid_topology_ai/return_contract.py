@@ -8,6 +8,10 @@ from numbers import Integral, Real
 from grid_topology_ai.config.physics import PhysicsConfig
 from grid_topology_ai.data_adapter import GridFMState
 from grid_topology_ai.grid_utility import state_security_penalty
+from grid_topology_ai.outcome_contract import (
+    RedispatchStatus,
+    TerminalOutcomeEvidence,
+)
 from grid_topology_ai.termination import (
     TerminationReason,
     validate_outcome_invariants,
@@ -47,11 +51,15 @@ def require_bounded_utility(value: object, *, context: str) -> float:
 def terminal_utility_from_outcome(
     solved: bool,
     termination_reason: TerminationReason | str | None,
+    *,
+    evidence: TerminalOutcomeEvidence | None = None,
 ) -> tuple[float, str]:
     """Map one terminal episode outcome to the canonical utility and class.
 
-    ``+1`` means the grid was physically solved, ``0`` is a safe handoff to
-    redispatch, and ``-1`` covers every failed or unsafe terminal outcome.
+    ``+1`` means the topology controller physically solved the grid. ``0`` is
+    reserved for a redispatch that was actually executed and validated against
+    the physical contract. A redispatch request or handoff alone is an unsolved
+    terminal outcome and therefore receives ``-1``.
     """
     if not isinstance(solved, bool):
         raise ValueError(f"solved must be a boolean, got {solved!r}")
@@ -59,13 +67,36 @@ def terminal_utility_from_outcome(
         solved=solved,
         termination_reason=termination_reason,
     )
+
+    if evidence is not None:
+        if evidence.solved is not solved:
+            raise ValueError(
+                "Terminal outcome evidence contradicts solved."
+            )
+        if evidence.termination_reason is not reason:
+            raise ValueError(
+                "Terminal outcome evidence contradicts termination_reason."
+            )
+
     if reason is TerminationReason.SOLVED:
         return 1.0, TerminationReason.SOLVED.value
-    if reason in {
-        TerminationReason.HANDOFF_TO_REDISPATCH,
-        TerminationReason.HANDOFF_TO_REDISPATCH_TEACHER,
-    }:
-        return 0.0, TerminationReason.HANDOFF_TO_REDISPATCH.value
+
+    if reason is TerminationReason.REDISPATCH_VALIDATED:
+        if evidence is None:
+            raise ValueError(
+                "redispatch_validated requires terminal outcome evidence."
+            )
+        if (
+            evidence.redispatch_status is not RedispatchStatus.VALIDATED
+            or evidence.redispatch_assessment is None
+            or not evidence.redispatch_assessment.physically_secure
+        ):
+            raise ValueError(
+                "redispatch_validated requires a physically secure validated "
+                "redispatch assessment."
+            )
+        return 0.0, TerminationReason.REDISPATCH_VALIDATED.value
+
     return -1.0, "unsolved_terminal" if reason is None else reason.value
 
 

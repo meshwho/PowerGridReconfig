@@ -16,15 +16,16 @@ from grid_topology_ai.termination import (
 )
 
 
-TERMINAL_OUTCOME_EVIDENCE_SCHEMA_VERSION = 1
+TERMINAL_OUTCOME_EVIDENCE_SCHEMA_VERSION = 2
 
 
 class RedispatchStatus(StrEnum):
     NOT_REQUESTED = "not_requested"
     REQUESTED = "requested"
+    VALIDATED = "validated"
 
 
-_REDISPATCH_REASONS = frozenset(
+_REQUESTED_REDISPATCH_REASONS = frozenset(
     {
         TerminationReason.HANDOFF_TO_REDISPATCH,
         TerminationReason.HANDOFF_TO_REDISPATCH_WITH_HARD_OVERLOAD,
@@ -35,6 +36,7 @@ _SAFE_HANDOFF_REASONS = frozenset(
     {
         TerminationReason.HANDOFF_TO_REDISPATCH,
         TerminationReason.HANDOFF_TO_REDISPATCH_TEACHER,
+        TerminationReason.REDISPATCH_VALIDATED,
     }
 )
 _HARD_OVERLOAD_REASONS = frozenset(
@@ -90,15 +92,16 @@ def _parse_redispatch_status(value: object) -> RedispatchStatus:
 
 def _validate_assessment_values(
     assessment: PhysicalStateAssessment,
+    *,
+    field_name: str,
 ) -> None:
     for field in fields(PhysicalStateAssessment):
         value = getattr(assessment, field.name)
+        qualified_name = f"{field_name}.{field.name}"
 
         if field.name in _BOOLEAN_ASSESSMENT_FIELDS:
             if not isinstance(value, bool):
-                raise TypeError(
-                    f"assessment.{field.name} must be a bool."
-                )
+                raise TypeError(f"{qualified_name} must be a bool.")
             continue
 
         if field.name in _INTEGER_ASSESSMENT_FIELDS:
@@ -108,8 +111,7 @@ def _validate_assessment_values(
                 or int(value) < 0
             ):
                 raise ValueError(
-                    f"assessment.{field.name} must be a "
-                    "non-negative integer."
+                    f"{qualified_name} must be a non-negative integer."
                 )
             continue
 
@@ -120,8 +122,7 @@ def _validate_assessment_values(
             or float(value) < 0.0
         ):
             raise ValueError(
-                f"assessment.{field.name} must be a finite "
-                "non-negative number."
+                f"{qualified_name} must be a finite non-negative number."
             )
 
     if (
@@ -129,13 +130,11 @@ def _validate_assessment_values(
         > assessment.num_overloaded_branches
     ):
         raise ValueError(
-            "assessment.num_hard_overloaded_branches cannot exceed "
-            "assessment.num_overloaded_branches."
+            f"{field_name}.num_hard_overloaded_branches cannot exceed "
+            f"{field_name}.num_overloaded_branches."
         )
 
-    expected_thermal_feasible = (
-        assessment.num_overloaded_branches == 0
-    )
+    expected_thermal_feasible = assessment.num_overloaded_branches == 0
     expected_hard_overload_free = (
         assessment.num_hard_overloaded_branches == 0
     )
@@ -165,7 +164,7 @@ def _validate_assessment_values(
     for name, expected in expected_flags.items():
         if getattr(assessment, name) != expected:
             raise ValueError(
-                f"assessment.{name} contradicts the physical counts."
+                f"{field_name}.{name} contradicts the physical counts."
             )
 
     expected_secure = all(
@@ -182,12 +181,14 @@ def _validate_assessment_values(
     )
     if assessment.physically_secure != expected_secure:
         raise ValueError(
-            "assessment.physically_secure contradicts the physical flags."
+            f"{field_name}.physically_secure contradicts the physical flags."
         )
 
 
 def _assessment_from_mapping(
     value: object,
+    *,
+    field_name: str,
 ) -> PhysicalStateAssessment | None:
     if value is None:
         return None
@@ -195,7 +196,8 @@ def _assessment_from_mapping(
         return value
     if not isinstance(value, Mapping):
         raise TypeError(
-            "assessment must be a mapping, PhysicalStateAssessment, or None."
+            f"{field_name} must be a mapping, "
+            "PhysicalStateAssessment, or None."
         )
 
     expected_fields = {
@@ -207,7 +209,7 @@ def _assessment_from_mapping(
         missing = sorted(expected_fields - observed_fields)
         unexpected = sorted(observed_fields - expected_fields)
         raise ValueError(
-            "assessment fields do not match the current contract: "
+            f"{field_name} fields do not match the current contract: "
             f"missing={missing}, unexpected={unexpected}."
         )
 
@@ -217,7 +219,10 @@ def _assessment_from_mapping(
             for name in expected_fields
         }
     )
-    _validate_assessment_values(assessment)
+    _validate_assessment_values(
+        assessment,
+        field_name=field_name,
+    )
     return assessment
 
 
@@ -229,6 +234,7 @@ class TerminalOutcomeEvidence:
     termination_reason: TerminationReason
     assessment: PhysicalStateAssessment | None
     redispatch_status: RedispatchStatus
+    redispatch_assessment: PhysicalStateAssessment | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.solved, bool):
@@ -243,7 +249,12 @@ class TerminalOutcomeEvidence:
             self.redispatch_status
         )
         assessment = _assessment_from_mapping(
-            self.assessment
+            self.assessment,
+            field_name="assessment",
+        )
+        redispatch_assessment = _assessment_from_mapping(
+            self.redispatch_assessment,
+            field_name="redispatch_assessment",
         )
 
         object.__setattr__(
@@ -261,17 +272,24 @@ class TerminalOutcomeEvidence:
             "assessment",
             assessment,
         )
+        object.__setattr__(
+            self,
+            "redispatch_assessment",
+            redispatch_assessment,
+        )
 
         validate_outcome_invariants(
             solved=self.solved,
             termination_reason=reason,
         )
 
-        expected_status = (
-            RedispatchStatus.REQUESTED
-            if reason in _REDISPATCH_REASONS
-            else RedispatchStatus.NOT_REQUESTED
-        )
+        if reason is TerminationReason.REDISPATCH_VALIDATED:
+            expected_status = RedispatchStatus.VALIDATED
+        elif reason in _REQUESTED_REDISPATCH_REASONS:
+            expected_status = RedispatchStatus.REQUESTED
+        else:
+            expected_status = RedispatchStatus.NOT_REQUESTED
+
         if status is not expected_status:
             raise ValueError(
                 f"{reason.value} requires "
@@ -283,37 +301,60 @@ class TerminalOutcomeEvidence:
                 raise ValueError(
                     f"{reason.value} requires a terminal physical assessment."
                 )
-            return
-
-        _validate_assessment_values(assessment)
-        validate_outcome_invariants(
-            solved=self.solved,
-            termination_reason=reason,
-            physically_secure=assessment.physically_secure,
-        )
-
-        if (
-            reason is TerminationReason.POWER_FLOW_FAILED
-            and assessment.power_flow_converged
-        ):
-            raise ValueError(
-                "power_flow_failed cannot carry a converged assessment."
+        else:
+            _validate_assessment_values(
+                assessment,
+                field_name="assessment",
+            )
+            validate_outcome_invariants(
+                solved=self.solved,
+                termination_reason=reason,
+                physically_secure=assessment.physically_secure,
             )
 
-        if (
-            reason in _SAFE_HANDOFF_REASONS
-            and not assessment.hard_overload_free
-        ):
-            raise ValueError(
-                f"{reason.value} requires a hard-overload-free assessment."
-            )
+            if (
+                reason is TerminationReason.POWER_FLOW_FAILED
+                and assessment.power_flow_converged
+            ):
+                raise ValueError(
+                    "power_flow_failed cannot carry a converged assessment."
+                )
 
-        if (
-            reason in _HARD_OVERLOAD_REASONS
-            and assessment.hard_overload_free
-        ):
+            if (
+                reason in _SAFE_HANDOFF_REASONS
+                and not assessment.hard_overload_free
+            ):
+                raise ValueError(
+                    f"{reason.value} requires a "
+                    "hard-overload-free assessment."
+                )
+
+            if (
+                reason in _HARD_OVERLOAD_REASONS
+                and assessment.hard_overload_free
+            ):
+                raise ValueError(
+                    f"{reason.value} requires a hard-overloaded assessment."
+                )
+
+        if status is RedispatchStatus.VALIDATED:
+            if redispatch_assessment is None:
+                raise ValueError(
+                    "Validated redispatch requires redispatch_assessment."
+                )
+            _validate_assessment_values(
+                redispatch_assessment,
+                field_name="redispatch_assessment",
+            )
+            if not redispatch_assessment.physically_secure:
+                raise ValueError(
+                    "Validated redispatch requires a physically secure "
+                    "redispatch_assessment."
+                )
+        elif redispatch_assessment is not None:
             raise ValueError(
-                f"{reason.value} requires a hard-overloaded assessment."
+                "redispatch_assessment is allowed only for validated "
+                "redispatch."
             )
 
     def to_dict(self) -> dict[str, object]:
@@ -326,6 +367,11 @@ class TerminalOutcomeEvidence:
                 None
                 if self.assessment is None
                 else asdict(self.assessment)
+            ),
+            "redispatch_assessment": (
+                None
+                if self.redispatch_assessment is None
+                else asdict(self.redispatch_assessment)
             ),
         }
 
@@ -343,6 +389,7 @@ class TerminalOutcomeEvidence:
             "termination_reason",
             "redispatch_status",
             "assessment",
+            "redispatch_assessment",
         }
         observed_fields = set(value)
         if observed_fields != expected_fields:
@@ -369,6 +416,13 @@ class TerminalOutcomeEvidence:
         return cls(
             solved=value["solved"],
             termination_reason=value["termination_reason"],
-            assessment=_assessment_from_mapping(value["assessment"]),
+            assessment=_assessment_from_mapping(
+                value["assessment"],
+                field_name="assessment",
+            ),
             redispatch_status=value["redispatch_status"],
+            redispatch_assessment=_assessment_from_mapping(
+                value["redispatch_assessment"],
+                field_name="redispatch_assessment",
+            ),
         )

@@ -5,6 +5,7 @@ from enum import StrEnum
 
 class TerminationReason(StrEnum):
     SOLVED = "solved"
+    REDISPATCH_VALIDATED = "redispatch_validated"
     HANDOFF_TO_REDISPATCH = "handoff_to_redispatch"
     HANDOFF_TO_REDISPATCH_WITH_HARD_OVERLOAD = (
         "handoff_to_redispatch_with_hard_overload"
