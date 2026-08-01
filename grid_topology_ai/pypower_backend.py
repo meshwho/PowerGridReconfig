@@ -74,28 +74,12 @@ class GridFMPowerFlowBackend(_CoreGridFMPowerFlowBackend):
         *,
         action: GridFMAction | None = None,
     ) -> tuple:
-        """Build a cache key from the topology after applying the action."""
+        """Preserve the public legacy argument order."""
 
-        branch_id, target_status = self._resolve_branch_status_action(
+        return super()._make_cache_key_from_state(
+            state=state,
             action=action,
             switched_off_branch_id=switched_off_branch_id,
-        )
-
-        outaged = {
-            int(outaged_branch_id)
-            for outaged_branch_id in state.outaged_branch_ids
-        }
-
-        if branch_id is not None:
-            if target_status == 0:
-                outaged.add(branch_id)
-            else:
-                outaged.discard(branch_id)
-
-        return (
-            int(state.scenario_id),
-            self.physics_config.fingerprint(),
-            tuple(sorted(outaged)),
         )
 
     def _build_ppc_from_state(
