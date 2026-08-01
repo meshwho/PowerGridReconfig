@@ -9,6 +9,8 @@ from grid_topology_ai.power_flow_errors import InvalidPhysicalState
 from grid_topology_ai.state_schema import (
     BRANCH_FEATURE_COLUMNS,
     BUS_FEATURE_COLUMNS,
+    BUS_ID_SEMANTICS,
+    EDGE_INDEX_SEMANTICS,
     STATE_FEATURE_SCHEMA_VERSION,
     finite_feature_matrix,
     state_feature_schema_fingerprint,
@@ -139,6 +141,8 @@ def test_schema_v2_has_stable_feature_order_and_fingerprint() -> None:
         "state_feature_schema_fingerprint": (
             state_feature_schema_fingerprint()
         ),
+        "edge_index_semantics": EDGE_INDEX_SEMANTICS,
+        "bus_id_semantics": BUS_ID_SEMANTICS,
     }
 
 
