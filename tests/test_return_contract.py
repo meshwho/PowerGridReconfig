@@ -48,11 +48,11 @@ def test_terminal_utility_contract_distinguishes_safe_and_unsafe_handoffs() -> N
     assert terminal_utility_from_outcome(
         False,
         TerminationReason.HANDOFF_TO_REDISPATCH,
-    ) == (0.0, "handoff_to_redispatch")
+    ) == (-1.0, "handoff_to_redispatch")
     assert terminal_utility_from_outcome(
         False,
         TerminationReason.HANDOFF_TO_REDISPATCH_TEACHER,
-    ) == (0.0, "handoff_to_redispatch")
+    ) == (-1.0, "handoff_to_redispatch_teacher")
     assert terminal_utility_from_outcome(
         False,
         TerminationReason.HANDOFF_TO_REDISPATCH_WITH_HARD_OVERLOAD,

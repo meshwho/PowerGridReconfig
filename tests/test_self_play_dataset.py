@@ -58,7 +58,7 @@ def row(path: Path) -> dict[str, object]:
         "outcome_steps_to_terminal": 1,
         "outcome_value_target_mode": "alphazero_discounted",
         "outcome_gamma": 0.95,
-        "outcome_value_target": 0.0,
+        "outcome_value_target": -0.95,
     }
 
 
@@ -72,7 +72,7 @@ def test_flat_dataset_accepts_valid_strict_row(tmp_path: Path) -> None:
         write(tmp_path / "examples.csv", row(state(tmp_path / "state.npz")))
     )
     assert len(dataset) == 1
-    assert dataset[0]["target_value"].item() == pytest.approx(0.0)
+    assert dataset[0]["target_value"].item() == pytest.approx(-0.95)
 
 
 def test_flat_dataset_rejects_positive_handoff_target(tmp_path: Path) -> None:

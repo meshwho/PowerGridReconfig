@@ -43,7 +43,7 @@ def _node(*, reward: float = 0.0) -> MCTSNode:
     ("solved", "reason", "expected_utility"),
     [
         (True, TerminationReason.SOLVED, 1.0),
-        (False, TerminationReason.HANDOFF_TO_REDISPATCH, 0.0),
+        (False, TerminationReason.HANDOFF_TO_REDISPATCH, -1.0),
         (False, TerminationReason.POWER_FLOW_FAILED, -1.0),
         (False, TerminationReason.MAX_STEPS_REACHED, -1.0),
     ],

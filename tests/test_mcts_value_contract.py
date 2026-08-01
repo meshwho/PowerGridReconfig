@@ -71,7 +71,7 @@ def test_mcts_terminal_leaf_uses_same_outcome_utility_as_value_targets() -> None
             solved=False,
             reason=TerminationReason.HANDOFF_TO_REDISPATCH,
         )
-    ) == 0.0
+    ) == -1.0
     assert planner._leaf_value(
         _node(
             done=True,

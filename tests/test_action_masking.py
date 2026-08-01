@@ -47,7 +47,7 @@ def _write_examples_csv(
     path,
     state_path,
     mcts_policy,
-    outcome_value_target=0.0,
+    outcome_value_target=-0.95,
 ):
     pd.DataFrame(
         [

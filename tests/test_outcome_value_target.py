@@ -147,7 +147,7 @@ def test_group_outcome_invariants_are_atomic(rows: list[dict[str, object]]) -> N
     "reason, solved, expected_class, expected_sign",
     [
         ("solved", True, "solved", 1),
-        ("handoff_to_redispatch", False, "handoff_to_redispatch", 0),
+        ("handoff_to_redispatch", False, "handoff_to_redispatch", -1),
         ("max_steps_reached", False, "max_steps_reached", -1),
         ("teacher_depth_limit", False, "teacher_depth_limit", -1),
     ],
@@ -286,6 +286,6 @@ def test_atomic_when_second_group_has_invalid_key() -> None:
 def test_terminal_value_from_outcome_public_helper() -> None:
     assert terminal_value_from_outcome(True, "solved") == (1.0, "solved")
     assert terminal_value_from_outcome(False, "handoff_to_redispatch") == (
-        0.0,
+        -1.0,
         "handoff_to_redispatch",
     )
