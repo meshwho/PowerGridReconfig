@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import copy
-from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -28,6 +27,11 @@ from grid_topology_ai.config.physics import (
     PhysicsConfig,
     QLimitPolicy,
     ZeroRateAPolicy,
+)
+from grid_topology_ai.data_adapter import (
+    BRANCH_FEATURE_COLUMNS,
+    BUS_FEATURE_COLUMNS,
+    GridFMState,
 )
 from grid_topology_ai.physical_constraints import (
     validate_ppc_input,
@@ -76,6 +80,42 @@ def _valid_result(input_ppc: dict[str, object]) -> dict[str, object]:
         ((0, 0), (0, QT + 1 - np.asarray(result["branch"]).shape[1])),
     )
     return result
+
+
+def _cache_state() -> GridFMState:
+    bus_features = np.zeros(
+        (2, len(BUS_FEATURE_COLUMNS)),
+        dtype=np.float32,
+    )
+    bus_features[:, BUS_FEATURE_COLUMNS.index("Vm")] = 1.0
+    bus_features[:, BUS_FEATURE_COLUMNS.index("min_vm_pu")] = 0.95
+    bus_features[:, BUS_FEATURE_COLUMNS.index("max_vm_pu")] = 1.05
+
+    branch_status = np.array([0.0, 1.0, 0.0], dtype=np.float32)
+    branch_features = np.zeros(
+        (3, len(BRANCH_FEATURE_COLUMNS)),
+        dtype=np.float32,
+    )
+    branch_features[
+        :,
+        BRANCH_FEATURE_COLUMNS.index("br_status"),
+    ] = branch_status
+
+    return GridFMState(
+        scenario_id=7,
+        load_scenario_idx=0.0,
+        bus_features=bus_features,
+        branch_features=branch_features,
+        edge_index=np.array(
+            [[0, 0, 1], [1, 1, 0]],
+            dtype=np.int64,
+        ),
+        branch_ids=np.array([2, 3, 5], dtype=np.int64),
+        branch_status=branch_status,
+        metrics={},
+        outaged_branch_ids=[5, 2],
+        bus_ids=np.array([10, 20], dtype=np.int64),
+    )
 
 
 def test_valid_input_and_result_satisfy_strict_contract() -> None:
@@ -327,7 +367,7 @@ def test_backend_rejects_non_physics_config() -> None:
 
 
 def test_backend_cache_key_includes_physics_fingerprint() -> None:
-    state = SimpleNamespace(scenario_id=7, outaged_branch_ids=[5, 2])
+    state = _cache_state()
     default_backend = GridFMPowerFlowBackend(
         adapter=object(),  # type: ignore[arg-type]
         physics_config=PhysicsConfig(),
@@ -340,9 +380,8 @@ def test_backend_cache_key_includes_physics_fingerprint() -> None:
     default_key = default_backend._make_cache_key_from_state(state, 3)
     custom_key = custom_backend._make_cache_key_from_state(state, 3)
 
-    assert default_key == (
-        7,
-        default_backend.physics_config.fingerprint(),
-        (2, 3, 5),
-    )
+    assert default_key[0] == default_backend.physics_config.fingerprint()
+    assert custom_key[0] == custom_backend.physics_config.fingerprint()
+    assert default_key[1:] == custom_key[1:]
+    assert default_key[2:] == (3, 0, (2, 3, 5))
     assert custom_key != default_key
