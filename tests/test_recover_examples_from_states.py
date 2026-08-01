@@ -38,6 +38,9 @@ def base_metadata() -> dict:
         "physical_objective_schema_version": (
             PHYSICAL_OBJECTIVE_SCHEMA_VERSION
         ),
+        "run_id": "run-1",
+        "iteration": 1,
+        "episode_id": "episode-1",
         "scenario_id": 1,
         "step": 0,
         "selected_action_id": 1,
@@ -101,6 +104,20 @@ def test_recovery_rejects_missing_terminal_evidence(
         recover_examples(tmp_path, gamma=0.9)
 
 
+def test_recovery_rejects_missing_episode_identity(
+    tmp_path: Path,
+) -> None:
+    metadata = solved_metadata()
+    metadata.pop("episode_id")
+    write_recovery_state(
+        tmp_path / "impact_teacher_scenario_000001_step_000.npz",
+        metadata,
+    )
+
+    with pytest.raises(ValueError, match="episode_id"):
+        recover_examples(tmp_path, gamma=0.9)
+
+
 def test_recovery_preserves_solved_outcome(
     tmp_path: Path,
 ) -> None:
@@ -118,6 +135,9 @@ def test_recovery_preserves_solved_outcome(
     assert bool(recovered.iloc[0]["solved"]) is True
     assert recovered.iloc[0]["termination_reason"] == "solved"
     assert recovered.iloc[0]["outcome_class"] == "solved"
+    assert recovered.iloc[0]["run_id"] == "run-1"
+    assert recovered.iloc[0]["iteration"] == 1
+    assert recovered.iloc[0]["episode_id"] == "episode-1"
     assert recovered.iloc[0][
         "outcome_value_target"
     ] == pytest.approx(0.9)

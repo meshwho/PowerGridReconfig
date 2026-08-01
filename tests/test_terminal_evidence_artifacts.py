@@ -249,3 +249,17 @@ def test_csv_and_state_evidence_mismatch_is_rejected(
         match="does not match state metadata",
     ):
         load_and_validate_examples_csv(examples_path)
+
+
+def test_csv_and_state_episode_identity_mismatch_is_rejected(
+    tmp_path: Path,
+) -> None:
+    examples_path, state_path = _write_episode(tmp_path)
+
+    def change_episode_id(metadata: dict[str, object]) -> None:
+        metadata["episode_id"] = "other-episode"
+
+    _rewrite_state_metadata(state_path, change_episode_id)
+
+    with pytest.raises(ValueError, match="episode_id"):
+        load_and_validate_examples_csv(examples_path)
