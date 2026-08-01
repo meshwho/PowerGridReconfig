@@ -77,7 +77,7 @@ def test_dataset_reads_strict_outcome_value_target(tmp_path):
             {
                 "state_path": str(state_path),
                 "mcts_policy_json": json.dumps({"0": 1.0}),
-                "outcome_value_target": 0.0,
+                "outcome_value_target": -0.95,
                 "scenario_id": 1,
                 "step": 0,
                 "state_id": "state_0",
@@ -99,4 +99,4 @@ def test_dataset_reads_strict_outcome_value_target(tmp_path):
         examples_csv=examples_csv,
         normalize_features=False,
     )[0]
-    assert float(sample["target_value"].item()) == pytest.approx(0.0)
+    assert float(sample["target_value"].item()) == pytest.approx(-0.95)

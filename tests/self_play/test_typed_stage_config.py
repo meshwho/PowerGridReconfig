@@ -39,7 +39,7 @@ def test_run_generate_uses_generation_request(
             rows.append(
                 {
                     "scenario_id": scenario_id,
-                    "outcome_value_target": 0.0,
+                    "outcome_value_target": -0.95,
                     "physical_objective_schema_version": (
                         PHYSICAL_OBJECTIVE_SCHEMA_VERSION
                     ),

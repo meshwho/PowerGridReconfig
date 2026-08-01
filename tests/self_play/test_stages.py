@@ -171,7 +171,7 @@ def _stage_rows(
     "reason, solved, expected",
     [
         ("solved", True, 0.95),
-        ("handoff_to_redispatch", False, 0.0),
+        ("handoff_to_redispatch", False, -0.95),
         ("max_steps_reached", False, -0.95),
     ],
 )
@@ -186,7 +186,7 @@ def test_ensure_outcome_value_targets_valid_terminal_cases(
     result = pd.read_csv(examples_csv)
     assert result.loc[1, "outcome_value_target"] == pytest.approx(expected)
     assert result.loc[0, "outcome_value_target"] == pytest.approx(
-        expected * 0.95 if expected else 0.0
+        expected * 0.95
     )
     from grid_topology_ai.self_play.example_validation import (
         validate_example_contract_versions,

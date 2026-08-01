@@ -89,7 +89,7 @@ def test_outcome_value_target_roundtrip_from_generator_to_dataset(tmp_path):
     assert sample_1["target_policy"].sum().item() == pytest.approx(1.0)
 
 
-def test_roundtrip_handoff_target_is_zero(tmp_path):
+def test_roundtrip_handoff_target_is_negative(tmp_path):
     state_0 = tmp_path / "state_0.npz"
     _write_fake_state(state_0)
     rows = [
@@ -112,7 +112,7 @@ def test_roundtrip_handoff_target_is_zero(tmp_path):
         examples_csv,
         normalize_features=False,
     )[0]
-    assert sample["target_value"].item() == pytest.approx(0.0)
+    assert sample["target_value"].item() == pytest.approx(-0.95)
     assert sample["target_policy"][0].item() == pytest.approx(1.0)
 
 

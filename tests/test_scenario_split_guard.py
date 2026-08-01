@@ -47,7 +47,7 @@ def _write_examples_csv(path, state_path, scenario_ids):
             {
                 "state_path": str(state_path),
                 "mcts_policy_json": json.dumps({"0": 1.0}),
-                "outcome_value_target": 0.0,
+                "outcome_value_target": -0.95,
                 "physical_objective_schema_version": PHYSICAL_OBJECTIVE_SCHEMA_VERSION,
                 "outcome_value_target_contract_version": OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
                 **_csv_provenance(),

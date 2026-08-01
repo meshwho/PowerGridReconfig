@@ -218,7 +218,7 @@ def test_graph_dataset_derives_edge_mask_only_from_branch_status(tmp_path: Path)
             _example_row(
                 state_path,
                 policy='{"1": 1.0}',
-                target=0.0,
+                target=-0.95,
                 solved=False,
                 termination_reason="handoff_to_redispatch",
                 outcome_class="handoff_to_redispatch",
@@ -258,7 +258,7 @@ def test_normalization_state_dict_returns_copies(tmp_path: Path):
             _example_row(
                 state_path,
                 policy='{"1": 1.0}',
-                target=0.0,
+                target=-0.95,
                 solved=False,
                 termination_reason="handoff_to_redispatch",
                 outcome_class="handoff_to_redispatch",
