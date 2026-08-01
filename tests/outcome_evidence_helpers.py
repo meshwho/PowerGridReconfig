@@ -109,3 +109,15 @@ def terminal_evidence_fields(
         ),
         "terminal_outcome_evidence_json": payload,
     }
+
+
+def terminal_evidence_metadata(
+    termination_reason: TerminationReason | str,
+) -> dict[str, object]:
+    evidence = terminal_evidence(termination_reason)
+    return {
+        "terminal_outcome_evidence_schema_version": (
+            TERMINAL_OUTCOME_EVIDENCE_SCHEMA_VERSION
+        ),
+        "terminal_outcome_evidence": evidence.to_dict(),
+    }
