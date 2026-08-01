@@ -4,13 +4,20 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from grid_topology_ai.config.physics import DEFAULT_PHYSICS_CONFIG, PhysicsConfig
+from grid_topology_ai.config.physics import (
+    DEFAULT_PHYSICS_CONFIG,
+    PhysicsConfig,
+)
 from grid_topology_ai.contracts import physics_provenance
 from grid_topology_ai.physical_objective import (
     PHYSICAL_OBJECTIVE_SCHEMA_VERSION,
 )
+from grid_topology_ai.termination import TerminationReason
 from scripts.self_play.recover_examples_from_states import (
     recover_examples,
+)
+from tests.outcome_evidence_helpers import (
+    terminal_evidence_metadata,
 )
 
 
@@ -40,6 +47,20 @@ def base_metadata() -> dict:
     }
 
 
+def solved_metadata() -> dict:
+    return {
+        **base_metadata(),
+        "episode_done": True,
+        "episode_solved": True,
+        "episode_termination_reason": (
+            TerminationReason.SOLVED.value
+        ),
+        **terminal_evidence_metadata(
+            TerminationReason.SOLVED
+        ),
+    }
+
+
 def test_recovery_rejects_missing_exact_outcome(
     tmp_path: Path,
 ) -> None:
@@ -55,7 +76,7 @@ def test_recovery_rejects_missing_exact_outcome(
         recover_examples(tmp_path, gamma=0.9)
 
 
-def test_recovery_preserves_solved_outcome(
+def test_recovery_rejects_missing_terminal_evidence(
     tmp_path: Path,
 ) -> None:
     metadata = base_metadata()
@@ -63,13 +84,29 @@ def test_recovery_preserves_solved_outcome(
         {
             "episode_done": True,
             "episode_solved": True,
-            "episode_termination_reason": "solved",
+            "episode_termination_reason": (
+                TerminationReason.SOLVED.value
+            ),
         }
     )
-
     write_recovery_state(
         tmp_path / "impact_teacher_scenario_000001_step_000.npz",
         metadata,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="terminal outcome evidence",
+    ):
+        recover_examples(tmp_path, gamma=0.9)
+
+
+def test_recovery_preserves_solved_outcome(
+    tmp_path: Path,
+) -> None:
+    write_recovery_state(
+        tmp_path / "impact_teacher_scenario_000001_step_000.npz",
+        solved_metadata(),
     )
 
     recovered = recover_examples(
@@ -81,19 +118,21 @@ def test_recovery_preserves_solved_outcome(
     assert bool(recovered.iloc[0]["solved"]) is True
     assert recovered.iloc[0]["termination_reason"] == "solved"
     assert recovered.iloc[0]["outcome_class"] == "solved"
-    assert recovered.iloc[0]["outcome_value_target"] == pytest.approx(0.9)
-    assert recovered.iloc[0]["physics_config_fingerprint"] == (
-        DEFAULT_PHYSICS_CONFIG.fingerprint()
-    )
+    assert recovered.iloc[0][
+        "outcome_value_target"
+    ] == pytest.approx(0.9)
+    assert recovered.iloc[0][
+        "physics_config_fingerprint"
+    ] == DEFAULT_PHYSICS_CONFIG.fingerprint()
+    assert recovered.iloc[0][
+        "terminal_outcome_evidence_json"
+    ]
 
 
-def test_recovery_rejects_mixed_physics_configs(tmp_path: Path) -> None:
-    first = base_metadata()
-    first.update(
-        episode_done=True,
-        episode_solved=True,
-        episode_termination_reason="solved",
-    )
+def test_recovery_rejects_mixed_physics_configs(
+    tmp_path: Path,
+) -> None:
+    first = solved_metadata()
     second = {
         **first,
         **physics_provenance(
@@ -113,5 +152,8 @@ def test_recovery_rejects_mixed_physics_configs(tmp_path: Path) -> None:
         second,
     )
 
-    with pytest.raises(ValueError, match="PhysicsConfig mismatch"):
+    with pytest.raises(
+        ValueError,
+        match="PhysicsConfig mismatch",
+    ):
         recover_examples(tmp_path, gamma=0.9)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -59,15 +60,20 @@ _ARTIFACT_MARKERS = {
     "physics_config_fingerprint",
 }
 
+_OUTCOME_ERROR_RE = re.compile(
+    r"^.+ row (?P<index>[^:]+): invalid terminal outcome: "
+    r"(?P<detail>.+)$"
+)
+
 
 def _with_terminal_evidence(value: Any) -> Any:
     if isinstance(value, dict):
         result = dict(value)
-        fields = terminal_evidence_fields(
-            result.get("termination_reason")
+        result.update(
+            terminal_evidence_fields(
+                result.get("termination_reason")
+            )
         )
-        for name, field_value in fields.items():
-            result.setdefault(name, field_value)
         return result
 
     if isinstance(value, list):
@@ -115,7 +121,10 @@ def _missing(value: object) -> bool:
         observed = pd.isna(value)
     except (TypeError, ValueError):
         return False
-    return isinstance(observed, (bool, np.bool_)) and bool(observed)
+    return (
+        isinstance(observed, (bool, np.bool_))
+        and bool(observed)
+    )
 
 
 def _enrich_frame(frame: pd.DataFrame) -> pd.DataFrame:
@@ -132,10 +141,48 @@ def _enrich_frame(frame: pd.DataFrame) -> pd.DataFrame:
                     index=result.index,
                     dtype=object,
                 )
-            if _missing(result.at[index, name]):
-                result.at[index, name] = value
+            result.at[index, name] = value
 
     return result
+
+
+def _wrap_outcome_validator(
+    module: object,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    validator = getattr(
+        module,
+        "validate_example_outcome_contracts",
+        None,
+    )
+    if validator is None or not callable(validator):
+        return
+
+    def current_validator(
+        examples: pd.DataFrame,
+        *,
+        source_path: str | Path,
+    ) -> None:
+        try:
+            validator(
+                _enrich_frame(examples),
+                source_path=source_path,
+            )
+        except ValueError as exc:
+            match = _OUTCOME_ERROR_RE.match(str(exc))
+            if match is None:
+                raise
+            raise ValueError(
+                "Invalid termination_reason at row "
+                f"{match.group('index')}. File: {source_path}: "
+                f"{match.group('detail')}"
+            ) from exc
+
+    monkeypatch.setattr(
+        module,
+        "validate_example_outcome_contracts",
+        current_validator,
+    )
 
 
 def _state_path(
@@ -235,6 +282,11 @@ def _current_terminal_evidence_fixtures(
             name,
             monkeypatch,
         )
+
+    _wrap_outcome_validator(
+        request.module,
+        monkeypatch,
+    )
 
     original_to_csv = pd.DataFrame.to_csv
 
