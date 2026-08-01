@@ -10,7 +10,7 @@ import pandas as pd
 from grid_topology_ai.power_flow_errors import InvalidPhysicalState
 
 
-STATE_FEATURE_SCHEMA_VERSION = 2
+STATE_FEATURE_SCHEMA_VERSION = 3
 EDGE_INDEX_SEMANTICS = "contiguous_bus_positions"
 BUS_ID_SEMANTICS = "original_bus_ids"
 
@@ -39,6 +39,12 @@ BUS_FEATURE_COLUMNS = [
     "gen_p_up_margin_mw",
     "gen_q_down_margin_mvar",
     "gen_q_up_margin_mvar",
+    "gen_min_p_down_margin_mw",
+    "gen_min_p_up_margin_mw",
+    "gen_min_q_down_margin_mvar",
+    "gen_min_q_up_margin_mvar",
+    "gen_p_limit_violation_count",
+    "gen_q_limit_violation_count",
 ]
 
 BRANCH_FEATURE_COLUMNS = [
@@ -71,6 +77,12 @@ _GENERATOR_FEATURE_COLUMNS = [
     "gen_p_up_margin_mw",
     "gen_q_down_margin_mvar",
     "gen_q_up_margin_mvar",
+    "gen_min_p_down_margin_mw",
+    "gen_min_p_up_margin_mw",
+    "gen_min_q_down_margin_mvar",
+    "gen_min_q_up_margin_mvar",
+    "gen_p_limit_violation_count",
+    "gen_q_limit_violation_count",
 ]
 
 
@@ -106,7 +118,7 @@ def with_bus_generator_features(
     bus_df: pd.DataFrame,
     gen_df: pd.DataFrame,
 ) -> pd.DataFrame:
-    """Return bus rows with active-generator limits and operating margins."""
+    """Return bus rows with aggregate and worst individual generator margins."""
 
     required_bus_columns = {"bus", "min_vm_pu", "max_vm_pu"}
     required_gen_columns = {
@@ -149,7 +161,7 @@ def with_bus_generator_features(
             "Generator in_service must contain only 0 or 1."
         )
 
-    active = gen_df.loc[status > 0.0]
+    active = gen_df.loc[status > 0.0].copy()
     if active.empty:
         return result
 
@@ -167,6 +179,23 @@ def with_bus_generator_features(
             "Active generator limits and outputs must be finite."
         )
 
+    active["p_down_margin_mw"] = active["p_mw"] - active["min_p_mw"]
+    active["p_up_margin_mw"] = active["max_p_mw"] - active["p_mw"]
+    active["q_down_margin_mvar"] = (
+        active["q_mvar"] - active["min_q_mvar"]
+    )
+    active["q_up_margin_mvar"] = (
+        active["max_q_mvar"] - active["q_mvar"]
+    )
+    active["p_limit_violated"] = (
+        (active["p_down_margin_mw"] < 0.0)
+        | (active["p_up_margin_mw"] < 0.0)
+    ).astype(np.float64)
+    active["q_limit_violated"] = (
+        (active["q_down_margin_mvar"] < 0.0)
+        | (active["q_up_margin_mvar"] < 0.0)
+    ).astype(np.float64)
+
     grouped = active.groupby("bus", sort=False).agg(
         Pg=("p_mw", "sum"),
         Qg=("q_mvar", "sum"),
@@ -175,6 +204,12 @@ def with_bus_generator_features(
         gen_p_max_mw=("max_p_mw", "sum"),
         gen_q_min_mvar=("min_q_mvar", "sum"),
         gen_q_max_mvar=("max_q_mvar", "sum"),
+        gen_min_p_down_margin_mw=("p_down_margin_mw", "min"),
+        gen_min_p_up_margin_mw=("p_up_margin_mw", "min"),
+        gen_min_q_down_margin_mvar=("q_down_margin_mvar", "min"),
+        gen_min_q_up_margin_mvar=("q_up_margin_mvar", "min"),
+        gen_p_limit_violation_count=("p_limit_violated", "sum"),
+        gen_q_limit_violation_count=("q_limit_violated", "sum"),
     )
 
     mapped_columns = [
@@ -185,6 +220,12 @@ def with_bus_generator_features(
         "gen_p_max_mw",
         "gen_q_min_mvar",
         "gen_q_max_mvar",
+        "gen_min_p_down_margin_mw",
+        "gen_min_p_up_margin_mw",
+        "gen_min_q_down_margin_mvar",
+        "gen_min_q_up_margin_mvar",
+        "gen_p_limit_violation_count",
+        "gen_q_limit_violation_count",
     ]
     bus_ids = result["bus"]
 
@@ -213,7 +254,7 @@ def with_bus_generator_features(
 def with_branch_rating_features(
     branch_df: pd.DataFrame,
 ) -> pd.DataFrame:
-    """Add the explicit unlimited-rating flag used by schema v2."""
+    """Add the explicit unlimited-rating flag used by the current schema."""
 
     if "rate_a" not in branch_df.columns:
         raise InvalidPhysicalState(
