@@ -12,8 +12,12 @@ from grid_topology_ai.contracts import (
     OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
     physics_provenance,
 )
+from grid_topology_ai.outcome_contract import (
+    TERMINAL_OUTCOME_EVIDENCE_SCHEMA_VERSION,
+)
 from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
 from grid_topology_ai.self_play.examples import ExampleWriter, SelfPlayExample
+from tests.outcome_evidence_helpers import terminal_evidence
 from tests.topology_contract_helpers import (
     TEST_ACTION_SPACE_CONFIG,
     topology_csv_fields,
@@ -64,8 +68,46 @@ def test_example_writer_rejects_off_policy_selected_action(
             solved=True,
             done=True,
             termination_reason="solved",
+            terminal_outcome_evidence=terminal_evidence("solved"),
             visit_counts={1: 3},
             mcts_policy={1: 1.0},
+        )
+
+
+def test_example_writer_rejects_mismatched_terminal_evidence(
+    tmp_path: Path,
+) -> None:
+    writer = ExampleWriter(
+        tmp_path,
+        physics_config=DEFAULT_PHYSICS_CONFIG,
+        action_space_config=TEST_ACTION_SPACE_CONFIG,
+    )
+    writer.state_store = SimpleNamespace(
+        save_state=lambda **kwargs: pytest.fail(
+            "state must not be written for invalid evidence"
+        )
+    )
+
+    with pytest.raises(ValueError, match="contradicts"):
+        writer.add_example(
+            state=SimpleNamespace(branch_ids=[3, 4]),
+            state_id="state-1",
+            action_mask=[True, True, True],
+            scenario_id=1,
+            step=0,
+            selected_action_id=0,
+            selected_branch_id=None,
+            step_reward=0.0,
+            final_return=0.0,
+            discounted_return_from_step=0.0,
+            solved=True,
+            done=True,
+            termination_reason="solved",
+            terminal_outcome_evidence=terminal_evidence(
+                "max_steps_reached"
+            ),
+            visit_counts={0: 3},
+            mcts_policy={0: 1.0},
         )
 
 
@@ -77,6 +119,7 @@ def test_example_writer_save_preserves_csv_schema(tmp_path: Path) -> None:
     )
     provenance = physics_provenance(DEFAULT_PHYSICS_CONFIG)
     action_provenance = topology_csv_fields((3, 4))
+    evidence = terminal_evidence("solved")
     writer.examples.append(
         SelfPlayExample(
             state_id="state-1",
@@ -91,7 +134,13 @@ def test_example_writer_save_preserves_csv_schema(tmp_path: Path) -> None:
             solved=True,
             done=True,
             termination_reason="solved",
-            physical_objective_schema_version=PHYSICAL_OBJECTIVE_SCHEMA_VERSION,
+            terminal_outcome_evidence_schema_version=(
+                TERMINAL_OUTCOME_EVIDENCE_SCHEMA_VERSION
+            ),
+            terminal_outcome_evidence_json=evidence.to_json(),
+            physical_objective_schema_version=(
+                PHYSICAL_OBJECTIVE_SCHEMA_VERSION
+            ),
             outcome_value_target_contract_version=(
                 OUTCOME_VALUE_TARGET_CONTRACT_VERSION
             ),
@@ -122,9 +171,7 @@ def test_example_writer_save_preserves_csv_schema(tmp_path: Path) -> None:
                 ]
             ),
             topology_action_config=str(
-                action_provenance[
-                    "topology_action_config"
-                ]
+                action_provenance["topology_action_config"]
             ),
             topology_action_config_fingerprint=str(
                 action_provenance[
@@ -135,9 +182,7 @@ def test_example_writer_save_preserves_csv_schema(tmp_path: Path) -> None:
                 action_provenance["action_layout"]
             ),
             action_layout_fingerprint=str(
-                action_provenance[
-                    "action_layout_fingerprint"
-                ]
+                action_provenance["action_layout_fingerprint"]
             ),
             physics_config=json.dumps(
                 provenance["physics_config"],
@@ -167,6 +212,8 @@ def test_example_writer_save_preserves_csv_schema(tmp_path: Path) -> None:
         "solved",
         "done",
         "termination_reason",
+        "terminal_outcome_evidence_schema_version",
+        "terminal_outcome_evidence_json",
         "physical_objective_schema_version",
         "outcome_value_target_contract_version",
         "state_feature_schema_version",

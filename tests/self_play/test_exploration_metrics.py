@@ -14,6 +14,8 @@ from grid_topology_ai.self_play.generation import _policy_entropy
 from grid_topology_ai.self_play.iteration import (
     _self_play_exploration_metrics,
 )
+from tests.outcome_evidence_helpers import terminal_evidence
+from tests.topology_contract_helpers import TEST_ACTION_SPACE_CONFIG
 
 
 def _exploration_rows() -> pd.DataFrame:
@@ -46,37 +48,23 @@ def _exploration_rows() -> pd.DataFrame:
 
 
 def test_policy_entropy_is_zero_for_one_hot_policy() -> None:
-    entropy, normalized = _policy_entropy(
-        {1: 1.0}
-    )
-
+    entropy, normalized = _policy_entropy({1: 1.0})
     assert entropy == pytest.approx(0.0)
     assert normalized == pytest.approx(0.0)
 
 
 def test_policy_entropy_is_one_when_uniform_and_normalized() -> None:
     entropy, normalized = _policy_entropy(
-        {
-            1: 0.25,
-            2: 0.25,
-            3: 0.25,
-            4: 0.25,
-        }
+        {1: 0.25, 2: 0.25, 3: 0.25, 4: 0.25}
     )
-
     assert entropy == pytest.approx(math.log(4.0))
     assert normalized == pytest.approx(1.0)
 
 
 def test_policy_entropy_uses_positive_probability_support() -> None:
     entropy, normalized = _policy_entropy(
-        {
-            1: 0.5,
-            2: 0.5,
-            3: 0.0,
-        }
+        {1: 0.5, 2: 0.5, 3: 0.0}
     )
-
     assert entropy == pytest.approx(math.log(2.0))
     assert normalized == pytest.approx(1.0)
 
@@ -87,13 +75,14 @@ def test_example_writer_saves_exploration_diagnostics(
     writer = ExampleWriter(
         tmp_path,
         physics_config=DEFAULT_PHYSICS_CONFIG,
+        action_space_config=TEST_ACTION_SPACE_CONFIG,
     )
     writer.state_store = SimpleNamespace(
         save_state=lambda **kwargs: tmp_path / "states" / "state-1.npz"
     )
 
     writer.add_example(
-        state=object(),  # type: ignore[arg-type]
+        state=SimpleNamespace(branch_ids=[4]),
         state_id="state-1",
         action_mask=[True, True],
         scenario_id=1,
@@ -106,6 +95,7 @@ def test_example_writer_saves_exploration_diagnostics(
         solved=True,
         done=True,
         termination_reason="solved",
+        terminal_outcome_evidence=terminal_evidence("solved"),
         visit_counts={1: 10},
         mcts_policy={1: 1.0},
         selection_temperature=0.75,
@@ -129,13 +119,13 @@ def test_example_writer_saves_exploration_diagnostics(
     assert row["mcts_visited_action_count"] == 3
     assert row["mcts_action_coverage"] == pytest.approx(0.5)
     assert row["mcts_visited_action_coverage"] == pytest.approx(0.3)
+    assert row["terminal_outcome_evidence_json"] == terminal_evidence(
+        "solved"
+    ).to_json()
 
 
 def test_exploration_metrics_aggregate_generated_steps() -> None:
-    metrics = _self_play_exploration_metrics(
-        _exploration_rows()
-    )
-
+    metrics = _self_play_exploration_metrics(_exploration_rows())
     assert metrics["steps"] == 2
     assert metrics["sampled_steps"] == 1
     assert metrics["sample_fraction"] == pytest.approx(0.5)
@@ -167,17 +157,12 @@ def test_exploration_metrics_reject_missing_columns() -> None:
         match="missing exploration diagnostic columns",
     ):
         _self_play_exploration_metrics(
-            pd.DataFrame(
-                [{"selection_mode": "sample"}]
-            )
+            pd.DataFrame([{"selection_mode": "sample"}])
         )
 
 
 def test_exploration_metrics_reject_empty_dataframe() -> None:
-    with pytest.raises(
-        ValueError,
-        match="empty dataframe",
-    ):
+    with pytest.raises(ValueError, match="empty dataframe"):
         _self_play_exploration_metrics(
             _exploration_rows().iloc[0:0]
         )
@@ -187,10 +172,7 @@ def test_exploration_metrics_reject_non_finite_values() -> None:
     examples = _exploration_rows()
     examples.loc[0, "mcts_action_coverage"] = np.nan
 
-    with pytest.raises(
-        ValueError,
-        match="must be finite",
-    ):
+    with pytest.raises(ValueError, match="must be finite"):
         _self_play_exploration_metrics(examples)
 
 
