@@ -12,6 +12,9 @@ from grid_topology_ai.outcome_contract import (
     TERMINAL_OUTCOME_EVIDENCE_SCHEMA_VERSION,
     TerminalOutcomeEvidence,
 )
+from grid_topology_ai.outcome_record import (
+    parse_terminal_outcome_fields,
+)
 from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
 from grid_topology_ai.return_contract import (
     VALUE_TARGET_MODE,
@@ -19,16 +22,14 @@ from grid_topology_ai.return_contract import (
     require_discount_factor,
     terminal_utility_from_outcome,
 )
-from grid_topology_ai.termination import (
-    TerminationReason,
-    parse_termination_reason,
-    validate_outcome_invariants,
-)
+from grid_topology_ai.termination import TerminationReason
 
 
 def _require_bool(value: object, *, field: str) -> bool:
     if not isinstance(value, (bool, np.bool_)):
-        raise ValueError(f"{field} must be a boolean, got {value!r}")
+        raise ValueError(
+            f"{field} must be a boolean, got {value!r}"
+        )
     return bool(value)
 
 
@@ -58,6 +59,16 @@ def terminal_evidence_from_row(
 ) -> TerminalOutcomeEvidence:
     """Parse and validate terminal evidence stored on one example row."""
 
+    try:
+        solved, reason = parse_terminal_outcome_fields(
+            solved=row.get("solved"),
+            termination_reason=row.get("termination_reason"),
+        )
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"{context}: invalid terminal outcome: {exc}"
+        ) from exc
+
     version = row.get("terminal_outcome_evidence_schema_version")
     if (
         isinstance(version, (bool, np.bool_))
@@ -77,21 +88,6 @@ def terminal_evidence_from_row(
     except (TypeError, ValueError) as exc:
         raise ValueError(
             f"{context}: invalid terminal outcome evidence: {exc}"
-        ) from exc
-
-    solved = _require_bool(row.get("solved"), field="solved")
-    try:
-        reason = parse_termination_reason(
-            row.get("termination_reason"),
-            allow_none=False,
-        )
-        validate_outcome_invariants(
-            solved=solved,
-            termination_reason=reason,
-        )
-    except (TypeError, ValueError) as exc:
-        raise ValueError(
-            f"{context}: invalid terminal outcome: {exc}"
         ) from exc
 
     if (
