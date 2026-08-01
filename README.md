@@ -74,10 +74,10 @@ be classified or searched.
 
 ## State feature schema
 
-Graph states use the versioned state feature schema `v2`. The schema is shared
+Graph states use the versioned state feature schema `v3`. The schema is shared
 by initial states and states reconstructed from PYPOWER results.
 
-Bus features contain 24 ordered columns:
+Bus features contain 30 ordered columns:
 
 ```text
 Pd
@@ -104,12 +104,25 @@ gen_p_down_margin_mw
 gen_p_up_margin_mw
 gen_q_down_margin_mvar
 gen_q_up_margin_mvar
+gen_min_p_down_margin_mw
+gen_min_p_up_margin_mw
+gen_min_q_down_margin_mvar
+gen_min_q_up_margin_mvar
+gen_p_limit_violation_count
+gen_q_limit_violation_count
 ```
 
-Generator values and limits are aggregated by bus using active generators only.
-Offline generators do not contribute to generation, availability, limits, or
-headroom. Negative margins are preserved because they represent an actual
-limit violation rather than missing data.
+Generator outputs and limits are aggregated by bus using active generators
+only. Offline generators do not contribute to generation, availability,
+limits, headroom, worst-unit margins, or violation counts.
+
+The aggregate directional margins describe the combined generation range at a
+bus. The `gen_min_*` columns preserve the worst directional margin of any
+active generator on that bus, preventing one unit's spare capacity from hiding
+another unit's limit violation. The P/Q violation counts record how many active
+generators are outside their raw configured limits. Negative margins are
+preserved because they represent an actual limit violation rather than missing
+data.
 
 Branch features contain 16 ordered columns:
 
@@ -156,7 +169,7 @@ The current exact contract versions are:
 | --- | ---: |
 | physical objective | `3` |
 | outcome/value target | `4` |
-| state feature schema | `2` |
+| state feature schema | `3` |
 | evaluation metrics | `6` |
 | checkpoint | `7` |
 | replay buffer schema | `6` |
@@ -177,7 +190,7 @@ space. Consumers fail closed on missing, old, reordered, or mismatched
 provenance.
 
 Artifacts produced under former solved semantics, before topology-action
-provenance, or before state feature schema `v2` are scientifically
+provenance, or before state feature schema `v3` are scientifically
 incompatible. They are never relabeled or upgraded in place. Regenerate states,
 self-play examples, replay, and checkpoints in this order:
 
@@ -363,7 +376,8 @@ Before the first real run, prepare:
 
 Bootstrap evaluation metrics must be computed with the same `PF_ALG` configured
 for generation and evaluation. The bootstrap checkpoint must also match the
-configured topology-action fingerprint and ordered action layout.
+current state-feature schema, configured topology-action fingerprint, and
+ordered action layout.
 
 ## Testing and CI
 

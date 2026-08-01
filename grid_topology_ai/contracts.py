@@ -126,7 +126,10 @@ def require_state_feature_schema_provenance(
     ):
         raw_columns = payload.get(field)
         if raw_columns is None:
-            continue
+            raise ValueError(
+                f"Incomplete state-feature schema provenance for {source}: "
+                f"missing {field}."
+            )
         parsed_columns = _json_value(
             raw_columns,
             name=field,

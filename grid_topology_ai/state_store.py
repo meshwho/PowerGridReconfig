@@ -67,7 +67,8 @@ class GridFMStateStore:
     def _validated_bus_ids(state: GridFMState) -> np.ndarray:
         if state.bus_ids is None:
             raise ValueError(
-                "GridFMState.bus_ids is required when saving schema-v2 states."
+                "GridFMState.bus_ids is required when saving "
+                "versioned graph states."
             )
 
         try:

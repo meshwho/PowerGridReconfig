@@ -10,7 +10,11 @@ import pandas as pd
 import pytest
 import torch
 
-from grid_topology_ai.state_schema import state_feature_schema_provenance
+from grid_topology_ai.state_schema import (
+    BRANCH_FEATURE_COLUMNS,
+    BUS_FEATURE_COLUMNS,
+    state_feature_schema_provenance,
+)
 
 
 _SCHEMA_FIXTURE_FILES = {
@@ -156,6 +160,20 @@ def _enrich_frame(frame: pd.DataFrame) -> pd.DataFrame:
     return result
 
 
+def _pad_feature_columns(
+    matrix: np.ndarray,
+    *,
+    expected_columns: int,
+) -> np.ndarray:
+    if matrix.ndim != 2 or matrix.shape[1] >= expected_columns:
+        return matrix
+    return np.pad(
+        matrix,
+        ((0, 0), (0, expected_columns - matrix.shape[1])),
+        mode="constant",
+    )
+
+
 def _enrich_state_arrays(arrays: Mapping[str, object]) -> dict[str, object]:
     result = dict(arrays)
     bus_features = result.get("bus_features")
@@ -164,12 +182,42 @@ def _enrich_state_arrays(arrays: Mapping[str, object]) -> dict[str, object]:
     if bus_features is None or metadata_json is None:
         return result
 
-    bus_matrix = np.asarray(bus_features)
+    bus_matrix = _pad_feature_columns(
+        np.asarray(bus_features),
+        expected_columns=len(BUS_FEATURE_COLUMNS),
+    )
+    result["bus_features"] = bus_matrix
     if bus_matrix.ndim >= 1:
         result.setdefault(
             "bus_ids",
             np.arange(int(bus_matrix.shape[0]), dtype=np.int64),
         )
+
+    branch_features = result.get("branch_features")
+    if branch_features is not None:
+        branch_matrix = _pad_feature_columns(
+            np.asarray(branch_features),
+            expected_columns=len(BRANCH_FEATURE_COLUMNS),
+        )
+        result["branch_features"] = branch_matrix
+
+        if branch_matrix.ndim == 2:
+            num_branches = int(branch_matrix.shape[0])
+            result.setdefault(
+                "branch_ids",
+                np.arange(num_branches, dtype=np.int64),
+            )
+            result.setdefault(
+                "branch_status",
+                np.ones(num_branches, dtype=np.float32),
+            )
+
+            status = np.asarray(result["branch_status"], dtype=np.float32)
+            if status.shape == (num_branches,):
+                branch_matrix = branch_matrix.copy()
+                status_column = BRANCH_FEATURE_COLUMNS.index("br_status")
+                branch_matrix[:, status_column] = status
+                result["branch_features"] = branch_matrix
 
     raw_metadata = np.asarray(metadata_json)
     if raw_metadata.size != 1:

@@ -17,6 +17,9 @@ from grid_topology_ai.contracts import (
     require_topology_action_provenance,
 )
 from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
+from grid_topology_ai.state_artifact_schema import (
+    validate_state_npz_schema_arrays,
+)
 from grid_topology_ai.termination import (
     parse_termination_reason,
     validate_outcome_invariants,
@@ -48,6 +51,12 @@ REQUIRED_EXAMPLE_COLUMNS: tuple[str, ...] = (
     "step",
     "state_id",
     "physical_objective_schema_version",
+    "state_feature_schema_version",
+    "state_feature_schema_fingerprint",
+    "bus_feature_columns",
+    "branch_feature_columns",
+    "edge_index_semantics",
+    "bus_id_semantics",
     "physics_config_contract_version",
     "topology_action_contract_version",
     "topology_action_config",
@@ -58,7 +67,13 @@ REQUIRED_EXAMPLE_COLUMNS: tuple[str, ...] = (
     "physics_config_fingerprint",
 ) + REQUIRED_OUTCOME_COLUMNS
 
-_REQUIRED_STATE_ARRAYS = ("bus_features", "branch_features", "edge_index", "action_mask", "branch_ids")
+_REQUIRED_STATE_ARRAYS = (
+    "bus_features",
+    "branch_features",
+    "edge_index",
+    "action_mask",
+    "branch_ids",
+)
 
 
 class _GraphDimensions(NamedTuple):
@@ -79,6 +94,7 @@ def load_and_validate_examples_csv(path: str | Path) -> pd.DataFrame:
         raise ValueError(f"Examples CSV has no readable columns: {path}") from exc
     validate_examples_dataframe(examples, source_path=path)
     return examples
+
 
 def validate_example_topology_action_contracts(
     examples: pd.DataFrame,
@@ -116,13 +132,20 @@ def validate_example_topology_action_contracts(
 
     return observed_config, observed_layout
 
-def validate_examples_dataframe(examples: pd.DataFrame, *, source_path: str | Path) -> None:
+
+def validate_examples_dataframe(
+    examples: pd.DataFrame,
+    *,
+    source_path: str | Path,
+) -> None:
     source = Path(source_path)
     if len(examples.columns) == 0:
         raise ValueError(f"Examples CSV has no readable columns: {source}")
     missing = sorted(set(REQUIRED_EXAMPLE_COLUMNS) - set(examples.columns))
     if missing:
-        raise ValueError(f"Examples CSV is missing required columns: {missing}. File: {source}")
+        raise ValueError(
+            f"Examples CSV is missing required columns: {missing}. File: {source}"
+        )
     if examples.empty:
         raise ValueError(f"Examples CSV is empty: {source}")
 
@@ -142,7 +165,10 @@ def validate_examples_dataframe(examples: pd.DataFrame, *, source_path: str | Pa
     for column in REQUIRED_EXAMPLE_COLUMNS:
         for index, value in examples[column].items():
             if _is_missing_required_value(value):
-                raise ValueError(f"Missing required value in column '{column}' at row {index}. File: {source}")
+                raise ValueError(
+                    f"Missing required value in column '{column}' at row "
+                    f"{index}. File: {source}"
+                )
 
     # Outcome validation is deliberately independent per training row: a
     # scenario can legitimately appear in multiple replay iterations.
@@ -151,41 +177,83 @@ def validate_examples_dataframe(examples: pd.DataFrame, *, source_path: str | Pa
     state_ids = examples["state_id"].map(lambda value: str(value).strip())
     duplicated = state_ids[state_ids.duplicated()]
     if not duplicated.empty:
-        raise ValueError(f"Duplicate state_id '{duplicated.iloc[0]}' in examples CSV. File: {source}")
+        raise ValueError(
+            f"Duplicate state_id '{duplicated.iloc[0]}' in examples CSV. "
+            f"File: {source}"
+        )
 
     expected: _GraphDimensions | None = None
     for index, row in examples.iterrows():
-        scenario_id = _require_integer(row["scenario_id"], column="scenario_id", index=index, source=source)
-        step = _require_integer(row["step"], column="step", index=index, source=source)
+        scenario_id = _require_integer(
+            row["scenario_id"],
+            column="scenario_id",
+            index=index,
+            source=source,
+        )
+        step = _require_integer(
+            row["step"],
+            column="step",
+            index=index,
+            source=source,
+        )
         if step < 0:
             raise ValueError(f"step must be >= 0 at row {index}. File: {source}")
         _ = scenario_id
-        policy = _parse_policy(row["mcts_policy_json"], index=index, source=source)
+        policy = _parse_policy(
+            row["mcts_policy_json"],
+            index=index,
+            source=source,
+        )
         state_path = Path(str(row["state_path"]).strip())
         if not state_path.exists():
-            raise FileNotFoundError(f"State file not found: {state_path}. File: {source}")
+            raise FileNotFoundError(
+                f"State file not found: {state_path}. File: {source}"
+            )
         if not state_path.is_file():
-            raise ValueError(f"State path is not a file: {state_path}. File: {source}")
+            raise ValueError(
+                f"State path is not a file: {state_path}. File: {source}"
+            )
         dims, action_mask = _validate_npz_state(
             state_path,
             expected_physics_config=physics_config,
-            expected_action_space_config=(
-                action_space_config
-            ),
+            expected_action_space_config=action_space_config,
             expected_action_layout=action_layout,
         )
         if expected is None:
             expected = dims
         elif dims != expected:
-            raise ValueError(f"Graph dimensions mismatch for {state_path}. Expected {expected._asdict()}, observed {dims._asdict()}.")
-        _validate_policy_against_mask(policy, action_mask=action_mask, index=index, source=source)
-        if "selected_action_id" in examples.columns and not _is_missing_required_value(row["selected_action_id"]):
-            selected = _require_integer(row["selected_action_id"], column="selected_action_id", index=index, source=source)
-            # The selected action is validated only against the environment action mask.
-            # A continuation/safety gate may execute an action absent from the MCTS
-            # policy target, so policy-support membership is intentionally not checked.
-            if selected < 0 or selected >= len(action_mask) or not bool(action_mask[selected]):
-                raise ValueError(f"selected_action_id {selected} is invalid for action_mask at row {index}. File: {source}")
+            raise ValueError(
+                f"Graph dimensions mismatch for {state_path}. Expected "
+                f"{expected._asdict()}, observed {dims._asdict()}."
+            )
+        _validate_policy_against_mask(
+            policy,
+            action_mask=action_mask,
+            index=index,
+            source=source,
+        )
+        if (
+            "selected_action_id" in examples.columns
+            and not _is_missing_required_value(row["selected_action_id"])
+        ):
+            selected = _require_integer(
+                row["selected_action_id"],
+                column="selected_action_id",
+                index=index,
+                source=source,
+            )
+            # The selected action is validated only against the environment
+            # action mask. A continuation/safety gate may execute an action
+            # absent from the MCTS policy target.
+            if (
+                selected < 0
+                or selected >= len(action_mask)
+                or not bool(action_mask[selected])
+            ):
+                raise ValueError(
+                    f"selected_action_id {selected} is invalid for action_mask "
+                    f"at row {index}. File: {source}"
+                )
 
 
 def validate_example_contract_versions(
@@ -232,14 +300,18 @@ def validate_example_contract_versions(
 
 
 def validate_example_outcome_contracts(
-    examples: pd.DataFrame, *, source_path: str | Path
+    examples: pd.DataFrame,
+    *,
+    source_path: str | Path,
 ) -> None:
     """Validate the strict, terminal outcome contract of each training row."""
+
     source = Path(source_path)
     missing = sorted(set(REQUIRED_OUTCOME_COLUMNS) - set(examples.columns))
     if missing:
         raise ValueError(
-            f"Examples CSV is missing required outcome columns: {missing}. File: {source}"
+            f"Examples CSV is missing required outcome columns: {missing}. "
+            f"File: {source}"
         )
     for index, row in examples.iterrows():
         for column in REQUIRED_OUTCOME_COLUMNS:
@@ -253,7 +325,9 @@ def validate_example_outcome_contracts(
             expected=OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
             name="outcome/value-target contract",
             source=f"{source} row {index}",
-            regeneration_command=("python -m scripts" ".self_play.generate ..."),
+            regeneration_command=(
+                "python -m scripts" ".self_play.generate ..."
+            ),
         )
         _validate_outcome_contract(row, index=index, source=source)
 
@@ -269,21 +343,44 @@ def _is_missing_required_value(value: Any) -> bool:
         return False
 
 
-def _require_integer(value: Any, *, column: str, index: Any, source: Path) -> int:
+def _require_integer(
+    value: Any,
+    *,
+    column: str,
+    index: Any,
+    source: Path,
+) -> int:
     if isinstance(value, (bool, np.bool_)):
-        raise ValueError(f"{column} must be finite integer-valued at row {index}. File: {source}")
+        raise ValueError(
+            f"{column} must be finite integer-valued at row {index}. "
+            f"File: {source}"
+        )
     number = pd.to_numeric(pd.Series([value]), errors="coerce").iloc[0]
-    if pd.isna(number) or not math.isfinite(float(number)) or not float(number).is_integer():
-        raise ValueError(f"{column} must be finite integer-valued at row {index}. File: {source}")
+    if (
+        pd.isna(number)
+        or not math.isfinite(float(number))
+        or not float(number).is_integer()
+    ):
+        raise ValueError(
+            f"{column} must be finite integer-valued at row {index}. "
+            f"File: {source}"
+        )
     return int(number)
 
 
-def _require_bool(value: Any, *, column: str, index: Any, source: Path) -> bool:
+def _require_bool(
+    value: Any,
+    *,
+    column: str,
+    index: Any,
+    source: Path,
+) -> bool:
     if isinstance(value, (bool, np.bool_)):
         return bool(value)
     raise ValueError(
         f"{column} must be boolean at row {index}. File: {source}"
     )
+
 
 def _require_finite_number(
     value: Any,
@@ -307,6 +404,7 @@ def _require_finite_number(
         )
 
     return float(number)
+
 
 def _validate_outcome_contract(
     row: pd.Series,
@@ -425,43 +523,81 @@ def _validate_outcome_contract(
             f"File: {source}"
         )
 
+
 def _validate_outcome(value: Any, *, index: Any, source: Path) -> None:
     number = pd.to_numeric(pd.Series([value]), errors="coerce").iloc[0]
     if pd.isna(number) or not math.isfinite(float(number)):
-        raise ValueError(f"outcome_value_target must be finite numeric at row {index}. File: {source}")
+        raise ValueError(
+            f"outcome_value_target must be finite numeric at row {index}. "
+            f"File: {source}"
+        )
     if abs(float(number)) > 1.0 + 1e-6:
-        raise ValueError(f"outcome_value_target outside [-1, 1] at row {index}. File: {source}")
+        raise ValueError(
+            f"outcome_value_target outside [-1, 1] at row {index}. "
+            f"File: {source}"
+        )
 
 
-def _parse_policy(value: Any, *, index: Any, source: Path) -> dict[int, float]:
+def _parse_policy(
+    value: Any,
+    *,
+    index: Any,
+    source: Path,
+) -> dict[int, float]:
     try:
         raw = json.loads(str(value))
     except json.JSONDecodeError as exc:
-        raise ValueError(f"Invalid mcts_policy_json at row {index}. File: {source}") from exc
+        raise ValueError(
+            f"Invalid mcts_policy_json at row {index}. File: {source}"
+        ) from exc
     if not isinstance(raw, dict):
-        raise ValueError(f"mcts_policy_json must be an object at row {index}. File: {source}")
+        raise ValueError(
+            f"mcts_policy_json must be an object at row {index}. File: {source}"
+        )
     if not raw:
-        raise ValueError(f"mcts_policy_json must not be empty at row {index}. File: {source}")
+        raise ValueError(
+            f"mcts_policy_json must not be empty at row {index}. File: {source}"
+        )
     policy: dict[int, float] = {}
     total = 0.0
     for key, probability in raw.items():
         try:
             action_id = int(key)
         except (TypeError, ValueError) as exc:
-            raise ValueError(f"Policy action ID must be an integer at row {index}. File: {source}") from exc
+            raise ValueError(
+                f"Policy action ID must be an integer at row {index}. "
+                f"File: {source}"
+            ) from exc
         if action_id < 0:
-            raise ValueError(f"Policy action ID must be >= 0 at row {index}. File: {source}")
-        if isinstance(probability, bool) or not isinstance(probability, (int, float)):
-            raise ValueError(f"Policy probability must be numeric at row {index}. File: {source}")
+            raise ValueError(
+                f"Policy action ID must be >= 0 at row {index}. File: {source}"
+            )
+        if isinstance(probability, bool) or not isinstance(
+            probability,
+            (int, float),
+        ):
+            raise ValueError(
+                f"Policy probability must be numeric at row {index}. "
+                f"File: {source}"
+            )
         probability_float = float(probability)
         if not math.isfinite(probability_float):
-            raise ValueError(f"Policy probability must be finite at row {index}. File: {source}")
+            raise ValueError(
+                f"Policy probability must be finite at row {index}. "
+                f"File: {source}"
+            )
         if probability_float < 0.0:
-            raise ValueError(f"Policy probability must be >= 0 at row {index}. File: {source}")
+            raise ValueError(
+                f"Policy probability must be >= 0 at row {index}. "
+                f"File: {source}"
+            )
         policy[action_id] = probability_float
         total += probability_float
     if total <= 0.0:
-        raise ValueError(f"Policy probability mass must be > 0 at row {index}. File: {source}")
+        raise ValueError(
+            f"Policy probability mass must be > 0 at row {index}. "
+            f"File: {source}"
+        )
     return policy
 
 
@@ -499,6 +635,8 @@ def validate_state_physics_provenance(
         source=str(state_path),
         expected_physics_config=expected_physics_config,
     )
+    validate_state_npz_schema_arrays(state_path)
+
 
 def validate_state_topology_action_provenance(
     state_path: str | Path,
@@ -628,6 +766,7 @@ def validate_state_topology_action_provenance(
 
     return observed_config, observed_layout
 
+
 def _validate_npz_state(
     state_path: Path,
     *,
@@ -637,9 +776,16 @@ def _validate_npz_state(
 ) -> tuple[_GraphDimensions, np.ndarray]:
     try:
         with np.load(state_path, allow_pickle=False) as data:
-            missing = [name for name in _REQUIRED_STATE_ARRAYS if name not in data.files]
+            missing = [
+                name
+                for name in _REQUIRED_STATE_ARRAYS
+                if name not in data.files
+            ]
             if missing:
-                raise ValueError(f"State NPZ is missing required arrays {missing}: {state_path}")
+                raise ValueError(
+                    f"State NPZ is missing required arrays {missing}: "
+                    f"{state_path}"
+                )
             bus_features = np.asarray(data["bus_features"])
             branch_features = np.asarray(data["branch_features"])
             edge_index = np.asarray(data["edge_index"])
@@ -668,20 +814,26 @@ def _validate_npz_state(
     )
 
     if bus_features.ndim != 2 or bus_features.shape[0] <= 0:
-        raise ValueError(f"{state_path}: bus_features must be non-empty 2D, got {bus_features.shape}")
+        raise ValueError(
+            f"{state_path}: bus_features must be non-empty 2D, "
+            f"got {bus_features.shape}"
+        )
     if branch_features.ndim != 2 or branch_features.shape[0] <= 0:
-        raise ValueError(f"{state_path}: branch_features must be non-empty 2D, got {branch_features.shape}")
+        raise ValueError(
+            f"{state_path}: branch_features must be non-empty 2D, "
+            f"got {branch_features.shape}"
+        )
     if edge_index.shape != (2, branch_features.shape[0]):
-        raise ValueError(f"{state_path}: edge_index must have shape (2, num_branches), got {edge_index.shape}")
-    expected_num_actions = len(
-        state_action_layout
-    )
+        raise ValueError(
+            f"{state_path}: edge_index must have shape (2, num_branches), "
+            f"got {edge_index.shape}"
+        )
+    expected_num_actions = len(state_action_layout)
 
     if (
-            action_mask.ndim != 1
-            or action_mask.shape[0]
-            != expected_num_actions
-            or action_mask.shape[0] <= 0
+        action_mask.ndim != 1
+        or action_mask.shape[0] != expected_num_actions
+        or action_mask.shape[0] <= 0
     ):
         raise ValueError(
             f"{state_path}: action_mask must be 1D "
@@ -689,12 +841,23 @@ def _validate_npz_state(
             f"got {action_mask.shape}"
         )
     if not bool(action_mask.any()):
-        raise ValueError(f"{state_path}: action_mask must contain at least one valid action")
-    if not np.isfinite(bus_features).all() or not np.isfinite(branch_features).all() or not np.isfinite(edge_index).all():
-        raise ValueError(f"{state_path}: graph arrays must contain only finite values")
+        raise ValueError(
+            f"{state_path}: action_mask must contain at least one valid action"
+        )
+    if (
+        not np.isfinite(bus_features).all()
+        or not np.isfinite(branch_features).all()
+        or not np.isfinite(edge_index).all()
+    ):
+        raise ValueError(
+            f"{state_path}: graph arrays must contain only finite values"
+        )
     if not np.equal(edge_index, np.rint(edge_index)).all():
         raise ValueError(f"{state_path}: edge_index must be integer-valued")
-    if int(edge_index.min()) < 0 or int(edge_index.max()) >= int(bus_features.shape[0]):
+    if (
+        int(edge_index.min()) < 0
+        or int(edge_index.max()) >= int(bus_features.shape[0])
+    ):
         raise ValueError(f"{state_path}: edge_index values out of bounds")
     return (
         _GraphDimensions(
@@ -708,14 +871,29 @@ def _validate_npz_state(
     )
 
 
-def _validate_policy_against_mask(policy: dict[int, float], *, action_mask: np.ndarray, index: Any, source: Path) -> None:
+def _validate_policy_against_mask(
+    policy: dict[int, float],
+    *,
+    action_mask: np.ndarray,
+    index: Any,
+    source: Path,
+) -> None:
     masked_mass = 0.0
     for action_id, probability in policy.items():
         if action_id >= len(action_mask):
-            raise ValueError(f"Policy action ID {action_id} is out of range at row {index}. File: {source}")
+            raise ValueError(
+                f"Policy action ID {action_id} is out of range at row "
+                f"{index}. File: {source}"
+            )
         if probability > 0.0 and not bool(action_mask[action_id]):
-            raise ValueError(f"Policy action ID {action_id} is masked at row {index}. File: {source}")
+            raise ValueError(
+                f"Policy action ID {action_id} is masked at row {index}. "
+                f"File: {source}"
+            )
         if bool(action_mask[action_id]):
             masked_mass += probability
     if masked_mass <= 0.0:
-        raise ValueError(f"Policy probability mass after action_mask must be > 0 at row {index}. File: {source}")
+        raise ValueError(
+            f"Policy probability mass after action_mask must be > 0 at row "
+            f"{index}. File: {source}"
+        )
