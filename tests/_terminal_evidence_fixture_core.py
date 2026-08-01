@@ -72,12 +72,16 @@ _OUTCOME_ERROR_RE = re.compile(
 )
 
 
-def _identity_fields(row: Mapping[str, object]) -> dict[str, object]:
+def _identity_fields(
+    row: Mapping[str, object],
+    *,
+    episode_id: str | None = None,
+) -> dict[str, object]:
     scenario_id = row.get("scenario_id", 0)
     return {
         "run_id": "test-run",
         "iteration": 1,
-        "episode_id": f"test-episode-{scenario_id}",
+        "episode_id": episode_id or f"test-episode-{scenario_id}",
     }
 
 
@@ -89,8 +93,9 @@ def _with_terminal_evidence(value: Any) -> Any:
                 result.get("termination_reason")
             )
         )
-        for name, field_value in _identity_fields(result).items():
-            result.setdefault(name, field_value)
+        if "state_path" not in result:
+            for name, field_value in _identity_fields(result).items():
+                result.setdefault(name, field_value)
         return result
 
     if isinstance(value, list):
@@ -122,6 +127,38 @@ def _wrap_row_builder(
     monkeypatch.setattr(module, name, current_builder)
 
 
+def _wrap_target_builder(
+    module: object,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    builder = getattr(
+        module,
+        "add_outcome_value_targets_to_rows",
+        None,
+    )
+    if builder is None or not callable(builder):
+        return
+
+    def current_builder(
+        *args: object,
+        **kwargs: object,
+    ) -> Any:
+        rows = args[0] if args else kwargs.get("rows")
+        if isinstance(rows, list):
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                for name, value in _identity_fields(row).items():
+                    row.setdefault(name, value)
+        return builder(*args, **kwargs)
+
+    monkeypatch.setattr(
+        module,
+        "add_outcome_value_targets_to_rows",
+        current_builder,
+    )
+
+
 def _is_artifact_frame(frame: pd.DataFrame) -> bool:
     return (
         len(frame) > 0
@@ -147,7 +184,17 @@ def _missing(value: object) -> bool:
 def _enrich_frame(frame: pd.DataFrame) -> pd.DataFrame:
     result = frame.copy()
 
-    add_identity = not _IDENTITY_COLUMNS.intersection(result.columns)
+    identity_columns = _IDENTITY_COLUMNS.intersection(result.columns)
+    add_identity = not identity_columns
+    if identity_columns == _IDENTITY_COLUMNS:
+        add_identity = all(
+            result[column].map(_missing).all()
+            for column in _IDENTITY_COLUMNS
+        )
+
+    episode_counts: dict[str, int] = {}
+    active_episodes: dict[str, str] = {}
+
     for index, row in result.iterrows():
         fields = terminal_evidence_fields(
             row.get("termination_reason")
@@ -162,7 +209,22 @@ def _enrich_frame(frame: pd.DataFrame) -> pd.DataFrame:
             result.at[index, name] = value
 
         if add_identity:
-            for name, value in _identity_fields(row).items():
+            scenario_key = str(row.get("scenario_id", 0))
+            try:
+                step = int(row.get("step", 0))
+            except (TypeError, ValueError):
+                step = 0
+            if step == 0 or scenario_key not in active_episodes:
+                count = episode_counts.get(scenario_key, 0) + 1
+                episode_counts[scenario_key] = count
+                active_episodes[scenario_key] = (
+                    f"test-episode-{scenario_key}-{count}"
+                )
+            identity = _identity_fields(
+                row,
+                episode_id=active_episodes[scenario_key],
+            )
+            for name, value in identity.items():
                 if name not in result.columns:
                     result[name] = pd.Series(
                         [None] * len(result),
@@ -295,6 +357,13 @@ def _sync_state_evidence(
                 evidence.termination_reason
             )
         )
+        for field in _IDENTITY_COLUMNS:
+            value = row.get(field)
+            if _missing(value):
+                continue
+            updated_metadata[field] = (
+                int(value) if field == "iteration" else str(value)
+            )
         arrays["metadata_json"] = np.array(
             json.dumps(updated_metadata)
         )
@@ -318,6 +387,10 @@ def _current_terminal_evidence_fixtures(
             monkeypatch,
         )
 
+    _wrap_target_builder(
+        request.module,
+        monkeypatch,
+    )
     _wrap_outcome_validator(
         request.module,
         monkeypatch,

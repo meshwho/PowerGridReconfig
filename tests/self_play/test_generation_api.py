@@ -126,6 +126,9 @@ class _FakeExampleWriter:
     COLUMNS = [
         "state_id",
         "state_path",
+        "run_id",
+        "iteration",
+        "episode_id",
         "scenario_id",
         "step",
         "selected_action_id",
@@ -175,11 +178,21 @@ class _FakeExampleWriter:
     def add_example(self, **kwargs: object) -> None:
         provenance = physics_provenance(self.physics_config)
         evidence = kwargs["terminal_outcome_evidence"]
+        metadata = kwargs.get("extra_metadata")
+        iteration = (
+            int(metadata.get("self_play_iteration", 1))
+            if isinstance(metadata, dict)
+            else 1
+        )
+        scenario_id = int(kwargs["scenario_id"])
         self.rows.append(
             {
                 "state_id": kwargs["state_id"],
                 "state_path": "states/fake.npz",
-                "scenario_id": kwargs["scenario_id"],
+                "run_id": "test-run",
+                "iteration": iteration,
+                "episode_id": f"test-episode-{scenario_id}",
+                "scenario_id": scenario_id,
                 "step": kwargs["step"],
                 "selected_action_id": kwargs["selected_action_id"],
                 "selected_branch_id": kwargs["selected_branch_id"],
