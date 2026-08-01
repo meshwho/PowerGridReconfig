@@ -199,6 +199,11 @@ def validate_examples_dataframe(
         _validate_state_terminal_evidence(
             state_path,
             expected_evidence=evidence,
+            expected_identity={
+                "run_id": row["run_id"],
+                "iteration": int(row["iteration"]),
+                "episode_id": row["episode_id"],
+            },
             index=index,
             source=source,
         )
@@ -403,10 +408,18 @@ def _validate_state_terminal_evidence(
     state_path: Path,
     *,
     expected_evidence: TerminalOutcomeEvidence,
+    expected_identity: Mapping[str, object],
     index: Any,
     source: Path,
 ) -> None:
     metadata = _load_state_metadata(state_path)
+
+    for field, expected in expected_identity.items():
+        if metadata.get(field) != expected:
+            raise ValueError(
+                f"CSV {field} does not match state metadata at row "
+                f"{index}. File: {source}. State: {state_path}"
+            )
 
     version = metadata.get(
         "terminal_outcome_evidence_schema_version"

@@ -73,6 +73,33 @@ def require_metadata_bool(
     return value
 
 
+def _require_identity(
+    metadata: dict[str, Any],
+    *,
+    source: Path,
+) -> tuple[str, int, str]:
+    run_id = metadata.get("run_id")
+    episode_id = metadata.get("episode_id")
+    iteration = metadata.get("iteration")
+
+    if not isinstance(run_id, str) or not run_id.strip():
+        raise ValueError(f"{source} metadata field 'run_id' is invalid.")
+    if not isinstance(episode_id, str) or not episode_id.strip():
+        raise ValueError(
+            f"{source} metadata field 'episode_id' is invalid."
+        )
+    if isinstance(iteration, bool) or not isinstance(iteration, int):
+        raise ValueError(
+            f"{source} metadata field 'iteration' is invalid."
+        )
+    if iteration <= 0:
+        raise ValueError(
+            f"{source} metadata field 'iteration' must be positive."
+        )
+
+    return run_id.strip(), iteration, episode_id.strip()
+
+
 def recover_examples(states_dir: Path, gamma: float) -> pd.DataFrame:
     rows: list[dict[str, Any]] = []
     observed_physics_config: PhysicsConfig | None = None
@@ -135,6 +162,9 @@ def recover_examples(states_dir: Path, gamma: float) -> pd.DataFrame:
             "episode_done",
             "episode_solved",
             "episode_termination_reason",
+            "run_id",
+            "iteration",
+            "episode_id",
         }
         missing_outcome_fields = (
             required_outcome_fields - set(meta)
@@ -147,6 +177,10 @@ def recover_examples(states_dir: Path, gamma: float) -> pd.DataFrame:
                 "produce current-contract value targets."
             )
 
+        run_id, iteration, episode_id = _require_identity(
+            meta,
+            source=path,
+        )
         done = require_metadata_bool(
             meta,
             "episode_done",
@@ -183,6 +217,9 @@ def recover_examples(states_dir: Path, gamma: float) -> pd.DataFrame:
             {
                 "state_id": state_id,
                 "state_path": str(path),
+                "run_id": run_id,
+                "iteration": iteration,
+                "episode_id": episode_id,
                 "scenario_id": scenario_id,
                 "step": step,
                 "selected_action_id": selected_action_id,
@@ -232,16 +269,19 @@ def recover_examples(states_dir: Path, gamma: float) -> pd.DataFrame:
 
     df = pd.DataFrame(rows)
     df = df.sort_values(
-        ["scenario_id", "step"]
+        ["episode_id", "step"]
     ).reset_index(drop=True)
 
     recovered_parts: list[pd.DataFrame] = []
 
-    for _, group in df.groupby("scenario_id", sort=False):
+    for _, group in df.groupby("episode_id", sort=False):
         group = group.sort_values("step").copy()
 
         episode_outcomes = group[
             [
+                "run_id",
+                "iteration",
+                "scenario_id",
                 "solved",
                 "done",
                 "termination_reason",
@@ -252,8 +292,8 @@ def recover_examples(states_dir: Path, gamma: float) -> pd.DataFrame:
 
         if len(episode_outcomes) != 1:
             raise ValueError(
-                "Recovered state files for one scenario contain "
-                "contradictory terminal outcomes or evidence."
+                "Recovered state files for one episode contain "
+                "contradictory identity, outcomes, or evidence."
             )
 
         rewards = group["step_reward"].astype(float).tolist()
@@ -278,14 +318,14 @@ def recover_examples(states_dir: Path, gamma: float) -> pd.DataFrame:
         ignore_index=True,
     )
     recovered = recovered.sort_values(
-        ["scenario_id", "step"]
+        ["episode_id", "step"]
     ).reset_index(drop=True)
 
     recovered_rows = recovered.to_dict(orient="records")
     add_outcome_value_targets_to_rows(
         rows=recovered_rows,
         gamma=float(gamma),
-        group_keys=("scenario_id",),
+        group_keys=("episode_id",),
     )
     return pd.DataFrame(recovered_rows)
 
