@@ -301,7 +301,7 @@ def test_missing_and_duplicate_step_are_atomic() -> None:
 
 @pytest.mark.parametrize(
     "step",
-    [1, np.int32(1), np.int64(1)],
+    [0, np.int32(0), np.int64(0)],
 )
 def test_valid_integer_steps(step: object) -> None:
     rows = [valid_row(step=step)]
@@ -310,8 +310,8 @@ def test_valid_integer_steps(step: object) -> None:
 
 
 def test_unsorted_steps_preserve_input_objects_and_compute_by_step() -> None:
-    later = valid_row(step=3)
-    earlier = valid_row(step=1)
+    later = valid_row(step=1)
+    earlier = valid_row(step=0)
     rows = [later, earlier]
     add_outcome_value_targets_to_rows(rows, gamma=0.5)
     assert rows == [later, earlier]
@@ -441,6 +441,52 @@ def test_atomic_when_second_group_has_invalid_key() -> None:
             valid_row(scenario_id=2, step=0),
             valid_row(scenario_id=None, step=1),
         ]
+    )
+
+
+def test_same_scenario_episodes_are_isolated() -> None:
+    solved = valid_row(step=0)
+    solved.update(
+        run_id="run-a",
+        iteration=1,
+        episode_id="episode-a",
+    )
+    failed = valid_row(
+        step=0,
+        solved=False,
+        termination_reason="max_steps_reached",
+    )
+    failed.update(
+        run_id="run-b",
+        iteration=2,
+        episode_id="episode-b",
+    )
+
+    rows = [solved, failed]
+    add_outcome_value_targets_to_rows(rows, gamma=1.0)
+
+    assert solved["outcome_value_target"] == 1.0
+    assert failed["outcome_value_target"] == -1.0
+
+
+def test_episode_rejects_mixed_identity() -> None:
+    first = valid_row(step=0)
+    second = valid_row(step=1)
+    first.update(
+        run_id="run-a",
+        iteration=1,
+        episode_id="episode-a",
+    )
+    second.update(
+        run_id="run-b",
+        iteration=1,
+        episode_id="episode-a",
+    )
+
+    assert_rejected_without_target_mutation(
+        [first, second],
+        group_keys=("episode_id",),
+        match="Mixed run_id",
     )
 
 

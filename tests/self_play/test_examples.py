@@ -39,6 +39,21 @@ def test_example_writer_uses_expected_artifact_names(tmp_path: Path) -> None:
     assert writer.examples_path == tmp_path / "examples.csv"
 
 
+def test_example_writers_use_distinct_run_ids(tmp_path: Path) -> None:
+    first = ExampleWriter(
+        tmp_path / "first",
+        physics_config=DEFAULT_PHYSICS_CONFIG,
+        action_space_config=TEST_ACTION_SPACE_CONFIG,
+    )
+    second = ExampleWriter(
+        tmp_path / "second",
+        physics_config=DEFAULT_PHYSICS_CONFIG,
+        action_space_config=TEST_ACTION_SPACE_CONFIG,
+    )
+
+    assert first.run_id != second.run_id
+
+
 def test_example_writer_rejects_off_policy_selected_action(
     tmp_path: Path,
 ) -> None:
@@ -124,6 +139,9 @@ def test_example_writer_save_preserves_csv_schema(tmp_path: Path) -> None:
         SelfPlayExample(
             state_id="state-1",
             state_path="states/state-1.npz",
+            run_id="run-1",
+            iteration=1,
+            episode_id="episode-1",
             scenario_id=1,
             step=0,
             selected_action_id=2,
@@ -202,6 +220,9 @@ def test_example_writer_save_preserves_csv_schema(tmp_path: Path) -> None:
     assert list(pd.read_csv(path).columns) == [
         "state_id",
         "state_path",
+        "run_id",
+        "iteration",
+        "episode_id",
         "scenario_id",
         "step",
         "selected_action_id",

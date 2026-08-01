@@ -94,7 +94,7 @@ def _write_episode(
     )
     pd.DataFrame(rows).to_csv(examples_path, index=False)
 
-    return examples_path, writer.states_dir / "state-1.npz"
+    return examples_path, Path(rows[0]["state_path"])
 
 
 def _rewrite_state_metadata(
@@ -129,6 +129,9 @@ def test_valid_terminal_evidence_artifacts_are_accepted(
         0,
         "terminal_outcome_evidence_schema_version",
     ] == TERMINAL_OUTCOME_EVIDENCE_SCHEMA_VERSION
+    assert examples.loc[0, "run_id"]
+    assert examples.loc[0, "episode_id"]
+    assert examples.loc[0, "iteration"] == 1
 
 
 def test_validated_redispatch_neutral_target_is_accepted(

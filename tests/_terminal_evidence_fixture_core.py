@@ -60,10 +60,25 @@ _ARTIFACT_MARKERS = {
     "physics_config_fingerprint",
 }
 
+_IDENTITY_COLUMNS = {
+    "run_id",
+    "iteration",
+    "episode_id",
+}
+
 _OUTCOME_ERROR_RE = re.compile(
     r"^.+ row (?P<index>[^:]+): invalid terminal outcome: "
     r"(?P<detail>.+)$"
 )
+
+
+def _identity_fields(row: Mapping[str, object]) -> dict[str, object]:
+    scenario_id = row.get("scenario_id", 0)
+    return {
+        "run_id": "test-run",
+        "iteration": 1,
+        "episode_id": f"test-episode-{scenario_id}",
+    }
 
 
 def _with_terminal_evidence(value: Any) -> Any:
@@ -74,6 +89,8 @@ def _with_terminal_evidence(value: Any) -> Any:
                 result.get("termination_reason")
             )
         )
+        for name, field_value in _identity_fields(result).items():
+            result.setdefault(name, field_value)
         return result
 
     if isinstance(value, list):
@@ -130,6 +147,7 @@ def _missing(value: object) -> bool:
 def _enrich_frame(frame: pd.DataFrame) -> pd.DataFrame:
     result = frame.copy()
 
+    add_identity = not _IDENTITY_COLUMNS.intersection(result.columns)
     for index, row in result.iterrows():
         fields = terminal_evidence_fields(
             row.get("termination_reason")
@@ -142,6 +160,16 @@ def _enrich_frame(frame: pd.DataFrame) -> pd.DataFrame:
                     dtype=object,
                 )
             result.at[index, name] = value
+
+        if add_identity:
+            for name, value in _identity_fields(row).items():
+                if name not in result.columns:
+                    result[name] = pd.Series(
+                        [None] * len(result),
+                        index=result.index,
+                        dtype=object,
+                    )
+                result.at[index, name] = value
 
     return result
 
