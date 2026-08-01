@@ -129,6 +129,12 @@ class _FakeExampleWriter:
         "termination_reason",
         "physical_objective_schema_version",
         "outcome_value_target_contract_version",
+        "state_feature_schema_version",
+        "state_feature_schema_fingerprint",
+        "bus_feature_columns",
+        "branch_feature_columns",
+        "edge_index_semantics",
+        "bus_id_semantics",
         "physics_config_contract_version",
         "physics_config",
         "physics_config_fingerprint",
@@ -174,8 +180,30 @@ class _FakeExampleWriter:
                 "physical_objective_schema_version": (
                     PHYSICAL_OBJECTIVE_SCHEMA_VERSION
                 ),
-                "outcome_value_target_contract_version": (
+                                "outcome_value_target_contract_version": (
                     OUTCOME_VALUE_TARGET_CONTRACT_VERSION
+                ),
+                "state_feature_schema_version": int(
+                    provenance["state_feature_schema_version"]
+                ),
+                "state_feature_schema_fingerprint": str(
+                    provenance["state_feature_schema_fingerprint"]
+                ),
+                "bus_feature_columns": json.dumps(
+                    provenance["bus_feature_columns"],
+                    separators=(",", ":"),
+                    allow_nan=False,
+                ),
+                "branch_feature_columns": json.dumps(
+                    provenance["branch_feature_columns"],
+                    separators=(",", ":"),
+                    allow_nan=False,
+                ),
+                "edge_index_semantics": str(
+                    provenance["edge_index_semantics"]
+                ),
+                "bus_id_semantics": str(
+                    provenance["bus_id_semantics"]
                 ),
                 "physics_config_contract_version": provenance[
                     "physics_config_contract_version"

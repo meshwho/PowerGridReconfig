@@ -435,7 +435,14 @@ def _current_artifact_contracts(
                 )
                 for name, value in fields.items():
                     if name not in frame.columns:
-                        frame[name] = None
+                        frame[name] = pd.Series(
+                            None,
+                            index=frame.index,
+                            dtype=object,
+                        )
+                    else:
+                        frame[name] = frame[name].astype(object)
+
                     current = frame.at[index, name]
                     missing = current is None
                     if not missing:
