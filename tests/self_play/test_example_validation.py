@@ -26,6 +26,8 @@ def write_state(path: Path, **overrides: object) -> Path:
         "bus_features": np.zeros((2, 3), dtype=np.float32),
         "branch_features": np.zeros((1, 4), dtype=np.float32),
         "edge_index": np.array([[0], [1]], dtype=np.int64),
+        "branch_ids": np.array([7], dtype=np.int64),
+        "branch_status": np.array([1.0], dtype=np.float32),
         "action_mask": np.array([True, True], dtype=bool),
         "metadata_json": np.array(json.dumps(provenance)),
     }
