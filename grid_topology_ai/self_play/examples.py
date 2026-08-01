@@ -38,6 +38,7 @@ class SelfPlayExample:
     state_id: str
     state_path: str
     scenario_id: int
+    step: int
     selected_action_id: int
     selected_branch_id: int | None
     step_reward: float
@@ -50,6 +51,8 @@ class SelfPlayExample:
     outcome_value_target_contract_version: int
     state_feature_schema_version: int
     state_feature_schema_fingerprint: str
+    bus_feature_columns: str
+    branch_feature_columns: str
     edge_index_semantics: str
     bus_id_semantics: str
     physics_config_contract_version: int
@@ -186,6 +189,16 @@ class ExampleWriter:
             state_feature_schema_fingerprint=str(
                 provenance["state_feature_schema_fingerprint"]
             ),
+            bus_feature_columns=json.dumps(
+                provenance["bus_feature_columns"],
+                separators=(",", ":"),
+                allow_nan=False,
+            ),
+            branch_feature_columns=json.dumps(
+                provenance["branch_feature_columns"],
+                separators=(",", ":"),
+                allow_nan=False,
+            ),
             edge_index_semantics=str(
                 provenance["edge_index_semantics"]
             ),
@@ -284,7 +297,7 @@ class ExampleWriter:
         self.examples.append(example)
 
     def save(self) -> Path:
-        """Save all examples to CSV.("""
+        """Save all examples to CSV."""
 
         frame = pd.DataFrame(
             [asdict(example) for example in self.examples]
