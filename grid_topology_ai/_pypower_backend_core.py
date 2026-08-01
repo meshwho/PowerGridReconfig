@@ -78,6 +78,7 @@ from grid_topology_ai.physical_objective import (
     OVERLOAD_LIMIT_PERCENT,
     assess_physical_state,
 )
+from grid_topology_ai.state_fingerprint import physical_state_fingerprint
 from grid_topology_ai.topology_actions import (
     GridFMAction,
 )
@@ -354,8 +355,10 @@ class GridFMPowerFlowBackend:
                 outaged.discard(branch_id)
 
         return (
-            int(state.scenario_id),
             self.physics_config.fingerprint(),
+            physical_state_fingerprint(state),
+            branch_id,
+            target_status,
             tuple(sorted(outaged)),
         )
 
