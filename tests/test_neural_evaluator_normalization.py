@@ -12,12 +12,25 @@ from grid_topology_ai.contracts import (
 from grid_topology_ai.models.graph_policy_value_net import GraphPolicyValueNet
 from grid_topology_ai.models.neural_evaluator import NeuralPolicyValueEvaluator
 from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
+from grid_topology_ai.state_schema import (
+    BRANCH_FEATURE_COLUMNS,
+    BUS_FEATURE_COLUMNS,
+)
 
 
 def test_graph_evaluator_loads_checkpoint_normalization_arrays(tmp_path):
+    num_bus_features = len(BUS_FEATURE_COLUMNS)
+    num_branch_features = len(BRANCH_FEATURE_COLUMNS)
+    bus_mean = np.arange(num_bus_features, dtype=np.float32) + 10.0
+    bus_std = np.arange(num_bus_features, dtype=np.float32) + 1.0
+    branch_mean = (
+        np.arange(num_branch_features, dtype=np.float32) + 100.0
+    )
+    branch_std = np.arange(num_branch_features, dtype=np.float32) + 1.0
+
     model = GraphPolicyValueNet(
-        num_bus_features=3,
-        num_branch_features=4,
+        num_bus_features=num_bus_features,
+        num_branch_features=num_branch_features,
         num_actions=3,
         hidden_dim=8,
         num_layers=1,
@@ -32,25 +45,25 @@ def test_graph_evaluator_loads_checkpoint_normalization_arrays(tmp_path):
             **physics_provenance(DEFAULT_PHYSICS_CONFIG),
             "model_type": "graph_policy_value_net",
             "model_state_dict": model.state_dict(),
-            "num_bus_features": 3,
-            "num_branch_features": 4,
+            "num_bus_features": num_bus_features,
+            "num_branch_features": num_branch_features,
             "num_buses": 2,
             "num_branches": 2,
             "num_actions": 3,
             "hidden_dim": 8,
             "num_layers": 1,
             "dropout": 0.0,
-            "bus_feature_mean": np.array([10.0, 20.0, 30.0], dtype=np.float32),
-            "bus_feature_std": np.array([2.0, 4.0, 5.0], dtype=np.float32),
-            "branch_feature_mean": np.array([100.0, 200.0, 300.0, 400.0], dtype=np.float32),
-            "branch_feature_std": np.array([10.0, 20.0, 25.0, 40.0], dtype=np.float32),
+            "bus_feature_mean": bus_mean,
+            "bus_feature_std": bus_std,
+            "branch_feature_mean": branch_mean,
+            "branch_feature_std": branch_std,
         },
         checkpoint_path,
     )
 
     evaluator = NeuralPolicyValueEvaluator(checkpoint_path, device="cpu")
 
-    np.testing.assert_array_equal(evaluator.bus_feature_mean, np.array([10.0, 20.0, 30.0], dtype=np.float32))
-    np.testing.assert_array_equal(evaluator.bus_feature_std, np.array([2.0, 4.0, 5.0], dtype=np.float32))
-    np.testing.assert_array_equal(evaluator.branch_feature_mean, np.array([100.0, 200.0, 300.0, 400.0], dtype=np.float32))
-    np.testing.assert_array_equal(evaluator.branch_feature_std, np.array([10.0, 20.0, 25.0, 40.0], dtype=np.float32))
+    np.testing.assert_array_equal(evaluator.bus_feature_mean, bus_mean)
+    np.testing.assert_array_equal(evaluator.bus_feature_std, bus_std)
+    np.testing.assert_array_equal(evaluator.branch_feature_mean, branch_mean)
+    np.testing.assert_array_equal(evaluator.branch_feature_std, branch_std)
