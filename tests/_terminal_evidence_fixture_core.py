@@ -163,9 +163,16 @@ def _wrap_outcome_validator(
         *,
         source_path: str | Path,
     ) -> None:
+        prepared = examples
+        if {
+            "terminal_outcome_evidence_schema_version",
+            "terminal_outcome_evidence_json",
+        }.issubset(examples.columns):
+            prepared = _enrich_frame(examples)
+
         try:
             validator(
-                _enrich_frame(examples),
+                prepared,
                 source_path=source_path,
             )
         except ValueError as exc:
