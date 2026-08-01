@@ -134,5 +134,5 @@ def test_neural_value_outside_terminal_utility_range_is_rejected() -> None:
 
 def test_return_contract_invalidates_legacy_search_artifacts() -> None:
     assert OUTCOME_VALUE_TARGET_CONTRACT_VERSION == 4
-    assert CHECKPOINT_CONTRACT_VERSION == 6
-    assert REPLAY_BUFFER_SCHEMA_VERSION == 5
+    assert CHECKPOINT_CONTRACT_VERSION == 7
+    assert REPLAY_BUFFER_SCHEMA_VERSION == 6
