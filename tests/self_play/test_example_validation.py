@@ -414,11 +414,15 @@ def test_optional_selected_action_must_be_valid(tmp_path: Path) -> None:
     assert_rejected(write_csv(tmp_path / "examples.csv", [row]), "selected_action_id")
 
 
-def test_selected_action_may_be_absent_from_mcts_policy_support(tmp_path: Path) -> None:
+def test_selected_action_may_be_absent_from_mcts_policy_support(
+    tmp_path: Path,
+) -> None:
     state = write_state(
         tmp_path / "s.npz",
         branch_features=np.zeros((2, 4), dtype=np.float32),
         edge_index=np.array([[0, 1], [1, 0]], dtype=np.int64),
+        branch_ids=np.array([7, 8], dtype=np.int64),
+        branch_status=np.array([0.0, 0.0], dtype=np.float32),
         action_mask=np.array([True, True, True], dtype=bool),
     )
     row = valid_row(state)
