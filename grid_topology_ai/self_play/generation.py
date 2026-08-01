@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import math
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-import math
+
 import numpy as np
 import pandas as pd
 
@@ -15,9 +16,9 @@ from grid_topology_ai.config.physics import (
 )
 from grid_topology_ai.search.root_policy import (
     require_action_in_policy_support,
-    select_action_from_policy,
     select_policy_action,
 )
+
 
 _RUNTIME_DEPENDENCIES_LOADED = False
 
@@ -57,71 +58,43 @@ class GenerationRequest:
     min_gate_visit_fraction: float = 0.01
 
     def __post_init__(self) -> None:
-
         for field_name in (
             "mcts_seed",
             "action_seed",
         ):
-            value = getattr(
-                self,
-                field_name,
-            )
-
+            value = getattr(self, field_name)
             if (
                 isinstance(value, bool)
-                or not isinstance(
-                    value,
-                    (int, np.integer),
-                )
+                or not isinstance(value, (int, np.integer))
             ):
                 raise ValueError(
-                    f"{field_name} must be a "
-                    "non-negative integer."
+                    f"{field_name} must be a non-negative integer."
                 )
 
             seed = int(value)
-
             if seed < 0:
                 raise ValueError(
-                    f"{field_name} must be a "
-                    "non-negative integer."
+                    f"{field_name} must be a non-negative integer."
                 )
-
-            object.__setattr__(
-                self,
-                field_name,
-                seed,
-            )
+            object.__setattr__(self, field_name, seed)
 
         if (
             isinstance(self.iteration, bool)
-            or not isinstance(
-                self.iteration,
-                (int, np.integer),
-            )
+            or not isinstance(self.iteration, (int, np.integer))
         ):
-            raise ValueError(
-                "iteration must be a positive integer."
-            )
+            raise ValueError("iteration must be a positive integer.")
 
-        iteration = int(
-            self.iteration
-        )
-
+        iteration = int(self.iteration)
         if iteration <= 0:
-            raise ValueError(
-                "iteration must be a positive integer."
-            )
-
-        object.__setattr__(
-            self,
-            "iteration",
-            iteration,
-        )
+            raise ValueError("iteration must be a positive integer.")
+        object.__setattr__(self, "iteration", iteration)
 
     @property
     def resolved_physics_config(self) -> PhysicsConfig:
-        return resolve_physics_config(self.physics_config, self.config.pf_alg)
+        return resolve_physics_config(
+            self.physics_config,
+            self.config.pf_alg,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -185,15 +158,19 @@ def _ensure_runtime_dependencies() -> None:
     _RUNTIME_DEPENDENCIES_LOADED = True
 
 
-def discounted_returns(rewards: list[float], gamma: float) -> list[float]:
+def discounted_returns(
+    rewards: list[float],
+    gamma: float,
+) -> list[float]:
     returns = [0.0 for _ in rewards]
     running = 0.0
 
-    for i in reversed(range(len(rewards))):
-        running = float(rewards[i]) + gamma * running
-        returns[i] = running
+    for index in reversed(range(len(rewards))):
+        running = float(rewards[index]) + gamma * running
+        returns[index] = running
 
     return returns
+
 
 def _scenario_seed(
     stream_seed: int,
@@ -211,6 +188,7 @@ def _scenario_seed(
     )
     return int(state[0])
 
+
 def _policy_entropy(
     policy: dict[int, float],
 ) -> tuple[float, float]:
@@ -227,14 +205,12 @@ def _policy_entropy(
         return 0.0, 0.0
 
     total = float(probabilities.sum())
-
     if not np.isfinite(total) or total <= 0.0:
         raise ValueError(
             "Policy probabilities must have a positive finite sum."
         )
 
     probabilities = probabilities / total
-
     entropy = float(
         -np.sum(
             probabilities * np.log(probabilities)
@@ -244,17 +220,15 @@ def _policy_entropy(
     if probabilities.size <= 1:
         return entropy, 0.0
 
-    normalized_entropy = (
-        entropy
-        / math.log(int(probabilities.size))
+    normalized_entropy = entropy / math.log(
+        int(probabilities.size)
     )
-
     normalized_entropy = min(
         1.0,
         max(0.0, float(normalized_entropy)),
     )
-
     return entropy, normalized_entropy
+
 
 def selection_temperature_for_step(
     config: GenerationConfig,
@@ -263,33 +237,24 @@ def selection_temperature_for_step(
     step: int,
 ) -> float:
     if iteration <= 0:
-        raise ValueError(
-            "iteration must be positive."
-        )
-
+        raise ValueError("iteration must be positive.")
     if step < 0:
-        raise ValueError(
-            "step must be non-negative."
-        )
+        raise ValueError("step must be non-negative.")
 
     if config.selection_temperature <= 0.0:
         return 0.0
-
     if (
         config.temperature_iterations <= 0
         or config.temperature_steps <= 0
     ):
         return 0.0
-
     if iteration > config.temperature_iterations:
         return 0.0
-
     if step >= config.temperature_steps:
         return 0.0
 
-    return float(
-        config.selection_temperature
-    )
+    return float(config.selection_temperature)
+
 
 def _select_generation_action(
     *,
@@ -356,18 +321,22 @@ def _select_generation_action(
     )
 
 
-def _scenario_ids_from_request(request: GenerationRequest) -> list[int]:
+def _scenario_ids_from_request(
+    request: GenerationRequest,
+) -> list[int]:
     if not request.transitions_csv.exists():
         raise FileNotFoundError(
             f"Transitions file not found: {request.transitions_csv}"
         )
 
     transitions = pd.read_csv(request.transitions_csv)
-
     if request.scenario_ids is not None:
         return [int(value) for value in request.scenario_ids]
 
-    return sorted(int(x) for x in transitions["scenario_id"].unique())
+    return sorted(
+        int(value)
+        for value in transitions["scenario_id"].unique()
+    )
 
 
 def _continuation_metadata(
@@ -385,7 +354,11 @@ def _continuation_metadata(
 
     allowed_action_ids = tuple(
         int(action_id)
-        for action_id in getattr(analysis, "allowed_action_ids", ())
+        for action_id in getattr(
+            analysis,
+            "allowed_action_ids",
+            (),
+        )
     )
     recommended_action_id = getattr(
         analysis,
@@ -422,7 +395,9 @@ def _continuation_metadata(
     }
 
 
-def generate_self_play_examples(request: GenerationRequest) -> Path:
+def generate_self_play_examples(
+    request: GenerationRequest,
+) -> Path:
     scenario_ids = _scenario_ids_from_request(request)
     _ensure_runtime_dependencies()
     request.output_dir.mkdir(parents=True, exist_ok=True)
@@ -436,10 +411,7 @@ def generate_self_play_examples(request: GenerationRequest) -> Path:
     print(f"Simulations:    {request.config.simulations}")
     print(f"Search depth:   {request.config.depth}")
     print(f"Max steps:      {request.config.max_steps}")
-    print(
-        "Initial action width: "
-        f"{request.config.top_k}"
-    )
+    print(f"Initial action width: {request.config.top_k}")
     print(
         "Widening coefficient: "
         f"{request.config.widening_coefficient}"
@@ -473,61 +445,62 @@ def generate_self_play_examples(request: GenerationRequest) -> Path:
     print(f"Use root noise: {request.config.use_root_noise}")
     print(f"Root alpha:     {request.root_dirichlet_alpha}")
     print(f"Root epsilon:   {request.root_exploration_fraction}")
+    print(f"Self-play iteration: {request.iteration}")
     print(
-        f"Self-play iteration: "
-        f"{request.iteration}"
-    )
-    print(
-        f"Early temperature:  "
+        "Early temperature:  "
         f"{request.config.selection_temperature}"
     )
     print(
-        f"Temperature steps:  "
+        "Temperature steps:  "
         f"{request.config.temperature_steps}"
     )
     print(
-        f"Temperature iters:  "
+        "Temperature iters:  "
         f"{request.config.temperature_iterations}"
     )
+    print(f"MCTS stream seed:   {request.mcts_seed}")
+    print(f"Action stream seed: {request.action_seed}")
     print(
-        f"MCTS stream seed:   "
-        f"{request.mcts_seed}"
+        "PF algorithm:   "
+        f"{request.resolved_physics_config.pf_alg}"
     )
-    print(
-        f"Action stream seed: "
-        f"{request.action_seed}"
-    )
-    print(f"PF algorithm:   {request.resolved_physics_config.pf_alg}")
     print(f"Cache enabled:  {request.enable_cache}")
     print(
         "Clear cache between scenarios: "
         f"{request.clear_cache_between_scenarios}"
     )
-    temperature_schedule_enabled = (
-            request.config.selection_temperature > 1e-8
-            and request.config.temperature_steps > 0
-            and request.config.temperature_iterations > 0
-    )
 
+    temperature_schedule_enabled = (
+        request.config.selection_temperature > 1e-8
+        and request.config.temperature_steps > 0
+        and request.config.temperature_iterations > 0
+    )
     if temperature_schedule_enabled:
         print(
             "Action selection: scheduled early sampling, "
             "then deterministic argmax"
         )
     else:
-        print(
-            "Action selection: deterministic argmax"
-        )
+        print("Action selection: deterministic argmax")
+
     print(
         "Continuation analysis: "
         f"{request.config.use_continuation_gate}"
     )
-
     if request.config.use_continuation_gate:
-        print(f"  min hard improvement: {request.min_hard_improvement}")
-        print(f"  min soft improvement: {request.min_soft_improvement}")
+        print(
+            "  min hard improvement: "
+            f"{request.min_hard_improvement}"
+        )
+        print(
+            "  min soft improvement: "
+            f"{request.min_soft_improvement}"
+        )
         print(f"  min gate visits:      {request.min_gate_visits}")
-        print(f"  min gate visit frac:  {request.min_gate_visit_fraction}")
+        print(
+            "  min gate visit frac:  "
+            f"{request.min_gate_visit_fraction}"
+        )
 
     print(f"\nScenario IDs: {scenario_ids}")
 
@@ -557,7 +530,6 @@ def generate_self_play_examples(request: GenerationRequest) -> Path:
         physics_config=request.resolved_physics_config,
         discount_factor=request.config.gamma,
     )
-
     mcts_config = MCTSConfig(
         num_simulations=request.config.simulations,
         max_depth=request.config.depth,
@@ -565,12 +537,8 @@ def generate_self_play_examples(request: GenerationRequest) -> Path:
         widening_coefficient=(
             request.config.widening_coefficient
         ),
-        widening_exponent=(
-            request.config.widening_exponent
-        ),
-        exploration_quota=(
-            request.config.exploration_quota
-        ),
+        widening_exponent=request.config.widening_exponent,
+        exploration_quota=request.config.exploration_quota,
         gamma=request.config.gamma,
         c_puct=request.config.c_puct,
         include_stop_action=True,
@@ -578,12 +546,13 @@ def generate_self_play_examples(request: GenerationRequest) -> Path:
         stop_policy=request.config.stop_policy,
         use_root_dirichlet_noise=request.config.use_root_noise,
         root_dirichlet_alpha=request.root_dirichlet_alpha,
-        root_exploration_fraction=request.root_exploration_fraction,
+        root_exploration_fraction=(
+            request.root_exploration_fraction
+        ),
         random_seed=request.mcts_seed,
     )
 
     evaluator = None
-
     if request.checkpoint is not None:
         evaluator = NeuralPolicyValueEvaluator(
             checkpoint_path=request.checkpoint,
@@ -614,14 +583,15 @@ def generate_self_play_examples(request: GenerationRequest) -> Path:
 
     total_examples = 0
     start_time = time.perf_counter()
+
     for scenario_id in scenario_ids:
         print("\n" + "=" * 100)
         print(f"Scenario {scenario_id}")
         print("=" * 100)
+
         if request.clear_cache_between_scenarios:
             backend.clear_cache()
             action_space.clear_cache()
-
             if evaluator is not None:
                 evaluator.clear_cache()
 
@@ -633,20 +603,14 @@ def generate_self_play_examples(request: GenerationRequest) -> Path:
             request.action_seed,
             int(scenario_id),
         )
-
-        planner.reset_rng(
-            scenario_mcts_seed
-        )
+        planner.reset_rng(scenario_mcts_seed)
         action_rng = np.random.default_rng(
             scenario_action_seed
         )
 
+        print(f"MCTS seed:          {scenario_mcts_seed}")
         print(
-            f"MCTS seed:          "
-            f"{scenario_mcts_seed}"
-        )
-        print(
-            f"Action sample seed: "
+            "Action sample seed: "
             f"{scenario_action_seed}"
         )
 
@@ -667,7 +631,6 @@ def generate_self_play_examples(request: GenerationRequest) -> Path:
                 break
 
             state_before = env.current_state
-
             if state_before is None:
                 break
 
@@ -678,40 +641,47 @@ def generate_self_play_examples(request: GenerationRequest) -> Path:
                 print("MCTS returned no action. Stop episode.")
                 break
 
-            effective_temperature = (
-                selection_temperature_for_step(
-                    request.config,
-                    iteration=request.iteration,
-                    step=step,
-                )
+            effective_temperature = selection_temperature_for_step(
+                request.config,
+                iteration=request.iteration,
+                step=step,
             )
             selection_mode = (
                 "sample"
                 if effective_temperature > 1e-8
                 else "argmax"
             )
-
             action_decision = _select_generation_action(
                 search_result=search_result,
                 temperature=effective_temperature,
                 rng=action_rng,
-                use_continuation_gate=request.config.use_continuation_gate,
+                use_continuation_gate=(
+                    request.config.use_continuation_gate
+                ),
                 min_hard_improvement=request.min_hard_improvement,
                 min_soft_improvement=request.min_soft_improvement,
                 min_gate_visits=request.min_gate_visits,
-                min_gate_visit_fraction=request.min_gate_visit_fraction,
+                min_gate_visit_fraction=(
+                    request.min_gate_visit_fraction
+                ),
                 scenario_id=int(scenario_id),
                 step=int(step),
                 physics_config=request.resolved_physics_config,
             )
-            selected_action_id = action_decision.selected_action_id
-            selected_branch_id = action_decision.selected_branch_id
+            selected_action_id = (
+                action_decision.selected_action_id
+            )
+            selected_branch_id = (
+                action_decision.selected_branch_id
+            )
             policy_target = action_decision.policy_target
             (
                 policy_target_entropy,
                 policy_target_normalized_entropy,
             ) = _policy_entropy(policy_target)
-            continuation_analysis = action_decision.continuation_analysis
+            continuation_analysis = (
+                action_decision.continuation_analysis
+            )
 
             require_action_in_policy_support(
                 selected_action_id,
@@ -725,13 +695,17 @@ def generate_self_play_examples(request: GenerationRequest) -> Path:
             if selected_action_id == 0:
                 selected_action = make_do_nothing_action()
             else:
-                selected_action = search_result.root.actions_by_id[
-                    selected_action_id
-                ]
+                selected_action = (
+                    search_result.root.actions_by_id[
+                        selected_action_id
+                    ]
+                )
 
             step_result = env.step(selected_action)
             rewards.append(float(step_result.reward))
-            state_id = f"scenario_{scenario_id:06d}_step_{step:03d}"
+            state_id = (
+                f"scenario_{scenario_id:06d}_step_{step:03d}"
+            )
             continuation_metadata = _continuation_metadata(
                 continuation_analysis,
                 selected_action_id,
@@ -744,9 +718,7 @@ def generate_self_play_examples(request: GenerationRequest) -> Path:
                     "action_mask": action_mask,
                     "scenario_id": scenario_id,
                     "step": step,
-                    "mcts_stream_seed": int(
-                        request.mcts_seed
-                    ),
+                    "mcts_stream_seed": int(request.mcts_seed),
                     "action_sampling_stream_seed": int(
                         request.action_seed
                     ),
@@ -782,7 +754,9 @@ def generate_self_play_examples(request: GenerationRequest) -> Path:
                     "policy_target_source": (
                         "temperature_adjusted_mcts_visit_distribution"
                     ),
-                    "execution_action_source": "policy_target_sampling",
+                    "execution_action_source": (
+                        "policy_target_sampling"
+                    ),
                     "mcts_best_action_id": (
                         None
                         if search_result.best_action_id is None
@@ -790,7 +764,11 @@ def generate_self_play_examples(request: GenerationRequest) -> Path:
                     ),
                     "mcts_best_branch_id": (
                         None
-                        if getattr(search_result, "best_branch_id", None) is None
+                        if getattr(
+                            search_result,
+                            "best_branch_id",
+                            None,
+                        ) is None
                         else int(search_result.best_branch_id)
                     ),
                     "mcts_legal_action_count": int(
@@ -816,18 +794,17 @@ def generate_self_play_examples(request: GenerationRequest) -> Path:
                 f"Step {step:02d}: "
                 f"action={selected_action_id}, "
                 f"branch={selected_branch_id}, "
-                f"temperature="
-                f"{effective_temperature:.4f}, "
+                f"temperature={effective_temperature:.4f}, "
                 f"selection={selection_mode}, "
-                f"continuation_recommendation="
+                "continuation_recommendation="
                 f"{continuation_metadata['continuation_recommended_action_id']}, "
-                f"continuation_reason="
+                "continuation_reason="
                 f"{continuation_metadata['continuation_recommendation_reason']}, "
-                f"coverage="
+                "coverage="
                 f"{search_result.root_considered_action_count}/"
                 f"{search_result.root_legal_action_count} "
                 f"({search_result.root_action_coverage:.1%}), "
-                f"visited="
+                "visited="
                 f"{search_result.root_visited_action_count}/"
                 f"{search_result.root_legal_action_count} "
                 f"({search_result.root_visited_action_coverage:.1%}), "
@@ -842,11 +819,29 @@ def generate_self_play_examples(request: GenerationRequest) -> Path:
         final_done = bool(env.done)
         final_solved = bool(env.solved)
         final_reason = env.termination_reason
+        final_evidence = env.terminal_outcome_evidence
 
-        returns = discounted_returns(rewards, request.config.gamma)
+        if pending_examples and (
+            not final_done
+            or final_reason is None
+            or final_evidence is None
+        ):
+            raise RuntimeError(
+                "Self-play episode ended without validated terminal "
+                f"outcome evidence for scenario {scenario_id}."
+            )
+
+        returns = discounted_returns(
+            rewards,
+            request.config.gamma,
+        )
         final_return = returns[0] if returns else 0.0
 
-        for item, return_from_step in zip(pending_examples, returns):
+        for item, return_from_step in zip(
+            pending_examples,
+            returns,
+        ):
+            assert final_evidence is not None
             example_writer.add_example(
                 state=item["state"],
                 state_id=item["state_id"],
@@ -857,18 +852,19 @@ def generate_self_play_examples(request: GenerationRequest) -> Path:
                 selected_branch_id=item["selected_branch_id"],
                 step_reward=item["step_reward"],
                 final_return=final_return,
-                discounted_return_from_step=float(return_from_step),
+                discounted_return_from_step=float(
+                    return_from_step
+                ),
                 solved=final_solved,
                 done=final_done,
                 termination_reason=final_reason,
+                terminal_outcome_evidence=final_evidence,
                 visit_counts=item["visit_counts"],
                 mcts_policy=item["mcts_policy"],
                 selection_temperature=float(
                     item["selection_temperature"]
                 ),
-                selection_mode=str(
-                    item["selection_mode"]
-                ),
+                selection_mode=str(item["selection_mode"]),
                 policy_target_entropy=float(
                     item["policy_target_entropy"]
                 ),
@@ -900,9 +896,7 @@ def generate_self_play_examples(request: GenerationRequest) -> Path:
                         item["mcts_stream_seed"]
                     ),
                     "action_sampling_stream_seed": int(
-                        item[
-                            "action_sampling_stream_seed"
-                        ]
+                        item["action_sampling_stream_seed"]
                     ),
                     "scenario_mcts_seed": int(
                         item["scenario_mcts_seed"]
@@ -935,7 +929,9 @@ def generate_self_play_examples(request: GenerationRequest) -> Path:
                     "temperature_iterations": int(
                         request.config.temperature_iterations
                     ),
-                    "mcts_simulations": int(request.config.simulations),
+                    "mcts_simulations": int(
+                        request.config.simulations
+                    ),
                     "mcts_depth": int(request.config.depth),
                     "mcts_top_k": int(request.config.top_k),
                     "mcts_widening_coefficient": float(
@@ -966,11 +962,15 @@ def generate_self_play_examples(request: GenerationRequest) -> Path:
                             "mcts_visited_action_coverage"
                         ]
                     ),
-                    "pf_alg": request.resolved_physics_config.pf_alg,
+                    "pf_alg": (
+                        request.resolved_physics_config.pf_alg
+                    ),
                     "use_continuation_gate": bool(
                         request.config.use_continuation_gate
                     ),
-                    "policy_target_source": item["policy_target_source"],
+                    "policy_target_source": item[
+                        "policy_target_source"
+                    ],
                     "execution_action_source": item[
                         "execution_action_source"
                     ],
@@ -989,8 +989,12 @@ def generate_self_play_examples(request: GenerationRequest) -> Path:
                     "selected_action_allowed_by_continuation": item[
                         "selected_action_allowed_by_continuation"
                     ],
-                    "mcts_best_action_id": item["mcts_best_action_id"],
-                    "mcts_best_branch_id": item["mcts_best_branch_id"],
+                    "mcts_best_action_id": item[
+                        "mcts_best_action_id"
+                    ],
+                    "mcts_best_branch_id": item[
+                        "mcts_best_branch_id"
+                    ],
                 },
             )
             total_examples += 1
@@ -1007,7 +1011,6 @@ def generate_self_play_examples(request: GenerationRequest) -> Path:
 
     print("\nPower flow cache:")
     print(backend.cache_info())
-
     print("\nAction space cache:")
     print(action_space.cache_info())
 
@@ -1024,7 +1027,10 @@ def generate_self_play_examples(request: GenerationRequest) -> Path:
 
     elapsed = time.perf_counter() - start_time
     print("\nTiming:")
-    print(f"Self-play generation elapsed time: {elapsed:.4f} sec")
+    print(
+        "Self-play generation elapsed time: "
+        f"{elapsed:.4f} sec"
+    )
     print("\nDone.")
 
     return examples_path

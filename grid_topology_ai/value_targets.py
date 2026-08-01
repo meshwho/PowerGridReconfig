@@ -8,6 +8,10 @@ import numpy as np
 import pandas as pd
 
 from grid_topology_ai.contracts import OUTCOME_VALUE_TARGET_CONTRACT_VERSION
+from grid_topology_ai.outcome_contract import (
+    TERMINAL_OUTCOME_EVIDENCE_SCHEMA_VERSION,
+    TerminalOutcomeEvidence,
+)
 from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
 from grid_topology_ai.return_contract import (
     VALUE_TARGET_MODE,
@@ -36,37 +40,115 @@ def _require_gamma(value: object) -> float:
 def terminal_value_from_outcome(
     solved: bool,
     termination_reason: TerminationReason | str | None,
+    *,
+    evidence: TerminalOutcomeEvidence | None = None,
 ) -> tuple[float, str]:
     """Compatibility name for the canonical terminal-utility mapping."""
     return terminal_utility_from_outcome(
         _require_bool(solved, field="solved"),
         termination_reason,
+        evidence=evidence,
     )
 
 
-def _require_group_key(row: Mapping[str, object], key: str) -> object:
+def terminal_evidence_from_row(
+    row: Mapping[str, object],
+    *,
+    context: str,
+) -> TerminalOutcomeEvidence:
+    """Parse and validate terminal evidence stored on one example row."""
+
+    version = row.get("terminal_outcome_evidence_schema_version")
+    if (
+        isinstance(version, (bool, np.bool_))
+        or not isinstance(version, Integral)
+        or int(version)
+        != TERMINAL_OUTCOME_EVIDENCE_SCHEMA_VERSION
+    ):
+        raise ValueError(
+            f"{context}: unsupported terminal outcome evidence schema "
+            f"version {version!r}."
+        )
+
+    try:
+        evidence = TerminalOutcomeEvidence.from_json(
+            row.get("terminal_outcome_evidence_json")
+        )
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"{context}: invalid terminal outcome evidence: {exc}"
+        ) from exc
+
+    solved = _require_bool(row.get("solved"), field="solved")
+    try:
+        reason = parse_termination_reason(
+            row.get("termination_reason"),
+            allow_none=False,
+        )
+        validate_outcome_invariants(
+            solved=solved,
+            termination_reason=reason,
+        )
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"{context}: invalid terminal outcome: {exc}"
+        ) from exc
+
+    if (
+        evidence.solved is not solved
+        or evidence.termination_reason is not reason
+    ):
+        raise ValueError(
+            f"{context}: terminal outcome evidence contradicts "
+            "solved or termination_reason."
+        )
+
+    return evidence
+
+
+def _require_group_key(
+    row: Mapping[str, object],
+    key: str,
+) -> object:
     if key not in row:
         raise ValueError(f"Missing required group key {key!r}")
     value = row[key]
-    if value is None or (isinstance(value, str) and not value.strip()):
+    if value is None or (
+        isinstance(value, str)
+        and not value.strip()
+    ):
         raise ValueError(f"Invalid group key {key!r}: {value!r}")
     if isinstance(value, (bool, np.bool_)):
         raise ValueError(f"Invalid group key {key!r}: {value!r}")
+
     missing = pd.isna(value)
     if not isinstance(missing, (bool, np.bool_)):
-        raise ValueError(f"Group key {key!r} must be a hashable scalar, got {value!r}")
-    if bool(missing) or (isinstance(value, Real) and not math.isfinite(float(value))):
+        raise ValueError(
+            f"Group key {key!r} must be a hashable scalar, "
+            f"got {value!r}"
+        )
+    if bool(missing) or (
+        isinstance(value, Real)
+        and not math.isfinite(float(value))
+    ):
         raise ValueError(f"Invalid group key {key!r}: {value!r}")
+
     try:
         hash(value)
     except TypeError as exc:
-        raise ValueError(f"Group key {key!r} must be hashable, got {value!r}") from exc
+        raise ValueError(
+            f"Group key {key!r} must be hashable, got {value!r}"
+        ) from exc
+
     if key == "scenario_id" and (
         not isinstance(value, Integral)
         or isinstance(value, (bool, np.bool_))
         or int(value) < 0
     ):
-        raise ValueError(f"scenario_id must be a non-negative integer, got {value!r}")
+        raise ValueError(
+            "scenario_id must be a non-negative integer, "
+            f"got {value!r}"
+        )
     return value
 
 
@@ -74,11 +156,18 @@ def _require_step(row: Mapping[str, object]) -> int:
     if "step" not in row:
         raise ValueError("Missing required step")
     value = row["step"]
-    if isinstance(value, (bool, np.bool_)) or not isinstance(value, Integral):
-        raise ValueError(f"step must be a non-negative integer, got {value!r}")
+    if (
+        isinstance(value, (bool, np.bool_))
+        or not isinstance(value, Integral)
+    ):
+        raise ValueError(
+            f"step must be a non-negative integer, got {value!r}"
+        )
     step = int(value)
     if step < 0:
-        raise ValueError(f"step must be a non-negative integer, got {value!r}")
+        raise ValueError(
+            f"step must be a non-negative integer, got {value!r}"
+        )
     return step
 
 
@@ -87,87 +176,130 @@ def add_outcome_value_targets_to_rows(
     gamma: float,
     group_keys: tuple[str, ...] = ("scenario_id",),
 ) -> None:
-    """Atomically derive discounted terminal-utility targets for episode rows."""
+    """Atomically derive discounted terminal-utility targets."""
+
     normalized_gamma = require_discount_factor(gamma)
     if (
         not isinstance(group_keys, tuple)
         or not group_keys
-        or any(not isinstance(key, str) or not key.strip() for key in group_keys)
+        or any(
+            not isinstance(key, str)
+            or not key.strip()
+            for key in group_keys
+        )
         or len(set(group_keys)) != len(group_keys)
     ):
-        raise ValueError("group_keys must be a non-empty tuple of unique field names")
+        raise ValueError(
+            "group_keys must be a non-empty tuple of unique field names"
+        )
 
-    groups: dict[tuple[object, ...], list[tuple[int, dict[str, object]]]] = {}
+    groups: dict[
+        tuple[object, ...],
+        list[tuple[int, dict[str, object]]],
+    ] = {}
     for row in rows:
         if (
             row.get("physical_objective_schema_version")
             != PHYSICAL_OBJECTIVE_SCHEMA_VERSION
         ):
             raise ValueError(
-                "Cannot derive current outcome value targets from legacy solved labels."
+                "Cannot derive current outcome value targets from "
+                "legacy solved labels."
             )
-        key = tuple(_require_group_key(row, name) for name in group_keys)
-        groups.setdefault(key, []).append((_require_step(row), row))
+        key = tuple(
+            _require_group_key(row, name)
+            for name in group_keys
+        )
+        groups.setdefault(key, []).append(
+            (_require_step(row), row)
+        )
 
-    pending_updates: list[tuple[dict[str, object], dict[str, object]]] = []
+    pending_updates: list[
+        tuple[dict[str, object], dict[str, object]]
+    ] = []
+
     for key, indexed_rows in groups.items():
         steps = [step for step, _ in indexed_rows]
         if len(steps) != len(set(steps)):
-            raise ValueError(f"Duplicate step in episode group {key!r}")
+            raise ValueError(
+                f"Duplicate step in episode group {key!r}"
+            )
         indexed_rows.sort(key=lambda item: item[0])
 
         expected_solved: bool | None = None
         expected_reason: TerminationReason | None = None
+        expected_evidence: TerminalOutcomeEvidence | None = None
+
         for _, row in indexed_rows:
-            solved = _require_bool(row.get("solved"), field="solved")
-            done = _require_bool(row.get("done"), field="done")
+            done = _require_bool(
+                row.get("done"),
+                field="done",
+            )
             if not done:
                 raise ValueError(
-                    "done must be True; cannot derive outcome target from an "
-                    "unfinished episode."
+                    "done must be True; cannot derive outcome target "
+                    "from an unfinished episode."
                 )
-            try:
-                reason = parse_termination_reason(
-                    row.get("termination_reason"),
-                    allow_none=False,
-                )
-                validate_outcome_invariants(
-                    solved=solved,
-                    termination_reason=reason,
-                )
-            except (TypeError, ValueError) as exc:
-                raise ValueError(
-                    f"Invalid terminal outcome in episode group {key!r}: {exc}"
-                ) from exc
+
+            evidence = terminal_evidence_from_row(
+                row,
+                context=f"episode group {key!r}",
+            )
+            solved = evidence.solved
+            reason = evidence.termination_reason
+
             if expected_solved is None:
-                expected_solved, expected_reason = solved, reason
-            elif solved != expected_solved or reason != expected_reason:
+                expected_solved = solved
+                expected_reason = reason
+                expected_evidence = evidence
+            elif (
+                solved != expected_solved
+                or reason is not expected_reason
+                or evidence != expected_evidence
+            ):
                 raise ValueError(
-                    f"Cannot derive targets from mixed episode outcomes in group {key!r}"
+                    "Cannot derive targets from mixed terminal evidence "
+                    f"in episode group {key!r}"
                 )
 
-        if expected_solved is None or expected_reason is None:
-            raise RuntimeError(f"Episode group {key!r} unexpectedly has no rows")
+        if (
+            expected_solved is None
+            or expected_reason is None
+            or expected_evidence is None
+        ):
+            raise RuntimeError(
+                f"Episode group {key!r} unexpectedly has no rows"
+            )
 
-        terminal_utility, outcome_class = terminal_utility_from_outcome(
-            expected_solved,
-            expected_reason,
+        terminal_utility, outcome_class = (
+            terminal_utility_from_outcome(
+                expected_solved,
+                expected_reason,
+                evidence=expected_evidence,
+            )
         )
         total = len(indexed_rows)
+
         for position, (_, row) in enumerate(indexed_rows):
             steps_to_terminal = total - position
             pending_updates.append(
                 (
                     row,
                     {
-                        "outcome_value_target": discounted_terminal_utility(
-                            terminal_utility,
-                            steps_to_terminal=steps_to_terminal,
-                            gamma=normalized_gamma,
+                        "outcome_value_target": (
+                            discounted_terminal_utility(
+                                terminal_utility,
+                                steps_to_terminal=steps_to_terminal,
+                                gamma=normalized_gamma,
+                            )
                         ),
                         "outcome_class": outcome_class,
-                        "outcome_steps_to_terminal": steps_to_terminal,
-                        "outcome_value_target_mode": VALUE_TARGET_MODE,
+                        "outcome_steps_to_terminal": (
+                            steps_to_terminal
+                        ),
+                        "outcome_value_target_mode": (
+                            VALUE_TARGET_MODE
+                        ),
                         "outcome_gamma": normalized_gamma,
                         "outcome_value_target_contract_version": (
                             OUTCOME_VALUE_TARGET_CONTRACT_VERSION
