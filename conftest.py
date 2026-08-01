@@ -42,7 +42,15 @@ _ROW_BUILDERS = (
     "rows",
     "_stage_rows",
     "_example_row",
+    "_valid_example_row",
     "semantic_invalid_handoff_row",
+)
+
+_CHECKPOINT_BUILDERS = (
+    "_checkpoint",
+    "_checkpoint_payload",
+    "_valid_checkpoint",
+    "checkpoint_payload",
 )
 
 
@@ -202,6 +210,24 @@ def _enrich_checkpoint(payload: Mapping[str, object]) -> dict[str, object]:
     return result
 
 
+def _wrap_checkpoint_builder(
+    module: object,
+    name: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    builder = getattr(module, name, None)
+    if builder is None or not callable(builder):
+        return
+
+    def current_builder(*args: object, **kwargs: object) -> Any:
+        value = builder(*args, **kwargs)
+        if isinstance(value, Mapping):
+            return _enrich_checkpoint(value)
+        return value
+
+    monkeypatch.setattr(module, name, current_builder)
+
+
 @pytest.fixture(autouse=True)
 def _current_state_schema_fixtures(
     request: pytest.FixtureRequest,
@@ -213,6 +239,8 @@ def _current_state_schema_fixtures(
 
     for name in _ROW_BUILDERS:
         _wrap_row_builder(request.module, name, monkeypatch)
+    for name in _CHECKPOINT_BUILDERS:
+        _wrap_checkpoint_builder(request.module, name, monkeypatch)
 
     original_savez = np.savez
 
