@@ -1,16 +1,21 @@
 from __future__ import annotations
 
-import copy
 from dataclasses import dataclass
 from typing import Any
 
 from grid_topology_ai.action_space import GridFMAction, GridFMActionSpace
 from grid_topology_ai.data_adapter import GridFMAdapter, GridFMState
+from grid_topology_ai.outcome_contract import (
+    TERMINAL_OUTCOME_EVIDENCE_SCHEMA_VERSION,
+    TerminalOutcomeEvidence,
+    redispatch_status_for_reason,
+)
 from grid_topology_ai.pypower_backend import (
     GridFMPowerFlowBackend,
     GridFMPowerFlowResult,
 )
 from grid_topology_ai.physical_objective import (
+    PhysicalStateAssessment,
     assess_physical_state,
     classify_stop_outcome,
 )
@@ -18,20 +23,12 @@ from grid_topology_ai.reward import GridFMReward, GridFMRewardBreakdown
 from grid_topology_ai.termination import (
     TerminationReason,
     termination_reason_value,
-    validate_outcome_invariants,
 )
 
 
 @dataclass(frozen=True)
 class TopologyStepResult:
-    """
-    Result of one environment step.
-
-    This is the RL-style output:
-        next_state, reward, done, info
-
-    Additional fields are included for debugging and planning.
-    """
+    """Result of one environment step."""
 
     next_state: GridFMState | None
     reward: float
@@ -41,33 +38,12 @@ class TopologyStepResult:
     action: GridFMAction
     reward_breakdown: GridFMRewardBreakdown | None
     power_flow_result: GridFMPowerFlowResult | None
+    terminal_outcome_evidence: TerminalOutcomeEvidence | None
     info: dict[str, Any]
 
 
 class TopologySwitchingEnv:
-    """
-    Multi-step topology switching environment.
-
-    This class wraps:
-        GridFMAdapter
-        GridFMActionSpace
-        GridFMPowerFlowBackend
-        GridFMReward
-
-    Main interface:
-        state = env.reset(scenario_id)
-        result = env.step(action)
-
-    Important:
-        This environment applies actions to the current state,
-        not always to the original scenario.
-
-    This is the required foundation for:
-        - greedy rollout;
-        - beam search;
-        - MCTS;
-        - AlphaZero-like self-learning.
-    """
+    """Multi-step topology switching environment."""
 
     def __init__(
         self,
@@ -94,14 +70,10 @@ class TopologySwitchingEnv:
         self.switched_branch_ids: list[int] = []
         self.applied_actions: list[GridFMAction] = []
         self.termination_reason: TerminationReason | None = None
+        self.terminal_outcome_evidence: TerminalOutcomeEvidence | None = None
 
     def reset(self, scenario_id: int) -> GridFMState:
-        """
-        Reset the environment through the canonical AC power-flow backend.
-
-        Raw adapter states are never exposed as MDP states because they do not
-        carry authoritative solver provenance.
-        """
+        """Reset through the canonical AC power-flow backend."""
 
         scenario_id = int(scenario_id)
         self.current_state = None
@@ -112,14 +84,18 @@ class TopologySwitchingEnv:
         self.switched_branch_ids = []
         self.applied_actions = []
         self.termination_reason = None
+        self.terminal_outcome_evidence = None
 
         initial_result = self.backend.run_power_flow(
             scenario_id=scenario_id,
             switched_off_branch_id=None,
         )
         if not initial_result.success or initial_result.next_state is None:
-            self.done = True
-            self.termination_reason = TerminationReason.POWER_FLOW_FAILED
+            self._finish_episode(
+                solved=False,
+                termination_reason=TerminationReason.POWER_FLOW_FAILED,
+                assessment=None,
+            )
             failure_kind = (
                 initial_result.failure_kind.value
                 if initial_result.failure_kind is not None
@@ -134,101 +110,62 @@ class TopologySwitchingEnv:
         self.current_state = initial_result.next_state
         assessment = assess_physical_state(self.current_state.metrics)
         if assessment.physically_secure:
-            self.done = True
-            self.solved = True
-            self.termination_reason = TerminationReason.SOLVED
+            self._finish_episode(
+                solved=True,
+                termination_reason=TerminationReason.SOLVED,
+                assessment=assessment,
+            )
 
         return self.current_state
 
     def valid_actions(self) -> list[GridFMAction]:
-        """
-        Return valid actions for the current state.
-        """
-
         self._require_active_episode()
-
         assert self.current_state is not None
-
         return self.action_space.valid_actions(self.current_state)
 
     def structural_action_mask(self):
-        """
-        Return the structural action mask for the current state.
-        """
-
         self._require_active_episode()
-
         assert self.current_state is not None
-
         return self.action_space.structural_action_mask(self.current_state)
 
     def operational_action_mask(self):
-        """
-        Return the operational action mask for the current state.
-        """
-
         self._require_active_episode()
-
         assert self.current_state is not None
-
         return self.action_space.operational_action_mask(self.current_state)
 
     def valid_action_mask(self):
-        """
-        Compatibility alias for the operational action mask.
-        """
-
         return self.operational_action_mask()
 
     def action_by_id(self, action_id: int) -> GridFMAction:
-        """
-        Convert integer action_id to GridFMAction and validate it.
-        """
-
         self._require_active_episode()
-
         assert self.current_state is not None
 
         all_actions = self.action_space.build_all_actions(self.current_state)
-
         if action_id < 0 or action_id >= len(all_actions):
             raise ValueError(f"Invalid action_id: {action_id}")
 
         action = all_actions[action_id]
         mask = self.action_space.valid_action_mask(self.current_state)
-
         if not bool(mask[action_id]):
-            raise ValueError(f"Action {action_id} is not valid in current state.")
-
+            raise ValueError(
+                f"Action {action_id} is not valid in current state."
+            )
         return action
 
     def action_by_branch_id(self, branch_id: int) -> GridFMAction:
-        """
-        Find the valid branch-status action for a branch.
-        """
-
         branch_id = int(branch_id)
-
         for action in self.valid_actions():
             if (
                 action.kind == "set_branch_status"
                 and action.branch_id == branch_id
             ):
                 return action
-
         raise ValueError(
             f"Branch {branch_id} has no valid status-change action "
             "in the current state."
         )
 
     def step(self, action: GridFMAction | int) -> TopologyStepResult:
-        """
-        Apply one action to the current state.
-
-        Integer inputs are resolved through the current action mask. Action
-        objects are checked against the current state to reject stale commands.
-        """
-
         self._require_active_episode()
 
         if isinstance(action, int):
@@ -237,35 +174,28 @@ class TopologySwitchingEnv:
             canonical_action = self.action_by_id(int(action.action_id))
             if action != canonical_action:
                 raise ValueError(
-                    "Topology action is stale or does not match the current state."
+                    "Topology action is stale or does not match the current "
+                    "state."
                 )
             action = canonical_action
 
         if action.kind == "stop":
             return self._step_do_nothing(action)
-
         if action.kind == "set_branch_status":
             return self._step_branch_status(action)
-
         raise ValueError(f"Unsupported action kind: {action.kind!r}.")
 
     def clone(self) -> "TopologySwitchingEnv":
-        """
-        Create a copy of the environment.
-
-        This is useful for search algorithms:
-            MCTS / beam search can branch without modifying the original env.
-        """
-
         cloned = TopologySwitchingEnv(
             adapter=self.adapter,
             backend=self.backend,
             action_space=self.action_space,
             reward_fn=self.reward_fn,
             max_steps=self.max_steps,
-            allow_handoff_with_hard_overloads=self.allow_handoff_with_hard_overloads,
+            allow_handoff_with_hard_overloads=(
+                self.allow_handoff_with_hard_overloads
+            ),
         )
-
         cloned.current_state = self.current_state
         cloned.initial_scenario_id = self.initial_scenario_id
         cloned.step_count = self.step_count
@@ -274,25 +204,10 @@ class TopologySwitchingEnv:
         cloned.switched_branch_ids = list(self.switched_branch_ids)
         cloned.applied_actions = list(self.applied_actions)
         cloned.termination_reason = self.termination_reason
-
+        cloned.terminal_outcome_evidence = self.terminal_outcome_evidence
         return cloned
 
     def _step_do_nothing(self, action: GridFMAction) -> TopologyStepResult:
-        """
-        Stop the topology switching episode.
-
-        In a multi-step environment, do_nothing is interpreted as:
-
-        1. solved
-           if the authoritative physical contract is satisfied;
-
-        2. handoff_to_redispatch
-           if topology switching should stop but the grid is not fully solved.
-
-        This is important for the future architecture:
-            topology switching -> if not enough -> redispatch.
-        """
-
         assert self.current_state is not None
 
         assessment = assess_physical_state(self.current_state.metrics)
@@ -302,21 +217,16 @@ class TopologySwitchingEnv:
             action_is_switching=False,
             power_flow_success=assessment.power_flow_converged,
         )
-
         outcome = classify_stop_outcome(
             assessment,
             allow_handoff_with_hard_overloads=(
                 self.allow_handoff_with_hard_overloads
             ),
         )
-
-        self.done = True
-        self.solved = outcome.solved
-        self.termination_reason = outcome.termination_reason
-        validate_outcome_invariants(
-            solved=self.solved,
-            termination_reason=self.termination_reason,
-            physically_secure=assessment.physically_secure,
+        evidence = self._finish_episode(
+            solved=outcome.solved,
+            termination_reason=outcome.termination_reason,
+            assessment=assessment,
         )
 
         return TopologyStepResult(
@@ -328,14 +238,14 @@ class TopologySwitchingEnv:
             action=action,
             reward_breakdown=reward_breakdown,
             power_flow_result=None,
+            terminal_outcome_evidence=evidence,
             info=self._info(),
         )
 
-    def _step_branch_status(self, action: GridFMAction) -> TopologyStepResult:
-        """
-        Set one branch status and run power flow from the current physical state.
-        """
-
+    def _step_branch_status(
+        self,
+        action: GridFMAction,
+    ) -> TopologyStepResult:
         assert self.current_state is not None
 
         before_state = self.current_state
@@ -343,7 +253,6 @@ class TopologySwitchingEnv:
             state=before_state,
             action=action,
         )
-
         reward_breakdown = self.reward_fn.compute(
             before_state=before_state,
             after_state=power_flow_result.next_state,
@@ -353,15 +262,15 @@ class TopologySwitchingEnv:
 
         self.step_count += 1
         self.applied_actions.append(action)
-
         if action.branch_id is not None:
             self.switched_branch_ids.append(int(action.branch_id))
 
         if not power_flow_result.success or power_flow_result.next_state is None:
-            self.done = True
-            self.solved = False
-            self.termination_reason = TerminationReason.POWER_FLOW_FAILED
-
+            evidence = self._finish_episode(
+                solved=False,
+                termination_reason=TerminationReason.POWER_FLOW_FAILED,
+                assessment=None,
+            )
             return TopologyStepResult(
                 next_state=None,
                 reward=float(reward_breakdown.reward),
@@ -371,29 +280,31 @@ class TopologySwitchingEnv:
                 action=action,
                 reward_breakdown=reward_breakdown,
                 power_flow_result=power_flow_result,
+                terminal_outcome_evidence=evidence,
                 info=self._info(),
             )
 
         self.current_state = power_flow_result.next_state
         assessment = assess_physical_state(self.current_state.metrics)
-        self.solved = assessment.physically_secure
 
-        if self.solved:
-            self.done = True
-            self.termination_reason = TerminationReason.SOLVED
+        if assessment.physically_secure:
+            evidence = self._finish_episode(
+                solved=True,
+                termination_reason=TerminationReason.SOLVED,
+                assessment=assessment,
+            )
         elif self.step_count >= self.max_steps:
-            self.done = True
-            self.termination_reason = TerminationReason.MAX_STEPS_REACHED
+            evidence = self._finish_episode(
+                solved=False,
+                termination_reason=TerminationReason.MAX_STEPS_REACHED,
+                assessment=assessment,
+            )
         else:
             self.done = False
+            self.solved = False
             self.termination_reason = None
-
-        if self.done:
-            validate_outcome_invariants(
-                solved=self.solved,
-                termination_reason=self.termination_reason,
-                physically_secure=assessment.physically_secure,
-            )
+            self.terminal_outcome_evidence = None
+            evidence = None
 
         return TopologyStepResult(
             next_state=self.current_state,
@@ -404,14 +315,33 @@ class TopologySwitchingEnv:
             action=action,
             reward_breakdown=reward_breakdown,
             power_flow_result=power_flow_result,
+            terminal_outcome_evidence=evidence,
             info=self._info(),
         )
 
-    def _info(self) -> dict[str, Any]:
-        """
-        Build debugging info dictionary.
-        """
+    def _finish_episode(
+        self,
+        *,
+        solved: bool,
+        termination_reason: TerminationReason,
+        assessment: PhysicalStateAssessment | None,
+    ) -> TerminalOutcomeEvidence:
+        evidence = TerminalOutcomeEvidence(
+            solved=bool(solved),
+            termination_reason=termination_reason,
+            assessment=assessment,
+            redispatch_status=redispatch_status_for_reason(
+                termination_reason
+            ),
+        )
+        self.done = True
+        self.solved = evidence.solved
+        self.termination_reason = evidence.termination_reason
+        self.terminal_outcome_evidence = evidence
+        return evidence
 
+    def _info(self) -> dict[str, Any]:
+        evidence = self.terminal_outcome_evidence
         return {
             "initial_scenario_id": self.initial_scenario_id,
             "step_count": self.step_count,
@@ -421,6 +351,14 @@ class TopologySwitchingEnv:
             "termination_reason": self.termination_reason,
             "termination_reason_value": termination_reason_value(
                 self.termination_reason
+            ),
+            "terminal_outcome_evidence_schema_version": (
+                None
+                if evidence is None
+                else TERMINAL_OUTCOME_EVIDENCE_SCHEMA_VERSION
+            ),
+            "terminal_outcome_evidence": (
+                None if evidence is None else evidence.to_dict()
             ),
             "switched_branch_ids": list(self.switched_branch_ids),
             "applied_actions": [
@@ -443,16 +381,13 @@ class TopologySwitchingEnv:
         }
 
     def _require_active_episode(self) -> None:
-        """
-        Ensure that reset() was called and episode is not already done.
-        """
-
         if self.current_state is None:
-            raise RuntimeError("Environment is not initialized. Call reset() first.")
-
+            raise RuntimeError(
+                "Environment is not initialized. Call reset() first."
+            )
         if self.done:
             raise RuntimeError(
-                f"Episode is already done. "
+                "Episode is already done. "
                 f"Termination reason: {self.termination_reason}. "
-                f"Call reset() to start a new episode."
+                "Call reset() to start a new episode."
             )

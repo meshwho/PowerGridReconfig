@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import math
 from dataclasses import asdict, dataclass, fields
 from enum import StrEnum
@@ -72,6 +73,22 @@ _INTEGER_ASSESSMENT_FIELDS = frozenset(
         "num_angle_difference_violations",
     }
 )
+
+
+def redispatch_status_for_reason(
+    termination_reason: TerminationReason | str,
+) -> RedispatchStatus:
+    reason = parse_termination_reason(
+        termination_reason,
+        allow_none=False,
+    )
+    assert reason is not None
+
+    if reason is TerminationReason.REDISPATCH_VALIDATED:
+        return RedispatchStatus.VALIDATED
+    if reason in _REQUESTED_REDISPATCH_REASONS:
+        return RedispatchStatus.REQUESTED
+    return RedispatchStatus.NOT_REQUESTED
 
 
 def _parse_redispatch_status(value: object) -> RedispatchStatus:
@@ -226,6 +243,12 @@ def _assessment_from_mapping(
     return assessment
 
 
+def _reject_json_constant(value: str) -> None:
+    raise ValueError(
+        f"Non-finite JSON constant {value!r} is not allowed."
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class TerminalOutcomeEvidence:
     """Physical evidence for one classified terminal episode outcome."""
@@ -283,13 +306,7 @@ class TerminalOutcomeEvidence:
             termination_reason=reason,
         )
 
-        if reason is TerminationReason.REDISPATCH_VALIDATED:
-            expected_status = RedispatchStatus.VALIDATED
-        elif reason in _REQUESTED_REDISPATCH_REASONS:
-            expected_status = RedispatchStatus.REQUESTED
-        else:
-            expected_status = RedispatchStatus.NOT_REQUESTED
-
+        expected_status = redispatch_status_for_reason(reason)
         if status is not expected_status:
             raise ValueError(
                 f"{reason.value} requires "
@@ -374,6 +391,38 @@ class TerminalOutcomeEvidence:
                 else asdict(self.redispatch_assessment)
             ),
         }
+
+    def to_json(self) -> str:
+        return json.dumps(
+            self.to_dict(),
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+
+    @classmethod
+    def from_json(
+        cls,
+        value: object,
+    ) -> "TerminalOutcomeEvidence":
+        if not isinstance(value, str) or not value.strip():
+            raise TypeError(
+                "terminal outcome evidence JSON must be a non-empty string."
+            )
+        try:
+            payload = json.loads(
+                value,
+                parse_constant=_reject_json_constant,
+            )
+        except (json.JSONDecodeError, ValueError) as exc:
+            raise ValueError(
+                "Invalid terminal outcome evidence JSON."
+            ) from exc
+        if not isinstance(payload, Mapping):
+            raise ValueError(
+                "Terminal outcome evidence JSON must contain an object."
+            )
+        return cls.from_mapping(payload)
 
     @classmethod
     def from_mapping(

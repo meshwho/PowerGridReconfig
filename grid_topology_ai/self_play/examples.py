@@ -14,6 +14,10 @@ from grid_topology_ai.contracts import (
     topology_action_provenance,
 )
 from grid_topology_ai.data_adapter import GridFMState
+from grid_topology_ai.outcome_contract import (
+    TERMINAL_OUTCOME_EVIDENCE_SCHEMA_VERSION,
+    TerminalOutcomeEvidence,
+)
 from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
 from grid_topology_ai.search.root_policy import (
     normalize_policy,
@@ -47,6 +51,8 @@ class SelfPlayExample:
     solved: bool
     done: bool
     termination_reason: str | None
+    terminal_outcome_evidence_schema_version: int
+    terminal_outcome_evidence_json: str
     physical_objective_schema_version: int
     outcome_value_target_contract_version: int
     state_feature_schema_version: int
@@ -111,6 +117,7 @@ class ExampleWriter:
         solved: bool,
         done: bool,
         termination_reason: TerminationReason | str | None,
+        terminal_outcome_evidence: TerminalOutcomeEvidence,
         visit_counts: dict[int, int],
         mcts_policy: dict[int, float],
         selection_temperature: float | None = None,
@@ -137,12 +144,44 @@ class ExampleWriter:
             context=policy_context,
         )
 
+        if not isinstance(
+            terminal_outcome_evidence,
+            TerminalOutcomeEvidence,
+        ):
+            raise TypeError(
+                "terminal_outcome_evidence must be "
+                "TerminalOutcomeEvidence."
+            )
+        if not isinstance(done, bool) or not done:
+            raise ValueError(
+                "Self-play examples require a completed terminal episode."
+            )
+
+        parsed_reason = validate_outcome_invariants(
+            solved=bool(solved),
+            termination_reason=termination_reason,
+        )
+        if (
+            terminal_outcome_evidence.solved is not bool(solved)
+            or terminal_outcome_evidence.termination_reason is not parsed_reason
+        ):
+            raise ValueError(
+                "Terminal outcome evidence contradicts the example outcome."
+            )
+
+        evidence_json = terminal_outcome_evidence.to_json()
+        evidence_mapping = terminal_outcome_evidence.to_dict()
+
         provenance = physics_provenance(self.physics_config)
         state_metadata = dict(extra_metadata or {})
         state_metadata.update(provenance)
         state_metadata["outcome_value_target_contract_version"] = (
             OUTCOME_VALUE_TARGET_CONTRACT_VERSION
         )
+        state_metadata["terminal_outcome_evidence_schema_version"] = (
+            TERMINAL_OUTCOME_EVIDENCE_SCHEMA_VERSION
+        )
+        state_metadata["terminal_outcome_evidence"] = evidence_mapping
 
         action_layout = build_branch_action_slots(state.branch_ids)
         action_provenance = topology_action_provenance(
@@ -158,10 +197,6 @@ class ExampleWriter:
             extra_metadata=state_metadata,
         )
 
-        parsed_reason = validate_outcome_invariants(
-            solved=bool(solved),
-            termination_reason=termination_reason,
-        )
         example = SelfPlayExample(
             state_id=state_id,
             state_path=str(state_path),
@@ -169,14 +204,22 @@ class ExampleWriter:
             step=int(step),
             selected_action_id=int(selected_action_id),
             selected_branch_id=(
-                None if selected_branch_id is None else int(selected_branch_id)
+                None
+                if selected_branch_id is None
+                else int(selected_branch_id)
             ),
             step_reward=float(step_reward),
             final_return=float(final_return),
-            discounted_return_from_step=float(discounted_return_from_step),
+            discounted_return_from_step=float(
+                discounted_return_from_step
+            ),
             solved=bool(solved),
-            done=bool(done),
+            done=True,
             termination_reason=termination_reason_value(parsed_reason),
+            terminal_outcome_evidence_schema_version=(
+                TERMINAL_OUTCOME_EVIDENCE_SCHEMA_VERSION
+            ),
+            terminal_outcome_evidence_json=evidence_json,
             physical_objective_schema_version=(
                 PHYSICAL_OBJECTIVE_SCHEMA_VERSION
             ),
@@ -297,8 +340,6 @@ class ExampleWriter:
         self.examples.append(example)
 
     def save(self) -> Path:
-        """Save all examples to CSV."""
-
         frame = pd.DataFrame(
             [asdict(example) for example in self.examples]
         )
