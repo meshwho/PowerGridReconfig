@@ -90,5 +90,5 @@ class GridFMStateStore:
 
         bus_ids = values.astype(np.int64)
         if np.unique(bus_ids).size != bus_ids.size:
-            raise ValueEror("GridFMState.bus_ids must be unique.")
+            raise ValueError("GridFMState.bus_ids must be unique.")
         return bus_ids
