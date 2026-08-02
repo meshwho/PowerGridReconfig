@@ -261,6 +261,62 @@ def _validate_episode_identity(
             )
 
 
+def _validate_episode_outcome_consistency(
+    examples: pd.DataFrame,
+    *,
+    source: Path,
+) -> None:
+    if "episode_id" not in examples.columns:
+        return
+
+    for episode_id, group in examples.groupby(
+        "episode_id",
+        sort=False,
+    ):
+        for column in ("run_id", "iteration", "scenario_id"):
+            if (
+                column in group.columns
+                and group[column].nunique(dropna=False) != 1
+            ):
+                raise ValueError(
+                    f"Episode {episode_id!r} contains mixed {column} "
+                    f"values. File: {source}"
+                )
+
+        expected: tuple[object, ...] | None = None
+        for index, row in group.iterrows():
+            evidence = terminal_evidence_from_row(
+                row.to_dict(),
+                context=f"{source} row {index}",
+            )
+            signature = (
+                evidence,
+                _core._require_finite_number(
+                    row["outcome_value_target"],
+                    column="outcome_value_target",
+                    index=index,
+                    source=source,
+                ),
+                str(row["outcome_class"]).strip(),
+                str(row["outcome_value_target_mode"]).strip(),
+                _core._require_finite_number(
+                    row["outcome_gamma"],
+                    column="outcome_gamma",
+                    index=index,
+                    source=source,
+                ),
+                row["outcome_objective_version"],
+                row["outcome_value_target_contract_version"],
+            )
+            if expected is None:
+                expected = signature
+            elif signature != expected:
+                raise ValueError(
+                    f"Episode {episode_id!r} contains mixed terminal "
+                    f"outcomes or evidence. File: {source}"
+                )
+
+
 def validate_example_outcome_contracts(
     examples: pd.DataFrame,
     *,
@@ -301,6 +357,11 @@ def validate_example_outcome_contracts(
             index=index,
             source=source,
         )
+
+    _validate_episode_outcome_consistency(
+        examples,
+        source=source,
+    )
 
 
 def _validate_outcome_contract(

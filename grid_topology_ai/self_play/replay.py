@@ -115,6 +115,20 @@ def _load_examples_csv(path: str | Path) -> list[dict[str, Any]]:
     ]
 
 
+def _validate_replay_batch_outcomes(
+    rows: list[dict[str, Any]],
+    *,
+    source: str,
+) -> None:
+    if not rows:
+        return
+
+    validate_example_outcome_contracts(
+        pd.DataFrame(rows),
+        source_path=source,
+    )
+
+
 def _require_replay_row_contracts(
     row: dict[str, Any],
     *,
@@ -315,6 +329,10 @@ class RollingReplayBuffer:
             rows = _read_jsonl_gz(
                 self.save_dir / str(relative_path)
             )
+            _validate_replay_batch_outcomes(
+                rows,
+                source=str(relative_path),
+            )
             for row_index, row in enumerate(rows):
                 _require_replay_row_contracts(
                     row,
@@ -374,6 +392,11 @@ class RollingReplayBuffer:
         Low-level method: callers are responsible for validating rows before
         mutation when ingesting production self-play CSV data.
         """
+
+        _validate_replay_batch_outcomes(
+            examples,
+            source=f"replay iteration {iteration}",
+        )
 
         expected_action_space_config = None
         expected_action_layout = None
@@ -462,6 +485,10 @@ class RollingReplayBuffer:
         """
 
         iteration = int(iteration)
+        _validate_replay_batch_outcomes(
+            examples,
+            source=f"replay iteration {iteration}",
+        )
 
         expected_action_space_config = None
         expected_action_layout = None
