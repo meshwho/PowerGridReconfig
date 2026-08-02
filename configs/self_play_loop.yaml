@@ -58,7 +58,7 @@ replay_buffer:
   fresh_fraction: 0.70
   random_seed: 42
 
-# MCTS/value optimization uses discounted terminal utility. Environment rewards
+# MCTS/value optimization uses undiscounted terminal utility. Environment rewards
 # are diagnostic potential shaping only and introduce no terminal penalties.
 generation:
   simulations: 150

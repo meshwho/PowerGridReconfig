@@ -194,6 +194,10 @@ target. MCTS backs up the leaf utility unchanged across every traversed edge.
 Dense environment rewards and their accumulated return remain diagnostic and
 never enter the policy-value target or MCTS Q backup.
 
+All rows sharing one `episode_id` must carry the same terminal outcome,
+physical evidence, outcome class, target, gamma, and contract versions. CSV and
+replay validation reject mixed episode outcomes before loading or mutation.
+
 ## 6. MCTS target versus executed action
 
 The policy target is the MCTS visit distribution. The real self-play action is selected from that distribution according to the configured temperature schedule. Continuation analysis is diagnostic only: it records allowed/recommended actions and whether the selected action agrees, but it does not override the executed action or rewrite the policy target.
