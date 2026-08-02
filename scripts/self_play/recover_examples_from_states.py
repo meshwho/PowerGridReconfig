@@ -26,6 +26,10 @@ from grid_topology_ai.outcome_record import (
 from grid_topology_ai.physical_objective import (
     PHYSICAL_OBJECTIVE_SCHEMA_VERSION,
 )
+from grid_topology_ai.return_contract import (
+    TERMINAL_UTILITY_GAMMA,
+    require_reward_discount_factor,
+)
 from grid_topology_ai.termination import (
     parse_termination_reason,
     validate_outcome_invariants,
@@ -103,6 +107,13 @@ def _require_identity(
 
 
 def recover_examples(states_dir: Path, gamma: float) -> pd.DataFrame:
+    gamma = require_reward_discount_factor(gamma)
+    if gamma != TERMINAL_UTILITY_GAMMA:
+        raise ValueError(
+            "Recovery gamma must be exactly 1.0 for "
+            "undiscounted terminal utility."
+        )
+
     rows: list[dict[str, Any]] = []
     observed_physics_config: PhysicsConfig | None = None
 
@@ -312,7 +323,7 @@ def recover_examples(states_dir: Path, gamma: float) -> pd.DataFrame:
         for index in reversed(range(len(rewards))):
             running = (
                 float(rewards[index])
-                + float(gamma) * running
+                + gamma * running
             )
             returns[index] = float(running)
 
@@ -333,7 +344,7 @@ def recover_examples(states_dir: Path, gamma: float) -> pd.DataFrame:
     recovered_rows = recovered.to_dict(orient="records")
     add_outcome_value_targets_to_rows(
         rows=recovered_rows,
-        gamma=float(gamma),
+        gamma=gamma,
         group_keys=("episode_id",),
     )
     return pd.DataFrame(recovered_rows)
