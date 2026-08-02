@@ -16,7 +16,9 @@ from grid_topology_ai.physical_objective import (
     OVERLOAD_LIMIT_PERCENT,
     assess_physical_state,
 )
-from grid_topology_ai.return_contract import require_discount_factor
+from grid_topology_ai.return_contract import (
+    require_reward_discount_factor,
+)
 
 
 @dataclass(frozen=True)
@@ -107,7 +109,9 @@ class GridFMReward:
             )
 
         self.physics_config = physics_config
-        self.discount_factor = require_discount_factor(discount_factor)
+        self.discount_factor = require_reward_discount_factor(
+            discount_factor
+        )
         self.overload_limit_percent = float(overload_limit_percent)
         self.hard_overload_limit_percent = float(hard_overload_limit_percent)
         self.utility_weights = GridUtilityWeights(

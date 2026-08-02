@@ -23,8 +23,8 @@ DEFAULT_HEURISTIC_UTILITY_SCALE = 500.0
 _UTILITY_TOLERANCE = 1e-7
 
 
-def require_discount_factor(value: object) -> float:
-    """Validate a discount factor shared by MCTS and target generation."""
+def require_reward_discount_factor(value: object) -> float:
+    """Validate the discount used by diagnostic reward accumulation."""
     if isinstance(value, bool) or not isinstance(value, Real):
         raise ValueError(
             f"gamma must be a finite real number in [0, 1], got {value!r}"
@@ -35,6 +35,12 @@ def require_discount_factor(value: object) -> float:
             f"gamma must be a finite real number in [0, 1], got {value!r}"
         )
     return gamma
+
+
+def require_discount_factor(value: object) -> float:
+    """Validate a caller gamma and return the fixed terminal-utility gamma."""
+    require_reward_discount_factor(value)
+    return TERMINAL_UTILITY_GAMMA
 
 
 def require_bounded_utility(value: object, *, context: str) -> float:
@@ -121,7 +127,7 @@ def discounted_terminal_utility(
             "steps_to_terminal must be a non-negative integer, "
             f"got {steps_to_terminal!r}"
         )
-    discount = require_discount_factor(gamma)
+    discount = require_reward_discount_factor(gamma)
     return float(utility * discount ** int(steps_to_terminal))
 
 

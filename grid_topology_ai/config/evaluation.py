@@ -24,7 +24,7 @@ class EvaluationConfig:
     widening_coefficient: float = 2.0
     widening_exponent: float = 0.5
     random_seed: int = 42
-    gamma: float = 1.0
+    gamma: float = 0.95
     c_puct: float = 2.0
     prior_exponent: float = 0.5
 
@@ -86,19 +86,10 @@ class EvaluationConfig:
             {1, 2, 3, 4},
         )
         require_fraction("evaluation.gamma", self.gamma)
-
-        gamma = float(self.gamma)
-
-        if gamma != 1.0:
-            raise ValueError(
-                "evaluation.gamma must be exactly 1.0 for "
-                "undiscounted terminal utility"
-            )
-
         object.__setattr__(
             self,
             "gamma",
-            gamma,
+            float(self.gamma),
         )
 
         require_positive(
@@ -212,7 +203,7 @@ class EvaluationConfig:
                     42,
                 ),
             ),
-            gamma=float(data.get("gamma", 1.0)),
+            gamma=float(data.get("gamma", 0.95)),
             c_puct=float(data.get("c_puct", 2.0)),
             prior_exponent=float(
                 data.get("prior_exponent", 0.5)
