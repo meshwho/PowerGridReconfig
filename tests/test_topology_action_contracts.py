@@ -5,6 +5,7 @@ import pytest
 from grid_topology_ai.config.physics import DEFAULT_PHYSICS_CONFIG
 from grid_topology_ai.contracts import (
     CHECKPOINT_CONTRACT_VERSION,
+    OUTCOME_OBJECTIVE_VERSION,
     OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
     physics_provenance,
     require_checkpoint_contracts,
@@ -91,6 +92,9 @@ def test_checkpoint_rejects_missing_action_layout() -> None:
         ),
         "physical_objective_schema_version": (
             PHYSICAL_OBJECTIVE_SCHEMA_VERSION
+        ),
+        "outcome_objective_version": (
+            OUTCOME_OBJECTIVE_VERSION
         ),
         "outcome_value_target_contract_version": (
             OUTCOME_VALUE_TARGET_CONTRACT_VERSION

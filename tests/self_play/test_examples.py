@@ -9,6 +9,7 @@ import pytest
 
 from grid_topology_ai.config.physics import DEFAULT_PHYSICS_CONFIG
 from grid_topology_ai.contracts import (
+    OUTCOME_OBJECTIVE_VERSION,
     OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
     physics_provenance,
 )
@@ -159,6 +160,9 @@ def test_example_writer_save_preserves_csv_schema(tmp_path: Path) -> None:
             physical_objective_schema_version=(
                 PHYSICAL_OBJECTIVE_SCHEMA_VERSION
             ),
+            outcome_objective_version=(
+                OUTCOME_OBJECTIVE_VERSION
+            ),
             outcome_value_target_contract_version=(
                 OUTCOME_VALUE_TARGET_CONTRACT_VERSION
             ),
@@ -236,6 +240,7 @@ def test_example_writer_save_preserves_csv_schema(tmp_path: Path) -> None:
         "terminal_outcome_evidence_schema_version",
         "terminal_outcome_evidence_json",
         "physical_objective_schema_version",
+        "outcome_objective_version",
         "outcome_value_target_contract_version",
         "state_feature_schema_version",
         "state_feature_schema_fingerprint",
