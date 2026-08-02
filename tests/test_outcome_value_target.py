@@ -24,6 +24,9 @@ def valid_row(
     termination_reason: object = "solved",
 ) -> dict[str, object]:
     return {
+        "run_id": "test-run",
+        "iteration": 1,
+        "episode_id": f"test-episode-{scenario_id}",
         "scenario_id": scenario_id,
         "step": step,
         "solved": solved,
