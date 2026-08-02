@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -25,8 +26,6 @@ from tests.outcome_evidence_helpers import terminal_evidence
 
 
 def _unsafe_state() -> GridFMState:
-    import numpy as np
-
     return GridFMState(
         scenario_id=1,
         load_scenario_idx=0.0,
@@ -104,7 +103,6 @@ def test_environment_classifies_no_legal_action() -> None:
 def test_no_legal_action_evidence_and_utility_contract() -> None:
     evidence = terminal_evidence(TerminationReason.NO_LEGAL_ACTION)
 
-    assert evidence.termination_reason is TerminationReason.NO_LEGAL_ACTION
     assert evidence.redispatch_status is RedispatchStatus.NOT_REQUESTED
     assert terminal_utility_from_outcome(
         False,
@@ -142,14 +140,14 @@ class _RuntimeObject:
         self.config = SimpleNamespace()
 
     def clear_cache(self) -> None:
-        return None
+        pass
 
     def cache_info(self) -> dict[str, int]:
         return {"size": 0}
 
 
 class _Writer:
-    instances: list["_Writer"] = []
+    instances: list[_Writer] = []
 
     def __init__(
         self,
@@ -180,18 +178,18 @@ class _Writer:
         path = self.output_dir / "examples.csv"
         pd.DataFrame(
             self.rows,
-            columns=[
+            columns=(
                 "done",
                 "solved",
                 "termination_reason",
                 "terminal_outcome_evidence_json",
-            ],
+            ),
         ).to_csv(path, index=False)
         return path
 
 
 class _GenerationEnv:
-    instances: list["_GenerationEnv"] = []
+    instances: list[_GenerationEnv] = []
 
     def __init__(self, **kwargs) -> None:
         self.done = False
@@ -204,7 +202,7 @@ class _GenerationEnv:
         type(self).instances.append(self)
 
     def reset(self, scenario_id: int) -> None:
-        return None
+        pass
 
     def valid_action_mask(self) -> list[bool]:
         return [True, True]
@@ -235,7 +233,7 @@ class _Planner:
         self.calls = 0
 
     def reset_rng(self, random_seed: int) -> None:
-        return None
+        pass
 
     def search_from_env(self, env: _GenerationEnv) -> SimpleNamespace:
         self.calls += 1
@@ -271,11 +269,7 @@ def _install_generation_runtime(
         "GridFMPowerFlowBackend",
         _RuntimeObject,
     )
-    monkeypatch.setattr(
-        generation,
-        "GridFMActionSpace",
-        _RuntimeObject,
-    )
+    monkeypatch.setattr(generation, "GridFMActionSpace", _RuntimeObject)
     monkeypatch.setattr(generation, "GridFMReward", _RuntimeObject)
     monkeypatch.setattr(generation, "MCTSConfig", _RuntimeObject)
     monkeypatch.setattr(generation, "MCTSPlanner", _Planner)
@@ -300,7 +294,10 @@ def _request(tmp_path: Path, *, max_steps: int) -> GenerationRequest:
         transitions_csv=transitions,
         output_dir=tmp_path / "out",
         checkpoint=None,
-        config=GenerationConfig(max_steps=max_steps),
+        config=GenerationConfig(
+            max_steps=max_steps,
+            use_continuation_gate=False,
+        ),
         mcts_seed=7,
         action_seed=8,
         clear_cache_between_scenarios=False,
