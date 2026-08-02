@@ -150,6 +150,41 @@ def test_validated_redispatch_neutral_target_is_accepted(
     )
 
 
+def test_episode_rejects_mixed_terminal_evidence(
+    tmp_path: Path,
+) -> None:
+    solved_path, _ = _write_episode(
+        tmp_path / "solved",
+        reason=TerminationReason.SOLVED,
+    )
+    failed_path, _ = _write_episode(
+        tmp_path / "failed",
+        reason=TerminationReason.MAX_STEPS_REACHED,
+    )
+
+    rows = [
+        pd.read_csv(solved_path).iloc[0].to_dict(),
+        pd.read_csv(failed_path).iloc[0].to_dict(),
+    ]
+    for step, row in enumerate(rows):
+        row.update(
+            run_id="run-1",
+            iteration=1,
+            episode_id="episode-1",
+            scenario_id=1,
+            step=step,
+        )
+
+    examples_path = tmp_path / "mixed_examples.csv"
+    pd.DataFrame(rows).to_csv(examples_path, index=False)
+
+    with pytest.raises(
+        ValueError,
+        match="mixed terminal outcomes or evidence",
+    ):
+        load_and_validate_examples_csv(examples_path)
+
+
 def test_missing_csv_evidence_column_is_rejected(
     tmp_path: Path,
 ) -> None:

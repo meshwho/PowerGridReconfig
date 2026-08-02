@@ -18,6 +18,7 @@ from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSIO
 from grid_topology_ai.self_play import replay as replay_module
 from grid_topology_ai.self_play.replay import RollingReplayBuffer
 from grid_topology_ai.termination import TerminationReason
+from tests.outcome_evidence_helpers import terminal_evidence_fields
 
 
 def rows(prefix: str, count: int) -> list[dict[str, object]]:
@@ -356,6 +357,38 @@ def test_add_examples_rejects_semantic_invalid_outcome(tmp_path: Path) -> None:
     before = deepcopy(buffer.buffer)
     with pytest.raises(ValueError, match="outcome_value_target"):
         buffer.add_examples([semantic_invalid_handoff_row()], iteration=1)
+    assert buffer.buffer == before
+
+
+def test_add_examples_rejects_mixed_episode_outcomes(
+    tmp_path: Path,
+) -> None:
+    batch = rows("mixed", 2)
+    for step, row in enumerate(batch):
+        row.update(
+            run_id="run-1",
+            iteration=1,
+            episode_id="episode-1",
+            scenario_id=1,
+            step=step,
+        )
+    batch[1].update(
+        solved=True,
+        termination_reason=TerminationReason.SOLVED.value,
+        outcome_class=TerminationReason.SOLVED.value,
+        outcome_value_target=1.0,
+        **terminal_evidence_fields(TerminationReason.SOLVED),
+    )
+
+    buffer = RollingReplayBuffer(save_dir=tmp_path / "replay")
+    before = deepcopy(buffer.buffer)
+
+    with pytest.raises(
+        ValueError,
+        match="mixed terminal outcomes or evidence",
+    ):
+        buffer.add_examples(batch, iteration=1)
+
     assert buffer.buffer == before
 
 
