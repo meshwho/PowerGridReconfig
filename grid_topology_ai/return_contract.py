@@ -17,7 +17,8 @@ from grid_topology_ai.termination import (
     validate_outcome_invariants,
 )
 
-VALUE_TARGET_MODE = "alphazero_discounted"
+VALUE_TARGET_MODE = "alphazero_terminal_utility"
+TERMINAL_UTILITY_GAMMA = 1.0
 DEFAULT_HEURISTIC_UTILITY_SCALE = 500.0
 _UTILITY_TOLERANCE = 1e-7
 

@@ -360,7 +360,10 @@ def main() -> None:
     parser.add_argument(
         "--gamma",
         type=float,
-        default=0.95,
+        default=1.0,
+        help=(
+            "Terminal-utility gamma. The current contract requires 1.0."
+        ),
     )
 
     args = parser.parse_args()

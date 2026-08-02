@@ -38,7 +38,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--widening-exponent", type=float, default=0.5)
     parser.add_argument("--exploration-quota", type=int, default=2)
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--gamma", type=float, default=0.95)
+    parser.add_argument(
+        "--gamma",
+        type=float,
+        default=1.0,
+        help="Terminal-utility gamma. The current contract requires 1.0.",
+    )
     parser.add_argument("--c-puct", type=float, default=1.5)
     parser.add_argument("--prior-exponent", type=float, default=0.5)
     parser.add_argument(

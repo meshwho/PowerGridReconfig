@@ -356,9 +356,9 @@ def _validate_outcome_contract(
         index=index,
         source=source,
     )
-    if gamma < 0.0 or gamma > 1.0:
+    if gamma != _core.TERMINAL_UTILITY_GAMMA:
         raise ValueError(
-            f"outcome_gamma must be in [0, 1] at row {index}. "
+            f"outcome_gamma must be exactly 1.0 at row {index}. "
             f"File: {source}"
         )
 
@@ -379,9 +379,7 @@ def _validate_outcome_contract(
         termination_reason=reason,
         evidence=evidence,
     )
-    expected_target = float(
-        terminal_value * gamma**steps_to_terminal
-    )
+    expected_target = terminal_value
     if not math.isclose(
         actual_target,
         expected_target,
@@ -403,7 +401,7 @@ def _validate_outcome_contract(
         )
 
     mode = str(row["outcome_value_target_mode"]).strip()
-    if mode != "alphazero_discounted":
+    if mode != _core.VALUE_TARGET_MODE:
         raise ValueError(
             f"Unsupported outcome_value_target_mode {mode!r} at "
             f"row {index}. File: {source}"

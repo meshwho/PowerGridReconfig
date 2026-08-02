@@ -2171,7 +2171,12 @@ def main() -> None:
     parser.add_argument("--beam-width", type=int, default=10)
     parser.add_argument("--candidate-pool", type=int, default=80)
     parser.add_argument("--top-k", type=int, default=30)
-    parser.add_argument("--gamma", type=float, default=0.95)
+    parser.add_argument(
+        "--gamma",
+        type=float,
+        default=1.0,
+        help="Terminal-utility gamma. The current contract requires 1.0.",
+    )
     parser.add_argument("--pf-alg", type=int, default=3, choices=[1, 2, 3, 4])
     parser.add_argument("--pf-max-iter", type=int, default=30)
     parser.add_argument("--max-steps", type=int, default=5)
@@ -2633,7 +2638,7 @@ def main() -> None:
         group_keys=("scenario_id",),
     )
 
-    print("Outcome value target mode: alphazero_discounted")
+    print("Outcome value target mode: alphazero_terminal_utility")
     print(f"Outcome gamma:             {args.gamma}")
 
     if args.value_target_mode == "tanh_step_reward_discounted_average":

@@ -78,7 +78,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=42,
         help="Random seed for reproducible MCTS exploration.",
     )
-    parser.add_argument("--gamma", type=float, default=0.95)
+    parser.add_argument(
+        "--gamma",
+        type=float,
+        default=1.0,
+        help="Terminal-utility gamma. The current contract requires 1.0.",
+    )
     parser.add_argument("--c-puct", type=float, default=2.0)
     parser.add_argument("--prior-exponent", type=float, default=0.5)
     parser.add_argument("--pf-alg", type=int, default=3)
@@ -153,7 +158,10 @@ def main() -> None:
         )
     )
 
-    reward_fn = GridFMReward(physics_config=physics_config)
+    reward_fn = GridFMReward(
+        physics_config=physics_config,
+        discount_factor=args.gamma,
+    )
 
     env = TopologySwitchingEnv(
         adapter=adapter,

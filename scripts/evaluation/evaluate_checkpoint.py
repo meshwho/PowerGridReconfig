@@ -108,7 +108,12 @@ def build_parser() -> argparse.ArgumentParser:
             "per-scenario MCTS exploration seeds."
         ),
     )
-    parser.add_argument("--gamma", type=float, default=0.95)
+    parser.add_argument(
+        "--gamma",
+        type=float,
+        default=1.0,
+        help="Terminal-utility gamma. The current contract requires 1.0.",
+    )
     parser.add_argument("--c-puct", type=float, default=2.0)
     parser.add_argument("--prior-exponent", type=float, default=0.5)
     parser.add_argument(

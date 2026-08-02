@@ -9,9 +9,10 @@ if TYPE_CHECKING:
     from grid_topology_ai.config.physics import PhysicsConfig
 
 
-# Version 4 makes MCTS backup and the value head optimize the same discounted
-# terminal utility. Version 3 checkpoints were searched with shaped returns.
-OUTCOME_VALUE_TARGET_CONTRACT_VERSION = 4
+# Version 5 uses undiscounted terminal utility in both MCTS backup and
+# value targets. Every state in one completed episode receives the same
+# terminal utility.
+OUTCOME_VALUE_TARGET_CONTRACT_VERSION = 5
 # Version 1 defines the terminal utility objective:
 # solved = +1, validated redispatch = 0, all other outcomes = -1.
 OUTCOME_OBJECTIVE_VERSION = 1

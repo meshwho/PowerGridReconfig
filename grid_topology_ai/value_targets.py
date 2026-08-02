@@ -20,8 +20,8 @@ from grid_topology_ai.outcome_record import (
 )
 from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
 from grid_topology_ai.return_contract import (
+    TERMINAL_UTILITY_GAMMA,
     VALUE_TARGET_MODE,
-    discounted_terminal_utility,
     require_discount_factor,
     terminal_utility_from_outcome,
 )
@@ -45,8 +45,15 @@ def _require_bool(value: object, *, field: str) -> bool:
 
 
 def _require_gamma(value: object) -> float:
-    """Compatibility wrapper around the shared return contract."""
-    return require_discount_factor(value)
+    gamma = require_discount_factor(value)
+
+    if gamma != TERMINAL_UTILITY_GAMMA:
+        raise ValueError(
+            "outcome gamma must be exactly 1.0 for "
+            "undiscounted terminal utility"
+        )
+
+    return gamma
 
 
 def terminal_value_from_outcome(
@@ -198,9 +205,9 @@ def add_outcome_value_targets_to_rows(
     gamma: float,
     group_keys: tuple[str, ...] = ("episode_id",),
 ) -> None:
-    """Atomically derive discounted terminal-utility targets."""
+    """Atomically derive undiscounted terminal-utility targets."""
 
-    normalized_gamma = require_discount_factor(gamma)
+    normalized_gamma = _require_gamma(gamma)
     if (
         not isinstance(group_keys, tuple)
         or not group_keys
@@ -333,13 +340,7 @@ def add_outcome_value_targets_to_rows(
                 (
                     row,
                     {
-                        "outcome_value_target": (
-                            discounted_terminal_utility(
-                                terminal_utility,
-                                steps_to_terminal=steps_to_terminal,
-                                gamma=normalized_gamma,
-                            )
-                        ),
+                        "outcome_value_target": terminal_utility,
                         "outcome_class": outcome_class,
                         "outcome_steps_to_terminal": (
                             steps_to_terminal

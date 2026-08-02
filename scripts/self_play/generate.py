@@ -61,10 +61,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--gamma",
         type=float,
-        default=0.95,
+        default=1.0,
         help=(
-            "Discount factor shared by terminal-utility targets and diagnostic "
-            "potential shaping."
+            "Terminal-utility gamma. The current contract requires 1.0."
         ),
     )
     parser.add_argument(

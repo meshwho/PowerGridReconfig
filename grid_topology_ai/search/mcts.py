@@ -16,6 +16,7 @@ from grid_topology_ai.physical_objective import (
 )
 from grid_topology_ai.return_contract import (
     DEFAULT_HEURISTIC_UTILITY_SCALE,
+    TERMINAL_UTILITY_GAMMA,
     heuristic_terminal_utility_estimate,
     require_bounded_utility,
     require_discount_factor,
@@ -31,7 +32,7 @@ if TYPE_CHECKING:
 class MCTSConfig:
     """Configuration for single-agent AlphaZero-style MCTS.
 
-    ``gamma`` discounts the common terminal utility contract. Dense environment
+    Terminal utility is backed up without temporal discount. Dense environment
     rewards are retained on nodes for diagnostics, but never enter PUCT backup.
     """
 
@@ -41,7 +42,7 @@ class MCTSConfig:
     widening_coefficient: float = 2.0
     widening_exponent: float = 0.5
     exploration_quota: int = 2
-    gamma: float = 0.95
+    gamma: float = TERMINAL_UTILITY_GAMMA
     c_puct: float = 1.5
 
     heuristic_utility_scale: float = DEFAULT_HEURISTIC_UTILITY_SCALE
@@ -72,6 +73,20 @@ class MCTSConfig:
     dc_max_depth: int = 0
 
     def __post_init__(self) -> None:
+
+        gamma = require_discount_factor(self.gamma)
+
+        if gamma != TERMINAL_UTILITY_GAMMA:
+            raise ValueError(
+                "MCTS gamma must be exactly 1.0 for "
+                "undiscounted terminal utility"
+            )
+
+        object.__setattr__(
+            self,
+            "gamma",
+            gamma,
+        )
 
         if (
             isinstance(self.dc_max_depth, bool)
@@ -298,7 +313,7 @@ class MCTSPlanner:
     """AlphaZero-style MCTS planner for topology switching.
 
     Neural leaf values and MCTS Q values share the exact same semantics:
-    expected discounted terminal utility in ``[-1, 1]``.
+    expected terminal utility in ``[-1, 1]``.
     """
 
     def __init__(
@@ -1322,19 +1337,14 @@ class MCTSPlanner:
         )
 
     def _backup(self, path: list[MCTSNode], leaf_value: float) -> None:
-        """Back up only discounted terminal utility.
-
-        ``reward_from_parent`` is intentionally diagnostic and does not enter Q.
-        A leaf value describes the leaf state; every traversed edge therefore
-        contributes exactly one factor of ``gamma``.
-        """
+        """Back up terminal utility without temporal discount."""
 
         value = require_bounded_utility(
             leaf_value,
             context="MCTS leaf utility",
         )
+
         for node in reversed(path):
-            value = float(self.gamma * value)
             node.visit_count += 1
             node.total_value += value
 

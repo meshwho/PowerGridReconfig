@@ -34,7 +34,7 @@ class GenerationConfig:
     widening_coefficient: float = 2.0
     widening_exponent: float = 0.5
     exploration_quota: int = 2
-    gamma: float = 0.95
+    gamma: float = 1.0
     c_puct: float = 2.0
     prior_exponent: float = 0.5
 
@@ -73,6 +73,21 @@ class GenerationConfig:
             exploration_quota,
         )
         require_fraction("generation.gamma", self.gamma)
+
+        gamma = float(self.gamma)
+
+        if gamma != 1.0:
+            raise ValueError(
+                "generation.gamma must be exactly 1.0 for "
+                "undiscounted terminal utility"
+            )
+
+        object.__setattr__(
+            self,
+            "gamma",
+            gamma,
+        )
+
         require_positive("generation.c_puct", self.c_puct)
         require_positive("generation.prior_exponent", self.prior_exponent)
         if isinstance(
@@ -231,7 +246,7 @@ class GenerationConfig:
             raise ValueError(
                 "Unsupported legacy generation terminal penalty fields: "
                 f"{', '.join(legacy_fields)}. Terminal penalties were removed. "
-                "Value targets use discounted terminal utility; dense rewards "
+                "Value targets use undiscounted terminal utility; dense rewards "
                 "are diagnostic potential shaping only."
             )
 
@@ -253,7 +268,7 @@ class GenerationConfig:
                     2,
                 ),
             ),
-            gamma=float(data.get("gamma", 0.95)),
+            gamma=float(data.get("gamma", 1.0)),
             c_puct=float(data.get("c_puct", 2.0)),
             prior_exponent=float(data.get("prior_exponent", 0.5)),
             selection_temperature=float(data.get("selection_temperature", 0.0)),

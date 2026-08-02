@@ -178,6 +178,22 @@ newly generated self-play steps. They are stored under
 The aggregation uses current-iteration raw examples only. Replay
 examples from earlier iterations are not included.
 
+### 5.7 Terminal utility contract
+
+The policy-value model and MCTS use undiscounted terminal utility.
+
+Every state in one completed episode receives the same value target:
+
+- physically solved: `+1`;
+- executed and physically validated redispatch: `0`;
+- every other terminal outcome: `-1`.
+
+`outcome_gamma` is fixed at `1.0`. `outcome_steps_to_terminal` records
+the remaining number of transitions for diagnostics but does not scale the
+target. MCTS backs up the leaf utility unchanged across every traversed edge.
+Dense environment rewards and their accumulated return remain diagnostic and
+never enter the policy-value target or MCTS Q backup.
+
 ## 6. MCTS target versus executed action
 
 The policy target is the MCTS visit distribution. The real self-play action is selected from that distribution according to the configured temperature schedule. Continuation analysis is diagnostic only: it records allowed/recommended actions and whether the selected action agrees, but it does not override the executed action or rewrite the policy target.
@@ -263,10 +279,11 @@ The current exact contract versions are:
 | Contract | Version |
 | --- | ---: |
 | physical objective | `3` |
-| outcome/value target | `4` |
+| outcome objective | `1` |
+| outcome/value target | `5` |
+| checkpoint | `7` |
+| replay buffer schema | `6` |
 | evaluation metrics | `6` |
-| checkpoint | `6` |
-| replay buffer schema | `5` |
 | physics configuration | `1` |
 | topology action | `1` |
 

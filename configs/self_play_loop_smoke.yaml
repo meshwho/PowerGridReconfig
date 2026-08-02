@@ -55,7 +55,7 @@ generation:
   widening_coefficient: 2.0
   widening_exponent: 0.5
   exploration_quota: 2
-  gamma: 0.95
+  gamma: 1.0
   c_puct: 2.0
   prior_exponent: 0.5
   use_root_noise: true
@@ -102,7 +102,7 @@ evaluation:
   exploration_quota: 2
   # Base seed for deterministic per-scenario MCTS exploration.
   random_seed: 42
-  gamma: 0.95
+  gamma: 1.0
   c_puct: 2.0
   prior_exponent: 0.5
   use_continuation_gate: true

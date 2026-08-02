@@ -18,6 +18,10 @@ from grid_topology_ai.contracts import (
     OUTCOME_OBJECTIVE_VERSION,
     require_outcome_objective_version,
 )
+from grid_topology_ai.return_contract import (
+    TERMINAL_UTILITY_GAMMA,
+    VALUE_TARGET_MODE,
+)
 from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
 from grid_topology_ai.state_artifact_schema import (
     validate_state_npz_schema_arrays,
@@ -33,6 +37,10 @@ from grid_topology_ai.topology_actions import (
     build_branch_action_slots,
 )
 from grid_topology_ai.value_targets import terminal_value_from_outcome
+
+
+
+
 
 REQUIRED_OUTCOME_COLUMNS: tuple[str, ...] = (
     "outcome_value_target",
@@ -477,9 +485,9 @@ def _validate_outcome_contract(
         source=source,
     )
 
-    if gamma < 0.0 or gamma > 1.0:
+    if gamma != TERMINAL_UTILITY_GAMMA:
         raise ValueError(
-            f"outcome_gamma must be in [0, 1] at row {index}. "
+            f"outcome_gamma must be exactly 1.0 at row {index}. "
             f"File: {source}"
         )
 
@@ -501,9 +509,7 @@ def _validate_outcome_contract(
         termination_reason=reason,
     )
 
-    expected_target = float(
-        terminal_value * gamma**steps_to_terminal
-    )
+    expected_target = terminal_value
 
     if not math.isclose(
         actual_target,
@@ -528,7 +534,7 @@ def _validate_outcome_contract(
 
     mode = str(row["outcome_value_target_mode"]).strip()
 
-    if mode != "alphazero_discounted":
+    if mode != VALUE_TARGET_MODE:
         raise ValueError(
             f"Unsupported outcome_value_target_mode {mode!r} at row {index}. "
             f"File: {source}"

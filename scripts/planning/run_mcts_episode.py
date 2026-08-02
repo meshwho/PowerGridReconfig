@@ -123,8 +123,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--gamma",
         type=float,
-        default=0.95,
-        help="Discount factor.",
+        default=1.0,
+        help="Terminal-utility gamma. The current contract requires 1.0.",
     )
 
     parser.add_argument(
