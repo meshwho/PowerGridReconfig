@@ -19,7 +19,9 @@ from grid_topology_ai.value_targets import (
 )
 from grid_topology_ai.self_play import _example_validation_core as _core
 from grid_topology_ai.self_play._example_validation_core import *  # noqa: F401,F403
-
+from grid_topology_ai.contracts import (
+    require_outcome_objective_version,
+)
 
 _EVIDENCE_COLUMNS: tuple[str, ...] = (
     "terminal_outcome_evidence_schema_version",
@@ -289,6 +291,10 @@ def validate_example_outcome_contracts(
             regeneration_command=(
                 "python -m " + "scripts" + ".self_play.generate ..."
             ),
+        )
+        require_outcome_objective_version(
+            row.to_dict(),
+            source=f"{source} row {index}",
         )
         _validate_outcome_contract(
             row,

@@ -17,6 +17,7 @@ from grid_topology_ai.contracts import (
     require_checkpoint_contracts,
     require_topology_action_provenance,
     topology_action_provenance,
+    OUTCOME_OBJECTIVE_VERSION,
 )
 from grid_topology_ai.models.graph_self_play_dataset import GraphSelfPlayDataset
 from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
@@ -251,7 +252,12 @@ def build_dataset_metadata(
         "missing_state_count": int(missing_state_count),
         "state_total_bytes": int(state_total_bytes),
         "state_paths_sha256": sha256_text("\n".join(unique_state_paths)),
-        "physical_objective_schema_version": PHYSICAL_OBJECTIVE_SCHEMA_VERSION,
+        "physical_objective_schema_version": (
+            PHYSICAL_OBJECTIVE_SCHEMA_VERSION
+        ),
+        "outcome_objective_version": (
+            OUTCOME_OBJECTIVE_VERSION
+        ),
         "outcome_value_target_contract_version": (
             OUTCOME_VALUE_TARGET_CONTRACT_VERSION
         ),
@@ -302,7 +308,12 @@ def make_checkpoint(
 
     checkpoint = {
         "checkpoint_contract_version": CHECKPOINT_CONTRACT_VERSION,
-        "physical_objective_schema_version": PHYSICAL_OBJECTIVE_SCHEMA_VERSION,
+        "physical_objective_schema_version": (
+            PHYSICAL_OBJECTIVE_SCHEMA_VERSION
+        ),
+        "outcome_objective_version": (
+            OUTCOME_OBJECTIVE_VERSION
+        ),
         "outcome_value_target_contract_version": (
             OUTCOME_VALUE_TARGET_CONTRACT_VERSION
         ),

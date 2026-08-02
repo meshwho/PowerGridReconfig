@@ -19,6 +19,8 @@ from grid_topology_ai.contracts import (
     require_physics_provenance,
     require_topology_action_provenance,
     topology_action_provenance,
+    OUTCOME_OBJECTIVE_VERSION,
+    require_outcome_objective_version,
 )
 from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
 from grid_topology_ai.self_play.example_validation import (
@@ -265,6 +267,10 @@ class RollingReplayBuffer:
             name="physical-objective contract",
             source=str(self.manifest_path),
             regeneration_command="python -m scripts.self_play.generate ...",
+        )
+        require_outcome_objective_version(
+            manifest,
+            source=str(self.manifest_path),
         )
         require_exact_contract_version(
             manifest.get("outcome_value_target_contract_version"),
@@ -557,6 +563,9 @@ class RollingReplayBuffer:
             "schema_version": REPLAY_BUFFER_SCHEMA_VERSION,
             "physical_objective_schema_version": (
                 PHYSICAL_OBJECTIVE_SCHEMA_VERSION
+            ),
+            "outcome_objective_version": (
+                OUTCOME_OBJECTIVE_VERSION
             ),
             "outcome_value_target_contract_version": (
                 OUTCOME_VALUE_TARGET_CONTRACT_VERSION

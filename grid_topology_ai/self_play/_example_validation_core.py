@@ -15,6 +15,8 @@ from grid_topology_ai.contracts import (
     require_exact_contract_version,
     require_physics_provenance,
     require_topology_action_provenance,
+    OUTCOME_OBJECTIVE_VERSION,
+    require_outcome_objective_version,
 )
 from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
 from grid_topology_ai.state_artifact_schema import (
@@ -35,6 +37,7 @@ from grid_topology_ai.value_targets import terminal_value_from_outcome
 REQUIRED_OUTCOME_COLUMNS: tuple[str, ...] = (
     "outcome_value_target",
     "outcome_value_target_contract_version",
+    "outcome_objective_version",
     "solved",
     "done",
     "termination_reason",
@@ -274,6 +277,10 @@ def validate_example_contract_versions(
                 "python -m scripts" ".self_play.generate ..."
             ),
         )
+        require_outcome_objective_version(
+            row.to_dict(),
+            source=f"{source} row {index}",
+        )
         require_exact_contract_version(
             row.get("outcome_value_target_contract_version"),
             expected=OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
@@ -328,6 +335,10 @@ def validate_example_outcome_contracts(
             regeneration_command=(
                 "python -m scripts" ".self_play.generate ..."
             ),
+        )
+        require_outcome_objective_version(
+            row.to_dict(),
+            source=f"{source} row {index}",
         )
         _validate_outcome_contract(row, index=index, source=source)
 

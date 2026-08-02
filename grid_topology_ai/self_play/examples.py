@@ -10,6 +10,7 @@ import pandas as pd
 
 from grid_topology_ai.config.physics import PhysicsConfig
 from grid_topology_ai.contracts import (
+    OUTCOME_OBJECTIVE_VERSION,
     OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
     physics_provenance,
     topology_action_provenance,
@@ -58,6 +59,7 @@ class SelfPlayExample:
     terminal_outcome_evidence_schema_version: int
     terminal_outcome_evidence_json: str
     physical_objective_schema_version: int
+    outcome_objective_version: int
     outcome_value_target_contract_version: int
     state_feature_schema_version: int
     state_feature_schema_fingerprint: str
@@ -211,6 +213,9 @@ class ExampleWriter:
             }
         )
         state_metadata.update(provenance)
+        state_metadata["outcome_objective_version"] = (
+            OUTCOME_OBJECTIVE_VERSION
+        )
         state_metadata["outcome_value_target_contract_version"] = (
             OUTCOME_VALUE_TARGET_CONTRACT_VERSION
         )
@@ -261,6 +266,9 @@ class ExampleWriter:
             terminal_outcome_evidence_json=evidence_json,
             physical_objective_schema_version=(
                 PHYSICAL_OBJECTIVE_SCHEMA_VERSION
+            ),
+            outcome_objective_version=(
+                OUTCOME_OBJECTIVE_VERSION
             ),
             outcome_value_target_contract_version=(
                 OUTCOME_VALUE_TARGET_CONTRACT_VERSION

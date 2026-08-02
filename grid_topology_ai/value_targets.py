@@ -7,7 +7,10 @@ from numbers import Integral, Real
 import numpy as np
 import pandas as pd
 
-from grid_topology_ai.contracts import OUTCOME_VALUE_TARGET_CONTRACT_VERSION
+from grid_topology_ai.contracts import (
+    OUTCOME_OBJECTIVE_VERSION,
+    OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
+)
 from grid_topology_ai.outcome_contract import (
     TERMINAL_OUTCOME_EVIDENCE_SCHEMA_VERSION,
     TerminalOutcomeEvidence,
@@ -345,6 +348,9 @@ def add_outcome_value_targets_to_rows(
                             VALUE_TARGET_MODE
                         ),
                         "outcome_gamma": normalized_gamma,
+                        "outcome_objective_version": (
+                            OUTCOME_OBJECTIVE_VERSION
+                        ),
                         "outcome_value_target_contract_version": (
                             OUTCOME_VALUE_TARGET_CONTRACT_VERSION
                         ),

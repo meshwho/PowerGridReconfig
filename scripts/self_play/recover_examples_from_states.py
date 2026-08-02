@@ -14,6 +14,8 @@ from grid_topology_ai.contracts import (
     physics_provenance,
     require_exact_contract_version,
     require_physics_provenance,
+    OUTCOME_OBJECTIVE_VERSION,
+    require_outcome_objective_version,
 )
 from grid_topology_ai.outcome_contract import (
     TERMINAL_OUTCOME_EVIDENCE_SCHEMA_VERSION,
@@ -129,6 +131,10 @@ def recover_examples(states_dir: Path, gamma: float) -> pd.DataFrame:
                 "python -m scripts.self_play.generate ..."
             ),
         )
+        require_outcome_objective_version(
+            meta,
+            source=str(path),
+        )
         state_physics_config = require_physics_provenance(
             meta,
             source=str(path),
@@ -240,6 +246,9 @@ def recover_examples(states_dir: Path, gamma: float) -> pd.DataFrame:
                 ),
                 "physical_objective_schema_version": (
                     PHYSICAL_OBJECTIVE_SCHEMA_VERSION
+                ),
+                "outcome_objective_version": (
+                    OUTCOME_OBJECTIVE_VERSION
                 ),
                 "physics_config_contract_version": provenance[
                     "physics_config_contract_version"

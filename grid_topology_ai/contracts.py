@@ -12,6 +12,9 @@ if TYPE_CHECKING:
 # Version 4 makes MCTS backup and the value head optimize the same discounted
 # terminal utility. Version 3 checkpoints were searched with shaped returns.
 OUTCOME_VALUE_TARGET_CONTRACT_VERSION = 4
+# Version 1 defines the terminal utility objective:
+# solved = +1, validated redispatch = 0, all other outcomes = -1.
+OUTCOME_OBJECTIVE_VERSION = 1
 # Version 6 adds MCTS legal-action coverage diagnostics to evaluation
 # rows and aggregated metrics.
 EVALUATION_METRICS_CONTRACT_VERSION = 6
@@ -53,6 +56,20 @@ def require_exact_contract_version(
             f"{regeneration_command}"
         )
 
+def require_outcome_objective_version(
+    payload: Mapping[str, object],
+    *,
+    source: str,
+) -> None:
+    require_exact_contract_version(
+        payload.get("outcome_objective_version"),
+        expected=OUTCOME_OBJECTIVE_VERSION,
+        name="outcome-objective contract",
+        source=source,
+        regeneration_command=(
+            "regenerate self-play examples and derived artifacts"
+        ),
+    )
 
 def _json_value(value: object, *, name: str, source: str) -> object:
     if not isinstance(value, str):
@@ -465,6 +482,10 @@ def require_checkpoint_contracts(
             "python -m scripts.self_play.generate ... followed by "
             "python -m scripts.self_play.train_graph_baseline ..."
         ),
+    )
+    require_outcome_objective_version(
+        payload,
+        source=source,
     )
     require_exact_contract_version(
         payload.get("outcome_value_target_contract_version"),
