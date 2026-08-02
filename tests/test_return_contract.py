@@ -14,6 +14,7 @@ from grid_topology_ai.return_contract import (
     heuristic_terminal_utility_estimate,
     require_bounded_utility,
     require_discount_factor,
+    require_reward_discount_factor,
     terminal_utility_from_outcome,
 )
 from grid_topology_ai.termination import TerminationReason
@@ -97,6 +98,8 @@ def test_discounted_terminal_utility_remains_a_generic_helper() -> None:
 def test_policy_value_contract_is_undiscounted() -> None:
     assert TERMINAL_UTILITY_GAMMA == 1.0
     assert VALUE_TARGET_MODE == "alphazero_terminal_utility"
+    assert require_discount_factor(0.5) == 1.0
+    assert require_reward_discount_factor(0.5) == 0.5
 
 
 @pytest.mark.parametrize(
@@ -106,6 +109,8 @@ def test_policy_value_contract_is_undiscounted() -> None:
 def test_discount_factor_rejects_invalid_values(value: float) -> None:
     with pytest.raises(ValueError):
         require_discount_factor(value)
+    with pytest.raises(ValueError):
+        require_reward_discount_factor(value)
 
 
 def test_bounded_utility_rejects_mixed_return_scale() -> None:

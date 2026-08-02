@@ -56,9 +56,8 @@ def test_mcts_config_excludes_legacy_return_knobs() -> None:
     }.isdisjoint(field_names)
 
 
-def test_mcts_config_rejects_discounted_terminal_utility() -> None:
-    with pytest.raises(ValueError, match="exactly 1.0"):
-        MCTSConfig(gamma=0.95)
+def test_mcts_config_normalizes_diagnostic_gamma() -> None:
+    assert MCTSConfig(gamma=0.95).gamma == TERMINAL_UTILITY_GAMMA
 
 
 def test_mcts_backup_ignores_shaped_environment_rewards() -> None:

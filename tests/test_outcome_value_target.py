@@ -88,10 +88,6 @@ def assert_rejected_without_target_mutation(
 @pytest.mark.parametrize(
     "gamma",
     [
-        0.0,
-        0.95,
-        np.float32(0.95),
-        np.float64(0.95),
         float("nan"),
         float("inf"),
         float("-inf"),
@@ -105,7 +101,7 @@ def assert_rejected_without_target_mutation(
         1.01,
     ],
 )
-def test_non_unit_gamma_is_atomic(gamma: object) -> None:
+def test_invalid_gamma_is_atomic(gamma: object) -> None:
     assert_rejected_without_target_mutation(
         [valid_row()],
         gamma=gamma,
@@ -116,12 +112,14 @@ def test_non_unit_gamma_is_atomic(gamma: object) -> None:
 @pytest.mark.parametrize(
     "gamma",
     [
+        0.0,
+        0.95,
         1.0,
-        np.float32(1.0),
+        np.float32(0.95),
         np.float64(1.0),
     ],
 )
-def test_unit_gamma_assigns_complete_contract(
+def test_valid_caller_gamma_assigns_fixed_terminal_contract(
     gamma: object,
 ) -> None:
     rows = [valid_row()]

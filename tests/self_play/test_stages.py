@@ -173,9 +173,9 @@ def _stage_rows(
 @pytest.mark.parametrize(
     "reason, solved, expected",
     [
-        ("solved", True, 0.95),
-        ("handoff_to_redispatch", False, -0.95),
-        ("max_steps_reached", False, -0.95),
+        ("solved", True, 1.0),
+        ("handoff_to_redispatch", False, -1.0),
+        ("max_steps_reached", False, -1.0),
     ],
 )
 def test_ensure_outcome_value_targets_valid_terminal_cases(
@@ -188,9 +188,8 @@ def test_ensure_outcome_value_targets_valid_terminal_cases(
     stages.ensure_outcome_value_targets(examples_csv, gamma=0.95)
     result = pd.read_csv(examples_csv)
     assert result.loc[1, "outcome_value_target"] == pytest.approx(expected)
-    assert result.loc[0, "outcome_value_target"] == pytest.approx(
-        expected * 0.95
-    )
+    assert result.loc[0, "outcome_value_target"] == pytest.approx(expected)
+    assert set(result["outcome_gamma"].tolist()) == {1.0}
     from grid_topology_ai.self_play.example_validation import (
         validate_example_contract_versions,
         validate_example_outcome_contracts,

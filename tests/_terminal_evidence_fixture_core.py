@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 from collections.abc import Mapping
 from pathlib import Path
@@ -13,6 +14,10 @@ import pytest
 from grid_topology_ai.contracts import (
     OUTCOME_OBJECTIVE_VERSION,
     REPLAY_BUFFER_SCHEMA_VERSION,
+)
+from grid_topology_ai.return_contract import (
+    TERMINAL_UTILITY_GAMMA,
+    VALUE_TARGET_MODE,
 )
 from tests.outcome_evidence_helpers import (
     terminal_evidence,
@@ -94,9 +99,71 @@ def _identity_fields(
     }
 
 
+def _current_outcome_fields(
+    row: Mapping[str, object],
+) -> dict[str, object]:
+    result = dict(row)
+    legacy_mode = (
+        result.get("outcome_value_target_mode")
+        == "alphazero_discounted"
+    )
+
+    gamma = result.get("outcome_gamma")
+    legacy_gamma = False
+    if (
+        not isinstance(gamma, (bool, np.bool_))
+        and isinstance(gamma, (int, float, np.integer, np.floating))
+    ):
+        numeric_gamma = float(gamma)
+        legacy_gamma = (
+            math.isfinite(numeric_gamma)
+            and math.isclose(
+                numeric_gamma,
+                0.95,
+                rel_tol=0.0,
+                abs_tol=1e-7,
+            )
+        )
+
+    if legacy_mode:
+        result["outcome_value_target_mode"] = VALUE_TARGET_MODE
+    if legacy_gamma:
+        result["outcome_gamma"] = TERMINAL_UTILITY_GAMMA
+
+    if not (legacy_mode or legacy_gamma):
+        return result
+
+    target = result.get("outcome_value_target")
+    steps = result.get("outcome_steps_to_terminal")
+    if (
+        not isinstance(target, (bool, np.bool_))
+        and isinstance(target, (int, float, np.integer, np.floating))
+        and not isinstance(steps, (bool, np.bool_))
+        and isinstance(steps, (int, np.integer))
+        and int(steps) > 0
+    ):
+        numeric_target = float(target)
+        expected_magnitude = 0.95 ** int(steps)
+        if (
+            math.isfinite(numeric_target)
+            and numeric_target != 0.0
+            and math.isclose(
+                abs(numeric_target),
+                expected_magnitude,
+                rel_tol=1e-7,
+                abs_tol=1e-7,
+            )
+        ):
+            result["outcome_value_target"] = (
+                1.0 if numeric_target > 0.0 else -1.0
+            )
+
+    return result
+
+
 def _with_terminal_evidence(value: Any) -> Any:
     if isinstance(value, dict):
-        result = dict(value)
+        result = _current_outcome_fields(value)
         result.setdefault(
             "outcome_objective_version",
             OUTCOME_OBJECTIVE_VERSION,
@@ -323,6 +390,15 @@ def _enrich_frame(
     active_episodes: dict[str, str] = {}
 
     for index, row in result.iterrows():
+        current = _current_outcome_fields(row.to_dict())
+        for name in (
+            "outcome_value_target",
+            "outcome_value_target_mode",
+            "outcome_gamma",
+        ):
+            if name in current and name in result.columns:
+                result.at[index, name] = current[name]
+
         fields = terminal_evidence_fields(
             row.get("termination_reason")
         )
