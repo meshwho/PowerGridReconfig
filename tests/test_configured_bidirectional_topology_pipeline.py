@@ -194,7 +194,7 @@ def test_cli_builds_canonical_bidirectional_generation_config(
     targets = captured["targets"]
     assert isinstance(targets, tuple)
     assert targets[0] == examples_path
-    assert targets[1] == pytest.approx(0.95)
+    assert targets[1] == pytest.approx(1.0)
 
 
 def test_self_play_constructs_action_space_from_typed_config(

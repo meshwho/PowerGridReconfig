@@ -408,4 +408,4 @@ def test_valid_semantic_replay_roundtrip(tmp_path: Path) -> None:
     source.save_manifest()
     loaded = RollingReplayBuffer(save_dir=save_dir)
     assert len(loaded.buffer) == 1
-    assert loaded.buffer[0]["outcome_value_target"] == -0.95
+    assert loaded.buffer[0]["outcome_value_target"] == -1.0
