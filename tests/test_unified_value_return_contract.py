@@ -14,16 +14,24 @@ from grid_topology_ai.contracts import (
     REPLAY_BUFFER_SCHEMA_VERSION,
 )
 from grid_topology_ai.evaluation import checkpoint as evaluation_checkpoint
-from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
+from grid_topology_ai.physical_objective import (
+    PHYSICAL_OBJECTIVE_SCHEMA_VERSION,
+)
 from grid_topology_ai.return_contract import (
+    TERMINAL_UTILITY_GAMMA,
     VALUE_TARGET_MODE,
-    discounted_terminal_utility,
     terminal_utility_from_outcome,
 )
-from grid_topology_ai.search.mcts import MCTSConfig, MCTSNode, MCTSPlanner
+from grid_topology_ai.search.mcts import (
+    MCTSConfig,
+    MCTSNode,
+    MCTSPlanner,
+)
 from grid_topology_ai.self_play import generation
 from grid_topology_ai.termination import TerminationReason
-from grid_topology_ai.value_targets import add_outcome_value_targets_to_rows
+from grid_topology_ai.value_targets import (
+    add_outcome_value_targets_to_rows,
+)
 from tests.outcome_evidence_helpers import terminal_evidence_fields
 
 
@@ -54,59 +62,63 @@ def test_mcts_backup_and_value_targets_share_terminal_utility(
     reason: TerminationReason,
     expected_utility: float,
 ) -> None:
-    gamma = 0.8
     utility, _ = terminal_utility_from_outcome(solved, reason)
     assert utility == expected_utility
 
     evidence_fields = terminal_evidence_fields(reason)
+    identity = {
+        "run_id": "run-1",
+        "iteration": 1,
+        "episode_id": "episode-1",
+    }
     rows: list[dict[str, object]] = [
         {
+            **identity,
             "scenario_id": 1,
             "step": 0,
             "solved": solved,
             "done": True,
             "termination_reason": reason.value,
-            "physical_objective_schema_version": PHYSICAL_OBJECTIVE_SCHEMA_VERSION,
+            "physical_objective_schema_version": (
+                PHYSICAL_OBJECTIVE_SCHEMA_VERSION
+            ),
             **evidence_fields,
         },
         {
+            **identity,
             "scenario_id": 1,
             "step": 1,
             "solved": solved,
             "done": True,
             "termination_reason": reason.value,
-            "physical_objective_schema_version": PHYSICAL_OBJECTIVE_SCHEMA_VERSION,
+            "physical_objective_schema_version": (
+                PHYSICAL_OBJECTIVE_SCHEMA_VERSION
+            ),
             **evidence_fields,
         },
     ]
-    add_outcome_value_targets_to_rows(rows, gamma=gamma)
+    add_outcome_value_targets_to_rows(
+        rows,
+        gamma=TERMINAL_UTILITY_GAMMA,
+    )
 
-    path = [_node(reward=10_000.0), _node(reward=-10_000.0)]
-    MCTSPlanner(MCTSConfig(gamma=gamma))._backup(
+    path = [
+        _node(reward=10_000.0),
+        _node(reward=-10_000.0),
+    ]
+    MCTSPlanner(MCTSConfig())._backup(
         path,
         leaf_value=utility,
     )
 
     assert rows[0]["outcome_value_target"] == pytest.approx(
-        discounted_terminal_utility(
-            utility,
-            steps_to_terminal=2,
-            gamma=gamma,
-        )
+        utility
     )
     assert rows[1]["outcome_value_target"] == pytest.approx(
-        discounted_terminal_utility(
-            utility,
-            steps_to_terminal=1,
-            gamma=gamma,
-        )
+        utility
     )
-    assert path[0].total_value == pytest.approx(
-        rows[0]["outcome_value_target"]
-    )
-    assert path[1].total_value == pytest.approx(
-        rows[1]["outcome_value_target"]
-    )
+    assert path[0].total_value == pytest.approx(utility)
+    assert path[1].total_value == pytest.approx(utility)
 
 
 def test_mcts_backup_has_no_dense_reward_path() -> None:
@@ -223,7 +235,8 @@ def test_evaluation_reward_uses_run_gamma_everywhere() -> None:
 
 
 def test_unified_return_contract_versions_are_pinned() -> None:
-    assert VALUE_TARGET_MODE == "alphazero_discounted"
-    assert OUTCOME_VALUE_TARGET_CONTRACT_VERSION == 4
+    assert TERMINAL_UTILITY_GAMMA == 1.0
+    assert VALUE_TARGET_MODE == "alphazero_terminal_utility"
+    assert OUTCOME_VALUE_TARGET_CONTRACT_VERSION == 5
     assert CHECKPOINT_CONTRACT_VERSION == 7
     assert REPLAY_BUFFER_SCHEMA_VERSION == 6

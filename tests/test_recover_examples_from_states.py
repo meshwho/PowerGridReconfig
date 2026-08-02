@@ -12,6 +12,7 @@ from grid_topology_ai.contracts import physics_provenance
 from grid_topology_ai.physical_objective import (
     PHYSICAL_OBJECTIVE_SCHEMA_VERSION,
 )
+from grid_topology_ai.return_contract import TERMINAL_UTILITY_GAMMA
 from grid_topology_ai.termination import TerminationReason
 from scripts.self_play.recover_examples_from_states import (
     recover_examples,
@@ -76,7 +77,10 @@ def test_recovery_rejects_missing_exact_outcome(
         ValueError,
         match="does not contain exact terminal outcome metadata",
     ):
-        recover_examples(tmp_path, gamma=0.9)
+        recover_examples(
+            tmp_path,
+            gamma=TERMINAL_UTILITY_GAMMA,
+        )
 
 
 def test_recovery_rejects_missing_terminal_evidence(
@@ -101,7 +105,10 @@ def test_recovery_rejects_missing_terminal_evidence(
         ValueError,
         match="terminal outcome evidence",
     ):
-        recover_examples(tmp_path, gamma=0.9)
+        recover_examples(
+            tmp_path,
+            gamma=TERMINAL_UTILITY_GAMMA,
+        )
 
 
 def test_recovery_rejects_missing_episode_identity(
@@ -115,6 +122,21 @@ def test_recovery_rejects_missing_episode_identity(
     )
 
     with pytest.raises(ValueError, match="episode_id"):
+        recover_examples(
+            tmp_path,
+            gamma=TERMINAL_UTILITY_GAMMA,
+        )
+
+
+def test_recovery_rejects_discounted_outcome_gamma(
+    tmp_path: Path,
+) -> None:
+    write_recovery_state(
+        tmp_path / "impact_teacher_scenario_000001_step_000.npz",
+        solved_metadata(),
+    )
+
+    with pytest.raises(ValueError, match="exactly 1.0"):
         recover_examples(tmp_path, gamma=0.9)
 
 
@@ -128,7 +150,7 @@ def test_recovery_preserves_solved_outcome(
 
     recovered = recover_examples(
         tmp_path,
-        gamma=0.9,
+        gamma=TERMINAL_UTILITY_GAMMA,
     )
 
     assert len(recovered) == 1
@@ -140,7 +162,10 @@ def test_recovery_preserves_solved_outcome(
     assert recovered.iloc[0]["episode_id"] == "episode-1"
     assert recovered.iloc[0][
         "outcome_value_target"
-    ] == pytest.approx(0.9)
+    ] == pytest.approx(1.0)
+    assert recovered.iloc[0][
+        "outcome_gamma"
+    ] == pytest.approx(1.0)
     assert recovered.iloc[0][
         "physics_config_fingerprint"
     ] == DEFAULT_PHYSICS_CONFIG.fingerprint()
@@ -176,4 +201,7 @@ def test_recovery_rejects_mixed_physics_configs(
         ValueError,
         match="PhysicsConfig mismatch",
     ):
-        recover_examples(tmp_path, gamma=0.9)
+        recover_examples(
+            tmp_path,
+            gamma=TERMINAL_UTILITY_GAMMA,
+        )

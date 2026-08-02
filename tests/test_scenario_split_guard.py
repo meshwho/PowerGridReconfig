@@ -9,9 +9,19 @@ from grid_topology_ai.contracts import (
     OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
     physics_provenance,
 )
-from grid_topology_ai.models.graph_self_play_dataset import GraphSelfPlayDataset
-from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
-from grid_topology_ai.training.graph_policy_value import validate_no_scenario_overlap
+from grid_topology_ai.models.graph_self_play_dataset import (
+    GraphSelfPlayDataset,
+)
+from grid_topology_ai.physical_objective import (
+    PHYSICAL_OBJECTIVE_SCHEMA_VERSION,
+)
+from grid_topology_ai.return_contract import (
+    TERMINAL_UTILITY_GAMMA,
+    VALUE_TARGET_MODE,
+)
+from grid_topology_ai.training.graph_policy_value import (
+    validate_no_scenario_overlap,
+)
 
 
 def _csv_provenance() -> dict[str, object]:
@@ -47,9 +57,13 @@ def _write_examples_csv(path, state_path, scenario_ids):
             {
                 "state_path": str(state_path),
                 "mcts_policy_json": json.dumps({"0": 1.0}),
-                "outcome_value_target": -0.95,
-                "physical_objective_schema_version": PHYSICAL_OBJECTIVE_SCHEMA_VERSION,
-                "outcome_value_target_contract_version": OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
+                "outcome_value_target": -1.0,
+                "physical_objective_schema_version": (
+                    PHYSICAL_OBJECTIVE_SCHEMA_VERSION
+                ),
+                "outcome_value_target_contract_version": (
+                    OUTCOME_VALUE_TARGET_CONTRACT_VERSION
+                ),
                 **_csv_provenance(),
                 "scenario_id": scenario_id,
                 "step": i,
@@ -59,14 +73,16 @@ def _write_examples_csv(path, state_path, scenario_ids):
                 "termination_reason": "handoff_to_redispatch",
                 "outcome_class": "handoff_to_redispatch",
                 "outcome_steps_to_terminal": 1,
-                "outcome_value_target_mode": "alphazero_discounted",
-                "outcome_gamma": 0.95,
+                "outcome_value_target_mode": VALUE_TARGET_MODE,
+                "outcome_gamma": TERMINAL_UTILITY_GAMMA,
             }
         )
     pd.DataFrame(rows).to_csv(path, index=False)
 
 
-def test_validate_no_scenario_overlap_accepts_disjoint_splits(tmp_path):
+def test_validate_no_scenario_overlap_accepts_disjoint_splits(
+    tmp_path,
+):
     state_path = tmp_path / "state.npz"
     _write_fake_state(state_path)
     train_csv = tmp_path / "examples_train.csv"
@@ -74,8 +90,14 @@ def test_validate_no_scenario_overlap_accepts_disjoint_splits(tmp_path):
     _write_examples_csv(train_csv, state_path, [1, 2, 3])
     _write_examples_csv(val_csv, state_path, [4, 5])
 
-    train_dataset = GraphSelfPlayDataset(train_csv, normalize_features=False)
-    val_dataset = GraphSelfPlayDataset(val_csv, normalize_features=False)
+    train_dataset = GraphSelfPlayDataset(
+        train_csv,
+        normalize_features=False,
+    )
+    val_dataset = GraphSelfPlayDataset(
+        val_csv,
+        normalize_features=False,
+    )
     validate_no_scenario_overlap(train_dataset, val_dataset)
 
 
@@ -87,16 +109,27 @@ def test_validate_no_scenario_overlap_rejects_leakage(tmp_path):
     _write_examples_csv(train_csv, state_path, [1, 2, 3])
     _write_examples_csv(val_csv, state_path, [3, 4])
 
-    train_dataset = GraphSelfPlayDataset(train_csv, normalize_features=False)
-    val_dataset = GraphSelfPlayDataset(val_csv, normalize_features=False)
+    train_dataset = GraphSelfPlayDataset(
+        train_csv,
+        normalize_features=False,
+    )
+    val_dataset = GraphSelfPlayDataset(
+        val_csv,
+        normalize_features=False,
+    )
     with pytest.raises(ValueError, match="scenario leakage"):
         validate_no_scenario_overlap(train_dataset, val_dataset)
 
 
-def test_validate_no_scenario_overlap_accepts_missing_validation(tmp_path):
+def test_validate_no_scenario_overlap_accepts_missing_validation(
+    tmp_path,
+):
     state_path = tmp_path / "state.npz"
     _write_fake_state(state_path)
     train_csv = tmp_path / "examples_train.csv"
     _write_examples_csv(train_csv, state_path, [1, 2, 3])
-    train_dataset = GraphSelfPlayDataset(train_csv, normalize_features=False)
+    train_dataset = GraphSelfPlayDataset(
+        train_csv,
+        normalize_features=False,
+    )
     validate_no_scenario_overlap(train_dataset, None)

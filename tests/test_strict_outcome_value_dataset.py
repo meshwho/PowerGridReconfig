@@ -9,8 +9,16 @@ from grid_topology_ai.contracts import (
     OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
     physics_provenance,
 )
-from grid_topology_ai.models.graph_self_play_dataset import GraphSelfPlayDataset
-from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
+from grid_topology_ai.models.graph_self_play_dataset import (
+    GraphSelfPlayDataset,
+)
+from grid_topology_ai.physical_objective import (
+    PHYSICAL_OBJECTIVE_SCHEMA_VERSION,
+)
+from grid_topology_ai.return_contract import (
+    TERMINAL_UTILITY_GAMMA,
+    VALUE_TARGET_MODE,
+)
 
 
 def _csv_provenance() -> dict[str, object]:
@@ -39,7 +47,9 @@ def _write_fake_state(path):
     )
 
 
-def test_dataset_rejects_legacy_csv_without_outcome_value_target(tmp_path):
+def test_dataset_rejects_legacy_csv_without_outcome_value_target(
+    tmp_path,
+):
     state_path = tmp_path / "state_0.npz"
     _write_fake_state(state_path)
     examples_csv = tmp_path / "examples.csv"
@@ -52,8 +62,12 @@ def test_dataset_rejects_legacy_csv_without_outcome_value_target(tmp_path):
                 "scenario_id": 1,
                 "step": 0,
                 "state_id": "state_0",
-                "physical_objective_schema_version": PHYSICAL_OBJECTIVE_SCHEMA_VERSION,
-                "outcome_value_target_contract_version": OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
+                "physical_objective_schema_version": (
+                    PHYSICAL_OBJECTIVE_SCHEMA_VERSION
+                ),
+                "outcome_value_target_contract_version": (
+                    OUTCOME_VALUE_TARGET_CONTRACT_VERSION
+                ),
                 **_csv_provenance(),
                 "solved": False,
                 "termination_reason": "max_steps_reached",
@@ -77,20 +91,24 @@ def test_dataset_reads_strict_outcome_value_target(tmp_path):
             {
                 "state_path": str(state_path),
                 "mcts_policy_json": json.dumps({"0": 1.0}),
-                "outcome_value_target": -0.95,
+                "outcome_value_target": -1.0,
                 "scenario_id": 1,
                 "step": 0,
                 "state_id": "state_0",
-                "physical_objective_schema_version": PHYSICAL_OBJECTIVE_SCHEMA_VERSION,
-                "outcome_value_target_contract_version": OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
+                "physical_objective_schema_version": (
+                    PHYSICAL_OBJECTIVE_SCHEMA_VERSION
+                ),
+                "outcome_value_target_contract_version": (
+                    OUTCOME_VALUE_TARGET_CONTRACT_VERSION
+                ),
                 **_csv_provenance(),
                 "solved": False,
                 "termination_reason": "handoff_to_redispatch",
                 "done": True,
                 "outcome_class": "handoff_to_redispatch",
                 "outcome_steps_to_terminal": 1,
-                "outcome_value_target_mode": "alphazero_discounted",
-                "outcome_gamma": 0.95,
+                "outcome_value_target_mode": VALUE_TARGET_MODE,
+                "outcome_gamma": TERMINAL_UTILITY_GAMMA,
             }
         ]
     ).to_csv(examples_csv, index=False)
@@ -99,4 +117,4 @@ def test_dataset_reads_strict_outcome_value_target(tmp_path):
         examples_csv=examples_csv,
         normalize_features=False,
     )[0]
-    assert float(sample["target_value"].item()) == pytest.approx(-0.95)
+    assert float(sample["target_value"].item()) == pytest.approx(-1.0)

@@ -3,8 +3,12 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from grid_topology_ai.data_adapter import BRANCH_FEATURE_COLUMNS, GridFMState
+from grid_topology_ai.data_adapter import (
+    BRANCH_FEATURE_COLUMNS,
+    GridFMState,
+)
 from grid_topology_ai.return_contract import (
+    TERMINAL_UTILITY_GAMMA,
     VALUE_TARGET_MODE,
     discounted_terminal_utility,
     heuristic_terminal_utility_estimate,
@@ -20,8 +24,14 @@ def _state(*, loading: float, overloaded: int, hard: int) -> GridFMState:
         (1, len(BRANCH_FEATURE_COLUMNS)),
         dtype=np.float32,
     )
-    branch_features[0, BRANCH_FEATURE_COLUMNS.index("br_status")] = 1.0
-    branch_features[0, BRANCH_FEATURE_COLUMNS.index("loading_percent")] = loading
+    branch_features[
+        0,
+        BRANCH_FEATURE_COLUMNS.index("br_status"),
+    ] = 1.0
+    branch_features[
+        0,
+        BRANCH_FEATURE_COLUMNS.index("loading_percent"),
+    ] = loading
     return GridFMState(
         scenario_id=1,
         load_scenario_idx=0.0,
@@ -41,7 +51,10 @@ def _state(*, loading: float, overloaded: int, hard: int) -> GridFMState:
 
 
 def test_terminal_utility_contract_distinguishes_safe_and_unsafe_handoffs() -> None:
-    assert terminal_utility_from_outcome(True, TerminationReason.SOLVED) == (
+    assert terminal_utility_from_outcome(
+        True,
+        TerminationReason.SOLVED,
+    ) == (
         1.0,
         "solved",
     )
@@ -63,7 +76,7 @@ def test_terminal_utility_contract_distinguishes_safe_and_unsafe_handoffs() -> N
     ) == (-1.0, "power_flow_failed")
 
 
-def test_discounted_terminal_utility_counts_exact_transitions() -> None:
+def test_discounted_terminal_utility_remains_a_generic_helper() -> None:
     assert discounted_terminal_utility(
         1.0,
         steps_to_terminal=0,
@@ -79,10 +92,17 @@ def test_discounted_terminal_utility_counts_exact_transitions() -> None:
         steps_to_terminal=2,
         gamma=0.9,
     ) == pytest.approx(-0.81)
-    assert VALUE_TARGET_MODE == "alphazero_discounted"
 
 
-@pytest.mark.parametrize("value", [-0.1, 1.1, float("nan"), float("inf")])
+def test_policy_value_contract_is_undiscounted() -> None:
+    assert TERMINAL_UTILITY_GAMMA == 1.0
+    assert VALUE_TARGET_MODE == "alphazero_terminal_utility"
+
+
+@pytest.mark.parametrize(
+    "value",
+    [-0.1, 1.1, float("nan"), float("inf")],
+)
 def test_discount_factor_rejects_invalid_values(value: float) -> None:
     with pytest.raises(ValueError):
         require_discount_factor(value)

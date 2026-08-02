@@ -7,9 +7,16 @@ import torch
 
 from grid_topology_ai.config.physics import DEFAULT_PHYSICS_CONFIG
 from grid_topology_ai.contracts import physics_provenance
-from grid_topology_ai.models.graph_self_play_dataset import GraphSelfPlayDataset
-from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
-from grid_topology_ai.value_targets import add_outcome_value_targets_to_rows
+from grid_topology_ai.models.graph_self_play_dataset import (
+    GraphSelfPlayDataset,
+)
+from grid_topology_ai.physical_objective import (
+    PHYSICAL_OBJECTIVE_SCHEMA_VERSION,
+)
+from grid_topology_ai.return_contract import TERMINAL_UTILITY_GAMMA
+from grid_topology_ai.value_targets import (
+    add_outcome_value_targets_to_rows,
+)
 from tests.outcome_evidence_helpers import terminal_evidence_fields
 
 
@@ -50,7 +57,9 @@ def _write_fake_state(path):
     )
 
 
-def test_outcome_value_target_roundtrip_from_generator_to_dataset(tmp_path):
+def test_outcome_value_target_roundtrip_from_generator_to_dataset(
+    tmp_path,
+):
     state_0 = tmp_path / "state_0.npz"
     state_1 = tmp_path / "state_1.npz"
     _write_fake_state(state_0)
@@ -78,15 +87,22 @@ def test_outcome_value_target_roundtrip_from_generator_to_dataset(tmp_path):
             "termination_reason": "solved",
         },
     ]
-    add_outcome_value_targets_to_rows(_current(rows), gamma=0.9)
+    add_outcome_value_targets_to_rows(
+        _current(rows),
+        gamma=TERMINAL_UTILITY_GAMMA,
+    )
     examples_csv = tmp_path / "examples.csv"
     pd.DataFrame(rows).to_csv(examples_csv, index=False)
 
-    dataset = GraphSelfPlayDataset(examples_csv, normalize_features=False)
+    dataset = GraphSelfPlayDataset(
+        examples_csv,
+        normalize_features=False,
+    )
     sample_0 = dataset[0]
     sample_1 = dataset[1]
-    assert sample_0["target_value"].item() == pytest.approx(0.9**2)
-    assert sample_1["target_value"].item() == pytest.approx(0.9)
+
+    assert sample_0["target_value"].item() == pytest.approx(1.0)
+    assert sample_1["target_value"].item() == pytest.approx(1.0)
     assert sample_0["target_policy"].shape == torch.Size([2])
     assert sample_1["target_policy"].shape == torch.Size([2])
     assert sample_0["target_policy"].sum().item() == pytest.approx(1.0)
@@ -108,7 +124,10 @@ def test_roundtrip_handoff_target_is_negative(tmp_path):
             "termination_reason": "handoff_to_redispatch_teacher",
         }
     ]
-    add_outcome_value_targets_to_rows(_current(rows), gamma=0.95)
+    add_outcome_value_targets_to_rows(
+        _current(rows),
+        gamma=TERMINAL_UTILITY_GAMMA,
+    )
     examples_csv = tmp_path / "examples.csv"
     pd.DataFrame(rows).to_csv(examples_csv, index=False)
 
@@ -116,7 +135,7 @@ def test_roundtrip_handoff_target_is_negative(tmp_path):
         examples_csv,
         normalize_features=False,
     )[0]
-    assert sample["target_value"].item() == pytest.approx(-0.95)
+    assert sample["target_value"].item() == pytest.approx(-1.0)
     assert sample["target_policy"][0].item() == pytest.approx(1.0)
 
 
@@ -135,7 +154,10 @@ def test_roundtrip_failed_target_is_negative(tmp_path):
             "termination_reason": "max_steps_reached",
         }
     ]
-    add_outcome_value_targets_to_rows(_current(rows), gamma=0.95)
+    add_outcome_value_targets_to_rows(
+        _current(rows),
+        gamma=TERMINAL_UTILITY_GAMMA,
+    )
     examples_csv = tmp_path / "examples.csv"
     pd.DataFrame(rows).to_csv(examples_csv, index=False)
 
@@ -143,4 +165,4 @@ def test_roundtrip_failed_target_is_negative(tmp_path):
         examples_csv,
         normalize_features=False,
     )[0]
-    assert sample["target_value"].item() == pytest.approx(-0.95)
+    assert sample["target_value"].item() == pytest.approx(-1.0)

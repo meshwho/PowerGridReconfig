@@ -12,8 +12,16 @@ from grid_topology_ai.contracts import (
     OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
     physics_provenance,
 )
-from grid_topology_ai.models.graph_self_play_dataset import GraphSelfPlayDataset
-from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
+from grid_topology_ai.models.graph_self_play_dataset import (
+    GraphSelfPlayDataset,
+)
+from grid_topology_ai.physical_objective import (
+    PHYSICAL_OBJECTIVE_SCHEMA_VERSION,
+)
+from grid_topology_ai.return_contract import (
+    TERMINAL_UTILITY_GAMMA,
+    VALUE_TARGET_MODE,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
@@ -25,7 +33,9 @@ MIXED_TRAIN_CSV = (
     PROJECT_ROOT
     / "data/self_play/impact_teacher_balanced_v1_mixed_lodf/examples_train.csv"
 )
-RUN_LOCAL_GRAPH_DATA_TESTS = os.environ.get("RUN_LOCAL_GRAPH_DATA_TESTS") == "1"
+RUN_LOCAL_GRAPH_DATA_TESTS = (
+    os.environ.get("RUN_LOCAL_GRAPH_DATA_TESTS") == "1"
+)
 
 
 def _csv_provenance() -> dict[str, object]:
@@ -41,7 +51,9 @@ def _csv_provenance() -> dict[str, object]:
 
 
 def _state_metadata() -> np.ndarray:
-    return np.array(json.dumps(physics_provenance(DEFAULT_PHYSICS_CONFIG)))
+    return np.array(
+        json.dumps(physics_provenance(DEFAULT_PHYSICS_CONFIG))
+    )
 
 
 def _example_row(
@@ -52,7 +64,6 @@ def _example_row(
     solved: bool,
     termination_reason: str,
     outcome_class: str,
-    gamma: float,
 ) -> dict[str, object]:
     return {
         "state_path": str(state_path),
@@ -62,16 +73,20 @@ def _example_row(
         "state_id": "state-1",
         "selected_action_id": 0,
         "outcome_value_target": target,
-        "physical_objective_schema_version": PHYSICAL_OBJECTIVE_SCHEMA_VERSION,
-        "outcome_value_target_contract_version": OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
+        "physical_objective_schema_version": (
+            PHYSICAL_OBJECTIVE_SCHEMA_VERSION
+        ),
+        "outcome_value_target_contract_version": (
+            OUTCOME_VALUE_TARGET_CONTRACT_VERSION
+        ),
         **_csv_provenance(),
         "solved": solved,
         "done": True,
         "termination_reason": termination_reason,
         "outcome_class": outcome_class,
         "outcome_steps_to_terminal": 1,
-        "outcome_value_target_mode": "alphazero_discounted",
-        "outcome_gamma": gamma,
+        "outcome_value_target_mode": VALUE_TARGET_MODE,
+        "outcome_gamma": TERMINAL_UTILITY_GAMMA,
     }
 
 
@@ -166,7 +181,9 @@ def test_val_dataset_can_use_train_normalization_stats():
     )
 
 
-def test_graph_dataset_uses_mcts_policy_not_selected_action(tmp_path: Path):
+def test_graph_dataset_uses_mcts_policy_not_selected_action(
+    tmp_path: Path,
+):
     state_path = tmp_path / "state.npz"
     np.savez(
         state_path,
@@ -187,7 +204,6 @@ def test_graph_dataset_uses_mcts_policy_not_selected_action(tmp_path: Path):
                 solved=True,
                 termination_reason="solved",
                 outcome_class="solved",
-                gamma=1.0,
             )
         ]
     ).to_csv(csv_path, index=False)
@@ -201,15 +217,26 @@ def test_graph_dataset_uses_mcts_policy_not_selected_action(tmp_path: Path):
     assert float(target_policy[2].item()) == pytest.approx(0.3)
 
 
-def test_graph_dataset_derives_edge_mask_only_from_branch_status(tmp_path: Path):
+def test_graph_dataset_derives_edge_mask_only_from_branch_status(
+    tmp_path: Path,
+):
     state_path = tmp_path / "state.npz"
     np.savez(
         state_path,
         bus_features=np.zeros((3, 2), dtype=np.float32),
         branch_features=np.zeros((3, 4), dtype=np.float32),
-        edge_index=np.array([[0, 1, 2], [1, 2, 0]], dtype=np.int64),
-        branch_status=np.array([1.0, 0.0, 1.0], dtype=np.float32),
-        action_mask=np.array([True, True, False, False], dtype=bool),
+        edge_index=np.array(
+            [[0, 1, 2], [1, 2, 0]],
+            dtype=np.int64,
+        ),
+        branch_status=np.array(
+            [1.0, 0.0, 1.0],
+            dtype=np.float32,
+        ),
+        action_mask=np.array(
+            [True, True, False, False],
+            dtype=bool,
+        ),
         metadata_json=_state_metadata(),
     )
     csv_path = tmp_path / "examples.csv"
@@ -218,11 +245,10 @@ def test_graph_dataset_derives_edge_mask_only_from_branch_status(tmp_path: Path)
             _example_row(
                 state_path,
                 policy='{"1": 1.0}',
-                target=-0.95,
+                target=-1.0,
                 solved=False,
                 termination_reason="handoff_to_redispatch",
                 outcome_class="handoff_to_redispatch",
-                gamma=0.95,
             )
         ]
     ).to_csv(csv_path, index=False)
@@ -245,8 +271,14 @@ def test_normalization_state_dict_returns_copies(tmp_path: Path):
     state_path = tmp_path / "state.npz"
     np.savez(
         state_path,
-        bus_features=np.array([[1, 2, 3], [4, 5, 6]], dtype=np.float32),
-        branch_features=np.array([[1, 2, 3, 4], [5, 6, 7, 8]], dtype=np.float32),
+        bus_features=np.array(
+            [[1, 2, 3], [4, 5, 6]],
+            dtype=np.float32,
+        ),
+        branch_features=np.array(
+            [[1, 2, 3, 4], [5, 6, 7, 8]],
+            dtype=np.float32,
+        ),
         edge_index=np.array([[0, 1], [1, 0]], dtype=np.int64),
         branch_status=np.ones(2, dtype=np.float32),
         action_mask=np.array([True, True, True], dtype=bool),
@@ -258,16 +290,18 @@ def test_normalization_state_dict_returns_copies(tmp_path: Path):
             _example_row(
                 state_path,
                 policy='{"1": 1.0}',
-                target=-0.95,
+                target=-1.0,
                 solved=False,
                 termination_reason="handoff_to_redispatch",
                 outcome_class="handoff_to_redispatch",
-                gamma=0.95,
             )
         ]
     ).to_csv(csv_path, index=False)
 
-    dataset = GraphSelfPlayDataset(csv_path, normalize_features=True)
+    dataset = GraphSelfPlayDataset(
+        csv_path,
+        normalize_features=True,
+    )
     stats = dataset.normalization_state_dict()
     stats["bus_feature_mean"][0] = 999.0
     fresh = dataset.normalization_state_dict()
@@ -281,11 +315,10 @@ def test_graph_dataset_rejects_semantic_invalid_handoff_before_state_io(
     row = _example_row(
         tmp_path / "does-not-exist.npz",
         policy='{"0": 1.0}',
-        target=0.95,
+        target=1.0,
         solved=False,
         termination_reason="handoff_to_redispatch",
         outcome_class="handoff_to_redispatch",
-        gamma=0.95,
     )
     pd.DataFrame([row]).to_csv(csv_path, index=False)
 

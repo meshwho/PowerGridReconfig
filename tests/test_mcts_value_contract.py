@@ -10,10 +10,19 @@ from grid_topology_ai.contracts import (
     OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
     REPLAY_BUFFER_SCHEMA_VERSION,
 )
-from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
-from grid_topology_ai.search.mcts import MCTSConfig, MCTSNode, MCTSPlanner
+from grid_topology_ai.physical_objective import (
+    PHYSICAL_OBJECTIVE_SCHEMA_VERSION,
+)
+from grid_topology_ai.return_contract import TERMINAL_UTILITY_GAMMA
+from grid_topology_ai.search.mcts import (
+    MCTSConfig,
+    MCTSNode,
+    MCTSPlanner,
+)
 from grid_topology_ai.termination import TerminationReason
-from grid_topology_ai.value_targets import add_outcome_value_targets_to_rows
+from grid_topology_ai.value_targets import (
+    add_outcome_value_targets_to_rows,
+)
 from tests.outcome_evidence_helpers import terminal_evidence_fields
 
 
@@ -47,24 +56,35 @@ def test_mcts_config_excludes_legacy_return_knobs() -> None:
     }.isdisjoint(field_names)
 
 
+def test_mcts_config_rejects_discounted_terminal_utility() -> None:
+    with pytest.raises(ValueError, match="exactly 1.0"):
+        MCTSConfig(gamma=0.95)
+
+
 def test_mcts_backup_ignores_shaped_environment_rewards() -> None:
-    planner = MCTSPlanner(MCTSConfig(gamma=0.5))
+    planner = MCTSPlanner(
+        MCTSConfig(gamma=TERMINAL_UTILITY_GAMMA)
+    )
     first = _node(reward=10_000.0)
     second = _node(reward=-10_000.0)
 
     planner._backup([first, second], leaf_value=1.0)
 
     assert second.visit_count == 1
-    assert second.total_value == 0.5
+    assert second.total_value == 1.0
     assert first.visit_count == 1
-    assert first.total_value == 0.25
+    assert first.total_value == 1.0
 
 
 def test_mcts_terminal_leaf_uses_same_outcome_utility_as_value_targets() -> None:
     planner = MCTSPlanner(MCTSConfig())
 
     assert planner._leaf_value(
-        _node(done=True, solved=True, reason=TerminationReason.SOLVED)
+        _node(
+            done=True,
+            solved=True,
+            reason=TerminationReason.SOLVED,
+        )
     ) == 1.0
     assert planner._leaf_value(
         _node(
@@ -82,13 +102,18 @@ def test_mcts_terminal_leaf_uses_same_outcome_utility_as_value_targets() -> None
     ) == -1.0
 
 
-def test_value_targets_equal_mcts_discounted_terminal_backup() -> None:
-    gamma = 0.5
+def test_value_targets_equal_mcts_undiscounted_terminal_backup() -> None:
     evidence_fields = terminal_evidence_fields(
         TerminationReason.SOLVED
     )
+    identity = {
+        "run_id": "run-1",
+        "iteration": 1,
+        "episode_id": "episode-1",
+    }
     rows: list[dict[str, object]] = [
         {
+            **identity,
             "scenario_id": 1,
             "step": 0,
             "solved": True,
@@ -100,6 +125,7 @@ def test_value_targets_equal_mcts_discounted_terminal_backup() -> None:
             **evidence_fields,
         },
         {
+            **identity,
             "scenario_id": 1,
             "step": 1,
             "solved": True,
@@ -111,9 +137,12 @@ def test_value_targets_equal_mcts_discounted_terminal_backup() -> None:
             **evidence_fields,
         },
     ]
-    add_outcome_value_targets_to_rows(rows, gamma=gamma)
+    add_outcome_value_targets_to_rows(
+        rows,
+        gamma=TERMINAL_UTILITY_GAMMA,
+    )
 
-    planner = MCTSPlanner(MCTSConfig(gamma=gamma))
+    planner = MCTSPlanner(MCTSConfig())
     first = _node(reward=1234.0)
     second = _node(reward=-4321.0)
     planner._backup([first, second], leaf_value=1.0)
@@ -142,6 +171,6 @@ def test_neural_value_outside_terminal_utility_range_is_rejected() -> None:
 
 
 def test_return_contract_invalidates_legacy_search_artifacts() -> None:
-    assert OUTCOME_VALUE_TARGET_CONTRACT_VERSION == 4
+    assert OUTCOME_VALUE_TARGET_CONTRACT_VERSION == 5
     assert CHECKPOINT_CONTRACT_VERSION == 7
     assert REPLAY_BUFFER_SCHEMA_VERSION == 6
