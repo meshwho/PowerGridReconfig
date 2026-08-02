@@ -10,6 +10,10 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from grid_topology_ai.contracts import (
+    OUTCOME_OBJECTIVE_VERSION,
+    REPLAY_BUFFER_SCHEMA_VERSION,
+)
 from tests.outcome_evidence_helpers import (
     terminal_evidence,
     terminal_evidence_fields,
@@ -36,6 +40,7 @@ _ARTIFACT_FIXTURE_FILES = {
     "test_mcts_value_contract.py",
     "test_neural_evaluator_normalization.py",
     "test_outcome_value_target.py",
+    "test_recover_examples_from_states.py",
     "test_scenario_split_guard.py",
     "test_self_play_dataset.py",
     "test_strict_outcome_value_dataset.py",
@@ -51,6 +56,10 @@ _ROW_BUILDERS = (
     "_example_row",
     "_valid_example_row",
     "semantic_invalid_handoff_row",
+    "_checkpoint",
+    "_checkpoint_metadata",
+    "_checkpoint_payload",
+    "base_metadata",
 )
 
 _ARTIFACT_MARKERS = {
@@ -88,11 +97,16 @@ def _identity_fields(
 def _with_terminal_evidence(value: Any) -> Any:
     if isinstance(value, dict):
         result = dict(value)
-        result.update(
-            terminal_evidence_fields(
-                result.get("termination_reason")
-            )
+        result.setdefault(
+            "outcome_objective_version",
+            OUTCOME_OBJECTIVE_VERSION,
         )
+        if "termination_reason" in result:
+            result.update(
+                terminal_evidence_fields(
+                    result.get("termination_reason")
+                )
+            )
         if "state_path" not in result:
             for name, field_value in _identity_fields(result).items():
                 result.setdefault(name, field_value)
@@ -159,6 +173,107 @@ def _wrap_target_builder(
     )
 
 
+def _wrap_example_constructor(
+    module: object,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    constructor = getattr(module, "SelfPlayExample", None)
+    if constructor is None or not callable(constructor):
+        return
+
+    def current_constructor(
+        *args: object,
+        **kwargs: object,
+    ) -> Any:
+        kwargs.setdefault(
+            "outcome_objective_version",
+            OUTCOME_OBJECTIVE_VERSION,
+        )
+        return constructor(*args, **kwargs)
+
+    monkeypatch.setattr(
+        module,
+        "SelfPlayExample",
+        current_constructor,
+    )
+
+
+def _patch_fake_writer(
+    module: object,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    writer = getattr(module, "_FakeExampleWriter", None)
+    columns = getattr(writer, "COLUMNS", None)
+    if writer is None or not isinstance(columns, list):
+        return
+    if "outcome_objective_version" not in columns:
+        updated = list(columns)
+        position = updated.index("physical_objective_schema_version") + 1
+        updated.insert(position, "outcome_objective_version")
+        monkeypatch.setattr(writer, "COLUMNS", updated)
+
+    add_example = getattr(writer, "add_example", None)
+    if not callable(add_example):
+        return
+
+    def current_add_example(
+        instance: object,
+        *args: object,
+        **kwargs: object,
+    ) -> Any:
+        result = add_example(instance, *args, **kwargs)
+        rows = getattr(instance, "rows", None)
+        if isinstance(rows, list) and rows:
+            rows[-1].setdefault(
+                "outcome_objective_version",
+                OUTCOME_OBJECTIVE_VERSION,
+            )
+        return result
+
+    monkeypatch.setattr(writer, "add_example", current_add_example)
+
+
+def _wrap_checkpoint_writer(
+    module: object,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    writer = getattr(module, "_write_checkpoint", None)
+    if writer is None or not callable(writer):
+        return
+
+    def current_writer(
+        *args: object,
+        **kwargs: object,
+    ) -> Any:
+        result = writer(*args, **kwargs)
+        path_value = kwargs.get("path")
+        if path_value is None and args:
+            path_value = args[0]
+        if path_value is None:
+            return result
+
+        import torch
+
+        path = Path(path_value)
+        payload = torch.load(
+            path,
+            map_location="cpu",
+            weights_only=False,
+        )
+        if (
+            isinstance(payload, dict)
+            and "checkpoint_contract_version" in payload
+        ):
+            payload.setdefault(
+                "outcome_objective_version",
+                OUTCOME_OBJECTIVE_VERSION,
+            )
+            torch.save(payload, path)
+        return result
+
+    monkeypatch.setattr(module, "_write_checkpoint", current_writer)
+
+
 def _is_artifact_frame(frame: pd.DataFrame) -> bool:
     return (
         len(frame) > 0
@@ -181,8 +296,20 @@ def _missing(value: object) -> bool:
     )
 
 
-def _enrich_frame(frame: pd.DataFrame) -> pd.DataFrame:
+def _enrich_frame(
+    frame: pd.DataFrame,
+    *,
+    add_objective: bool = True,
+) -> pd.DataFrame:
     result = frame.copy()
+
+    if (
+        add_objective
+        and "outcome_objective_version" not in result.columns
+    ):
+        result["outcome_objective_version"] = (
+            OUTCOME_OBJECTIVE_VERSION
+        )
 
     identity_columns = _IDENTITY_COLUMNS.intersection(result.columns)
     add_identity = not identity_columns
@@ -258,7 +385,10 @@ def _wrap_outcome_validator(
             "terminal_outcome_evidence_schema_version",
             "terminal_outcome_evidence_json",
         }.issubset(examples.columns):
-            prepared = _enrich_frame(examples)
+            prepared = _enrich_frame(
+                examples,
+                add_objective=False,
+            )
 
         try:
             validator(
@@ -352,6 +482,10 @@ def _sync_state_evidence(
             continue
 
         updated_metadata = dict(metadata)
+        updated_metadata.setdefault(
+            "outcome_objective_version",
+            OUTCOME_OBJECTIVE_VERSION,
+        )
         updated_metadata.update(
             terminal_evidence_metadata(
                 evidence.termination_reason
@@ -368,6 +502,42 @@ def _sync_state_evidence(
             json.dumps(updated_metadata)
         )
         np.savez_compressed(path, **arrays)
+
+
+def _patch_replay_manifest_writes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_write_text = Path.write_text
+
+    def current_write_text(
+        path: Path,
+        data: str,
+        *args: object,
+        **kwargs: object,
+    ) -> int:
+        if path.name == "buffer_manifest.json":
+            try:
+                payload = json.loads(data)
+            except (json.JSONDecodeError, TypeError):
+                payload = None
+            if (
+                isinstance(payload, dict)
+                and payload.get("schema_version")
+                == REPLAY_BUFFER_SCHEMA_VERSION
+            ):
+                payload.setdefault(
+                    "outcome_objective_version",
+                    OUTCOME_OBJECTIVE_VERSION,
+                )
+                data = json.dumps(payload)
+        return original_write_text(
+            path,
+            data,
+            *args,
+            **kwargs,
+        )
+
+    monkeypatch.setattr(Path, "write_text", current_write_text)
 
 
 @pytest.fixture(autouse=True)
@@ -391,6 +561,20 @@ def _current_terminal_evidence_fixtures(
         request.module,
         monkeypatch,
     )
+    _wrap_example_constructor(
+        request.module,
+        monkeypatch,
+    )
+    _patch_fake_writer(
+        request.module,
+        monkeypatch,
+    )
+    _wrap_checkpoint_writer(
+        request.module,
+        monkeypatch,
+    )
+    if filename == "test_replay.py":
+        _patch_replay_manifest_writes(monkeypatch)
     _wrap_outcome_validator(
         request.module,
         monkeypatch,
