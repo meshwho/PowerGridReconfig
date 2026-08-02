@@ -207,6 +207,18 @@ class TopologySwitchingEnv:
         cloned.terminal_outcome_evidence = self.terminal_outcome_evidence
         return cloned
 
+    def terminate_no_legal_action(self) -> TerminalOutcomeEvidence:
+        """Finish an active episode when search has no executable action."""
+
+        self._require_active_episode()
+        assert self.current_state is not None
+        assessment = assess_physical_state(self.current_state.metrics)
+        return self._finish_episode(
+            solved=False,
+            termination_reason=TerminationReason.NO_LEGAL_ACTION,
+            assessment=assessment,
+        )
+
     def _step_do_nothing(self, action: GridFMAction) -> TopologyStepResult:
         assert self.current_state is not None
 

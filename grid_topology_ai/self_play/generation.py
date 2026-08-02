@@ -632,13 +632,19 @@ def generate_self_play_examples(
 
             state_before = env.current_state
             if state_before is None:
-                break
+                raise RuntimeError(
+                    "Active self-play environment has no current state."
+                )
 
             action_mask = env.valid_action_mask()
             search_result = planner.search_from_env(env)
 
             if search_result.best_action_id is None:
-                print("MCTS returned no action. Stop episode.")
+                env.terminate_no_legal_action()
+                print(
+                    "MCTS returned no legal action. "
+                    "Episode terminated with no_legal_action."
+                )
                 break
 
             effective_temperature = selection_temperature_for_step(

@@ -14,6 +14,7 @@ class TerminationReason(StrEnum):
     POWER_FLOW_FAILED = "power_flow_failed"
     MAX_STEPS_REACHED = "max_steps_reached"
     CONSTRAINT_EXHAUSTED = "constraint_exhausted"
+    NO_LEGAL_ACTION = "no_legal_action"
     HANDOFF_TO_REDISPATCH_TEACHER = "handoff_to_redispatch_teacher"
     TEACHER_DEPTH_LIMIT = "teacher_depth_limit"
 
