@@ -181,8 +181,37 @@ def test_generation_records_analysis_without_override(
             self.physics_config = physics_config
             self.action_space_config = action_space_config
 
-        def add_example(self, **kwargs):
-            captured.append(kwargs)
+        def add_episode(
+            self,
+            pending_examples,
+            *,
+            final_return,
+            returns_from_step,
+            solved,
+            done,
+            termination_reason,
+            terminal_outcome_evidence,
+            iteration,
+        ):
+            for item, return_from_step in zip(
+                pending_examples,
+                returns_from_step,
+            ):
+                captured.append(
+                    {
+                        **item,
+                        "final_return": final_return,
+                        "discounted_return_from_step": return_from_step,
+                        "solved": solved,
+                        "done": done,
+                        "termination_reason": termination_reason,
+                        "terminal_outcome_evidence": (
+                            terminal_outcome_evidence
+                        ),
+                        "iteration": iteration,
+                    }
+                )
+            return len(pending_examples)
 
         def save(self):
             return tmp_path / "examples.csv"

@@ -200,11 +200,6 @@ def test_generation_cli_propagates_temperature_schedule(
         "generate_self_play_examples",
         fake_generate,
     )
-    monkeypatch.setattr(
-        generation_cli,
-        "ensure_outcome_value_targets",
-        lambda *args, **kwargs: examples_path,
-    )
 
     result = generation_cli.main(
         [

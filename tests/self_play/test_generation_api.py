@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-import json
-from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError, fields
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -12,14 +11,15 @@ import pytest
 from grid_topology_ai.config import GenerationConfig
 from grid_topology_ai.config.physics import PhysicsConfig
 from grid_topology_ai.contracts import (
+    OUTCOME_OBJECTIVE_VERSION,
     OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
-    physics_provenance,
 )
 from grid_topology_ai.outcome_contract import (
     TERMINAL_OUTCOME_EVIDENCE_SCHEMA_VERSION,
 )
 from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
 from grid_topology_ai.self_play import generation
+from grid_topology_ai.self_play.examples import SelfPlayExample
 from grid_topology_ai.self_play.generation import (
     GenerationRequest,
     generate_self_play_examples,
@@ -63,9 +63,6 @@ class _FakeEnv:
         self.termination_reason = TerminationReason.SOLVED
         self.terminal_outcome_evidence = terminal_evidence("solved")
         return _FakeStepResult()
-
-    def action_by_id(self, action_id: int) -> _FakeAction:
-        return _FakeAction()
 
 
 class _FakeCache:
@@ -111,6 +108,7 @@ class _FakePlanner:
         action = _FakeAction()
         return SimpleNamespace(
             best_action_id=1,
+            best_branch_id=10,
             policy={1: 1.0},
             visit_counts={1: 3},
             root=SimpleNamespace(actions_by_id={1: action}),
@@ -123,43 +121,7 @@ class _FakePlanner:
 
 
 class _FakeExampleWriter:
-    COLUMNS = [
-        "state_id",
-        "state_path",
-        "run_id",
-        "iteration",
-        "episode_id",
-        "scenario_id",
-        "step",
-        "selected_action_id",
-        "selected_branch_id",
-        "step_reward",
-        "final_return",
-        "discounted_return_from_step",
-        "solved",
-        "done",
-        "termination_reason",
-        "terminal_outcome_evidence_schema_version",
-        "terminal_outcome_evidence_json",
-        "physical_objective_schema_version",
-        "outcome_value_target_contract_version",
-        "state_feature_schema_version",
-        "state_feature_schema_fingerprint",
-        "bus_feature_columns",
-        "branch_feature_columns",
-        "edge_index_semantics",
-        "bus_id_semantics",
-        "physics_config_contract_version",
-        "physics_config",
-        "physics_config_fingerprint",
-        "topology_action_contract_version",
-        "topology_action_config",
-        "topology_action_config_fingerprint",
-        "action_layout",
-        "action_layout_fingerprint",
-        "visit_counts_json",
-        "mcts_policy_json",
-    ]
+    COLUMNS = [field.name for field in fields(SelfPlayExample)]
 
     def __init__(
         self,
@@ -175,82 +137,96 @@ class _FakeExampleWriter:
         self.states_dir = self.output_dir / "states"
         self.rows: list[dict[str, object]] = []
 
-    def add_example(self, **kwargs: object) -> None:
-        provenance = physics_provenance(self.physics_config)
-        evidence = kwargs["terminal_outcome_evidence"]
-        metadata = kwargs.get("extra_metadata")
-        iteration = (
-            int(metadata.get("self_play_iteration", 1))
-            if isinstance(metadata, dict)
-            else 1
-        )
-        scenario_id = int(kwargs["scenario_id"])
-        self.rows.append(
-            {
-                "state_id": kwargs["state_id"],
-                "state_path": "states/fake.npz",
-                "run_id": "test-run",
-                "iteration": iteration,
-                "episode_id": f"test-episode-{scenario_id}",
-                "scenario_id": scenario_id,
-                "step": kwargs["step"],
-                "selected_action_id": kwargs["selected_action_id"],
-                "selected_branch_id": kwargs["selected_branch_id"],
-                "step_reward": kwargs["step_reward"],
-                "final_return": kwargs["final_return"],
-                "discounted_return_from_step": kwargs[
-                    "discounted_return_from_step"
-                ],
-                "solved": kwargs["solved"],
-                "done": kwargs["done"],
-                "termination_reason": kwargs["termination_reason"],
-                "terminal_outcome_evidence_schema_version": (
-                    TERMINAL_OUTCOME_EVIDENCE_SCHEMA_VERSION
-                ),
-                "terminal_outcome_evidence_json": evidence.to_json(),
-                "physical_objective_schema_version": (
-                    PHYSICAL_OBJECTIVE_SCHEMA_VERSION
-                ),
-                "outcome_value_target_contract_version": (
-                    OUTCOME_VALUE_TARGET_CONTRACT_VERSION
-                ),
-                "state_feature_schema_version": int(
-                    provenance["state_feature_schema_version"]
-                ),
-                "state_feature_schema_fingerprint": str(
-                    provenance["state_feature_schema_fingerprint"]
-                ),
-                "bus_feature_columns": json.dumps(
-                    provenance["bus_feature_columns"],
-                    separators=(",", ":"),
-                    allow_nan=False,
-                ),
-                "branch_feature_columns": json.dumps(
-                    provenance["branch_feature_columns"],
-                    separators=(",", ":"),
-                    allow_nan=False,
-                ),
-                "edge_index_semantics": str(
-                    provenance["edge_index_semantics"]
-                ),
-                "bus_id_semantics": str(
-                    provenance["bus_id_semantics"]
-                ),
-                "physics_config_contract_version": provenance[
-                    "physics_config_contract_version"
-                ],
-                "physics_config": json.dumps(
-                    provenance["physics_config"],
-                    sort_keys=True,
-                    separators=(",", ":"),
-                ),
-                "physics_config_fingerprint": provenance[
-                    "physics_config_fingerprint"
-                ],
-                "visit_counts_json": '{"1": 3}',
-                "mcts_policy_json": '{"1": 1.0}',
-            }
-        )
+    def add_episode(
+        self,
+        pending_examples: list[dict[str, object]],
+        *,
+        final_return: float,
+        returns_from_step: list[float],
+        solved: bool,
+        done: bool,
+        termination_reason: TerminationReason,
+        terminal_outcome_evidence,
+        iteration: int,
+    ) -> int:
+        reason = termination_reason.value
+        target = 1.0 if solved else -1.0
+        episode_id = f"test-episode-{pending_examples[0]['scenario_id']}"
+        total_steps = len(pending_examples)
+
+        for item, return_from_step in zip(
+            pending_examples,
+            returns_from_step,
+        ):
+            step = int(item["step"])
+            self.rows.append(
+                {
+                    "state_id": f"{episode_id}_step_{step:03d}",
+                    "state_path": "states/fake.npz",
+                    "run_id": "test-run",
+                    "iteration": int(iteration),
+                    "episode_id": episode_id,
+                    "scenario_id": int(item["scenario_id"]),
+                    "step": step,
+                    "selected_action_id": int(item["selected_action_id"]),
+                    "selected_branch_id": item["selected_branch_id"],
+                    "step_reward": float(item["step_reward"]),
+                    "final_return": float(final_return),
+                    "discounted_return_from_step": float(return_from_step),
+                    "solved": bool(solved),
+                    "done": bool(done),
+                    "termination_reason": reason,
+                    "terminal_outcome_evidence_schema_version": (
+                        TERMINAL_OUTCOME_EVIDENCE_SCHEMA_VERSION
+                    ),
+                    "terminal_outcome_evidence_json": (
+                        terminal_outcome_evidence.to_json()
+                    ),
+                    "physical_objective_schema_version": (
+                        PHYSICAL_OBJECTIVE_SCHEMA_VERSION
+                    ),
+                    "outcome_objective_version": OUTCOME_OBJECTIVE_VERSION,
+                    "outcome_value_target_contract_version": (
+                        OUTCOME_VALUE_TARGET_CONTRACT_VERSION
+                    ),
+                    "visit_counts_json": '{"1": 3}',
+                    "mcts_policy_json": '{"1": 1.0}',
+                    "outcome_value_target": target,
+                    "outcome_class": reason,
+                    "outcome_steps_to_terminal": total_steps - step,
+                    "outcome_value_target_mode": (
+                        "alphazero_terminal_utility"
+                    ),
+                    "outcome_gamma": 1.0,
+                    "selection_temperature": item.get(
+                        "selection_temperature"
+                    ),
+                    "selection_mode": item.get("selection_mode"),
+                    "policy_target_entropy": item.get(
+                        "policy_target_entropy"
+                    ),
+                    "policy_target_normalized_entropy": item.get(
+                        "policy_target_normalized_entropy"
+                    ),
+                    "mcts_legal_action_count": item.get(
+                        "mcts_legal_action_count"
+                    ),
+                    "mcts_considered_action_count": item.get(
+                        "mcts_considered_action_count"
+                    ),
+                    "mcts_visited_action_count": item.get(
+                        "mcts_visited_action_count"
+                    ),
+                    "mcts_action_coverage": item.get(
+                        "mcts_action_coverage"
+                    ),
+                    "mcts_visited_action_coverage": item.get(
+                        "mcts_visited_action_coverage"
+                    ),
+                }
+            )
+
+        return total_steps
 
     def save(self) -> Path:
         path = self.output_dir / "examples.csv"
@@ -367,7 +343,7 @@ def test_generation_request_is_frozen_and_slotted(tmp_path: Path) -> None:
     assert not hasattr(request, "__dict__")
 
 
-def test_generate_self_play_examples_creates_output(
+def test_generate_self_play_examples_creates_complete_output(
     tmp_path: Path,
     fake_generation_runtime: None,
 ) -> None:
@@ -379,6 +355,9 @@ def test_generate_self_play_examples_creates_output(
     assert row["step_reward"] == pytest.approx(1.0)
     assert row["final_return"] == pytest.approx(1.0)
     assert row["discounted_return_from_step"] == pytest.approx(1.0)
+    assert row["outcome_value_target"] == pytest.approx(1.0)
+    assert row["outcome_class"] == "solved"
+    assert row["outcome_gamma"] == pytest.approx(1.0)
     assert row["terminal_outcome_evidence_json"] == terminal_evidence(
         "solved"
     ).to_json()
@@ -515,15 +494,15 @@ def test_missing_transitions_csv_raises(tmp_path: Path) -> None:
         generate_self_play_examples(request)
 
 
-def test_output_schema_matches_existing_generation_schema(
+def test_output_schema_matches_self_play_example(
     tmp_path: Path,
     fake_generation_runtime: None,
 ) -> None:
     examples_csv = generate_self_play_examples(_request(tmp_path))
 
-    assert list(pd.read_csv(examples_csv).columns) == (
-        _FakeExampleWriter.COLUMNS
-    )
+    assert list(pd.read_csv(examples_csv).columns) == [
+        field.name for field in fields(SelfPlayExample)
+    ]
 
 
 def test_empty_scenario_selection_preserves_old_behavior(

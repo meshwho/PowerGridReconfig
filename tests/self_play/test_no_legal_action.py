@@ -148,6 +148,17 @@ class _RuntimeObject:
 
 class _Writer:
     instances: list[_Writer] = []
+    columns = (
+        "done",
+        "solved",
+        "termination_reason",
+        "terminal_outcome_evidence_json",
+        "outcome_value_target",
+        "outcome_class",
+        "outcome_steps_to_terminal",
+        "outcome_value_target_mode",
+        "outcome_gamma",
+    )
 
     def __init__(
         self,
@@ -162,28 +173,49 @@ class _Writer:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         type(self).instances.append(self)
 
-    def add_example(self, **kwargs: object) -> None:
-        evidence = kwargs["terminal_outcome_evidence"]
-        assert isinstance(evidence, TerminalOutcomeEvidence)
-        self.rows.append(
-            {
-                "done": kwargs["done"],
-                "solved": kwargs["solved"],
-                "termination_reason": kwargs["termination_reason"],
-                "terminal_outcome_evidence_json": evidence.to_json(),
-            }
+    def add_episode(
+        self,
+        pending_examples,
+        *,
+        final_return,
+        returns_from_step,
+        solved,
+        done,
+        termination_reason,
+        terminal_outcome_evidence,
+        iteration,
+    ) -> int:
+        assert isinstance(
+            terminal_outcome_evidence,
+            TerminalOutcomeEvidence,
         )
+        total_steps = len(pending_examples)
+        for item in pending_examples:
+            step = int(item["step"])
+            self.rows.append(
+                {
+                    "done": done,
+                    "solved": solved,
+                    "termination_reason": termination_reason.value,
+                    "terminal_outcome_evidence_json": (
+                        terminal_outcome_evidence.to_json()
+                    ),
+                    "outcome_value_target": -1.0,
+                    "outcome_class": termination_reason.value,
+                    "outcome_steps_to_terminal": total_steps - step,
+                    "outcome_value_target_mode": (
+                        "alphazero_terminal_utility"
+                    ),
+                    "outcome_gamma": 1.0,
+                }
+            )
+        return total_steps
 
     def save(self) -> Path:
         path = self.output_dir / "examples.csv"
         pd.DataFrame(
             self.rows,
-            columns=(
-                "done",
-                "solved",
-                "termination_reason",
-                "terminal_outcome_evidence_json",
-            ),
+            columns=self.columns,
         ).to_csv(path, index=False)
         return path
 
@@ -340,6 +372,9 @@ def test_generation_labels_prior_decisions_as_no_legal_action(
     assert bool(row["done"]) is True
     assert bool(row["solved"]) is False
     assert row["termination_reason"] == "no_legal_action"
+    assert row["outcome_value_target"] == pytest.approx(-1.0)
+    assert row["outcome_class"] == "no_legal_action"
+    assert row["outcome_gamma"] == pytest.approx(1.0)
     assert row["terminal_outcome_evidence_json"] == terminal_evidence(
         TerminationReason.NO_LEGAL_ACTION
     ).to_json()

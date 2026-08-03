@@ -21,20 +21,35 @@ def test_silent_self_play_fallback_files_do_not_use_broad_exception_catches() ->
     assert bad == []
 
 
-def test_self_play_broad_exception_inventory_is_limited_to_stage_logger() -> None:
-    matches = []
-    for path in Path("grid_topology_ai/self_play").glob("*.py"):
-        if "except Exception" in path.read_text(encoding="utf-8"):
-            matches.append(path.as_posix())
+def test_self_play_broad_exception_boundaries_are_documented() -> None:
+    matches = sorted(
+        path.as_posix()
+        for path in Path("grid_topology_ai/self_play").glob("*.py")
+        if "except Exception" in path.read_text(encoding="utf-8")
+    )
 
-    assert matches == ["grid_topology_ai/self_play/stages.py"]
-    assert "Intentional top-level logging boundary" in Path(
+    assert matches == [
+        "grid_topology_ai/self_play/examples.py",
+        "grid_topology_ai/self_play/stages.py",
+    ]
+
+    examples_source = Path(
+        "grid_topology_ai/self_play/examples.py"
+    ).read_text(encoding="utf-8")
+    assert examples_source.count("except Exception") == 1
+    assert "del self.examples[original_count:]" in examples_source
+    assert "path.unlink(missing_ok=True)" in examples_source
+
+    stages_source = Path(
         "grid_topology_ai/self_play/stages.py"
     ).read_text(encoding="utf-8")
+    assert "Intentional top-level logging boundary" in stages_source
 
 
 def test_evaluation_worker_broad_exception_boundary_is_documented() -> None:
-    text = Path("grid_topology_ai/evaluation/checkpoint.py").read_text(encoding="utf-8")
+    text = Path("grid_topology_ai/evaluation/checkpoint.py").read_text(
+        encoding="utf-8"
+    )
 
     assert text.count("except Exception") == 1
     assert "Intentional process-worker boundary" in text

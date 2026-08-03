@@ -152,22 +152,10 @@ def test_cli_builds_canonical_bidirectional_generation_config(
         captured["request"] = request
         return examples_path
 
-    def fake_targets(
-        path: Path,
-        *,
-        gamma: float,
-    ) -> None:
-        captured["targets"] = (path, gamma)
-
     monkeypatch.setattr(
         generation_cli,
         "generate_self_play_examples",
         fake_generate,
-    )
-    monkeypatch.setattr(
-        generation_cli,
-        "ensure_outcome_value_targets",
-        fake_targets,
     )
 
     result = generation_cli.main(
@@ -191,10 +179,7 @@ def test_cli_builds_canonical_bidirectional_generation_config(
     assert request.config.require_connected_after_switch is False
     assert request.config.min_loading_for_switch_percent == pytest.approx(37.5)
     assert request.config.closeable_branch_ids == (10, 20)
-    targets = captured["targets"]
-    assert isinstance(targets, tuple)
-    assert targets[0] == examples_path
-    assert targets[1] == pytest.approx(1.0)
+    assert examples_path == tmp_path / "examples.csv"
 
 
 def test_self_play_constructs_action_space_from_typed_config(
