@@ -15,6 +15,7 @@ class ReplayBufferConfig:
     min_size_to_train: int = 1_000
     fresh_fraction: float = 0.70
     random_seed: int = 42
+    retention_iterations: int = 10
 
     def __post_init__(self) -> None:
         require_positive("replay_buffer.max_size", self.max_size)
@@ -25,6 +26,10 @@ class ReplayBufferConfig:
         require_fraction(
             "replay_buffer.fresh_fraction",
             self.fresh_fraction,
+        )
+        require_positive(
+            "replay_buffer.retention_iterations",
+            self.retention_iterations,
         )
 
     @classmethod
@@ -41,4 +46,7 @@ class ReplayBufferConfig:
                 data.get("fresh_fraction", 0.70)
             ),
             random_seed=int(data.get("random_seed", 42)),
+            retention_iterations=int(
+                data.get("retention_iterations", 10)
+            ),
         )

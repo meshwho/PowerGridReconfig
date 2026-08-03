@@ -45,6 +45,7 @@ replay_buffer:
   min_size_to_train: 5
   fresh_fraction: 0.70
   random_seed: 42
+  retention_iterations: 1
 
 generation:
   simulations: 5

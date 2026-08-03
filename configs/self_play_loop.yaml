@@ -57,6 +57,7 @@ replay_buffer:
   min_size_to_train: 1000
   fresh_fraction: 0.70
   random_seed: 42
+  retention_iterations: 10
 
 # MCTS/value optimization uses undiscounted terminal utility. Environment rewards
 # are diagnostic potential shaping only and introduce no terminal penalties.
