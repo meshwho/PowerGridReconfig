@@ -35,6 +35,10 @@ from grid_topology_ai.self_play.generation import (
     GenerationRequest,
     generate_self_play_examples,
 )
+from grid_topology_ai.self_play.lineage_artifacts import (
+    annotate_examples_csv,
+    annotate_transitions_csv,
+)
 from grid_topology_ai.training.graph_policy_value import (
     TrainingRequest,
     train_graph_policy_value_model,
@@ -309,6 +313,7 @@ def run_generate(
     """
 
     project_root = Path(project_root)
+    raw_dir = Path(raw_dir)
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -317,11 +322,15 @@ def run_generate(
         scenario_ids=scenario_ids,
         output_path=output_dir / "selected_transitions.csv",
     )
+    annotate_transitions_csv(
+        transitions_csv=selected_transitions_csv,
+        raw_dir=raw_dir,
+    )
 
     log_path = output_dir / "generate.log"
 
     request = GenerationRequest(
-        raw_dir=Path(raw_dir),
+        raw_dir=raw_dir,
         transitions_csv=selected_transitions_csv,
         output_dir=output_dir,
         checkpoint=Path(checkpoint),
@@ -340,6 +349,10 @@ def run_generate(
     if not examples_csv.exists():
         raise FileNotFoundError(f"Examples CSV was not created: {examples_csv}")
 
+    annotate_examples_csv(
+        examples_csv=examples_csv,
+        transitions_csv=selected_transitions_csv,
+    )
     return examples_csv
 
 
