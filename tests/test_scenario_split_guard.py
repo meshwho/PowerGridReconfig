@@ -66,7 +66,7 @@ def _write_examples_csv(path, state_path, scenario_ids):
                 ),
                 **_csv_provenance(),
                 "scenario_id": scenario_id,
-                "step": i,
+                "step": 0,
                 "state_id": f"state_{i}",
                 "solved": False,
                 "done": True,
