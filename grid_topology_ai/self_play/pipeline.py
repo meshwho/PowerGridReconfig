@@ -122,6 +122,13 @@ def run_self_play_pipeline(
         config=config.replay_buffer,
         physics_config=config.physics,
     )
+    set_scenario_metadata = getattr(
+        replay_buffer,
+        "set_scenario_metadata",
+        None,
+    )
+    if callable(set_scenario_metadata):
+        set_scenario_metadata(pool_metadata)
 
     learning_curve_path = paths.learning_curve
     learning_curve = load_learning_curve(learning_curve_path)
