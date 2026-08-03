@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 
 import numpy as np
@@ -44,6 +45,25 @@ def _buffer(tmp_path: Path) -> RollingReplayBuffer:
             random_seed=17,
         ),
     )
+
+
+def _priorities(
+    buffer: RollingReplayBuffer,
+    rows: list[dict[str, object]],
+    *,
+    current_iteration: int = 2,
+) -> dict[str, float]:
+    episodes, _ = buffer._episode_groups(
+        rows,
+        current_iteration=current_iteration,
+        rng=np.random.default_rng(1),
+    )
+    return {
+        str(episode["rows"][0]["episode_id"]): float(
+            episode["priority"]
+        )
+        for episode in episodes
+    }
 
 
 def test_episode_sampling_does_not_favor_long_episodes(
@@ -179,23 +199,103 @@ def test_episode_priority_combines_age_and_error(
         ),
     ]
 
-    episodes, _ = buffer._episode_groups(
-        source,
-        current_iteration=2,
-        rng=np.random.default_rng(1),
-    )
-    priorities = {
-        str(episode["rows"][0]["episode_id"]): float(
-            episode["priority"]
-        )
-        for episode in episodes
-    }
+    priorities = _priorities(buffer, source)
 
     assert priorities["old"] == AGE_DECAY
     assert priorities["fresh"] == 1.0
     assert priorities["error"] == (
         1.0 + ERROR_PRIORITY_SCALE * 0.9
     )
+
+
+def test_policy_loss_activates_priority_without_explicit_error(
+    tmp_path: Path,
+) -> None:
+    buffer = _buffer(tmp_path)
+    source = [
+        _row(
+            "certain",
+            episode_id="certain",
+            scenario_id=1,
+            selected_action_id=1,
+            mcts_policy_json=json.dumps({"1": 1.0}),
+        ),
+        _row(
+            "surprising",
+            episode_id="surprising",
+            scenario_id=2,
+            selected_action_id=1,
+            mcts_policy_json=json.dumps({"1": 0.1, "2": 0.9}),
+        ),
+    ]
+
+    priorities = _priorities(buffer, source)
+    policy_loss = -math.log(0.1)
+    expected_score = policy_loss / (1.0 + policy_loss)
+
+    assert priorities["certain"] == 1.0
+    assert np.isclose(
+        priorities["surprising"],
+        1.0 + ERROR_PRIORITY_SCALE * expected_score,
+    )
+
+
+def test_explicit_error_takes_precedence_over_policy_loss(
+    tmp_path: Path,
+) -> None:
+    buffer = _buffer(tmp_path)
+    source = [
+        _row(
+            "explicit",
+            episode_id="explicit",
+            scenario_id=1,
+            selected_action_id=1,
+            mcts_policy_json=json.dumps({"1": 0.01, "2": 0.99}),
+            value_error=1.0,
+        )
+    ]
+
+    priority = _priorities(buffer, source)["explicit"]
+
+    assert np.isclose(
+        priority,
+        1.0 + ERROR_PRIORITY_SCALE * 0.5,
+    )
+
+
+def test_missing_or_invalid_policy_error_fallback_is_neutral(
+    tmp_path: Path,
+) -> None:
+    buffer = _buffer(tmp_path)
+    source = [
+        _row(
+            "missing",
+            episode_id="missing",
+            scenario_id=1,
+        ),
+        _row(
+            "invalid-json",
+            episode_id="invalid-json",
+            scenario_id=2,
+            selected_action_id=1,
+            mcts_policy_json="not-json",
+        ),
+        _row(
+            "missing-action",
+            episode_id="missing-action",
+            scenario_id=3,
+            selected_action_id=3,
+            mcts_policy_json=json.dumps({"1": 1.0}),
+        ),
+    ]
+
+    priorities = _priorities(buffer, source)
+
+    assert priorities == {
+        "missing": 1.0,
+        "invalid-json": 1.0,
+        "missing-action": 1.0,
+    }
 
 
 def test_export_mixed_batch_records_sampling_contract(
@@ -255,6 +355,9 @@ def test_export_mixed_batch_records_sampling_contract(
         "difficulty",
     ]
     assert metadata["scenario_metadata_count"] == 6
+    assert metadata["error_priority_source"] == (
+        "explicit_error_or_selected_action_policy_loss"
+    )
     assert metadata["fresh_sampling"]["selected_episodes"] == 2
     assert metadata["old_sampling"]["selected_episodes"] == 2
 
@@ -265,6 +368,9 @@ def test_export_mixed_batch_records_sampling_contract(
     persisted = json.loads(metadata_path.read_text(encoding="utf-8"))
     assert persisted["sampling_contract_version"] == (
         SAMPLING_CONTRACT_VERSION
+    )
+    assert persisted["error_priority_source"] == (
+        metadata["error_priority_source"]
     )
     assert persisted["fresh_sampling"] == metadata["fresh_sampling"]
     assert persisted["old_sampling"] == metadata["old_sampling"]
