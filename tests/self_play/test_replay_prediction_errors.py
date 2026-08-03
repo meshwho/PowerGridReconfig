@@ -181,10 +181,13 @@ class _Dataset:
 
 class _Model:
     def __call__(self, **kwargs: Any) -> tuple[torch.Tensor, torch.Tensor]:
-        del kwargs
+        device = kwargs["bus_features"].device
         return (
-            torch.tensor([[0.0, 0.0], [math.log(0.25), math.log(0.75)]]),
-            torch.tensor([0.5, -0.5]),
+            torch.tensor(
+                [[0.0, 0.0], [math.log(0.25), math.log(0.75)]],
+                device=device,
+            ),
+            torch.tensor([0.5, -0.5], device=device),
         )
 
 
