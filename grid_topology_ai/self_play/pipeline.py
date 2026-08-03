@@ -12,6 +12,10 @@ from grid_topology_ai.self_play.acceptance import (
 from grid_topology_ai.self_play.artifacts import save_yaml
 from grid_topology_ai.self_play.checkpoint_state import initialize_best_state
 from grid_topology_ai.self_play.completion import write_iteration_completion_marker
+from grid_topology_ai.self_play.final_test import (
+    FinalTestEvaluation,
+    run_final_test_evaluation,
+)
 from grid_topology_ai.self_play.iteration import (
     IterationRequest,
     run_self_play_iteration,
@@ -48,6 +52,8 @@ class PipelineResult:
     learning_curve_path: Path
     pool_metadata: dict[str, object]
 
+    final_test_metrics: dict[str, object]
+    final_test_report_path: Path
     already_complete: bool
 
 
@@ -71,6 +77,24 @@ def _format_metric(
         return f"{float(value):.4f}"
     except (TypeError, ValueError, OverflowError):
         return str(value)
+
+
+def _run_reporting_only_final_test(
+    *,
+    config: SelfPlayConfig,
+    paths: SelfPlayPaths,
+    best_checkpoint: Path,
+) -> FinalTestEvaluation:
+    _print_header("Final-test reporting evaluation")
+    result = run_final_test_evaluation(
+        paths=paths,
+        checkpoint=best_checkpoint,
+        config=config.evaluation,
+        physics_config=config.physics,
+    )
+    print(f"Checkpoint: {result.checkpoint}")
+    print(f"Report:     {result.report_path}")
+    return result
 
 
 def run_self_play_pipeline(
@@ -154,6 +178,11 @@ def run_self_play_pipeline(
     executed_iterations: list[int] = []
 
     if start_iteration > config.n_iterations:
+        final_test = _run_reporting_only_final_test(
+            config=config,
+            paths=paths,
+            best_checkpoint=best_checkpoint,
+        )
         _print_header("Self-play already complete")
         print(f"Completed iterations: {completed_iterations}")
         print(f"Configured total:     {config.n_iterations}")
@@ -162,6 +191,7 @@ def run_self_play_pipeline(
             f"Best {metric_name}:           "
             f"{_format_metric(best_metrics, metric_name)}"
         )
+        print(f"Final-test report:    {final_test.report_path}")
         return PipelineResult(
             best_checkpoint=best_checkpoint,
             best_metrics=best_metrics,
@@ -170,6 +200,8 @@ def run_self_play_pipeline(
             executed_iterations=(),
             learning_curve_path=learning_curve_path,
             pool_metadata=pool_metadata,
+            final_test_metrics=dict(final_test.metrics),
+            final_test_report_path=final_test.report_path,
             already_complete=True,
         )
 
@@ -243,10 +275,17 @@ def run_self_play_pipeline(
         print(f"Learning curve:       {learning_curve_path}")
         print(f"Completion marker:    {completion_marker_path}")
 
+    final_test = _run_reporting_only_final_test(
+        config=config,
+        paths=paths,
+        best_checkpoint=best_checkpoint,
+    )
+
     _print_header("Self-play complete")
     print(f"Final best checkpoint: {best_checkpoint}")
     print(f"Final best {metric_name}: {_format_metric(best_metrics, metric_name)}")
     print(f"Learning curve:        {learning_curve_path}")
+    print(f"Final-test report:     {final_test.report_path}")
 
     return PipelineResult(
         best_checkpoint=best_checkpoint,
@@ -256,5 +295,7 @@ def run_self_play_pipeline(
         executed_iterations=tuple(executed_iterations),
         learning_curve_path=learning_curve_path,
         pool_metadata=pool_metadata,
+        final_test_metrics=dict(final_test.metrics),
+        final_test_report_path=final_test.report_path,
         already_complete=False,
     )
