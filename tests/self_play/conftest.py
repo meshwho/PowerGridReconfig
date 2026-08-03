@@ -10,6 +10,7 @@ from grid_topology_ai.config import AcceptanceConfig
 from grid_topology_ai.config.acceptance import PRIMARY_ACCEPTANCE_METRIC
 from grid_topology_ai.evaluation import checkpoint as evaluation
 from grid_topology_ai.self_play import iteration as iteration_module
+from grid_topology_ai.self_play import stages
 from grid_topology_ai.self_play.acceptance import (
     accept_candidate as strict_accept_candidate,
 )
@@ -32,6 +33,21 @@ _COMPONENT_FIELDS = (
 _TERMINAL_ONLY_EPISODE_TESTS = {
     "test_run_episode_adds_physical_row_fields_directly",
     "test_run_episode_rejects_solved_contract_mismatch",
+}
+
+_MOCKED_GENERATION_STAGE_TESTS = {
+    (
+        "test_stages.py",
+        "test_run_generate_returns_complete_generator_artifact",
+    ),
+    (
+        "test_typed_stage_config.py",
+        "test_run_generate_uses_generation_request",
+    ),
+    (
+        "test_typed_stage_config.py",
+        "test_stage_output_logs_exception_and_restores_streams",
+    ),
 }
 
 
@@ -231,3 +247,26 @@ def adapt_legacy_iteration_exploration_fixtures(
     )
 
     yield
+
+
+@pytest.fixture(autouse=True)
+def isolate_mocked_generation_stage_dependencies(
+    request: pytest.FixtureRequest,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Keep mocked generation tests independent from raw lineage artifacts."""
+
+    key = (request.node.path.name, request.node.name)
+    if key not in _MOCKED_GENERATION_STAGE_TESTS:
+        return
+
+    monkeypatch.setattr(
+        stages,
+        "annotate_transitions_csv",
+        lambda **kwargs: {},
+    )
+    monkeypatch.setattr(
+        stages,
+        "annotate_examples_csv",
+        lambda **kwargs: None,
+    )
