@@ -28,6 +28,65 @@ _STATE_ARRAYS = (
 )
 
 
+class _RunningMoments:
+    def __init__(self, feature_count: int):
+        if feature_count <= 0:
+            raise ValueError("feature_count must be positive.")
+
+        self.feature_count = int(feature_count)
+        self.count = 0
+        self.mean = np.zeros(self.feature_count, dtype=np.float64)
+        self.m2 = np.zeros(self.feature_count, dtype=np.float64)
+
+    def update(self, values: np.ndarray) -> None:
+        batch = np.asarray(values, dtype=np.float64)
+
+        if batch.ndim != 2:
+            raise ValueError(
+                f"Feature batch must be 2D, got {batch.shape}."
+            )
+        if batch.shape[1] != self.feature_count:
+            raise ValueError(
+                "Feature batch width mismatch. "
+                f"Expected {self.feature_count}, got {batch.shape[1]}."
+            )
+        if batch.shape[0] == 0:
+            raise ValueError("Feature batch must not be empty.")
+        if not np.isfinite(batch).all():
+            raise ValueError("Feature batch must contain only finite values.")
+
+        batch_count = int(batch.shape[0])
+        batch_mean = batch.mean(axis=0)
+        centered = batch - batch_mean
+        batch_m2 = np.sum(centered * centered, axis=0)
+
+        if self.count == 0:
+            self.count = batch_count
+            self.mean = batch_mean.copy()
+            self.m2 = batch_m2.copy()
+            return
+
+        total_count = self.count + batch_count
+        delta = batch_mean - self.mean
+
+        self.mean += delta * (batch_count / total_count)
+        self.m2 += (
+            batch_m2
+            + delta * delta * self.count * batch_count / total_count
+        )
+        self.count = total_count
+
+    def finish(self) -> tuple[np.ndarray, np.ndarray]:
+        if self.count == 0:
+            raise RuntimeError("No feature batches were added.")
+
+        variance = np.maximum(self.m2 / self.count, 0.0)
+        mean = self.mean.astype(np.float32)
+        std = np.sqrt(variance).astype(np.float32)
+        std[std < 1e-6] = 1.0
+        return mean, std
+
+
 class GraphSelfPlayDataset(Dataset):
     """
     Graph dataset for AlphaZero-like policy-value training.
@@ -260,43 +319,18 @@ class GraphSelfPlayDataset(Dataset):
     def _compute_feature_statistics(
         self,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-        """
-        Compute per-feature normalization statistics.
+        """Compute per-feature statistics without materializing all graphs."""
 
-        For graph model:
-        - bus_feature_mean/std are computed over all buses in all examples;
-        - branch_feature_mean/std are computed over all branches in all examples.
-
-        This is better than using one global flat vector because each node/edge
-        feature keeps its own physical meaning.
-        """
-
-        bus_chunks = []
-        branch_chunks = []
+        bus_moments = _RunningMoments(self.num_bus_features)
+        branch_moments = _RunningMoments(self.num_branch_features)
 
         for idx in range(len(self.examples)):
             data = self._load_npz_by_index(idx)
+            bus_moments.update(data["bus_features"])
+            branch_moments.update(data["branch_features"])
 
-            bus_features = data["bus_features"].astype(np.float32)
-            branch_features = data["branch_features"].astype(
-                np.float32
-            )
-
-            bus_chunks.append(bus_features)
-            branch_chunks.append(branch_features)
-
-        all_bus = np.concatenate(bus_chunks, axis=0)
-        all_branch = np.concatenate(branch_chunks, axis=0)
-
-        bus_mean = all_bus.mean(axis=0).astype(np.float32)
-        bus_std = all_bus.std(axis=0).astype(np.float32)
-
-        branch_mean = all_branch.mean(axis=0).astype(np.float32)
-        branch_std = all_branch.std(axis=0).astype(np.float32)
-
-        bus_std[bus_std < 1e-6] = 1.0
-        branch_std[branch_std < 1e-6] = 1.0
-
+        bus_mean, bus_std = bus_moments.finish()
+        branch_mean, branch_std = branch_moments.finish()
         return bus_mean, bus_std, branch_mean, branch_std
 
     def _normalize_bus_features(
