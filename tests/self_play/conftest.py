@@ -310,6 +310,38 @@ def adapt_legacy_iteration_split_fixtures(
 
 
 @pytest.fixture(autouse=True)
+def isolate_legacy_pipeline_final_test(
+    request: pytest.FixtureRequest,
+    monkeypatch: pytest.MonkeyPatch,
+) -> Iterator[None]:
+    """Keep existing pipeline tests focused on iteration orchestration."""
+
+    if request.node.path.name != "test_pipeline.py":
+        yield
+        return
+
+    from grid_topology_ai.self_play import pipeline as pipeline_module
+    from grid_topology_ai.self_play.final_test import FinalTestEvaluation
+
+    def final_test_evaluation(*, paths, checkpoint, **kwargs):
+        output_dir = paths.run_dir / "final_test"
+        return FinalTestEvaluation(
+            metrics={},
+            metrics_path=output_dir / "eval_metrics.json",
+            results_path=output_dir / "eval_results.csv",
+            report_path=output_dir / "final_test_report.json",
+            checkpoint=Path(checkpoint),
+        )
+
+    monkeypatch.setattr(
+        pipeline_module,
+        "run_final_test_evaluation",
+        final_test_evaluation,
+    )
+    yield
+
+
+@pytest.fixture(autouse=True)
 def isolate_mocked_generation_stage_dependencies(
     request: pytest.FixtureRequest,
     monkeypatch: pytest.MonkeyPatch,
