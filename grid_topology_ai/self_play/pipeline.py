@@ -168,7 +168,14 @@ def run_self_play_pipeline(
 
     for iteration in range(start_iteration, config.n_iterations + 1):
         _print_header(f"Iteration {iteration} / {config.n_iterations}")
-        replay_buffer.set_producer_checkpoint(best_checkpoint)
+
+        set_producer_checkpoint = getattr(
+            replay_buffer,
+            "set_producer_checkpoint",
+            None,
+        )
+        if callable(set_producer_checkpoint):
+            set_producer_checkpoint(best_checkpoint)
 
         result = run_self_play_iteration(
             IterationRequest(
