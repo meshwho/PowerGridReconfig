@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import math
 from collections import defaultdict
 from collections.abc import Mapping
 from pathlib import Path
@@ -11,7 +13,7 @@ import pandas as pd
 from grid_topology_ai.contracts import physics_provenance
 from grid_topology_ai.self_play._replay_core import _episode_key, _save_manifest
 
-SAMPLING_CONTRACT_VERSION = 1
+SAMPLING_CONTRACT_VERSION = 2
 AGE_DECAY = 0.95
 ERROR_PRIORITY_SCALE = 0.10
 _ERROR_FIELDS = (
@@ -40,21 +42,62 @@ def _first_text(rows: list[dict[str, Any]], *fields: str) -> str:
     return ""
 
 
+def _finite_error(value: object) -> float | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        number = abs(float(value))
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not np.isfinite(number):
+        return None
+    return number
+
+
+def _selected_action_policy_error(row: dict[str, Any]) -> float | None:
+    """Return one-hot policy loss when explicit training errors are absent."""
+
+    selected = row.get("selected_action_id")
+    raw_policy = row.get("mcts_policy_json")
+    if selected is None or raw_policy is None or isinstance(selected, bool):
+        return None
+
+    try:
+        selected_action_id = int(selected)
+        policy = json.loads(str(raw_policy))
+    except (TypeError, ValueError, json.JSONDecodeError, OverflowError):
+        return None
+
+    if selected_action_id < 0 or not isinstance(policy, Mapping):
+        return None
+
+    probability = _finite_error(
+        policy.get(str(selected_action_id), policy.get(selected_action_id))
+    )
+    if probability is None or probability <= 0.0 or probability > 1.0:
+        return None
+
+    return float(-math.log(max(probability, 1e-12)))
+
+
 def _error_score(rows: list[dict[str, Any]]) -> float:
-    values: list[float] = []
+    explicit: list[float] = []
     for row in rows:
         for field in _ERROR_FIELDS:
-            value = row.get(field)
-            if value is None or isinstance(value, bool):
-                continue
-            try:
-                number = abs(float(value))
-            except (TypeError, ValueError, OverflowError):
-                continue
-            if np.isfinite(number):
-                values.append(number)
+            value = _finite_error(row.get(field))
+            if value is not None:
+                explicit.append(value)
+
+    values = explicit
+    if not values:
+        values = [
+            value
+            for row in rows
+            if (value := _selected_action_policy_error(row)) is not None
+        ]
     if not values:
         return 0.0
+
     largest = max(values)
     return float(largest / (1.0 + largest))
 
@@ -110,7 +153,10 @@ class EpisodeSamplingMixin:
         for episode_rows in grouped.values():
             shuffled = list(episode_rows)
             rng.shuffle(shuffled)
-            iteration = max(int(row.get("replay_iteration", -1)) for row in episode_rows)
+            iteration = max(
+                int(row.get("replay_iteration", -1))
+                for row in episode_rows
+            )
             age = max(0, int(current_iteration) - iteration)
             priority = AGE_DECAY ** age * (
                 1.0 + ERROR_PRIORITY_SCALE * _error_score(episode_rows)
@@ -121,7 +167,11 @@ class EpisodeSamplingMixin:
                 "termination_reason",
             ) or "unknown"
             stratum = (outcome, self._difficulty(episode_rows))
-            episode = {"rows": shuffled, "priority": priority, "selected": 0}
+            episode = {
+                "rows": shuffled,
+                "priority": priority,
+                "selected": 0,
+            }
             episodes.append(episode)
             strata[stratum].append(episode)
         return episodes, strata
@@ -143,7 +193,11 @@ class EpisodeSamplingMixin:
                 "selected_strata": {},
             }
 
-        episodes, strata = self._episode_groups(rows, current_iteration, rng)
+        episodes, strata = self._episode_groups(
+            rows,
+            current_iteration,
+            rng,
+        )
         target = min(int(n_examples), len(rows))
         selected: list[dict[str, Any]] = []
         selected_strata: dict[str, int] = defaultdict(int)
@@ -151,11 +205,18 @@ class EpisodeSamplingMixin:
         while len(selected) < target:
             queues: dict[tuple[str, str], list[dict[str, Any]]] = {}
             for stratum, members in strata.items():
-                active = [episode for episode in members if episode["rows"]]
+                active = [
+                    episode
+                    for episode in members
+                    if episode["rows"]
+                ]
                 if not active:
                     continue
                 weights = np.asarray(
-                    [max(float(episode["priority"]), 1e-12) for episode in active],
+                    [
+                        max(float(episode["priority"]), 1e-12)
+                        for episode in active
+                    ],
                     dtype=np.float64,
                 )
                 keys = rng.exponential(scale=1.0 / weights)
@@ -178,7 +239,9 @@ class EpisodeSamplingMixin:
                     episode = queue.pop()
                     selected.append(episode["rows"].pop())
                     episode["selected"] += 1
-                    label = f"outcome={stratum[0]}|difficulty={stratum[1]}"
+                    label = (
+                        f"outcome={stratum[0]}|difficulty={stratum[1]}"
+                    )
                     selected_strata[label] += 1
                     if queue:
                         next_order.append(stratum)
@@ -195,7 +258,10 @@ class EpisodeSamplingMixin:
             "source_examples": len(rows),
             "source_episodes": len(episodes),
             "selected_examples": len(selected),
-            "selected_episodes": sum(episode["selected"] > 0 for episode in episodes),
+            "selected_episodes": sum(
+                episode["selected"] > 0
+                for episode in episodes
+            ),
             "source_strata": source_strata,
             "selected_strata": dict(sorted(selected_strata.items())),
         }
@@ -215,14 +281,28 @@ class EpisodeSamplingMixin:
                 f"but min_size_to_train={self.config.min_size_to_train}."
             )
 
-        total = len(self.buffer) if n_examples is None else min(int(n_examples), len(self.buffer))
+        total = (
+            len(self.buffer)
+            if n_examples is None
+            else min(int(n_examples), len(self.buffer))
+        )
         if total <= 0:
             raise ValueError("n_examples must be positive.")
-        fraction = self.config.fresh_fraction if fresh_fraction is None else fresh_fraction
+        fraction = (
+            self.config.fresh_fraction
+            if fresh_fraction is None
+            else fresh_fraction
+        )
         fraction = float(np.clip(fraction, 0.0, 1.0))
-        rng_seed = int(self.config.random_seed if seed is None else seed)
+        rng_seed = int(
+            self.config.random_seed
+            if seed is None
+            else seed
+        )
         rng = np.random.default_rng(rng_seed)
-        fresh, old = self._split_fresh_old(current_iteration=current_iteration)
+        fresh, old = self._split_fresh_old(
+            current_iteration=current_iteration
+        )
 
         n_fresh = min(int(round(total * fraction)), len(fresh))
         n_old = min(total - n_fresh, len(old))
@@ -233,14 +313,22 @@ class EpisodeSamplingMixin:
         n_old += min(remaining, len(old) - n_old)
 
         fresh_rows, fresh_meta = self._sample_episode_rows(
-            fresh, n_fresh, current_iteration, rng
+            fresh,
+            n_fresh,
+            current_iteration,
+            rng,
         )
         old_rows, old_meta = self._sample_episode_rows(
-            old, n_old, current_iteration, rng
+            old,
+            n_old,
+            current_iteration,
+            rng,
         )
         selected = fresh_rows + old_rows
         if not selected:
-            raise ValueError("Could not sample any examples from replay buffer.")
+            raise ValueError(
+                "Could not sample any examples from replay buffer."
+            )
         rng.shuffle(selected)
 
         output_path = Path(output_path)
@@ -263,8 +351,14 @@ class EpisodeSamplingMixin:
             "scenario_metadata_count": len(self.scenario_metadata),
             "age_decay_per_iteration": AGE_DECAY,
             "error_priority_scale": ERROR_PRIORITY_SCALE,
+            "error_priority_source": (
+                "explicit_error_or_selected_action_policy_loss"
+            ),
             "fresh_sampling": fresh_meta,
             "old_sampling": old_meta,
         }
-        _save_manifest(metadata, output_path.with_suffix(".metadata.json"))
+        _save_manifest(
+            metadata,
+            output_path.with_suffix(".metadata.json"),
+        )
         return metadata
