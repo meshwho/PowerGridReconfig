@@ -2,10 +2,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from grid_topology_ai.self_play.paths import SelfPlayPaths
 from grid_topology_ai.evaluation.checkpoint import (
     load_scenario_ids,
 )
+from grid_topology_ai.self_play.dataset_isolation import (
+    validate_physical_dataset_isolation,
+)
+from grid_topology_ai.self_play.paths import SelfPlayPaths
+
 
 def _require_file(path: Path, label: str) -> None:
     if not path.is_file():
@@ -15,6 +19,7 @@ def _require_file(path: Path, label: str) -> None:
 def _require_directory(path: Path, label: str) -> None:
     if not path.is_dir():
         raise FileNotFoundError(f"{label} not found: {path}")
+
 
 def _require_disjoint_scenario_ids(
     first_csv: Path,
@@ -35,10 +40,7 @@ def _require_disjoint_scenario_ids(
         )
     )
 
-    overlap = sorted(
-        first_ids & second_ids
-    )
-
+    overlap = sorted(first_ids & second_ids)
     if not overlap:
         return
 
@@ -47,6 +49,7 @@ def _require_disjoint_scenario_ids(
         "scenario IDs overlap: "
         f"{overlap[:20]}"
     )
+
 
 def validate_inputs(
     paths: SelfPlayPaths,
@@ -90,17 +93,31 @@ def validate_inputs(
     )
 
     _require_disjoint_scenario_ids(
+        paths.pool_transitions_csv,
+        "Pool",
+        paths.eval_csv,
+        "Evaluation",
+    )
+    _require_disjoint_scenario_ids(
+        paths.pool_transitions_csv,
+        "Pool",
+        paths.final_test_csv,
+        "final-test",
+    )
+    _require_disjoint_scenario_ids(
         paths.eval_csv,
         "Evaluation",
         paths.final_test_csv,
         "final-test",
     )
 
-    _require_disjoint_scenario_ids(
-        paths.pool_transitions_csv,
-        "Pool",
-        paths.final_test_csv,
-        "final-test",
+    validate_physical_dataset_isolation(
+        pool_transitions_csv=paths.pool_transitions_csv,
+        pool_raw_dir=paths.pool_raw_dir,
+        eval_transitions_csv=paths.eval_csv,
+        eval_raw_dir=paths.eval_raw_dir,
+        final_test_transitions_csv=paths.final_test_csv,
+        final_test_raw_dir=paths.final_test_raw_dir,
     )
 
     if require_bootstrap:
@@ -113,7 +130,6 @@ def validate_inputs(
         for path, label in bootstrap_files
         if not path.is_file()
     ]
-
     return tuple(warnings)
 
 
@@ -125,6 +141,10 @@ def validate_resume_artifacts(
         (paths.best_metrics, "Resume best metrics"),
         (paths.pool_metadata, "Resume pool metadata"),
         (paths.replay_manifest, "Resume replay manifest"),
+        (
+            paths.physical_split_manifest,
+            "Resume physical split manifest",
+        ),
     )
 
     for path, label in required_files:
