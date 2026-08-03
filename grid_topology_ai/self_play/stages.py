@@ -20,7 +20,6 @@ from grid_topology_ai.config import (
 )
 from grid_topology_ai.config.physics import PhysicsConfig
 from grid_topology_ai.contracts import (
-    OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
     physics_provenance,
     require_checkpoint_contracts,
 )
@@ -31,7 +30,6 @@ from grid_topology_ai.evaluation.checkpoint import (
 from grid_topology_ai.self_play.artifacts import load_json, save_json, sha256_file
 from grid_topology_ai.self_play.example_validation import (
     validate_example_contract_versions,
-    validate_example_outcome_contracts,
 )
 from grid_topology_ai.self_play.generation import (
     GenerationRequest,
@@ -41,7 +39,6 @@ from grid_topology_ai.training.graph_policy_value import (
     TrainingRequest,
     train_graph_policy_value_model,
 )
-from grid_topology_ai.value_targets import add_outcome_value_targets_to_rows
 
 
 class _TeeTextIO(io.TextIOBase):
@@ -291,68 +288,6 @@ def split_examples_by_scenario(
     return metadata
 
 
-def ensure_outcome_value_targets(
-    examples_csv: str | Path,
-    *,
-    gamma: float,
-) -> Path:
-    """
-    Ensure examples.csv contains strict outcome_value_target.
-
-    Only freshly generated rows carrying the current physical-objective
-    provenance may receive current value targets. Legacy solved labels are not
-    scientifically upgradeable and must be regenerated.
-    """
-
-    examples_csv = Path(examples_csv)
-
-    if not examples_csv.exists():
-        raise FileNotFoundError(f"Examples CSV not found: {examples_csv}")
-
-    df = pd.read_csv(examples_csv)
-
-    if df.empty:
-        raise ValueError(f"Examples CSV is empty: {examples_csv}")
-
-    if "physical_objective_schema_version" not in df.columns:
-        raise ValueError(
-            "Examples CSV predates the current physical-objective contract. "
-            "Regenerate episodes with python -m scripts.self_play.generate; "
-            "legacy solved labels cannot be upgraded in place."
-        )
-
-    if "outcome_value_target" in df.columns:
-        validate_example_contract_versions(df, source_path=examples_csv)
-        validate_example_outcome_contracts(df, source_path=examples_csv)
-        print(f"outcome_value_target already exists: {examples_csv}")
-        return examples_csv
-
-    if "outcome_value_target_contract_version" in df.columns:
-        observed = set(df["outcome_value_target_contract_version"].tolist())
-        if observed != {OUTCOME_VALUE_TARGET_CONTRACT_VERSION}:
-            raise ValueError(
-                "Examples CSV has incompatible outcome target provenance. "
-                "Regenerate episodes and targets instead of rewriting versions."
-            )
-
-    rows = df.to_dict(orient="records")
-
-    add_outcome_value_targets_to_rows(
-        rows=rows,
-        gamma=gamma,
-        group_keys=("scenario_id",),
-    )
-
-    updated = pd.DataFrame(rows)
-    validate_example_contract_versions(updated, source_path=examples_csv)
-    validate_example_outcome_contracts(updated, source_path=examples_csv)
-    updated.to_csv(examples_csv, index=False)
-
-    print(f"Added outcome_value_target to: {examples_csv}")
-
-    return examples_csv
-
-
 def run_generate(
     *,
     project_root: str | Path,
@@ -404,11 +339,6 @@ def run_generate(
 
     if not examples_csv.exists():
         raise FileNotFoundError(f"Examples CSV was not created: {examples_csv}")
-
-    ensure_outcome_value_targets(
-        examples_csv=examples_csv,
-        gamma=config.gamma,
-    )
 
     return examples_csv
 
