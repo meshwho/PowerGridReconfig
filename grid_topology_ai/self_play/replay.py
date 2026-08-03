@@ -9,7 +9,9 @@ from grid_topology_ai.self_play._replay_core import (
 from grid_topology_ai.self_play.example_validation import (
     load_and_validate_examples_csv,
 )
-from grid_topology_ai.self_play.replay_sampling import EpisodeSamplingMixin
+from grid_topology_ai.self_play.replay_error_sampling import (
+    ReplayPredictionErrorMixin,
+)
 
 
 __all__ = (
@@ -18,8 +20,11 @@ __all__ = (
 )
 
 
-class RollingReplayBuffer(EpisodeSamplingMixin, _CoreRollingReplayBuffer):
-    """Persistent replay buffer with episode-balanced batch sampling."""
+class RollingReplayBuffer(
+    ReplayPredictionErrorMixin,
+    _CoreRollingReplayBuffer,
+):
+    """Persistent replay buffer with episode-balanced priority sampling."""
 
 
 def __getattr__(name: str) -> Any:
