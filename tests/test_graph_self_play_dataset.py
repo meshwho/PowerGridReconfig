@@ -90,6 +90,30 @@ def _example_row(
     }
 
 
+def _statistics_dataset(
+    bus_batches: list[np.ndarray],
+    branch_batches: list[np.ndarray],
+) -> GraphSelfPlayDataset:
+    if len(bus_batches) != len(branch_batches):
+        raise ValueError("Bus and branch batch counts must match.")
+
+    dataset = object.__new__(GraphSelfPlayDataset)
+    dataset.examples = pd.DataFrame(
+        {"row": range(len(bus_batches))}
+    )
+    dataset.num_bus_features = int(bus_batches[0].shape[1])
+    dataset.num_branch_features = int(branch_batches[0].shape[1])
+
+    def load_batch(index: int) -> dict[str, np.ndarray]:
+        return {
+            "bus_features": bus_batches[index],
+            "branch_features": branch_batches[index],
+        }
+
+    dataset._load_npz_by_index = load_batch
+    return dataset
+
+
 @pytest.mark.skipif(
     not RUN_LOCAL_GRAPH_DATA_TESTS or not MIXED_VAL_CSV.exists(),
     reason=(
@@ -324,3 +348,200 @@ def test_graph_dataset_rejects_semantic_invalid_handoff_before_state_io(
 
     with pytest.raises(ValueError, match="outcome_value_target"):
         GraphSelfPlayDataset(csv_path)
+
+
+def test_streaming_feature_statistics_match_numpy() -> None:
+    bus_batches = [
+        np.array(
+            [[1.0, 10.0], [3.0, 10.0]],
+            dtype=np.float32,
+        ),
+        np.array(
+            [[5.0, 10.0], [7.0, 10.0]],
+            dtype=np.float32,
+        ),
+    ]
+    branch_batches = [
+        np.array(
+            [[2.0, 4.0, 6.0], [4.0, 6.0, 8.0]],
+            dtype=np.float32,
+        ),
+        np.array(
+            [[6.0, 8.0, 10.0], [8.0, 10.0, 12.0]],
+            dtype=np.float32,
+        ),
+    ]
+    all_bus = np.concatenate(bus_batches, axis=0).astype(np.float64)
+    all_branch = np.concatenate(branch_batches, axis=0).astype(
+        np.float64
+    )
+
+    dataset = _statistics_dataset(bus_batches, branch_batches)
+    bus_mean, bus_std, branch_mean, branch_std = (
+        dataset._compute_feature_statistics()
+    )
+
+    expected_bus_std = all_bus.std(axis=0).astype(np.float32)
+    expected_bus_std[expected_bus_std < 1e-6] = 1.0
+    expected_branch_std = all_branch.std(axis=0).astype(np.float32)
+    expected_branch_std[expected_branch_std < 1e-6] = 1.0
+
+    np.testing.assert_allclose(
+        bus_mean,
+        all_bus.mean(axis=0).astype(np.float32),
+    )
+    np.testing.assert_allclose(bus_std, expected_bus_std)
+    np.testing.assert_allclose(
+        branch_mean,
+        all_branch.mean(axis=0).astype(np.float32),
+    )
+    np.testing.assert_allclose(branch_std, expected_branch_std)
+
+
+def test_streaming_feature_statistics_do_not_concatenate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bus_batches = [
+        np.array([[1.0, 2.0], [3.0, 4.0]], dtype=np.float32),
+        np.array([[5.0, 6.0], [7.0, 8.0]], dtype=np.float32),
+    ]
+    branch_batches = [
+        np.array([[1.0, 3.0], [5.0, 7.0]], dtype=np.float32),
+        np.array([[9.0, 11.0], [13.0, 15.0]], dtype=np.float32),
+    ]
+    dataset = _statistics_dataset(bus_batches, branch_batches)
+
+    def fail_on_concatenate(*args, **kwargs):
+        pytest.fail("Streaming statistics must not call np.concatenate.")
+
+    monkeypatch.setattr(
+        "grid_topology_ai.models.graph_self_play_dataset.np.concatenate",
+        fail_on_concatenate,
+    )
+
+    dataset._compute_feature_statistics()
+
+
+def test_streaming_feature_statistics_replace_zero_std() -> None:
+    bus_batches = [
+        np.array([[3.0, 1.0], [3.0, 3.0]], dtype=np.float32),
+        np.array([[3.0, 5.0], [3.0, 7.0]], dtype=np.float32),
+    ]
+    branch_batches = [
+        np.array([[4.0, 2.0], [4.0, 6.0]], dtype=np.float32),
+        np.array([[4.0, 10.0], [4.0, 14.0]], dtype=np.float32),
+    ]
+    dataset = _statistics_dataset(bus_batches, branch_batches)
+
+    _, bus_std, _, branch_std = dataset._compute_feature_statistics()
+
+    assert bus_std[0] == pytest.approx(1.0)
+    assert branch_std[0] == pytest.approx(1.0)
+    assert bus_std[1] > 1.0
+    assert branch_std[1] > 1.0
+
+
+def test_streaming_feature_statistics_are_stable_for_large_offsets() -> None:
+    bus_batches = [
+        np.array(
+            [[1_000_000.0], [1_000_001.0]],
+            dtype=np.float32,
+        ),
+        np.array(
+            [[1_000_002.0], [1_000_003.0]],
+            dtype=np.float32,
+        ),
+    ]
+    branch_batches = [
+        np.array(
+            [[2_000_000.0], [2_000_002.0]],
+            dtype=np.float32,
+        ),
+        np.array(
+            [[2_000_004.0], [2_000_006.0]],
+            dtype=np.float32,
+        ),
+    ]
+    dataset = _statistics_dataset(bus_batches, branch_batches)
+
+    bus_mean, bus_std, branch_mean, branch_std = (
+        dataset._compute_feature_statistics()
+    )
+
+    bus_reference = np.array(
+        [1_000_000.0, 1_000_001.0, 1_000_002.0, 1_000_003.0],
+        dtype=np.float64,
+    )
+    branch_reference = np.array(
+        [2_000_000.0, 2_000_002.0, 2_000_004.0, 2_000_006.0],
+        dtype=np.float64,
+    )
+    assert bus_mean[0] == pytest.approx(bus_reference.mean())
+    assert bus_std[0] == pytest.approx(bus_reference.std())
+    assert branch_mean[0] == pytest.approx(branch_reference.mean())
+    assert branch_std[0] == pytest.approx(branch_reference.std())
+
+
+def test_provided_normalization_stats_skip_statistics_pass(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state_path = tmp_path / "state.npz"
+    np.savez(
+        state_path,
+        bus_features=np.zeros((2, 3), dtype=np.float32),
+        branch_features=np.zeros((2, 4), dtype=np.float32),
+        edge_index=np.array([[0, 1], [1, 0]], dtype=np.int64),
+        branch_status=np.ones(2, dtype=np.float32),
+        action_mask=np.array([True, True, True], dtype=bool),
+        metadata_json=_state_metadata(),
+    )
+    csv_path = tmp_path / "examples.csv"
+    pd.DataFrame(
+        [
+            _example_row(
+                state_path,
+                policy='{"1": 1.0}',
+                target=-1.0,
+                solved=False,
+                termination_reason="handoff_to_redispatch",
+                outcome_class="handoff_to_redispatch",
+            )
+        ]
+    ).to_csv(csv_path, index=False)
+
+    stats = {
+        "bus_feature_mean": np.array([1.0, 2.0, 3.0]),
+        "bus_feature_std": np.array([4.0, 5.0, 6.0]),
+        "branch_feature_mean": np.array([7.0, 8.0, 9.0, 10.0]),
+        "branch_feature_std": np.array([11.0, 12.0, 13.0, 14.0]),
+    }
+    original_loader = GraphSelfPlayDataset._load_npz_by_index
+    load_count = 0
+
+    def counted_loader(self, index):
+        nonlocal load_count
+        load_count += 1
+        return original_loader(self, index)
+
+    monkeypatch.setattr(
+        GraphSelfPlayDataset,
+        "_load_npz_by_index",
+        counted_loader,
+    )
+
+    dataset = GraphSelfPlayDataset(
+        csv_path,
+        normalize_features=True,
+        normalization_stats=stats,
+    )
+
+    assert load_count == 1
+    np.testing.assert_array_equal(
+        dataset.bus_feature_mean,
+        stats["bus_feature_mean"],
+    )
+    np.testing.assert_array_equal(
+        dataset.branch_feature_std,
+        stats["branch_feature_std"],
+    )
