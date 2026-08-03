@@ -1,26 +1,30 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any
 
 import numpy as np
-import pandas as pd
 import torch
 from torch.utils.data import Dataset
 
 from grid_topology_ai.config.physics import PhysicsConfig
 from grid_topology_ai.self_play.example_validation import (
-    REQUIRED_EXAMPLE_COLUMNS,
+    load_and_validate_examples_csv,
+    policy_vector_from_json,
     validate_example_contract_versions,
-    validate_example_outcome_contracts,
     validate_example_topology_action_contracts,
-    validate_state_physics_provenance,
-    validate_state_topology_action_provenance,
 )
 from grid_topology_ai.topology_actions import (
     action_layout_fingerprint,
     require_branch_status_policy_layout,
+)
+
+_STATE_ARRAYS = (
+    "bus_features",
+    "branch_features",
+    "edge_index",
+    "branch_status",
+    "action_mask",
 )
 
 
@@ -55,23 +59,9 @@ class GraphSelfPlayDataset(Dataset):
     ):
         self.examples_csv = Path(examples_csv)
         self.normalize_features = bool(normalize_features)
-
-        if not self.examples_csv.exists():
-            raise FileNotFoundError(f"Examples file not found: {self.examples_csv}")
-
-        self.examples = pd.read_csv(self.examples_csv)
-
-        if self.examples.empty:
-            raise ValueError("Graph self-play examples CSV is empty.")
-
-        required_columns = set(REQUIRED_EXAMPLE_COLUMNS)
-
-        missing = required_columns - set(self.examples.columns)
-
-        if missing:
-            raise ValueError(
-                f"Examples CSV is missing required columns: {sorted(missing)}"
-            )
+        self.examples = load_and_validate_examples_csv(
+            self.examples_csv
+        )
 
         self.physics_config = validate_example_contract_versions(
             self.examples,
@@ -86,35 +76,28 @@ class GraphSelfPlayDataset(Dataset):
             source_path=self.examples_csv,
         )
 
-        self.action_layout_fingerprint = (
-            action_layout_fingerprint(
-                self.action_layout
-            )
+        self.action_layout_fingerprint = action_layout_fingerprint(
+            self.action_layout
         )
-
-        self.policy_layout = (
-            require_branch_status_policy_layout(
-                self.action_layout
-            )
+        self.policy_layout = require_branch_status_policy_layout(
+            self.action_layout
         )
-        validate_example_outcome_contracts(
-            self.examples,
-            source_path=self.examples_csv,
-        )
-        self._validate_outcome_value_targets()
-        self._validate_state_files()
 
         first_data = self._load_npz_by_index(0)
 
-        self.num_bus_features = int(first_data["bus_features"].shape[1])
-        self.num_branch_features = int(first_data["branch_features"].shape[1])
+        self.num_bus_features = int(
+            first_data["bus_features"].shape[1]
+        )
+        self.num_branch_features = int(
+            first_data["branch_features"].shape[1]
+        )
         self.num_buses = int(first_data["bus_features"].shape[0])
-        self.num_branches = int(first_data["branch_features"].shape[0])
+        self.num_branches = int(
+            first_data["branch_features"].shape[0]
+        )
         self.num_actions = int(first_data["action_mask"].shape[0])
 
-        if self.num_actions != len(
-                self.action_layout
-        ):
+        if self.num_actions != len(self.action_layout):
             raise ValueError(
                 "Action mask size does not match the "
                 "versioned action layout. "
@@ -173,7 +156,6 @@ class GraphSelfPlayDataset(Dataset):
 
     def __getitem__(self, idx: int) -> dict[str, Any]:
         row = self.examples.iloc[idx]
-
         data = self._load_npz_by_index(idx)
 
         bus_features = data["bus_features"].astype(np.float32)
@@ -197,38 +179,43 @@ class GraphSelfPlayDataset(Dataset):
         )
 
         bus_features = self._normalize_bus_features(bus_features)
-        branch_features = self._normalize_branch_features(branch_features)
-
-        target_policy = self._policy_json_to_vector(
-            policy_json=str(row["mcts_policy_json"]),
-            num_actions=int(action_mask.shape[0]),
+        branch_features = self._normalize_branch_features(
+            branch_features
         )
 
-        # Safety: target policy must only assign probability to valid actions.
-        target_policy = target_policy * action_mask.astype(np.float32)
-
-        target_sum = float(target_policy.sum())
-
-        if target_sum > 0.0:
-            target_policy = target_policy / target_sum
+        target_policy = policy_vector_from_json(
+            row["mcts_policy_json"],
+            action_mask=action_mask,
+            index=idx,
+            source_path=self.examples_csv,
+        )
 
         # Strict v3 logic:
         # The value head is trained only on outcome_value_target.
-        # No value_target fallback and no discounted_return_from_step / value_scale fallback.
+        # No fallback to discounted returns or scaled rewards.
         target_value = float(row["outcome_value_target"])
 
         return {
-            "bus_features": torch.tensor(bus_features, dtype=torch.float32),
+            "bus_features": torch.tensor(
+                bus_features,
+                dtype=torch.float32,
+            ),
             "branch_features": torch.tensor(
                 branch_features,
                 dtype=torch.float32,
             ),
-            "edge_index": torch.tensor(edge_index, dtype=torch.long),
+            "edge_index": torch.tensor(
+                edge_index,
+                dtype=torch.long,
+            ),
             "edge_active_mask": torch.tensor(
                 edge_active_mask,
                 dtype=torch.bool,
             ),
-            "action_mask": torch.tensor(action_mask, dtype=torch.bool),
+            "action_mask": torch.tensor(
+                action_mask,
+                dtype=torch.bool,
+            ),
             "target_policy": torch.tensor(
                 target_policy,
                 dtype=torch.float32,
@@ -242,74 +229,33 @@ class GraphSelfPlayDataset(Dataset):
             "state_id": str(row["state_id"]),
         }
 
-    def _validate_outcome_value_targets(self) -> None:
-        """
-        Validate strict AlphaZero-like value targets.
-
-        New datasets must contain outcome_value_target for every row.
-        Legacy fallback to discounted_return_from_step / value_scale is intentionally removed.
-        """
-
-        values = pd.to_numeric(
-            self.examples["outcome_value_target"],
-            errors="coerce",
-        )
-
-        invalid_mask = values.isna() | ~np.isfinite(values.to_numpy(dtype=np.float64))
-
-        if bool(invalid_mask.any()):
-            bad_count = int(invalid_mask.sum())
-            raise ValueError(
-                f"{bad_count} rows in {self.examples_csv} have invalid "
-                f"'outcome_value_target'. Regenerate the dataset with the new "
-                f"teacher generator."
-            )
-
-        outside_mask = values.abs() > 1.0 + 1e-6
-
-        if bool(outside_mask.any()):
-            bad_count = int(outside_mask.sum())
-            min_value = float(values.min())
-            max_value = float(values.max())
-
-            raise ValueError(
-                f"{bad_count} rows in {self.examples_csv} have "
-                f"'outcome_value_target' outside [-1, 1]. "
-                f"Observed range: [{min_value:.6f}, {max_value:.6f}]."
-            )
-
-    def _validate_state_files(self) -> None:
-        """
-        Check that all referenced .npz state files exist.
-        """
-
-        for _, row in self.examples.iterrows():
-            state_path = Path(str(row["state_path"]))
-
-            if not state_path.exists():
-                raise FileNotFoundError(f"State file not found: {state_path}")
-            validate_state_physics_provenance(
-                state_path,
-                expected_physics_config=self.physics_config,
-            )
-            validate_state_topology_action_provenance(
-                state_path,
-                expected_action_space_config=(
-                    self.topology_action_config
-                ),
-                expected_action_layout=(
-                    self.action_layout
-                ),
-            )
-
-    def _load_npz_by_index(self, idx: int):
+    def _load_npz_by_index(
+        self,
+        idx: int,
+    ) -> dict[str, np.ndarray]:
         row = self.examples.iloc[idx]
         state_path = Path(str(row["state_path"]))
 
         if not state_path.exists():
-            raise FileNotFoundError(f"State file not found: {state_path}")
+            raise FileNotFoundError(
+                f"State file not found: {state_path}"
+            )
 
-        return np.load(state_path, allow_pickle=False)
+        with np.load(state_path, allow_pickle=False) as data:
+            missing = [
+                name
+                for name in _STATE_ARRAYS
+                if name not in data.files
+            ]
+            if missing:
+                raise ValueError(
+                    f"State NPZ is missing required arrays {missing}: "
+                    f"{state_path}"
+                )
+            return {
+                name: np.asarray(data[name]).copy()
+                for name in _STATE_ARRAYS
+            }
 
     def _compute_feature_statistics(
         self,
@@ -332,7 +278,9 @@ class GraphSelfPlayDataset(Dataset):
             data = self._load_npz_by_index(idx)
 
             bus_features = data["bus_features"].astype(np.float32)
-            branch_features = data["branch_features"].astype(np.float32)
+            branch_features = data["branch_features"].astype(
+                np.float32
+            )
 
             bus_chunks.append(bus_features)
             branch_chunks.append(branch_features)
@@ -356,7 +304,8 @@ class GraphSelfPlayDataset(Dataset):
         bus_features: np.ndarray,
     ) -> np.ndarray:
         normalized = (
-            bus_features.astype(np.float32) - self.bus_feature_mean
+            bus_features.astype(np.float32)
+            - self.bus_feature_mean
         ) / self.bus_feature_std
 
         return normalized.astype(np.float32)
@@ -366,7 +315,8 @@ class GraphSelfPlayDataset(Dataset):
         branch_features: np.ndarray,
     ) -> np.ndarray:
         normalized = (
-            branch_features.astype(np.float32) - self.branch_feature_mean
+            branch_features.astype(np.float32)
+            - self.branch_feature_mean
         ) / self.branch_feature_std
 
         return normalized.astype(np.float32)
@@ -390,12 +340,14 @@ class GraphSelfPlayDataset(Dataset):
 
         if bus_features.ndim != 2:
             raise ValueError(
-                f"{state_path}: bus_features must be 2D, got {bus_features.shape}"
+                f"{state_path}: bus_features must be 2D, "
+                f"got {bus_features.shape}"
             )
 
         if branch_features.ndim != 2:
             raise ValueError(
-                f"{state_path}: branch_features must be 2D, got {branch_features.shape}"
+                f"{state_path}: branch_features must be 2D, "
+                f"got {branch_features.shape}"
             )
 
         if edge_index.shape != (2, branch_features.shape[0]):
@@ -414,7 +366,8 @@ class GraphSelfPlayDataset(Dataset):
 
         if not np.isfinite(branch_status).all():
             raise ValueError(
-                f"{state_path}: branch_status must contain only finite values"
+                f"{state_path}: branch_status must contain only "
+                "finite values"
             )
 
         if not np.isin(branch_status, (0.0, 1.0)).all():
@@ -431,8 +384,8 @@ class GraphSelfPlayDataset(Dataset):
         expected_edge_active_mask = branch_status > 0.5
 
         if not np.array_equal(
-                edge_active_mask,
-                expected_edge_active_mask,
+            edge_active_mask,
+            expected_edge_active_mask,
         ):
             raise ValueError(
                 f"{state_path}: edge_active_mask must be derived from "
@@ -441,68 +394,46 @@ class GraphSelfPlayDataset(Dataset):
 
         if action_mask.ndim != 1:
             raise ValueError(
-                f"{state_path}: action_mask must be 1D, got {action_mask.shape}"
+                f"{state_path}: action_mask must be 1D, "
+                f"got {action_mask.shape}"
             )
 
         if bus_features.shape[1] != self.num_bus_features:
             raise ValueError(
                 f"{state_path}: bus feature dim mismatch. "
-                f"Expected {self.num_bus_features}, got {bus_features.shape[1]}"
+                f"Expected {self.num_bus_features}, "
+                f"got {bus_features.shape[1]}"
             )
 
         if branch_features.shape[1] != self.num_branch_features:
             raise ValueError(
                 f"{state_path}: branch feature dim mismatch. "
-                f"Expected {self.num_branch_features}, got {branch_features.shape[1]}"
+                f"Expected {self.num_branch_features}, "
+                f"got {branch_features.shape[1]}"
             )
 
         if bus_features.shape[0] != self.num_buses:
             raise ValueError(
                 f"{state_path}: num_buses mismatch. "
-                f"Expected {self.num_buses}, got {bus_features.shape[0]}"
+                f"Expected {self.num_buses}, "
+                f"got {bus_features.shape[0]}"
             )
 
         if branch_features.shape[0] != self.num_branches:
             raise ValueError(
                 f"{state_path}: num_branches mismatch. "
-                f"Expected {self.num_branches}, got {branch_features.shape[0]}"
+                f"Expected {self.num_branches}, "
+                f"got {branch_features.shape[0]}"
             )
 
-        expected_num_actions = len(
-            self.action_layout
-        )
+        expected_num_actions = len(self.action_layout)
 
         if action_mask.shape[0] != expected_num_actions:
             raise ValueError(
                 f"{state_path}: action_mask mismatch. "
-                f"Expected {expected_num_actions}, got {action_mask.shape[0]}"
+                f"Expected {expected_num_actions}, "
+                f"got {action_mask.shape[0]}"
             )
-
-    @staticmethod
-    def _policy_json_to_vector(
-        policy_json: str,
-        num_actions: int,
-    ) -> np.ndarray:
-        """
-        Convert MCTS/teacher policy JSON into dense vector.
-        """
-
-        policy_dict = json.loads(policy_json)
-
-        policy = np.zeros(num_actions, dtype=np.float32)
-
-        for action_id_str, probability in policy_dict.items():
-            action_id = int(action_id_str)
-
-            if 0 <= action_id < num_actions:
-                policy[action_id] = float(probability)
-
-        total = float(policy.sum())
-
-        if total > 0.0:
-            policy = policy / total
-
-        return policy.astype(np.float32)
 
     def normalization_state_dict(self) -> dict[str, np.ndarray]:
         """
@@ -510,8 +441,20 @@ class GraphSelfPlayDataset(Dataset):
         """
 
         return {
-            "bus_feature_mean": self.bus_feature_mean.astype(np.float32, copy=True),
-            "bus_feature_std": self.bus_feature_std.astype(np.float32, copy=True),
-            "branch_feature_mean": self.branch_feature_mean.astype(np.float32, copy=True),
-            "branch_feature_std": self.branch_feature_std.astype(np.float32, copy=True),
+            "bus_feature_mean": self.bus_feature_mean.astype(
+                np.float32,
+                copy=True,
+            ),
+            "bus_feature_std": self.bus_feature_std.astype(
+                np.float32,
+                copy=True,
+            ),
+            "branch_feature_mean": self.branch_feature_mean.astype(
+                np.float32,
+                copy=True,
+            ),
+            "branch_feature_std": self.branch_feature_std.astype(
+                np.float32,
+                copy=True,
+            ),
         }

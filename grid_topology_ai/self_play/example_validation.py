@@ -165,7 +165,7 @@ def validate_examples_dataframe(
                 f"observed {dimensions._asdict()}."
             )
 
-        _core._validate_policy_against_mask(
+        _validate_policy_against_mask(
             policy,
             action_mask=action_mask,
             index=index,
@@ -208,6 +208,71 @@ def validate_examples_dataframe(
             },
             index=index,
             source=source,
+        )
+
+
+def policy_vector_from_json(
+    value: object,
+    *,
+    action_mask: np.ndarray,
+    index: Any,
+    source_path: str | Path,
+) -> np.ndarray:
+    """Build a dense policy vector without changing its probability mass."""
+
+    source = Path(source_path)
+    mask = np.asarray(action_mask, dtype=bool)
+    if mask.ndim != 1:
+        raise ValueError(
+            f"action_mask must be 1D at row {index}. File: {source}"
+        )
+
+    policy = _core._parse_policy(
+        value,
+        index=index,
+        source=source,
+    )
+    _validate_policy_against_mask(
+        policy,
+        action_mask=mask,
+        index=index,
+        source=source,
+    )
+
+    vector = np.zeros(mask.shape[0], dtype=np.float32)
+    for action_id, probability in policy.items():
+        vector[action_id] = probability
+    return vector
+
+
+def _validate_policy_against_mask(
+    policy: dict[int, float],
+    *,
+    action_mask: np.ndarray,
+    index: Any,
+    source: Path,
+) -> None:
+    _core._validate_policy_against_mask(
+        policy,
+        action_mask=action_mask,
+        index=index,
+        source=source,
+    )
+
+    masked_mass = sum(
+        probability
+        for action_id, probability in policy.items()
+        if bool(action_mask[action_id])
+    )
+    if not math.isclose(
+        masked_mass,
+        1.0,
+        rel_tol=1e-6,
+        abs_tol=1e-6,
+    ):
+        raise ValueError(
+            "Policy probability mass after action_mask must equal 1.0 "
+            f"at row {index}; observed {masked_mass:.9g}. File: {source}"
         )
 
 
