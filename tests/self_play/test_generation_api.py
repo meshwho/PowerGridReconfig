@@ -19,7 +19,9 @@ from grid_topology_ai.outcome_contract import (
 )
 from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
 from grid_topology_ai.self_play import generation
-from grid_topology_ai.self_play.examples import SelfPlayExample
+from grid_topology_ai.self_play.examples import (
+    SelfPlayExample as SelfPlayExampleDataclass,
+)
 from grid_topology_ai.self_play.generation import (
     GenerationRequest,
     generate_self_play_examples,
@@ -121,7 +123,9 @@ class _FakePlanner:
 
 
 class _FakeExampleWriter:
-    COLUMNS = [field.name for field in fields(SelfPlayExample)]
+    COLUMNS = [
+        field.name for field in fields(SelfPlayExampleDataclass)
+    ]
 
     def __init__(
         self,
@@ -501,7 +505,7 @@ def test_output_schema_matches_self_play_example(
     examples_csv = generate_self_play_examples(_request(tmp_path))
 
     assert list(pd.read_csv(examples_csv).columns) == [
-        field.name for field in fields(SelfPlayExample)
+        field.name for field in fields(SelfPlayExampleDataclass)
     ]
 
 
