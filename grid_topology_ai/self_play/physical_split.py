@@ -23,12 +23,16 @@ from grid_topology_ai.self_play.lineage_artifacts import (
 from grid_topology_ai.self_play.physical_lineage import (
     PHYSICAL_LINEAGE_CONTRACT_VERSION,
     PHYSICAL_LINEAGE_FINGERPRINT_FIELD,
-    PhysicalLineage,
     require_one_lineage_per_scenario,
     require_physical_lineage,
 )
 
-PHYSICAL_SPLIT_MANIFEST_SCHEMA_VERSION = 1
+PHYSICAL_SPLIT_MANIFEST_SCHEMA_VERSION = 2
+PHYSICAL_SPLIT_ASSIGNMENT_STRATEGY = "difficulty_outcome_stratified_v1"
+PHYSICAL_SPLIT_STRATIFICATION_FIELDS = (
+    "difficulty_class",
+    "outcome_class_at_assignment",
+)
 TRAIN_SPLIT = "train"
 VALIDATION_SPLIT = "validation"
 _VALID_SPLITS = {TRAIN_SPLIT, VALIDATION_SPLIT}
@@ -129,6 +133,51 @@ def _assignment_rank(seed: int, fingerprint: str) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
+def _normalize_stratum_label(value: object) -> str:
+    if value is None:
+        return "unknown"
+    if isinstance(value, Real) and not isinstance(value, bool):
+        number = float(value)
+        if math.isnan(number):
+            return "unknown"
+    text = str(value).strip().casefold()
+    return text or "unknown"
+
+
+def _stratum_id(difficulty: object, outcome: object) -> str:
+    payload = {
+        "difficulty_class": _normalize_stratum_label(difficulty),
+        "outcome_class_at_assignment": _normalize_stratum_label(outcome),
+    }
+    canonical = json.dumps(
+        payload,
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _stratum_rank(seed: int, stratum_id: str) -> str:
+    payload = f"{int(seed)}:stratum:{stratum_id}".encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _group_label(group: pd.DataFrame, column: str) -> str:
+    if column not in group.columns:
+        return "unknown"
+    values = {
+        _normalize_stratum_label(value)
+        for value in group[column].tolist()
+        if _normalize_stratum_label(value) != "unknown"
+    }
+    if not values:
+        return "unknown"
+    if len(values) == 1:
+        return next(iter(values))
+    return "mixed"
+
+
 def _lineage_summary(
     frame: pd.DataFrame,
     *,
@@ -168,35 +217,14 @@ def _lineage_summary(
                 for value in group["scenario_id"].tolist()
             }
         )
-        difficulties = {
-            str(value).strip()
-            for value in group.get(
-                "difficulty_class",
-                pd.Series(dtype=object),
-            ).dropna()
-            if str(value).strip()
-        }
-        outcomes = {
-            str(value).strip()
-            for value in group.get(
-                "outcome_class",
-                pd.Series(dtype=object),
-            ).dropna()
-            if str(value).strip()
-        }
+        difficulty = _group_label(group, "difficulty_class")
+        outcome = _group_label(group, "outcome_class")
         summaries[lineage.fingerprint] = {
             **lineage.as_dict(),
             "scenario_ids": scenarios,
-            "difficulty_class": (
-                next(iter(difficulties))
-                if len(difficulties) == 1
-                else "mixed" if difficulties else "unknown"
-            ),
-            "outcome_class_at_assignment": (
-                next(iter(outcomes))
-                if len(outcomes) == 1
-                else "mixed" if outcomes else "unknown"
-            ),
+            "difficulty_class": difficulty,
+            "outcome_class_at_assignment": outcome,
+            "stratum_id": _stratum_id(difficulty, outcome),
         }
     if not summaries:
         raise ValueError(f"{source} contains no physical lineages.")
@@ -218,12 +246,15 @@ def _new_manifest(
     return {
         "schema_version": PHYSICAL_SPLIT_MANIFEST_SCHEMA_VERSION,
         "lineage_contract_version": PHYSICAL_LINEAGE_CONTRACT_VERSION,
+        "assignment_strategy": PHYSICAL_SPLIT_ASSIGNMENT_STRATEGY,
+        "stratification_fields": list(PHYSICAL_SPLIT_STRATIFICATION_FIELDS),
         **physics_provenance(physics_config),
         "seed": int(seed),
         "validation_fraction": float(validation_fraction),
         "min_validation_lineages": int(min_validation_lineages),
         "source_hashes": dict(sorted(hashes.items())),
         "assignments": {},
+        "strata": {},
     }
 
 
@@ -274,22 +305,115 @@ def _validate_assignment(
         raise ValueError(
             f"Physical split scenario_ids must not be empty in {source}."
         )
+    difficulty = _normalize_stratum_label(
+        entry.get("difficulty_class", "unknown")
+    )
+    outcome = _normalize_stratum_label(
+        entry.get("outcome_class_at_assignment", "unknown")
+    )
+    expected_stratum = _stratum_id(difficulty, outcome)
+    observed_stratum = _require_sha256(
+        entry.get("stratum_id"),
+        name="stratum_id",
+    )
+    if observed_stratum != expected_stratum:
+        raise ValueError(
+            f"Physical split stratum_id mismatch for {fingerprint} "
+            f"in {source}."
+        )
     return {
         **lineage.as_dict(),
         "split": split,
         "assigned_iteration": assigned_iteration,
         "scenario_ids": scenario_ids,
-        "difficulty_class": str(
-            entry.get("difficulty_class", "unknown")
-        ).strip() or "unknown",
-        "outcome_class_at_assignment": str(
-            entry.get("outcome_class_at_assignment", "unknown")
-        ).strip() or "unknown",
+        "difficulty_class": difficulty,
+        "outcome_class_at_assignment": outcome,
+        "stratum_id": observed_stratum,
         "assignment_rank": _require_sha256(
             entry.get("assignment_rank"),
             name="assignment_rank",
         ),
     }
+
+
+def _strata_summary(
+    assignments: Mapping[str, Mapping[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    strata: dict[str, dict[str, Any]] = {}
+    for entry in assignments.values():
+        stratum_id = str(entry["stratum_id"])
+        summary = strata.setdefault(
+            stratum_id,
+            {
+                "difficulty_class": str(entry["difficulty_class"]),
+                "outcome_class_at_assignment": str(
+                    entry["outcome_class_at_assignment"]
+                ),
+                "lineage_count": 0,
+                "train_lineage_count": 0,
+                "validation_lineage_count": 0,
+            },
+        )
+        if (
+            summary["difficulty_class"] != entry["difficulty_class"]
+            or summary["outcome_class_at_assignment"]
+            != entry["outcome_class_at_assignment"]
+        ):
+            raise ValueError(
+                f"Physical split stratum {stratum_id} has mixed labels."
+            )
+        summary["lineage_count"] += 1
+        summary[f"{entry['split']}_lineage_count"] += 1
+    return dict(sorted(strata.items()))
+
+
+def _validate_strata_payload(
+    raw: object,
+    *,
+    expected: Mapping[str, Mapping[str, Any]],
+    source: Path,
+) -> None:
+    if not isinstance(raw, Mapping):
+        raise ValueError(
+            f"Physical split strata must be an object: {source}."
+        )
+    normalized: dict[str, dict[str, Any]] = {}
+    for stratum_id, entry in raw.items():
+        key = _require_sha256(stratum_id, name="stratum id")
+        if not isinstance(entry, Mapping):
+            raise ValueError(
+                f"Physical split stratum must be an object: {source}."
+            )
+        difficulty = _normalize_stratum_label(
+            entry.get("difficulty_class", "unknown")
+        )
+        outcome = _normalize_stratum_label(
+            entry.get("outcome_class_at_assignment", "unknown")
+        )
+        if key != _stratum_id(difficulty, outcome):
+            raise ValueError(
+                f"Physical split stratum key mismatch in {source}."
+            )
+        normalized[key] = {
+            "difficulty_class": difficulty,
+            "outcome_class_at_assignment": outcome,
+            "lineage_count": _require_non_negative_integer(
+                entry.get("lineage_count"),
+                name="stratum lineage_count",
+            ),
+            "train_lineage_count": _require_non_negative_integer(
+                entry.get("train_lineage_count"),
+                name="stratum train_lineage_count",
+            ),
+            "validation_lineage_count": _require_non_negative_integer(
+                entry.get("validation_lineage_count"),
+                name="stratum validation_lineage_count",
+            ),
+        }
+    if normalized != dict(expected):
+        raise ValueError(
+            f"Physical split strata summary mismatch for {source}."
+        )
 
 
 def load_physical_split_manifest(
@@ -323,10 +447,18 @@ def load_physical_split_manifest(
         expected=PHYSICAL_LINEAGE_CONTRACT_VERSION,
         name="physical lineage contract",
         source=str(manifest_path),
-        regeneration_command=(
-            "regenerate physical lineage artifacts"
-        ),
+        regeneration_command="regenerate physical lineage artifacts",
     )
+    if payload.get("assignment_strategy") != PHYSICAL_SPLIT_ASSIGNMENT_STRATEGY:
+        raise ValueError(
+            f"Physical split assignment strategy mismatch for {manifest_path}."
+        )
+    if payload.get("stratification_fields") != list(
+        PHYSICAL_SPLIT_STRATIFICATION_FIELDS
+    ):
+        raise ValueError(
+            f"Physical split stratification fields mismatch for {manifest_path}."
+        )
     require_physics_provenance(
         payload,
         source=str(manifest_path),
@@ -445,8 +577,15 @@ def load_physical_split_manifest(
             f"Physical split manifest must contain both splits: {manifest_path}."
         )
 
+    expected_strata = _strata_summary(assignments)
+    _validate_strata_payload(
+        payload.get("strata"),
+        expected=expected_strata,
+        source=manifest_path,
+    )
     payload["source_hashes"] = dict(sorted(normalized_recorded_hashes.items()))
     payload["assignments"] = assignments
+    payload["strata"] = expected_strata
     return payload
 
 
@@ -470,6 +609,166 @@ def _validation_target(
             f"total={total_lineages}, validation={target}."
         )
     return target
+
+
+def _strata_for_assignment(
+    assignments: Mapping[str, Mapping[str, Any]],
+    summaries: Mapping[str, Mapping[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    strata: dict[str, dict[str, Any]] = {}
+    for entry in assignments.values():
+        stratum = strata.setdefault(
+            str(entry["stratum_id"]),
+            {
+                "difficulty_class": entry["difficulty_class"],
+                "outcome_class_at_assignment": entry[
+                    "outcome_class_at_assignment"
+                ],
+                "existing_validation": 0,
+                "existing_train": 0,
+                "unseen": [],
+            },
+        )
+        stratum[f"existing_{entry['split']}"] += 1
+    for fingerprint, summary in summaries.items():
+        if fingerprint in assignments:
+            continue
+        stratum = strata.setdefault(
+            str(summary["stratum_id"]),
+            {
+                "difficulty_class": summary["difficulty_class"],
+                "outcome_class_at_assignment": summary[
+                    "outcome_class_at_assignment"
+                ],
+                "existing_validation": 0,
+                "existing_train": 0,
+                "unseen": [],
+            },
+        )
+        stratum["unseen"].append(fingerprint)
+    return strata
+
+
+def _validation_capacity(stratum: Mapping[str, Any]) -> int:
+    unseen_count = len(stratum["unseen"])
+    if unseen_count == 0:
+        return 0
+    existing_train = int(stratum["existing_train"])
+    existing_validation = int(stratum["existing_validation"])
+    total = existing_train + existing_validation + unseen_count
+    if total >= 2 and existing_train == 0:
+        return max(0, unseen_count - 1)
+    return unseen_count
+
+
+def _select_validation_lineages(
+    *,
+    assignments: Mapping[str, Mapping[str, Any]],
+    summaries: Mapping[str, Mapping[str, Any]],
+    seed: int,
+    validation_fraction: float,
+    min_validation_lineages: int,
+) -> set[str]:
+    strata = _strata_for_assignment(assignments, summaries)
+    total_after = len(assignments) + sum(
+        len(stratum["unseen"])
+        for stratum in strata.values()
+    )
+    base_target = _validation_target(
+        total_after,
+        validation_fraction=validation_fraction,
+        min_validation_lineages=min_validation_lineages,
+    )
+    current_validation = sum(
+        entry["split"] == VALIDATION_SPLIT
+        for entry in assignments.values()
+    )
+    uncovered = [
+        stratum_id
+        for stratum_id, stratum in strata.items()
+        if (
+            int(stratum["existing_validation"]) == 0
+            and int(stratum["existing_train"])
+            + len(stratum["unseen"]) >= 2
+            and _validation_capacity(stratum) > 0
+        )
+    ]
+    total_capacity = sum(
+        _validation_capacity(stratum)
+        for stratum in strata.values()
+    )
+    desired_total = max(
+        base_target,
+        current_validation + len(uncovered),
+    )
+    desired_total = min(
+        total_after - 1,
+        current_validation + total_capacity,
+        desired_total,
+    )
+    seats = max(0, desired_total - current_validation)
+    if seats == 0:
+        return set()
+
+    ranked_unseen = {
+        stratum_id: sorted(
+            stratum["unseen"],
+            key=lambda fingerprint: _assignment_rank(seed, fingerprint),
+        )
+        for stratum_id, stratum in strata.items()
+    }
+    selected: set[str] = set()
+    projected_validation = {
+        stratum_id: int(stratum["existing_validation"])
+        for stratum_id, stratum in strata.items()
+    }
+    capacity = {
+        stratum_id: _validation_capacity(stratum)
+        for stratum_id, stratum in strata.items()
+    }
+
+    for stratum_id in sorted(
+        uncovered,
+        key=lambda value: _stratum_rank(seed, value),
+    ):
+        if seats == 0:
+            break
+        fingerprint = ranked_unseen[stratum_id].pop(0)
+        selected.add(fingerprint)
+        projected_validation[stratum_id] += 1
+        capacity[stratum_id] -= 1
+        seats -= 1
+
+    while seats > 0:
+        candidates = [
+            stratum_id
+            for stratum_id in strata
+            if capacity[stratum_id] > 0 and ranked_unseen[stratum_id]
+        ]
+        if not candidates:
+            break
+
+        def priority(stratum_id: str) -> tuple[float, str]:
+            stratum = strata[stratum_id]
+            total = (
+                int(stratum["existing_train"])
+                + int(stratum["existing_validation"])
+                + len(stratum["unseen"])
+            )
+            deficit = (
+                total * validation_fraction
+                - projected_validation[stratum_id]
+            )
+            return (-deficit, _stratum_rank(seed, stratum_id))
+
+        chosen = min(candidates, key=priority)
+        fingerprint = ranked_unseen[chosen].pop(0)
+        selected.add(fingerprint)
+        projected_validation[chosen] += 1
+        capacity[chosen] -= 1
+        seats -= 1
+
+    return selected
 
 
 def assign_physical_split(
@@ -517,36 +816,29 @@ def assign_physical_split(
         )
 
     assignments = dict(manifest["assignments"])
-    unseen = sorted(set(summaries) - set(assignments))
-    total_after = len(assignments) + len(unseen)
-    target_validation = _validation_target(
-        total_after,
+    validation_unseen = _select_validation_lineages(
+        assignments=assignments,
+        summaries=summaries,
+        seed=resolved_seed,
         validation_fraction=fraction,
         min_validation_lineages=minimum,
     )
-    current_validation = sum(
-        entry["split"] == VALIDATION_SPLIT
-        for entry in assignments.values()
-    )
-    validation_needed = max(0, target_validation - current_validation)
-    ranked_unseen = sorted(
-        unseen,
+    unseen = sorted(
+        set(summaries) - set(assignments),
         key=lambda fingerprint: _assignment_rank(
             resolved_seed,
             fingerprint,
         ),
     )
-
-    for position, fingerprint in enumerate(ranked_unseen):
+    for fingerprint in unseen:
         summary = summaries[fingerprint]
-        split = (
-            VALIDATION_SPLIT
-            if position < validation_needed
-            else TRAIN_SPLIT
-        )
         assignments[fingerprint] = {
             **summary,
-            "split": split,
+            "split": (
+                VALIDATION_SPLIT
+                if fingerprint in validation_unseen
+                else TRAIN_SPLIT
+            ),
             "assigned_iteration": assigned_iteration,
             "assignment_rank": _assignment_rank(
                 resolved_seed,
@@ -577,6 +869,7 @@ def assign_physical_split(
         entry["split"] == VALIDATION_SPLIT
         for entry in assignments.values()
     )
+    manifest["strata"] = _strata_summary(assignments)
     manifest["last_updated_iteration"] = assigned_iteration
     _write_json_atomic(manifest, path)
     return manifest
