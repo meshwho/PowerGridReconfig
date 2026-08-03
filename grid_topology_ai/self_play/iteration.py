@@ -18,6 +18,9 @@ from grid_topology_ai.self_play.acceptance import (
 )
 from grid_topology_ai.self_play.artifacts import save_json, sha256_file
 from grid_topology_ai.self_play.checkpoint_state import promote_candidate
+from grid_topology_ai.self_play.iteration_split import (
+    prepare_physical_iteration_split,
+)
 from grid_topology_ai.self_play.paths import SelfPlayPaths
 from grid_topology_ai.self_play.pool_sampling import sample_from_pool
 from grid_topology_ai.self_play.pool_state import update_and_save_pool_metadata
@@ -26,7 +29,6 @@ from grid_topology_ai.self_play.stages import (
     run_evaluate,
     run_generate,
     run_train,
-    split_examples_by_scenario,
 )
 from grid_topology_ai.evaluation.checkpoint import load_scenario_ids
 from grid_topology_ai.evaluation.paired_results import (
@@ -516,26 +518,33 @@ def run_self_play_iteration(
     )
 
     train_batch_path = iter_dir / "train_batch.csv"
-
-    train_batch_metadata = request.replay_buffer.export_mixed_batch(
-        output_path=train_batch_path,
-        current_iteration=iteration,
-        n_examples=examples_per_iteration,
-        fresh_fraction=float(config.replay_buffer.fresh_fraction),
-        seed=iteration_seed,
-    )
-
     train_examples_path = iter_dir / "train_examples.csv"
     validation_examples_path = iter_dir / "validation_examples.csv"
     split_metadata_path = iter_dir / "train_validation_split.json"
-    split_metadata = split_examples_by_scenario(
-        examples_csv=train_batch_path,
-        train_output_csv=train_examples_path,
-        validation_output_csv=validation_examples_path,
-        metadata_output_json=split_metadata_path,
-        validation_fraction=config.training.validation_fraction,
-        min_validation_scenarios=config.training.min_validation_scenarios,
-        seed=iteration_seed,
+
+    train_batch_metadata, split_metadata = (
+        prepare_physical_iteration_split(
+            replay_buffer=request.replay_buffer,
+            paths=paths,
+            physics_config=config.physics,
+            iteration=iteration,
+            split_seed=int(config.seed),
+            sampling_seed=iteration_seed,
+            validation_fraction=(
+                config.training.validation_fraction
+            ),
+            min_validation_lineages=(
+                config.training.min_validation_scenarios
+            ),
+            n_examples=examples_per_iteration,
+            fresh_fraction=float(
+                config.replay_buffer.fresh_fraction
+            ),
+            train_batch_path=train_batch_path,
+            train_examples_path=train_examples_path,
+            validation_examples_path=validation_examples_path,
+            metadata_path=split_metadata_path,
+        )
     )
 
     candidate_checkpoint = run_train(
