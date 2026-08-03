@@ -158,7 +158,7 @@ def test_dataset_rejects_non_unit_policy_mass(tmp_path, policy):
     examples_csv = tmp_path / "examples.csv"
     _write_examples_csv(examples_csv, state_path, policy)
 
-    with pytest.raises(ValueError, match="sum to 1"):
+    with pytest.raises(ValueError, match="must equal 1.0"):
         GraphSelfPlayDataset(
             examples_csv=examples_csv,
             normalize_features=False,

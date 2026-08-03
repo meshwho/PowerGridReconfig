@@ -51,11 +51,21 @@ def _write_fake_state(path):
 
 
 def _write_examples_csv(path, state_path, scenario_ids):
+    with np.load(state_path, allow_pickle=False) as data:
+        state_arrays = {
+            name: np.asarray(data[name]).copy()
+            for name in data.files
+        }
+
     rows = []
     for i, scenario_id in enumerate(scenario_ids):
+        row_state_path = state_path.with_name(
+            f"{path.stem}_state_{i}.npz"
+        )
+        np.savez(row_state_path, **state_arrays)
         rows.append(
             {
-                "state_path": str(state_path),
+                "state_path": str(row_state_path),
                 "mcts_policy_json": json.dumps({"0": 1.0}),
                 "outcome_value_target": -1.0,
                 "physical_objective_schema_version": (
