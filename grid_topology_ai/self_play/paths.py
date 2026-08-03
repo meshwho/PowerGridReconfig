@@ -116,6 +116,10 @@ class SelfPlayPaths:
         return self.replay_dir / "buffer_manifest.json"
 
     @property
+    def physical_split_manifest(self) -> Path:
+        return self.run_dir / "physical_split_manifest.json"
+
+    @property
     def learning_curve(self) -> Path:
         return self.run_dir / "learning_curve.csv"
 
