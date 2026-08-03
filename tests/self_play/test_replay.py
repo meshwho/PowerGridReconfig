@@ -81,6 +81,7 @@ def rows(prefix: str, count: int) -> list[dict[str, object]]:
     return [
         {
             "state_id": f"{prefix}_{index}",
+            "episode_id": f"{prefix}_{index}",
             "scenario_id": index,
             "physical_objective_schema_version": PHYSICAL_OBJECTIVE_SCHEMA_VERSION,
             "outcome_value_target_contract_version": OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
