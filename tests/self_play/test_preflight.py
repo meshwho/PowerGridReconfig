@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
-import pandas as pd
 import pytest
 
 from grid_topology_ai.config import SelfPlayConfig
+from grid_topology_ai.self_play import dataset_isolation as isolation_module
 from grid_topology_ai.self_play.paths import SelfPlayPaths
+from grid_topology_ai.self_play.physical_lineage import PhysicalLineage
 from grid_topology_ai.self_play.preflight import (
     validate_inputs,
     validate_resume_artifacts,
@@ -25,52 +27,55 @@ def _write_raw_dataset(
     scenarios: dict[int, tuple[float, tuple[int, ...]]],
 ) -> None:
     raw_dir.mkdir(parents=True, exist_ok=True)
-    bus_rows: list[dict[str, object]] = []
-    branch_rows: list[dict[str, object]] = []
-
-    for scenario_id, (load, outages) in scenarios.items():
-        bus_rows.extend(
-            [
-                {
-                    "scenario": scenario_id,
-                    "bus": 1,
-                    "Pd": load,
-                    "Qd": load * 0.2,
-                },
-                {
-                    "scenario": scenario_id,
-                    "bus": 2,
-                    "Pd": load * 0.5,
-                    "Qd": load * 0.1,
-                },
-            ]
-        )
-        for branch_id, buses in (
-            (1, (1, 2)),
-            (2, (2, 1)),
-        ):
-            branch_rows.append(
-                {
-                    "scenario": scenario_id,
-                    "idx": branch_id,
-                    "from_bus": buses[0],
-                    "to_bus": buses[1],
-                    "r": 0.01 * branch_id,
-                    "x": 0.02 * branch_id,
-                    "b": 0.001 * branch_id,
-                    "br_status": (
-                        0 if branch_id in outages else 1
-                    ),
-                }
-            )
-
-    pd.DataFrame(bus_rows).to_parquet(
-        raw_dir / "bus_data.parquet",
-        index=False,
+    payload = {
+        str(scenario_id): {
+            "load": float(load),
+            "outages": list(outages),
+        }
+        for scenario_id, (load, outages) in scenarios.items()
+    }
+    (raw_dir / "test_physical_lineages.json").write_text(
+        json.dumps(payload, sort_keys=True),
+        encoding="utf-8",
     )
-    pd.DataFrame(branch_rows).to_parquet(
-        raw_dir / "branch_data.parquet",
-        index=False,
+
+
+@pytest.fixture(autouse=True)
+def use_test_physical_lineages(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def build_scenario_lineages(
+        *,
+        raw_dir: str | Path,
+        scenario_ids,
+    ) -> dict[int, PhysicalLineage]:
+        path = Path(raw_dir) / "test_physical_lineages.json"
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        result: dict[int, PhysicalLineage] = {}
+        for value in scenario_ids:
+            scenario_id = int(value)
+            item = payload.get(str(scenario_id))
+            if not isinstance(item, dict):
+                raise ValueError(
+                    f"Scenario {scenario_id} is missing from physical data: "
+                    f"{path}."
+                )
+            outages = tuple(int(branch) for branch in item["outages"])
+            result[scenario_id] = PhysicalLineage.build(
+                base_case_id="case118",
+                load_profile_id=f"load:{float(item['load']).hex()}",
+                contingency_family_id=(
+                    tuple(f"branch:{branch}" for branch in outages)
+                    or ("none",)
+                ),
+                source=f"test scenario {scenario_id}",
+            )
+        return result
+
+    monkeypatch.setattr(
+        isolation_module,
+        "build_scenario_lineages",
+        build_scenario_lineages,
     )
 
 
