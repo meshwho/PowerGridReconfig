@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from collections.abc import Iterator, Mapping
 from functools import wraps
+from pathlib import Path
 from typing import Any
 
+import pandas as pd
 import pytest
 
 from grid_topology_ai.config import AcceptanceConfig
@@ -246,6 +248,64 @@ def adapt_legacy_iteration_exploration_fixtures(
         exploration_metrics,
     )
 
+    yield
+
+
+@pytest.fixture(autouse=True)
+def adapt_legacy_iteration_split_fixtures(
+    request: pytest.FixtureRequest,
+    monkeypatch: pytest.MonkeyPatch,
+) -> Iterator[None]:
+    """Keep compact iteration doubles focused on orchestration behavior."""
+
+    if request.node.path.name != "test_iteration.py":
+        yield
+        return
+
+    def physical_iteration_split(
+        *,
+        replay_buffer,
+        iteration,
+        sampling_seed,
+        n_examples,
+        fresh_fraction,
+        train_batch_path,
+        train_examples_path,
+        validation_examples_path,
+        metadata_path,
+        **kwargs,
+    ):
+        batch_metadata = replay_buffer.export_mixed_batch(
+            output_path=Path(train_batch_path),
+            current_iteration=int(iteration),
+            n_examples=n_examples,
+            fresh_fraction=float(fresh_fraction),
+            seed=int(sampling_seed),
+        )
+        batch = pd.read_csv(train_batch_path)
+        if len(batch) < 2:
+            raise ValueError("Legacy iteration fixture needs two examples.")
+        train = batch.iloc[:-1].copy()
+        validation = batch.iloc[-1:].copy()
+        train.to_csv(train_examples_path, index=False)
+        validation.to_csv(validation_examples_path, index=False)
+        metadata = {
+            "train_examples": len(train),
+            "validation_examples": len(validation),
+            "train_scenarios": train["scenario_id"].nunique(),
+            "validation_scenarios": validation["scenario_id"].nunique(),
+        }
+        Path(metadata_path).write_text(
+            "{}\n",
+            encoding="utf-8",
+        )
+        return batch_metadata, metadata
+
+    monkeypatch.setattr(
+        iteration_module,
+        "prepare_physical_iteration_split",
+        physical_iteration_split,
+    )
     yield
 
 
