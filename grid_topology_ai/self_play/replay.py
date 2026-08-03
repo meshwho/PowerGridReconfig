@@ -6,7 +6,16 @@ from grid_topology_ai.self_play import _replay_core as _core
 from grid_topology_ai.self_play._replay_core import (
     RollingReplayBuffer as _CoreRollingReplayBuffer,
 )
+from grid_topology_ai.self_play.example_validation import (
+    load_and_validate_examples_csv,
+)
 from grid_topology_ai.self_play.replay_sampling import EpisodeSamplingMixin
+
+
+__all__ = (
+    "RollingReplayBuffer",
+    "load_and_validate_examples_csv",
+)
 
 
 class RollingReplayBuffer(EpisodeSamplingMixin, _CoreRollingReplayBuffer):
