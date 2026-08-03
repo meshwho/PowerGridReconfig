@@ -10,15 +10,70 @@ import pytest
 from grid_topology_ai.config import ReplayBufferConfig
 from grid_topology_ai.config.physics import DEFAULT_PHYSICS_CONFIG, PhysicsConfig
 from grid_topology_ai.contracts import (
+    CHECKPOINT_CONTRACT_VERSION,
+    OUTCOME_OBJECTIVE_VERSION,
     OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
     REPLAY_BUFFER_SCHEMA_VERSION,
     physics_provenance,
 )
 from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
 from grid_topology_ai.self_play import replay as replay_module
+from grid_topology_ai.self_play.artifacts import sha256_file
 from grid_topology_ai.self_play.replay import RollingReplayBuffer
 from grid_topology_ai.termination import TerminationReason
 from tests.outcome_evidence_helpers import terminal_evidence_fields
+from tests.topology_contract_helpers import topology_metadata
+
+
+def _producer_checkpoint_metadata() -> dict[str, object]:
+    physics = physics_provenance(DEFAULT_PHYSICS_CONFIG)
+    action = topology_metadata((0,))
+
+    return {
+        "sha256": "a" * 64,
+        "checkpoint_contract_version": CHECKPOINT_CONTRACT_VERSION,
+        "model_type": "test_policy_value",
+        "physical_objective_schema_version": (
+            PHYSICAL_OBJECTIVE_SCHEMA_VERSION
+        ),
+        "outcome_objective_version": OUTCOME_OBJECTIVE_VERSION,
+        "outcome_value_target_contract_version": (
+            OUTCOME_VALUE_TARGET_CONTRACT_VERSION
+        ),
+        "state_feature_schema_fingerprint": physics[
+            "state_feature_schema_fingerprint"
+        ],
+        "physics_config_fingerprint": physics[
+            "physics_config_fingerprint"
+        ],
+        "topology_action_config_fingerprint": action[
+            "topology_action_config_fingerprint"
+        ],
+        "action_layout_fingerprint": action[
+            "action_layout_fingerprint"
+        ],
+    }
+
+
+def _configure_producer_checkpoint(
+    buffer: RollingReplayBuffer,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> Path:
+    checkpoint_path = tmp_path / "producer.pt"
+    checkpoint_path.write_bytes(b"test checkpoint")
+    buffer.set_producer_checkpoint(checkpoint_path)
+    metadata = _producer_checkpoint_metadata()
+
+    def producer_metadata(*args, **kwargs):
+        return dict(metadata)
+
+    monkeypatch.setattr(
+        buffer,
+        "_producer_checkpoint_provenance",
+        producer_metadata,
+    )
+    return checkpoint_path
 
 
 def rows(prefix: str, count: int) -> list[dict[str, object]]:
@@ -78,7 +133,10 @@ def test_mixed_batch_respects_fresh_fraction(
     assert metadata["fresh_fraction_actual"] == 0.70
 
 
-def test_reload_preserves_fifo_order(tmp_path: Path) -> None:
+def test_reload_preserves_fifo_order(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     save_dir = tmp_path / "replay"
     config = ReplayBufferConfig(
         max_size=4,
@@ -89,6 +147,7 @@ def test_reload_preserves_fifo_order(tmp_path: Path) -> None:
         save_dir=save_dir,
         config=config,
     )
+    _configure_producer_checkpoint(buffer, tmp_path, monkeypatch)
 
     iteration_1 = rows("i1", 2)
     buffer.add_examples(iteration_1, iteration=1)
@@ -180,11 +239,16 @@ def _invalid_csv(tmp_path: Path, *, name: str = "invalid.csv") -> Path:
     return _write_examples_csv(tmp_path / name, [row])
 
 
-def test_valid_csv_is_added_and_persisted(tmp_path: Path) -> None:
+def test_valid_csv_is_added_and_persisted(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     buffer = RollingReplayBuffer(
         save_dir=tmp_path / "replay",
         config=ReplayBufferConfig(max_size=10, min_size_to_train=1),
     )
+    _configure_producer_checkpoint(buffer, tmp_path, monkeypatch)
+
     returned = buffer.add_and_save_from_csv(
         examples_csv=_valid_csv(tmp_path), iteration=1
     )
@@ -195,7 +259,10 @@ def test_valid_csv_is_added_and_persisted(tmp_path: Path) -> None:
     assert iter_file.exists()
     assert manifest.exists()
     with gzip.open(iter_file, "rt", encoding="utf-8") as f:
-        assert json.loads(f.readline())["replay_iteration"] == 1
+        header = json.loads(f.readline())
+        row = json.loads(f.readline())
+    assert header["record_type"] == "replay_chunk_header"
+    assert row["replay_iteration"] == 1
     manifest_payload = json.loads(manifest.read_text(encoding="utf-8"))
     assert manifest_payload["schema_version"] == REPLAY_BUFFER_SCHEMA_VERSION
     assert manifest_payload["physical_objective_schema_version"] == (
@@ -216,9 +283,14 @@ def test_legacy_replay_manifest_is_rejected(tmp_path: Path) -> None:
 
 def test_replay_manifest_physics_config_mismatch_is_rejected(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     save_dir = tmp_path / "replay"
     source = RollingReplayBuffer(save_dir=save_dir)
+    _configure_producer_checkpoint(source, tmp_path, monkeypatch)
+    seed = rows("seed", 1)
+    source.save_iteration_file(seed, iteration=1)
+    source.add_examples(seed, iteration=1)
     source.save_manifest()
 
     with pytest.raises(ValueError, match="PhysicsConfig mismatch"):
@@ -251,10 +323,10 @@ def test_invalid_csv_does_not_mutate_buffer(tmp_path: Path) -> None:
         save_dir=tmp_path / "replay",
         config=ReplayBufferConfig(max_size=1, min_size_to_train=1),
     )
-    buffer.add_examples(rows("old", 1), iteration=0)
+    buffer.add_examples(rows("old", 1), iteration=1)
     before = deepcopy(buffer.buffer)
     with pytest.raises(ValueError):
-        buffer.add_and_save_from_csv(examples_csv=_invalid_csv(tmp_path), iteration=1)
+        buffer.add_and_save_from_csv(examples_csv=_invalid_csv(tmp_path), iteration=2)
     assert buffer.buffer == before
 
 
@@ -286,22 +358,22 @@ def test_invalid_csv_does_not_overwrite_existing_iteration_file(tmp_path: Path) 
 
 def test_missing_state_file_does_not_mutate_replay(tmp_path: Path) -> None:
     buffer = RollingReplayBuffer(save_dir=tmp_path / "replay")
-    buffer.add_examples(rows("old", 1), iteration=0)
+    buffer.add_examples(rows("old", 1), iteration=1)
     before = deepcopy(buffer.buffer)
     csv = _write_examples_csv(
         tmp_path / "missing.csv", [_valid_example_row(tmp_path / "missing.npz")]
     )
     with pytest.raises(FileNotFoundError):
-        buffer.add_and_save_from_csv(examples_csv=csv, iteration=1)
+        buffer.add_and_save_from_csv(examples_csv=csv, iteration=2)
     assert buffer.buffer == before
 
 
 def test_invalid_policy_does_not_mutate_replay(tmp_path: Path) -> None:
     buffer = RollingReplayBuffer(save_dir=tmp_path / "replay")
-    buffer.add_examples(rows("old", 1), iteration=0)
+    buffer.add_examples(rows("old", 1), iteration=1)
     before = deepcopy(buffer.buffer)
     with pytest.raises(ValueError):
-        buffer.add_and_save_from_csv(examples_csv=_invalid_csv(tmp_path), iteration=1)
+        buffer.add_and_save_from_csv(examples_csv=_invalid_csv(tmp_path), iteration=2)
     assert buffer.buffer == before
 
 
@@ -410,31 +482,48 @@ def test_save_iteration_file_rejects_semantic_invalid_outcome(tmp_path: Path) ->
     assert not list((tmp_path / "replay").glob("*.tmp"))
 
 
-def test_load_rejects_current_version_semantic_invalid_chunk(tmp_path: Path) -> None:
+def test_load_rejects_current_version_semantic_invalid_chunk(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     save_dir = tmp_path / "replay"
-    save_dir.mkdir()
+    source = RollingReplayBuffer(save_dir=save_dir)
+    _configure_producer_checkpoint(source, tmp_path, monkeypatch)
+
+    good = rows("good", 1)
+    source.save_iteration_file(good, iteration=1)
+    source.add_examples(good, iteration=1)
+    source.save_manifest()
+
     chunk = save_dir / "buffer_iter_001.jsonl.gz"
-    with gzip.open(chunk, "wt", encoding="utf-8") as handle:
-        handle.write(json.dumps(semantic_invalid_handoff_row()) + "\n")
-    (save_dir / "buffer_manifest.json").write_text(
-        json.dumps(
-            {
-                "schema_version": REPLAY_BUFFER_SCHEMA_VERSION,
-                "physical_objective_schema_version": PHYSICAL_OBJECTIVE_SCHEMA_VERSION,
-                "outcome_value_target_contract_version": OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
-                **physics_provenance(DEFAULT_PHYSICS_CONFIG),
-                "files": [{"path": chunk.name, "n": 1, "iteration": 1}],
-            }
-        ),
+    header, _ = replay_module._read_jsonl_gz(chunk)
+    invalid = semantic_invalid_handoff_row()
+    invalid["replay_iteration"] = 1
+    replay_module._write_jsonl_gz(
+        header=header,
+        rows=[invalid],
+        path=chunk,
+    )
+
+    manifest_path = save_dir / "buffer_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["files"][0]["sha256"] = sha256_file(chunk)
+    manifest_path.write_text(
+        json.dumps(manifest),
         encoding="utf-8",
     )
+
     with pytest.raises(ValueError, match="outcome_value_target"):
         RollingReplayBuffer(save_dir=save_dir)
 
 
-def test_valid_semantic_replay_roundtrip(tmp_path: Path) -> None:
+def test_valid_semantic_replay_roundtrip(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     save_dir = tmp_path / "replay"
     source = RollingReplayBuffer(save_dir=save_dir)
+    _configure_producer_checkpoint(source, tmp_path, monkeypatch)
     good = rows("good", 1)
     source.add_examples(good, iteration=1)
     source.save_iteration_file(good, iteration=1)
