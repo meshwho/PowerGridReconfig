@@ -14,6 +14,9 @@ from grid_topology_ai.self_play.artifacts import (
     sha256_file,
     sha256_json,
 )
+from grid_topology_ai.self_play.lineage_artifacts import (
+    validate_lineage_columns,
+)
 from grid_topology_ai.self_play.paths import SelfPlayPaths
 from grid_topology_ai.self_play.physical_lineage import (
     PHYSICAL_LINEAGE_FINGERPRINT_FIELD,
@@ -23,9 +26,17 @@ from grid_topology_ai.self_play.physical_split import (
     VALIDATION_SPLIT,
     assign_physical_split,
     load_physical_split_manifest,
-    split_frame_by_manifest,
 )
 from grid_topology_ai.self_play.replay_sampling import EpisodeSamplingMixin
+from grid_topology_ai.self_play.split_integrity import (
+    manifest_scenario_lineages,
+    physical_split_source_hashes,
+    require_current_scenario_consistency,
+    require_exact_source_hashes,
+)
+from grid_topology_ai.self_play.validation_snapshot import (
+    update_validation_snapshot,
+)
 
 
 class _ReplayBuffer(Protocol):
@@ -49,10 +60,10 @@ def _fingerprints_for_split(
         raise ValueError("Physical split manifest has no assignments.")
 
     fingerprints = {
-        str(fingerprint)
+        str(fingerprint).strip().lower()
         for fingerprint, entry in assignments.items()
         if isinstance(entry, Mapping)
-        and str(entry.get("split", "")) == split
+        and str(entry.get("split", "")).strip() == split
     }
     if not fingerprints:
         raise ValueError(
@@ -88,6 +99,47 @@ def _write_csv_atomic(frame: pd.DataFrame, path: Path) -> None:
         temporary.unlink(missing_ok=True)
 
 
+def _split_active_replay(
+    frame: pd.DataFrame,
+    *,
+    manifest: Mapping[str, Any],
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    validate_lineage_columns(frame, source="replay buffer")
+    assignments = manifest.get("assignments")
+    if not isinstance(assignments, Mapping):
+        raise ValueError("Physical split manifest has no assignments.")
+    split_by_fingerprint = {
+        str(fingerprint).strip().lower(): str(entry.get("split", "")).strip()
+        for fingerprint, entry in assignments.items()
+        if isinstance(entry, Mapping)
+    }
+    fingerprints = (
+        frame[PHYSICAL_LINEAGE_FINGERPRINT_FIELD]
+        .astype(str)
+        .str.strip()
+        .str.lower()
+    )
+    missing = sorted(set(fingerprints) - set(split_by_fingerprint))
+    if missing:
+        raise ValueError(
+            "Replay buffer contains unassigned physical lineages: "
+            f"{missing[:5]}."
+        )
+    labels = fingerprints.map(split_by_fingerprint)
+    invalid = sorted(set(labels) - {TRAIN_SPLIT, VALIDATION_SPLIT})
+    if invalid:
+        raise ValueError(
+            f"Physical split manifest contains invalid labels: {invalid}."
+        )
+    train = frame.loc[labels == TRAIN_SPLIT].copy()
+    validation = frame.loc[labels == VALIDATION_SPLIT].copy()
+    if train.empty:
+        raise ValueError(
+            "Active replay buffer contains no physical training lineages."
+        )
+    return train, validation
+
+
 def _refresh_prediction_errors(
     replay_buffer: _ReplayBuffer,
     *,
@@ -106,7 +158,7 @@ def _export_train_batch(
     replay_buffer: _ReplayBuffer,
     *,
     train_rows: list[dict[str, Any]],
-    train_fingerprints: set[str],
+    active_train_fingerprints: set[str],
     output_path: Path,
     current_iteration: int,
     n_examples: int | None,
@@ -137,7 +189,9 @@ def _export_train_batch(
     metadata.update(
         {
             "eligible_examples": len(train_rows),
-            "eligible_physical_lineage_count": len(train_fingerprints),
+            "eligible_physical_lineage_count": len(
+                active_train_fingerprints
+            ),
             "eligible_split": TRAIN_SPLIT,
         }
     )
@@ -179,8 +233,10 @@ def prepare_physical_iteration_split(
     metadata_path = Path(metadata_path)
 
     replay_frame = pd.DataFrame(replay_buffer.buffer)
-    pool_hash = sha256_file(paths.pool_transitions_csv)
-    source_hashes = {"pool_transitions": pool_hash}
+    source_hashes = physical_split_source_hashes(
+        transitions_csv=paths.pool_transitions_csv,
+        raw_dir=paths.pool_raw_dir,
+    )
 
     previous = load_physical_split_manifest(
         paths.physical_split_manifest,
@@ -195,6 +251,21 @@ def prepare_physical_iteration_split(
         if previous is not None
         else set()
     )
+    if previous is not None:
+        require_exact_source_hashes(
+            previous,
+            expected=source_hashes,
+            source=paths.physical_split_manifest,
+        )
+        manifest_scenario_lineages(
+            previous,
+            source=paths.physical_split_manifest,
+        )
+        require_current_scenario_consistency(
+            replay_frame,
+            previous,
+            source="replay buffer",
+        )
 
     manifest = assign_physical_split(
         replay_frame,
@@ -207,22 +278,42 @@ def prepare_physical_iteration_split(
         source="replay buffer",
         source_hashes=source_hashes,
     )
+    require_exact_source_hashes(
+        manifest,
+        expected=source_hashes,
+        source=paths.physical_split_manifest,
+    )
+    manifest_scenario_lineages(
+        manifest,
+        source=paths.physical_split_manifest,
+    )
+
     train_fingerprints = _fingerprints_for_split(manifest, TRAIN_SPLIT)
     validation_fingerprints = _fingerprints_for_split(
         manifest,
         VALIDATION_SPLIT,
     )
-
-    train_replay, validation_replay = split_frame_by_manifest(
+    train_replay, active_validation = _split_active_replay(
         replay_frame,
         manifest=manifest,
-        source="replay buffer",
     )
+    active_train_fingerprints = _frame_fingerprints(train_replay)
+
+    validation_snapshot = update_validation_snapshot(
+        current_validation=active_validation,
+        manifest=manifest,
+        physics_config=physics_config,
+        iteration=int(iteration),
+        csv_path=paths.physical_validation_snapshot,
+        metadata_path=paths.physical_validation_snapshot_metadata,
+    )
+    validation_replay = validation_snapshot.frame
+
     train_rows = train_replay.to_dict(orient="records")
     train_batch_metadata = _export_train_batch(
         replay_buffer,
         train_rows=train_rows,
-        train_fingerprints=train_fingerprints,
+        active_train_fingerprints=active_train_fingerprints,
         output_path=train_batch_path,
         current_iteration=int(iteration),
         n_examples=n_examples,
@@ -235,6 +326,11 @@ def prepare_physical_iteration_split(
     validation_row_fingerprints = _frame_fingerprints(validation_replay)
     if not sampled_fingerprints <= train_fingerprints:
         raise RuntimeError("Train replay sampler selected a validation lineage.")
+    if validation_row_fingerprints != validation_fingerprints:
+        raise RuntimeError(
+            "Persistent validation snapshot does not cover all assigned "
+            "validation lineages."
+        )
     overlap = sampled_fingerprints & validation_row_fingerprints
     if overlap:
         raise RuntimeError(
@@ -249,12 +345,24 @@ def prepare_physical_iteration_split(
     assignments = manifest["assignments"]
     new_assignments = sorted(set(assignments) - previous_assignments)
     split_metadata: dict[str, Any] = {
-        "schema_version": 2,
+        "schema_version": 3,
         "split_unit": "physical_lineage",
         "assignment_strategy": manifest["assignment_strategy"],
         "persistent_manifest_path": str(paths.physical_split_manifest),
         "persistent_manifest_sha256": sha256_file(
             paths.physical_split_manifest
+        ),
+        "persistent_validation_snapshot_path": str(
+            paths.physical_validation_snapshot
+        ),
+        "persistent_validation_snapshot_sha256": sha256_file(
+            paths.physical_validation_snapshot
+        ),
+        "persistent_validation_snapshot_metadata_path": str(
+            paths.physical_validation_snapshot_metadata
+        ),
+        "persistent_validation_snapshot_metadata_sha256": sha256_file(
+            paths.physical_validation_snapshot_metadata
         ),
         "source_replay_manifest": str(paths.replay_manifest),
         "source_replay_manifest_sha256": (
@@ -262,7 +370,7 @@ def prepare_physical_iteration_split(
             if paths.replay_manifest.is_file()
             else None
         ),
-        "pool_transitions_sha256": pool_hash,
+        "source_hashes": dict(sorted(source_hashes.items())),
         "iteration": int(iteration),
         "split_seed": int(split_seed),
         "sampling_seed": int(sampling_seed),
@@ -273,6 +381,7 @@ def prepare_physical_iteration_split(
         "total_examples": int(len(replay_frame)),
         "train_examples": int(len(sampled_train)),
         "validation_examples": int(len(validation_replay)),
+        "active_validation_examples": int(len(active_validation)),
         "total_scenarios": _scenario_count(replay_frame),
         "train_scenarios": _scenario_count(sampled_train),
         "validation_scenarios": _scenario_count(validation_replay),
@@ -280,6 +389,10 @@ def prepare_physical_iteration_split(
         "train_lineages": int(manifest["train_lineage_count"]),
         "validation_lineages": int(
             manifest["validation_lineage_count"]
+        ),
+        "active_train_lineages": len(active_train_fingerprints),
+        "active_validation_lineages": len(
+            _frame_fingerprints(active_validation)
         ),
         "sampled_train_lineages": len(sampled_fingerprints),
         "train_csv": str(train_examples_path),
@@ -295,6 +408,12 @@ def prepare_physical_iteration_split(
         "validation_scenario_ids": sorted(
             int(value)
             for value in validation_replay["scenario_id"].unique()
+        ),
+        "validation_snapshot_created_iteration": int(
+            validation_snapshot.metadata["created_iteration"]
+        ),
+        "validation_snapshot_last_updated_iteration": int(
+            validation_snapshot.metadata["last_updated_iteration"]
         ),
     }
     save_json(split_metadata, metadata_path)

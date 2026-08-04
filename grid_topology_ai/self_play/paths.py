@@ -120,6 +120,22 @@ class SelfPlayPaths:
         return self.run_dir / "physical_split_manifest.json"
 
     @property
+    def physical_validation_snapshot(self) -> Path:
+        return self.run_dir / "physical_validation_examples.csv"
+
+    @property
+    def physical_validation_snapshot_metadata(self) -> Path:
+        return self.run_dir / "physical_validation_examples.metadata.json"
+
+    @property
+    def final_test_dir(self) -> Path:
+        return self.run_dir / "final_test"
+
+    @property
+    def final_test_report(self) -> Path:
+        return self.final_test_dir / "final_test_report.json"
+
+    @property
     def learning_curve(self) -> Path:
         return self.run_dir / "learning_curve.csv"
 

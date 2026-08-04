@@ -165,21 +165,35 @@ def _frame_digest(
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-def _scenario_subset(
+def _scenario_groups(
     frame: pd.DataFrame,
-    scenario_id: int,
+    scenario_ids: Iterable[int],
     *,
     source: Path,
-) -> pd.DataFrame:
+) -> dict[int, pd.DataFrame]:
+    requested = {int(value) for value in scenario_ids}
     scenario_values = frame["scenario"].map(
         lambda value: _coerce_scenario_id(value, source=str(source))
     )
-    subset = frame.loc[scenario_values == int(scenario_id)].copy()
-    if subset.empty:
-        raise ValueError(
-            f"Scenario {scenario_id} is missing from physical data: {source}."
+    normalized = frame.copy()
+    normalized["__scenario_id"] = scenario_values
+    selected = normalized.loc[
+        normalized["__scenario_id"].isin(requested)
+    ]
+    groups = {
+        int(scenario_id): group.drop(columns="__scenario_id").copy()
+        for scenario_id, group in selected.groupby(
+            "__scenario_id",
+            sort=False,
         )
-    return subset
+    }
+    missing = sorted(requested - set(groups))
+    if missing:
+        raise ValueError(
+            "Scenarios are missing from physical data "
+            f"{source}: {missing[:20]}."
+        )
+    return groups
 
 
 def _base_case_id(
@@ -307,26 +321,34 @@ def build_scenario_lineages(
             optional=_GEN_BASE_OPTIONAL_COLUMNS,
         )
 
+    bus_groups = _scenario_groups(
+        buses,
+        requested,
+        source=bus_path,
+    )
+    branch_groups = _scenario_groups(
+        branches,
+        requested,
+        source=branch_path,
+    )
+    generator_groups = (
+        None
+        if generators is None
+        else _scenario_groups(
+            generators,
+            requested,
+            source=gen_path,
+        )
+    )
+
     lineages: dict[int, PhysicalLineage] = {}
     for scenario_id in requested:
-        bus_rows = _scenario_subset(
-            buses,
-            scenario_id,
-            source=bus_path,
-        )
-        branch_rows = _scenario_subset(
-            branches,
-            scenario_id,
-            source=branch_path,
-        )
+        bus_rows = bus_groups[scenario_id]
+        branch_rows = branch_groups[scenario_id]
         gen_rows = (
             None
-            if generators is None
-            else _scenario_subset(
-                generators,
-                scenario_id,
-                source=gen_path,
-            )
+            if generator_groups is None
+            else generator_groups[scenario_id]
         )
         lineages[scenario_id] = PhysicalLineage.build(
             base_case_id=_base_case_id(

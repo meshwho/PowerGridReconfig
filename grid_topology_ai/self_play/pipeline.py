@@ -14,6 +14,7 @@ from grid_topology_ai.self_play.checkpoint_state import initialize_best_state
 from grid_topology_ai.self_play.completion import write_iteration_completion_marker
 from grid_topology_ai.self_play.final_test import (
     FinalTestEvaluation,
+    load_final_test_evaluation,
     run_final_test_evaluation,
 )
 from grid_topology_ai.self_play.iteration import (
@@ -112,11 +113,6 @@ def run_self_play_pipeline(
     start_iteration = run_state.start_iteration
     completed_iterations = run_state.completed_iterations
 
-    save_yaml(
-        payload=dict(request.raw_config),
-        path=paths.resolved_config,
-    )
-
     if request.resume and completed_iterations:
         validate_resume_artifacts(paths)
 
@@ -133,6 +129,26 @@ def run_self_play_pipeline(
         expected_physics_config=config.physics,
         source=str(paths.best_metrics),
     )
+
+    sealed_final_test = load_final_test_evaluation(
+        paths=paths,
+        config=config.evaluation,
+        physics_config=config.physics,
+    )
+    if (
+        sealed_final_test is not None
+        and start_iteration <= config.n_iterations
+    ):
+        raise RuntimeError(
+            "This self-play run is sealed by final-test evaluation and cannot "
+            "execute additional training iterations. Start a new run directory "
+            "for further development."
+        )
+    if sealed_final_test is None:
+        save_yaml(
+            payload=dict(request.raw_config),
+            path=paths.resolved_config,
+        )
 
     pool_metadata = initialize_pool_metadata(
         transitions_csv=paths.pool_transitions_csv,
@@ -178,7 +194,7 @@ def run_self_play_pipeline(
     executed_iterations: list[int] = []
 
     if start_iteration > config.n_iterations:
-        final_test = _run_reporting_only_final_test(
+        final_test = sealed_final_test or _run_reporting_only_final_test(
             config=config,
             paths=paths,
             best_checkpoint=best_checkpoint,
