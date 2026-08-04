@@ -142,6 +142,12 @@ class GraphSelfPlayDataset(Dataset):
             self.action_layout
         )
 
+        self.action_layout_count = int(
+            self.examples[
+                "action_layout_fingerprint"
+            ].nunique(dropna=False)
+        )
+
         first_data = self._load_npz_by_index(0)
 
         self.num_bus_features = int(
@@ -150,18 +156,31 @@ class GraphSelfPlayDataset(Dataset):
         self.num_branch_features = int(
             first_data["branch_features"].shape[1]
         )
-        self.num_buses = int(first_data["bus_features"].shape[0])
-        self.num_branches = int(
+        self.reference_num_buses = int(
+            first_data["bus_features"].shape[0]
+        )
+        self.reference_num_branches = int(
             first_data["branch_features"].shape[0]
         )
-        self.num_actions = int(first_data["action_mask"].shape[0])
+        self.reference_num_actions = int(
+            first_data["action_mask"].shape[0]
+        )
 
-        if self.num_actions != len(self.action_layout):
+        # Temporary compatibility aliases for legacy Graph V1 and existing
+        # metadata consumers. Graph V2 must not use these as constraints.
+        self.num_buses = self.reference_num_buses
+        self.num_branches = self.reference_num_branches
+        self.num_actions = self.reference_num_actions
+
+        if (
+                self.reference_num_actions
+                != len(self.action_layout)
+        ):
             raise ValueError(
-                "Action mask size does not match the "
-                "versioned action layout. "
+                "The first state action mask does not "
+                "match its action layout. "
                 f"Expected {len(self.action_layout)}, "
-                f"got {self.num_actions}."
+                f"got {self.reference_num_actions}."
             )
 
         if normalization_stats is not None:
@@ -356,117 +375,164 @@ class GraphSelfPlayDataset(Dataset):
         return normalized.astype(np.float32)
 
     def _validate_graph_shapes(
-        self,
-        bus_features: np.ndarray,
-        branch_features: np.ndarray,
-        edge_index: np.ndarray,
-        branch_status: np.ndarray,
-        edge_active_mask: np.ndarray,
-        action_mask: np.ndarray,
-        state_path: Path,
+            self,
+            bus_features: np.ndarray,
+            branch_features: np.ndarray,
+            edge_index: np.ndarray,
+            branch_status: np.ndarray,
+            edge_active_mask: np.ndarray,
+            action_mask: np.ndarray,
+            state_path: Path,
     ) -> None:
         """
-        Ensure every sample has the same fixed graph size.
+        Validate one graph independently of other dataset samples.
 
-        This is true for our current case118 dataset and allows the standard
-        PyTorch DataLoader to stack samples into batches automatically.
+        Graph cardinality may vary between samples. Feature widths and the
+        stop-plus-one-action-per-branch semantics remain fixed.
         """
 
-        if bus_features.ndim != 2:
+        if (
+                bus_features.ndim != 2
+                or bus_features.shape[0] <= 0
+        ):
             raise ValueError(
-                f"{state_path}: bus_features must be 2D, "
-                f"got {bus_features.shape}"
+                f"{state_path}: bus_features must be "
+                f"non-empty 2D, got "
+                f"{bus_features.shape}"
             )
 
-        if branch_features.ndim != 2:
+        if (
+                branch_features.ndim != 2
+                or branch_features.shape[0] <= 0
+        ):
             raise ValueError(
-                f"{state_path}: branch_features must be 2D, "
-                f"got {branch_features.shape}"
+                f"{state_path}: branch_features must be "
+                f"non-empty 2D, got "
+                f"{branch_features.shape}"
             )
 
-        if edge_index.shape != (2, branch_features.shape[0]):
+        num_buses = int(bus_features.shape[0])
+        num_branches = int(
+            branch_features.shape[0]
+        )
+
+        if edge_index.shape != (
+                2,
+                num_branches,
+        ):
             raise ValueError(
-                f"{state_path}: edge_index must have shape "
-                f"(2, num_branches), got {edge_index.shape}"
+                f"{state_path}: edge_index must have "
+                f"shape (2, num_branches), got "
+                f"{edge_index.shape}"
             )
 
-        num_branches = int(branch_features.shape[0])
-
-        if branch_status.shape != (num_branches,):
+        if branch_status.shape != (
+                num_branches,
+        ):
             raise ValueError(
-                f"{state_path}: branch_status must have shape "
-                f"({num_branches},), got {branch_status.shape}"
+                f"{state_path}: branch_status must "
+                f"have shape ({num_branches},), got "
+                f"{branch_status.shape}"
             )
 
         if not np.isfinite(branch_status).all():
             raise ValueError(
-                f"{state_path}: branch_status must contain only "
-                "finite values"
+                f"{state_path}: branch_status must "
+                "contain only finite values"
             )
 
-        if not np.isin(branch_status, (0.0, 1.0)).all():
+        if not np.isin(
+                branch_status,
+                (0.0, 1.0),
+        ).all():
             raise ValueError(
-                f"{state_path}: branch_status must contain only 0 or 1"
+                f"{state_path}: branch_status must "
+                "contain only 0 or 1"
             )
 
-        if edge_active_mask.shape != (num_branches,):
-            raise ValueError(
-                f"{state_path}: edge_active_mask must have shape "
-                f"({num_branches},), got {edge_active_mask.shape}"
-            )
-
-        expected_edge_active_mask = branch_status > 0.5
-
-        if not np.array_equal(
-            edge_active_mask,
-            expected_edge_active_mask,
+        if edge_active_mask.shape != (
+                num_branches,
         ):
             raise ValueError(
-                f"{state_path}: edge_active_mask must be derived from "
-                "branch_status"
+                f"{state_path}: edge_active_mask must "
+                f"have shape ({num_branches},), got "
+                f"{edge_active_mask.shape}"
             )
 
-        if action_mask.ndim != 1:
+        expected_edge_active_mask = (
+                branch_status > 0.5
+        )
+
+        if not np.array_equal(
+                edge_active_mask,
+                expected_edge_active_mask,
+        ):
             raise ValueError(
-                f"{state_path}: action_mask must be 1D, "
-                f"got {action_mask.shape}"
+                f"{state_path}: edge_active_mask must "
+                "be derived from branch_status"
             )
 
-        if bus_features.shape[1] != self.num_bus_features:
+        if action_mask.shape != (
+                num_branches + 1,
+        ):
             raise ValueError(
-                f"{state_path}: bus feature dim mismatch. "
-                f"Expected {self.num_bus_features}, "
-                f"got {bus_features.shape[1]}"
+                f"{state_path}: action_mask must "
+                "contain one stop action plus one "
+                "action per branch. Expected "
+                f"{num_branches + 1}, got "
+                f"{action_mask.shape}"
             )
 
-        if branch_features.shape[1] != self.num_branch_features:
+        if not bool(action_mask.any()):
             raise ValueError(
-                f"{state_path}: branch feature dim mismatch. "
-                f"Expected {self.num_branch_features}, "
-                f"got {branch_features.shape[1]}"
+                f"{state_path}: action_mask must "
+                "contain at least one legal action"
             )
 
-        if bus_features.shape[0] != self.num_buses:
+        if (
+                bus_features.shape[1]
+                != self.num_bus_features
+        ):
             raise ValueError(
-                f"{state_path}: num_buses mismatch. "
-                f"Expected {self.num_buses}, "
-                f"got {bus_features.shape[0]}"
+                f"{state_path}: bus feature dim "
+                f"mismatch. Expected "
+                f"{self.num_bus_features}, got "
+                f"{bus_features.shape[1]}"
             )
 
-        if branch_features.shape[0] != self.num_branches:
+        if (
+                branch_features.shape[1]
+                != self.num_branch_features
+        ):
             raise ValueError(
-                f"{state_path}: num_branches mismatch. "
-                f"Expected {self.num_branches}, "
-                f"got {branch_features.shape[0]}"
+                f"{state_path}: branch feature dim "
+                f"mismatch. Expected "
+                f"{self.num_branch_features}, got "
+                f"{branch_features.shape[1]}"
             )
 
-        expected_num_actions = len(self.action_layout)
-
-        if action_mask.shape[0] != expected_num_actions:
+        if not np.isfinite(edge_index).all():
             raise ValueError(
-                f"{state_path}: action_mask mismatch. "
-                f"Expected {expected_num_actions}, "
-                f"got {action_mask.shape[0]}"
+                f"{state_path}: edge_index must "
+                "contain only finite values"
+            )
+
+        if not np.equal(
+                edge_index,
+                np.rint(edge_index),
+        ).all():
+            raise ValueError(
+                f"{state_path}: edge_index must be "
+                "integer-valued"
+            )
+
+        if (
+                int(edge_index.min()) < 0
+                or int(edge_index.max()) >= num_buses
+        ):
+            raise ValueError(
+                f"{state_path}: edge_index values "
+                "are out of bounds"
             )
 
     def normalization_state_dict(self) -> dict[str, np.ndarray]:

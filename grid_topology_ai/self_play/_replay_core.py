@@ -36,13 +36,16 @@ from grid_topology_ai.self_play.example_validation import (
     validate_example_outcome_contracts,
 )
 from grid_topology_ai.topology_actions import (
+    STOP_PLUS_BRANCH_STATUS_POLICY_LAYOUT,
     ActionSlot,
     ActionSpaceConfig,
+    action_layout_fingerprint,
+    require_branch_status_policy_layout,
 )
 
 _CHUNK_HEADER_RECORD_TYPE = "replay_chunk_header"
-_REPLAY_MANIFEST_FORMAT_VERSION = 2
-_REPLAY_CHUNK_FORMAT_VERSION = 1
+_REPLAY_MANIFEST_FORMAT_VERSION = 3
+_REPLAY_CHUNK_FORMAT_VERSION = 2
 
 
 def _json_safe(value: Any) -> Any:
@@ -337,6 +340,71 @@ def _episode_count(rows: list[dict[str, Any]]) -> int:
 def _scenario_count(rows: list[dict[str, Any]]) -> int:
     return len({str(row.get("scenario_id")) for row in rows})
 
+def _layout_fingerprints(
+    rows: list[dict[str, Any]],
+    *,
+    source: str,
+) -> tuple[str, ...]:
+    fingerprints = {
+        _require_sha256(
+            row.get(
+                "action_layout_fingerprint"
+            ),
+            name=(
+                "action layout fingerprint"
+            ),
+            source=source,
+        )
+        for row in rows
+    }
+
+    if not fingerprints:
+        raise ValueError(
+            f"No action layouts found for {source}."
+        )
+
+    return tuple(sorted(fingerprints))
+
+
+def _require_layout_fingerprints(
+    value: object,
+    *,
+    source: str,
+) -> tuple[str, ...]:
+    if not isinstance(value, list):
+        raise ValueError(
+            "action_layout_fingerprints must be "
+            f"a list for {source}."
+        )
+
+    fingerprints = tuple(
+        _require_sha256(
+            item,
+            name=(
+                "action layout fingerprint"
+            ),
+            source=source,
+        )
+        for item in value
+    )
+
+    if not fingerprints:
+        raise ValueError(
+            "action_layout_fingerprints must not "
+            f"be empty for {source}."
+        )
+
+    normalized = tuple(
+        sorted(set(fingerprints))
+    )
+
+    if fingerprints != normalized:
+        raise ValueError(
+            "action_layout_fingerprints must be "
+            f"sorted and unique for {source}."
+        )
+
+    return fingerprints
 
 def _require_sha256(value: object, *, name: str, source: str) -> str:
     text = str(value or "").strip().lower()
@@ -426,9 +494,13 @@ class RollingReplayBuffer:
         return len(self.buffer)
 
     def _require_manifest_contracts(
-        self,
-        manifest: dict[str, Any],
-    ) -> tuple[ActionSpaceConfig, tuple[ActionSlot, ...]]:
+            self,
+            manifest: dict[str, Any],
+    ) -> tuple[
+        ActionSpaceConfig,
+        tuple[ActionSlot, ...],
+        tuple[str, ...],
+    ]:
         require_exact_contract_version(
             manifest.get("schema_version"),
             expected=REPLAY_BUFFER_SCHEMA_VERSION,
@@ -486,9 +558,57 @@ class RollingReplayBuffer:
             expected_physics_config=self.physics_config,
         )
 
-        return require_topology_action_provenance(
-            manifest,
-            source=str(self.manifest_path),
+        action_space_config, representative_layout = (
+            require_topology_action_provenance(
+                manifest,
+                source=str(self.manifest_path),
+            )
+        )
+
+        policy_layout = (
+            require_branch_status_policy_layout(
+                representative_layout
+            )
+        )
+
+        if (
+                manifest.get("policy_layout")
+                != policy_layout
+        ):
+            raise ValueError(
+                "Replay manifest policy layout "
+                f"mismatch: {self.manifest_path}."
+            )
+
+        layout_fingerprints = (
+            _require_layout_fingerprints(
+                manifest.get(
+                    "action_layout_fingerprints"
+                ),
+                source=str(self.manifest_path),
+            )
+        )
+
+        representative_fingerprint = (
+            action_layout_fingerprint(
+                representative_layout
+            )
+        )
+
+        if (
+                representative_fingerprint
+                not in layout_fingerprints
+        ):
+            raise ValueError(
+                "Replay manifest representative layout "
+                "is not included in "
+                "action_layout_fingerprints."
+            )
+
+        return (
+            action_space_config,
+            representative_layout,
+            layout_fingerprints,
         )
 
     def _require_producer_checkpoint(
@@ -525,15 +645,23 @@ class RollingReplayBuffer:
                 f"Replay producer checkpoint model_type is missing: {source}"
             )
 
-        matching_fields = (
+        matching_fields = [
             "physical_objective_schema_version",
             "outcome_objective_version",
             "outcome_value_target_contract_version",
             "state_feature_schema_fingerprint",
             "physics_config_fingerprint",
             "topology_action_config_fingerprint",
-            "action_layout_fingerprint",
-        )
+            "policy_layout",
+        ]
+
+        if model_type not in {
+            "graph_v2",
+            "graph_policy_value_net_v2",
+        }:
+            matching_fields.append(
+                "action_layout_fingerprint"
+            )
 
         mismatches = [
             field
@@ -555,7 +683,7 @@ class RollingReplayBuffer:
         *,
         source: str,
         expected_action_space_config: ActionSpaceConfig,
-        expected_action_layout: tuple[ActionSlot, ...],
+        expected_layout_fingerprints: tuple[str, ...],
     ) -> None:
         require_exact_contract_version(
             header.get("schema_version"),
@@ -602,12 +730,59 @@ class RollingReplayBuffer:
             source=source,
             expected_physics_config=self.physics_config,
         )
-        require_topology_action_provenance(
-            header,
-            source=source,
-            expected_action_space_config=expected_action_space_config,
-            expected_action_layout=expected_action_layout,
+        _, representative_layout = (
+            require_topology_action_provenance(
+                header,
+                source=source,
+                expected_action_space_config=(
+                    expected_action_space_config
+                ),
+            )
         )
+
+        policy_layout = (
+            require_branch_status_policy_layout(
+                representative_layout
+            )
+        )
+
+        if header.get("policy_layout") != policy_layout:
+            raise ValueError(
+                f"Replay chunk policy layout mismatch: "
+                f"{source}."
+            )
+
+        header_layout_fingerprints = (
+            _require_layout_fingerprints(
+                header.get(
+                    "action_layout_fingerprints"
+                ),
+                source=source,
+            )
+        )
+
+        if not set(
+                header_layout_fingerprints
+        ).issubset(
+            expected_layout_fingerprints
+        ):
+            raise ValueError(
+                "Replay chunk contains action layouts "
+                "not declared by its manifest: "
+                f"{source}."
+            )
+
+        if (
+                action_layout_fingerprint(
+                    representative_layout
+                )
+                not in header_layout_fingerprints
+        ):
+            raise ValueError(
+                "Replay chunk representative layout is "
+                "not included in its layout list: "
+                f"{source}."
+            )
         self._require_producer_checkpoint(
             header.get("producer_checkpoint"),
             header=header,
@@ -621,7 +796,7 @@ class RollingReplayBuffer:
         *,
         source: str,
         expected_action_space_config: ActionSpaceConfig,
-        expected_action_layout: tuple[ActionSlot, ...],
+        expected_layout_fingerprints: tuple[str, ...],
     ) -> None:
         iteration = _require_positive_integer(
             header.get("iteration"),
@@ -674,9 +849,49 @@ class RollingReplayBuffer:
             _require_replay_row_contracts(
                 row,
                 source=f"{source} row {row_index}",
-                expected_physics_config=self.physics_config,
-                expected_action_space_config=expected_action_space_config,
-                expected_action_layout=expected_action_layout,
+                expected_physics_config=(
+                    self.physics_config
+                ),
+                expected_action_space_config=(
+                    expected_action_space_config
+                ),
+            )
+
+        observed_layout_fingerprints = (
+            _layout_fingerprints(
+                rows,
+                source=source,
+            )
+        )
+
+        header_layout_fingerprints = (
+            _require_layout_fingerprints(
+                header.get(
+                    "action_layout_fingerprints"
+                ),
+                source=source,
+            )
+        )
+
+        if (
+                observed_layout_fingerprints
+                != header_layout_fingerprints
+        ):
+            raise ValueError(
+                "Replay chunk action layouts do not "
+                "match its header for "
+                f"{source}."
+            )
+
+        if not set(
+                observed_layout_fingerprints
+        ).issubset(
+            expected_layout_fingerprints
+        ):
+            raise ValueError(
+                "Replay chunk action layouts are not "
+                "declared by the manifest for "
+                f"{source}."
             )
 
         self._require_episode_sizes(rows, source=source)
@@ -727,6 +942,14 @@ class RollingReplayBuffer:
             "topology_action_config_fingerprint": header.get(
                 "topology_action_config_fingerprint"
             ),
+            "policy_layout": header.get(
+                "policy_layout"
+            ),
+            "action_layout_fingerprints": (
+                header.get(
+                    "action_layout_fingerprints"
+                )
+            ),
             "action_layout_fingerprint": header.get(
                 "action_layout_fingerprint"
             ),
@@ -755,8 +978,11 @@ class RollingReplayBuffer:
 
         (
             manifest_action_space_config,
-            manifest_action_layout,
-        ) = self._require_manifest_contracts(manifest)
+            _manifest_representative_layout,
+            manifest_layout_fingerprints,
+        ) = self._require_manifest_contracts(
+            manifest
+        )
 
         files = manifest.get("files", [])
 
@@ -805,7 +1031,9 @@ class RollingReplayBuffer:
                 expected_action_space_config=(
                     manifest_action_space_config
                 ),
-                expected_action_layout=manifest_action_layout,
+                expected_layout_fingerprints=(
+                    manifest_layout_fingerprints
+                ),
             )
             self._validate_chunk_contents(
                 header,
@@ -893,6 +1121,7 @@ class RollingReplayBuffer:
         list[dict[str, Any]],
         ActionSpaceConfig,
         tuple[ActionSlot, ...],
+        tuple[str, ...],
     ]:
         iteration = _require_positive_integer(
             iteration,
@@ -904,9 +1133,10 @@ class RollingReplayBuffer:
             source=f"replay iteration {iteration}",
         )
 
-        expected_action_space_config, expected_action_layout = (
-            self._buffer_action_contract()
-        )
+        (
+            expected_action_space_config,
+            representative_action_layout,
+        ) = self._buffer_action_contract()
         normalized: list[dict[str, Any]] = []
 
         for row in examples:
@@ -919,13 +1149,18 @@ class RollingReplayBuffer:
                     expected_action_space_config=(
                         expected_action_space_config
                     ),
-                    expected_action_layout=expected_action_layout,
                 )
             )
 
             if expected_action_space_config is None:
-                expected_action_space_config = row_action_space_config
-                expected_action_layout = row_action_layout
+                expected_action_space_config = (
+                    row_action_space_config
+                )
+
+            if representative_action_layout is None:
+                representative_action_layout = (
+                    row_action_layout
+                )
 
             item["replay_iteration"] = iteration
             normalized.append(item)
@@ -942,16 +1177,26 @@ class RollingReplayBuffer:
 
         if (
             expected_action_space_config is None
-            or expected_action_layout is None
+            or representative_action_layout is None
         ):
             raise RuntimeError(
                 "Replay examples have no topology action contract."
             )
 
+        layout_fingerprints = (
+            _layout_fingerprints(
+                normalized,
+                source=(
+                    f"replay iteration {iteration}"
+                ),
+            )
+        )
+
         return (
             normalized,
             expected_action_space_config,
-            expected_action_layout,
+            representative_action_layout,
+            layout_fingerprints,
         )
 
     def add_examples(
@@ -962,7 +1207,7 @@ class RollingReplayBuffer:
     ) -> None:
         """Add validated examples and evict only complete episodes."""
 
-        normalized, _, _ = self._prepare_examples(
+        normalized, _, _, _ = self._prepare_examples(
             examples,
             iteration=iteration,
         )
@@ -997,7 +1242,8 @@ class RollingReplayBuffer:
         checkpoint_path: str | Path,
         *,
         expected_action_space_config: ActionSpaceConfig,
-        expected_action_layout: tuple[ActionSlot, ...],
+        representative_action_layout: tuple[ActionSlot, ...],
+        layout_fingerprints: tuple[str, ...],
     ) -> dict[str, Any]:
         from grid_topology_ai.training.checkpoints import (
             load_checkpoint_payload,
@@ -1009,12 +1255,50 @@ class RollingReplayBuffer:
             map_location="cpu",
             expected_physics_config=self.physics_config,
         )
-        require_topology_action_provenance(
-            checkpoint,
-            source=str(checkpoint_path),
-            expected_action_space_config=expected_action_space_config,
-            expected_action_layout=expected_action_layout,
-        )
+        model_type = str(
+            checkpoint.get(
+                "model_type",
+                "",
+            )
+        ).strip()
+
+        is_graph_v2 = model_type in {
+            "graph_v2",
+            "graph_policy_value_net_v2",
+        }
+        if is_graph_v2:
+            require_topology_action_provenance(
+                checkpoint,
+                source=str(checkpoint_path),
+                expected_action_space_config=(
+                    expected_action_space_config
+                ),
+            )
+        else:
+            require_topology_action_provenance(
+                checkpoint,
+                source=str(checkpoint_path),
+                expected_action_space_config=(
+                    expected_action_space_config
+                ),
+                expected_action_layout=(
+                    representative_action_layout
+                ),
+            )
+
+            checkpoint_layout_fingerprint = str(
+                checkpoint[
+                    "action_layout_fingerprint"
+                ]
+            )
+
+            if layout_fingerprints != (
+                    checkpoint_layout_fingerprint,
+            ):
+                raise ValueError(
+                    "Graph V1 cannot produce replay "
+                    "containing multiple action layouts."
+                )
 
         return {
             "path": str(checkpoint_path),
@@ -1023,6 +1307,9 @@ class RollingReplayBuffer:
                 checkpoint["checkpoint_contract_version"]
             ),
             "model_type": str(checkpoint["model_type"]),
+            "policy_layout": str(
+                checkpoint["policy_layout"]
+            ),
             "physical_objective_schema_version": int(
                 checkpoint["physical_objective_schema_version"]
             ),
@@ -1053,6 +1340,7 @@ class RollingReplayBuffer:
         iteration: int,
         action_space_config: ActionSpaceConfig,
         action_layout: tuple[ActionSlot, ...],
+        layout_fingerprints: tuple[str, ...],
         producer_checkpoint: dict[str, Any],
     ) -> dict[str, Any]:
         return {
@@ -1072,6 +1360,14 @@ class RollingReplayBuffer:
                 action_space_config,
                 action_layout,
             ),
+            "policy_layout": (
+                require_branch_status_policy_layout(
+                    action_layout
+                )
+            ),
+            "action_layout_fingerprints": list(
+                layout_fingerprints
+            ),
             "producer_checkpoint": producer_checkpoint,
         }
 
@@ -1083,7 +1379,12 @@ class RollingReplayBuffer:
     ) -> Path:
         """Save one self-contained replay chunk atomically."""
 
-        rows, action_space_config, action_layout = (
+        (
+            rows,
+            action_space_config,
+            action_layout,
+            layout_fingerprints,
+        ) = (
             self._prepare_examples(
                 examples,
                 iteration=iteration,
@@ -1098,6 +1399,12 @@ class RollingReplayBuffer:
             self.producer_checkpoint,
             expected_action_space_config=action_space_config,
             expected_action_layout=action_layout,
+            representative_action_layout=(
+                action_layout
+            ),
+            layout_fingerprints=(
+                layout_fingerprints
+            ),
         )
         header = self._chunk_header(
             rows=rows,
@@ -1105,6 +1412,9 @@ class RollingReplayBuffer:
             action_space_config=action_space_config,
             action_layout=action_layout,
             producer_checkpoint=producer,
+            layout_fingerprints=(
+                layout_fingerprints
+            ),
         )
         output_path = (
             self.save_dir
@@ -1122,21 +1432,25 @@ class RollingReplayBuffer:
         file_path: Path,
         *,
         expected_action_space_config: ActionSpaceConfig,
-        expected_action_layout: tuple[ActionSlot, ...],
+        expected_layout_fingerprints: tuple[str, ...],
     ) -> dict[str, Any]:
         header, rows = _read_jsonl_gz(file_path)
         self._require_chunk_contracts(
             header,
             source=str(file_path),
             expected_action_space_config=expected_action_space_config,
-            expected_action_layout=expected_action_layout,
+            expected_layout_fingerprints=(
+                expected_layout_fingerprints
+            ),
         )
         self._validate_chunk_contents(
             header,
             rows,
             source=str(file_path),
             expected_action_space_config=expected_action_space_config,
-            expected_action_layout=expected_action_layout,
+            expected_layout_fingerprints=(
+                expected_layout_fingerprints
+            ),
         )
         producer = header["producer_checkpoint"]
 
@@ -1160,6 +1474,12 @@ class RollingReplayBuffer:
                 "action_layout_fingerprint"
             ],
             "producer_checkpoint_sha256": producer["sha256"],
+            "policy_layout": header[
+                "policy_layout"
+            ],
+            "action_layout_fingerprints": header[
+                "action_layout_fingerprints"
+            ],
         }
 
     def save_manifest(self) -> None:
@@ -1176,6 +1496,14 @@ class RollingReplayBuffer:
                 source="replay buffer",
             )
         )
+
+        layout_fingerprints = (
+            _layout_fingerprints(
+                self.buffer,
+                source="replay buffer",
+            )
+        )
+
         chunk_paths = sorted(
             self.save_dir.glob("buffer_iter_*.jsonl.gz")
         )
@@ -1189,7 +1517,9 @@ class RollingReplayBuffer:
             self._chunk_manifest_item(
                 file_path,
                 expected_action_space_config=topology_action_config,
-                expected_action_layout=action_layout,
+                expected_layout_fingerprints=(
+                    layout_fingerprints
+                ),
             )
             for file_path in chunk_paths
         ]
@@ -1237,6 +1567,14 @@ class RollingReplayBuffer:
             **topology_action_provenance(
                 topology_action_config,
                 action_layout,
+            ),
+            "policy_layout": (
+                require_branch_status_policy_layout(
+                    action_layout
+                )
+            ),
+            "action_layout_fingerprints": list(
+                layout_fingerprints
             ),
             "config": asdict(self.config),
             "latest_iteration": int(newest_iteration),

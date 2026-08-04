@@ -160,12 +160,38 @@ class NeuralPolicyValueEvaluator:
 
         checkpoint = self.checkpoint
 
-        self.num_bus_features = int(checkpoint["num_bus_features"])
-        self.num_branch_features = int(checkpoint["num_branch_features"])
-        self.num_buses = int(checkpoint["num_buses"])
-        self.num_branches = int(checkpoint["num_branches"])
-        self.num_actions = int(checkpoint["num_actions"])
-        self.hidden_dim = int(checkpoint["hidden_dim"])
+        self.num_bus_features = int(
+            checkpoint["num_bus_features"]
+        )
+        self.num_branch_features = int(
+            checkpoint["num_branch_features"]
+        )
+
+        # Cardinality fields remain reference metadata.
+        # Graph V2 must not use them as runtime constraints.
+        self.reference_num_buses = int(
+            checkpoint["num_buses"]
+        )
+        self.reference_num_branches = int(
+            checkpoint["num_branches"]
+        )
+        self.reference_num_actions = int(
+            checkpoint["num_actions"]
+        )
+
+        self.hidden_dim = int(
+            checkpoint["hidden_dim"]
+        )
+        if self.model_type == "graph_policy_value_net":
+            self.num_buses = (
+                self.reference_num_buses
+            )
+            self.num_branches = (
+                self.reference_num_branches
+            )
+            self.num_actions = (
+                self.reference_num_actions
+            )
         self.num_layers = int(checkpoint["num_layers"])
         self.dropout = float(checkpoint.get("dropout", 0.0))
         self.value_scale = float(checkpoint.get("value_scale", 10000.0))
@@ -190,19 +216,34 @@ class NeuralPolicyValueEvaluator:
         self.bus_feature_std[self.bus_feature_std < 1e-6] = 1.0
         self.branch_feature_std[self.branch_feature_std < 1e-6] = 1.0
 
-        if self.model_type == "graph_policy_value_net_v2":
-            model_cls = GraphPolicyValueNetV2
+        if (
+                self.model_type
+                == "graph_policy_value_net_v2"
+        ):
+            self.model = GraphPolicyValueNetV2(
+                num_bus_features=(
+                    self.num_bus_features
+                ),
+                num_branch_features=(
+                    self.num_branch_features
+                ),
+                hidden_dim=self.hidden_dim,
+                num_layers=self.num_layers,
+                dropout=self.dropout,
+            )
         else:
-            model_cls = GraphPolicyValueNet
-
-        self.model = model_cls(
-            num_bus_features=self.num_bus_features,
-            num_branch_features=self.num_branch_features,
-            num_actions=self.num_actions,
-            hidden_dim=self.hidden_dim,
-            num_layers=self.num_layers,
-            dropout=self.dropout,
-        )
+            self.model = GraphPolicyValueNet(
+                num_bus_features=(
+                    self.num_bus_features
+                ),
+                num_branch_features=(
+                    self.num_branch_features
+                ),
+                num_actions=self.num_actions,
+                hidden_dim=self.hidden_dim,
+                num_layers=self.num_layers,
+                dropout=self.dropout,
+            )
 
         self.model.load_state_dict(checkpoint["model_state_dict"])
 
@@ -236,10 +277,22 @@ class NeuralPolicyValueEvaluator:
             dtype=np.bool_,
         )
 
+        current_layout = (
+            build_branch_action_slots(
+                state.branch_ids
+            )
+        )
+
+        current_layout_fingerprint = (
+            action_layout_fingerprint(
+                current_layout
+            )
+        )
+
         return (
             self.model_type,
             self.physics_config.fingerprint(),
-            self.action_layout_fingerprint,
+            current_layout_fingerprint,
             physical_state_fingerprint(state),
             mask.shape,
             mask.tobytes(order="C"),
@@ -275,7 +328,9 @@ class NeuralPolicyValueEvaluator:
         )
 
         if (
-            current_layout_fingerprint
+            self.model_type
+            != "graph_policy_value_net_v2"
+            and current_layout_fingerprint
             != self.action_layout_fingerprint
         ):
             raise ValueError(
@@ -298,12 +353,33 @@ class NeuralPolicyValueEvaluator:
         if self.enable_cache:
             self.cache_misses += 1
 
-        if action_mask.shape[0] != self.num_actions:
+        if action_mask.ndim != 1:
             raise ValueError(
-                f"Action mask size mismatch: expected {self.num_actions}, "
-                f"got {action_mask.shape[0]}"
+                "Action mask must be 1D, got "
+                f"{action_mask.shape}."
             )
 
+        if (
+                self.model_type
+                == "graph_policy_value_net_v2"
+        ):
+            expected_num_actions = (
+                    len(state.branch_ids) + 1
+            )
+        else:
+            expected_num_actions = (
+                self.num_actions
+            )
+
+        if (
+                action_mask.shape[0]
+                != expected_num_actions
+        ):
+            raise ValueError(
+                "Action mask size mismatch: "
+                f"expected {expected_num_actions}, "
+                f"got {action_mask.shape[0]}."
+            )
         if self.model_type in {
             "graph_policy_value_net",
             "graph_policy_value_net_v2",
@@ -386,44 +462,102 @@ class NeuralPolicyValueEvaluator:
         )
         edge_active_mask = branch_status > 0.5
 
-        if bus_features.shape != (self.num_buses, self.num_bus_features):
-            raise ValueError(
-                f"bus_features shape mismatch: expected "
-                f"({self.num_buses}, {self.num_bus_features}), "
-                f"got {bus_features.shape}"
-            )
-
-        if branch_features.shape != (
-            self.num_branches,
-            self.num_branch_features,
+        if (
+                bus_features.ndim != 2
+                or bus_features.shape[0] <= 0
         ):
             raise ValueError(
-                f"branch_features shape mismatch: expected "
-                f"({self.num_branches}, {self.num_branch_features}), "
-                f"got {branch_features.shape}"
+                "bus_features must be a non-empty "
+                f"2D array, got {bus_features.shape}."
             )
 
-        if edge_index.shape != (2, self.num_branches):
+        if (
+                branch_features.ndim != 2
+                or branch_features.shape[0] <= 0
+        ):
             raise ValueError(
-                f"edge_index shape mismatch: expected "
-                f"(2, {self.num_branches}), got {edge_index.shape}"
+                "branch_features must be a non-empty "
+                f"2D array, got "
+                f"{branch_features.shape}."
             )
 
-        if branch_status.shape != (self.num_branches,):
+        num_buses = int(
+            bus_features.shape[0]
+        )
+        num_branches = int(
+            branch_features.shape[0]
+        )
+
+        if (
+                bus_features.shape[1]
+                != self.num_bus_features
+        ):
             raise ValueError(
-                "branch_status shape mismatch: expected "
-                f"({self.num_branches},), got {branch_status.shape}"
+                "bus feature width mismatch: "
+                f"expected {self.num_bus_features}, "
+                f"got {bus_features.shape[1]}."
             )
 
-        if not np.isfinite(branch_status).all():
+        if (
+                branch_features.shape[1]
+                != self.num_branch_features
+        ):
             raise ValueError(
-                "branch_status must contain only finite values"
+                "branch feature width mismatch: "
+                f"expected "
+                f"{self.num_branch_features}, "
+                f"got {branch_features.shape[1]}."
             )
 
-        if not np.isin(branch_status, (0.0, 1.0)).all():
+        if edge_index.shape != (
+                2,
+                num_branches,
+        ):
             raise ValueError(
-                "branch_status must contain only 0 or 1"
+                "edge_index shape mismatch: "
+                f"expected {(2, num_branches)}, "
+                f"got {edge_index.shape}."
             )
+
+        if branch_status.shape != (
+                num_branches,
+        ):
+            raise ValueError(
+                "branch_status shape mismatch: "
+                f"expected {(num_branches,)}, "
+                f"got {branch_status.shape}."
+            )
+
+        if action_mask.shape != (
+                num_branches + 1,
+        ):
+            raise ValueError(
+                "action_mask must contain stop plus "
+                "one action per branch. Expected "
+                f"{num_branches + 1}, got "
+                f"{action_mask.shape}."
+            )
+
+        if (
+                self.model_type
+                == "graph_policy_value_net"
+        ):
+            if num_buses != self.num_buses:
+                raise ValueError(
+                    "Graph V1 bus count mismatch: "
+                    f"expected {self.num_buses}, "
+                    f"got {num_buses}."
+                )
+
+            if (
+                    num_branches
+                    != self.num_branches
+            ):
+                raise ValueError(
+                    "Graph V1 branch count mismatch: "
+                    f"expected {self.num_branches}, "
+                    f"got {num_branches}."
+                )
 
         bus_features = (
             bus_features - self.bus_feature_mean
@@ -437,22 +571,32 @@ class NeuralPolicyValueEvaluator:
             bus_features.astype(np.float32),
             dtype=torch.float32,
             device=self.device,
-        ).unsqueeze(0)
+        )
 
         branch_tensor = torch.tensor(
-            branch_features.astype(np.float32),
+            branch_features.astype(
+                np.float32
+            ),
             dtype=torch.float32,
             device=self.device,
-        ).unsqueeze(0)
+        )
 
         edge_index_tensor = torch.tensor(
             edge_index,
             dtype=torch.long,
             device=self.device,
-        ).unsqueeze(0)
+        )
 
-        edge_active_mask_tensor = torch.tensor(
-            edge_active_mask,
+        edge_active_mask_tensor = (
+            torch.tensor(
+                edge_active_mask,
+                dtype=torch.bool,
+                device=self.device,
+            )
+        )
+
+        mask_tensor = torch.tensor(
+            action_mask.astype(bool),
             dtype=torch.bool,
             device=self.device,
         ).unsqueeze(0)
@@ -464,19 +608,30 @@ class NeuralPolicyValueEvaluator:
         ).unsqueeze(0)
 
         with torch.no_grad():
-            if self.model_type == "graph_policy_value_net_v2":
+            if (
+                    self.model_type
+                    == "graph_policy_value_net_v2"
+            ):
                 logits, value = self.model(
                     bus_features=bus_tensor,
                     branch_features=branch_tensor,
                     edge_index=edge_index_tensor,
-                    edge_active_mask=edge_active_mask_tensor,
+                    edge_active_mask=(
+                        edge_active_mask_tensor
+                    ),
                     action_mask=mask_tensor,
                 )
             else:
                 logits, value = self.model(
-                    bus_features=bus_tensor,
-                    branch_features=branch_tensor,
-                    edge_index=edge_index_tensor,
+                    bus_features=(
+                        bus_tensor.unsqueeze(0)
+                    ),
+                    branch_features=(
+                        branch_tensor.unsqueeze(0)
+                    ),
+                    edge_index=(
+                        edge_index_tensor.unsqueeze(0)
+                    ),
                     action_mask=mask_tensor,
                 )
 

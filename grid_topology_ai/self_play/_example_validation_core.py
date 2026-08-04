@@ -35,6 +35,7 @@ from grid_topology_ai.topology_actions import (
     ActionSpaceConfig,
     action_layout_fingerprint,
     build_branch_action_slots,
+    require_branch_status_policy_layout,
 )
 from grid_topology_ai.value_targets import terminal_value_from_outcome
 
@@ -115,33 +116,57 @@ def validate_example_topology_action_contracts(
     ActionSpaceConfig,
     tuple[ActionSlot, ...],
 ]:
+    """
+    Validate shared action semantics without requiring one concrete topology.
+
+    Every row may have its own branch IDs and action count. All rows must still
+    use the same ActionSpaceConfig and the same stop-plus-branch policy layout.
+    """
+
     source = Path(source_path)
-    observed_config = None
-    observed_layout = None
+
+    observed_config: ActionSpaceConfig | None = None
+    representative_layout: tuple[ActionSlot, ...] | None = None
+    observed_policy_layout: str | None = None
 
     for index, row in examples.iterrows():
-        observed_config, observed_layout = (
+        row_config, row_layout = (
             require_topology_action_provenance(
                 row.to_dict(),
                 source=f"{source} row {index}",
-                expected_action_space_config=(
-                    observed_config
-                ),
-                expected_action_layout=(
-                    observed_layout
-                ),
+                expected_action_space_config=observed_config,
             )
         )
 
+        row_policy_layout = (
+            require_branch_status_policy_layout(
+                row_layout
+            )
+        )
+
+        if observed_config is None:
+            observed_config = row_config
+
+        if representative_layout is None:
+            representative_layout = row_layout
+
+        if observed_policy_layout is None:
+            observed_policy_layout = row_policy_layout
+        elif row_policy_layout != observed_policy_layout:
+            raise ValueError(
+                "Examples contain incompatible policy layouts. "
+                f"File: {source}"
+            )
+
     if (
         observed_config is None
-        or observed_layout is None
+        or representative_layout is None
     ):
         raise ValueError(
             f"Examples CSV is empty: {source}"
         )
 
-    return observed_config, observed_layout
+    return observed_config, representative_layout
 
 
 def validate_examples_dataframe(
@@ -167,7 +192,7 @@ def validate_examples_dataframe(
 
     (
         action_space_config,
-        action_layout,
+        _representative_action_layout,
     ) = validate_example_topology_action_contracts(
         examples,
         source_path=source,
@@ -193,7 +218,7 @@ def validate_examples_dataframe(
             f"File: {source}"
         )
 
-    expected: _GraphDimensions | None = None
+    expected_feature_dimensions: tuple[int, int] | None = None
     for index, row in examples.iterrows():
         scenario_id = _require_integer(
             row["scenario_id"],
@@ -224,18 +249,44 @@ def validate_examples_dataframe(
             raise ValueError(
                 f"State path is not a file: {state_path}. File: {source}"
             )
+
+        _, row_action_layout = (
+            require_topology_action_provenance(
+                row.to_dict(),
+                source=f"{source} row {index}",
+                expected_action_space_config=(
+                    action_space_config
+                ),
+            )
+        )
+
         dims, action_mask = _validate_npz_state(
             state_path,
             expected_physics_config=physics_config,
-            expected_action_space_config=action_space_config,
-            expected_action_layout=action_layout,
+            expected_action_space_config=(
+                action_space_config
+            ),
+            expected_action_layout=row_action_layout,
         )
-        if expected is None:
-            expected = dims
-        elif dims != expected:
+
+        feature_dimensions = (
+            dims.num_bus_features,
+            dims.num_branch_features,
+        )
+
+        if expected_feature_dimensions is None:
+            expected_feature_dimensions = (
+                feature_dimensions
+            )
+        elif (
+                feature_dimensions
+                != expected_feature_dimensions
+        ):
             raise ValueError(
-                f"Graph dimensions mismatch for {state_path}. Expected "
-                f"{expected._asdict()}, observed {dims._asdict()}."
+                "Graph feature dimensions mismatch for "
+                f"{state_path}. Expected "
+                f"{expected_feature_dimensions}, observed "
+                f"{feature_dimensions}."
             )
         _validate_policy_against_mask(
             policy,

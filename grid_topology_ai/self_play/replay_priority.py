@@ -20,6 +20,9 @@ from grid_topology_ai.training.checkpoints import (
     extract_normalization_stats,
     load_checkpoint_payload,
 )
+from grid_topology_ai.models.graph_batch import (
+    collate_graph_samples,
+)
 
 GraphModel = GraphPolicyValueNet | GraphPolicyValueNetV2
 
@@ -34,14 +37,64 @@ def _load_model(
     device: torch.device,
 ) -> GraphModel:
     model_type = str(checkpoint.get("model_type", "")).strip()
-    common_kwargs = {
-        "num_bus_features": int(checkpoint["num_bus_features"]),
-        "num_branch_features": int(checkpoint["num_branch_features"]),
-        "num_actions": int(checkpoint["num_actions"]),
-        "hidden_dim": int(checkpoint.get("hidden_dim", 128)),
-        "num_layers": int(checkpoint.get("num_layers", 3)),
-        "dropout": float(checkpoint.get("dropout", 0.0)),
+
+    is_graph_v2 = model_type in {
+        "graph_v2",
+        "graph_policy_value_net_v2",
     }
+
+    common_kwargs = {
+        "num_bus_features": int(
+            checkpoint["num_bus_features"]
+        ),
+        "num_branch_features": int(
+            checkpoint["num_branch_features"]
+        ),
+        "hidden_dim": int(
+            checkpoint.get(
+                "hidden_dim",
+                128,
+            )
+        ),
+        "num_layers": int(
+            checkpoint.get(
+                "num_layers",
+                3,
+            )
+        ),
+        "dropout": float(
+            checkpoint.get(
+                "dropout",
+                0.0,
+            )
+        ),
+    }
+
+    if model_type in {
+        "graph_v2",
+        "graph_policy_value_net_v2",
+    }:
+        model: GraphModel = (
+            GraphPolicyValueNetV2(
+                **common_kwargs
+            )
+        )
+    elif model_type in {
+        "graph_v1",
+        "graph_policy_value_net",
+    }:
+        model = GraphPolicyValueNet(
+            **common_kwargs,
+            num_actions=int(
+                checkpoint["num_actions"]
+            ),
+        )
+    else:
+        raise ValueError(
+            "Replay priority scoring requires "
+            "a graph policy-value checkpoint, "
+            f"got model_type={model_type!r}."
+        )
 
     if model_type in {"graph_v2", "graph_policy_value_net_v2"}:
         model: GraphModel = GraphPolicyValueNetV2(**common_kwargs)
@@ -69,8 +122,19 @@ def _forward(
         "edge_index": batch["edge_index"],
         "action_mask": batch["action_mask"],
     }
-    if isinstance(model, GraphPolicyValueNetV2):
-        kwargs["edge_active_mask"] = batch["edge_active_mask"]
+    if isinstance(
+            model,
+            GraphPolicyValueNetV2,
+    ):
+        kwargs["edge_active_mask"] = (
+            batch["edge_active_mask"]
+        )
+        kwargs["node_batch"] = (
+            batch["node_batch"]
+        )
+        kwargs["edge_batch"] = (
+            batch["edge_batch"]
+        )
     return model(**kwargs)
 
 
@@ -116,10 +180,18 @@ def score_replay_prediction_errors(
     )
 
     expected_dimensions = {
-        "num_bus_features": dataset.num_bus_features,
-        "num_branch_features": dataset.num_branch_features,
-        "num_actions": dataset.num_actions,
+        "num_bus_features": (
+            dataset.num_bus_features
+        ),
+        "num_branch_features": (
+            dataset.num_branch_features
+        ),
     }
+
+    if not is_graph_v2:
+        expected_dimensions[
+            "num_actions"
+        ] = dataset.num_actions
     mismatches = [
         name
         for name, expected in expected_dimensions.items()
@@ -132,19 +204,50 @@ def score_replay_prediction_errors(
             + "."
         )
 
-    require_topology_action_provenance(
-        checkpoint,
-        source=str(checkpoint_path),
-        expected_action_space_config=dataset.topology_action_config,
-        expected_action_layout=dataset.action_layout,
-    )
+    if is_graph_v2:
+        require_topology_action_provenance(
+            checkpoint,
+            source=str(checkpoint_path),
+            expected_action_space_config=(
+                dataset.topology_action_config
+            ),
+        )
+    else:
+        require_topology_action_provenance(
+            checkpoint,
+            source=str(checkpoint_path),
+            expected_action_space_config=(
+                dataset.topology_action_config
+            ),
+            expected_action_layout=(
+                dataset.action_layout
+            ),
+        )
+
+    if (
+            not is_graph_v2
+            and dataset.action_layout_count != 1
+    ):
+        raise ValueError(
+            "Graph V1 replay scoring requires "
+            "one fixed action layout."
+        )
+
     model = _load_model(checkpoint, device=device)
+
+    collate_fn = (
+        collate_graph_samples
+        if is_graph_v2
+        else None
+    )
+
     loader = DataLoader(
         dataset,
         batch_size=min(max(1, int(batch_size)), len(dataset)),
         shuffle=False,
         num_workers=0,
         pin_memory=(device.type == "cuda"),
+        collate_fn=collate_fn,
     )
 
     entries: dict[str, dict[str, float]] = {}

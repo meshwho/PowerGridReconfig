@@ -13,9 +13,18 @@ from torch.utils.data import DataLoader
 from grid_topology_ai.config import TrainingConfig
 from grid_topology_ai.config.physics import PhysicsConfig
 from grid_topology_ai.contracts import require_physics_provenance
-from grid_topology_ai.models.graph_policy_value_net import GraphPolicyValueNet
-from grid_topology_ai.models.graph_policy_value_net_v2 import GraphPolicyValueNetV2
-from grid_topology_ai.models.graph_self_play_dataset import GraphSelfPlayDataset
+from grid_topology_ai.models.graph_batch import (
+    collate_graph_samples,
+)
+from grid_topology_ai.models.graph_policy_value_net import (
+    GraphPolicyValueNet,
+)
+from grid_topology_ai.models.graph_policy_value_net_v2 import (
+    GraphPolicyValueNetV2,
+)
+from grid_topology_ai.models.graph_self_play_dataset import (
+    GraphSelfPlayDataset,
+)
 from grid_topology_ai.training.checkpoints import (
     NORMALIZATION_STAT_KEYS,
     checkpoint_variant_path,
@@ -127,6 +136,8 @@ def _forward_graph_model(
     edge_index: torch.Tensor,
     edge_active_mask: torch.Tensor,
     action_mask: torch.Tensor,
+    node_batch: torch.Tensor | None = None,
+    edge_batch: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """
     Call graph V1 and V2 without changing the legacy V1 forward contract.
@@ -142,6 +153,8 @@ def _forward_graph_model(
             edge_index=edge_index,
             edge_active_mask=edge_active_mask,
             action_mask=action_mask,
+            node_batch=node_batch,
+            edge_batch=edge_batch,
         )
 
     return model(
@@ -179,6 +192,8 @@ def train_one_epoch(
         branch_features = batch["branch_features"]
         edge_index = batch["edge_index"]
         edge_active_mask = batch["edge_active_mask"]
+        node_batch = batch.get("node_batch")
+        edge_batch = batch.get("edge_batch")
         action_mask = batch["action_mask"]
         target_policy = batch["target_policy"]
         target_value = batch["target_value"]
@@ -193,6 +208,8 @@ def train_one_epoch(
                 edge_index=edge_index,
                 edge_active_mask=edge_active_mask,
                 action_mask=action_mask,
+                node_batch=node_batch,
+                edge_batch=edge_batch,
             )
 
             policy_loss = soft_policy_loss(
@@ -267,11 +284,15 @@ def evaluate_one_epoch(
             branch_features = batch["branch_features"]
             edge_index = batch["edge_index"]
             edge_active_mask = batch["edge_active_mask"]
+            node_batch = batch.get("node_batch")
+            edge_batch = batch.get("edge_batch")
             action_mask = batch["action_mask"]
             target_policy = batch["target_policy"]
             target_value = batch["target_value"]
 
-            batch_size = int(bus_features.shape[0])
+            batch_size = int(
+                target_value.shape[0]
+            )
 
             with torch.amp.autocast("cuda", enabled=use_amp):
                 policy_logits, predicted_value = _forward_graph_model(
@@ -281,6 +302,8 @@ def evaluate_one_epoch(
                     edge_index=edge_index,
                     edge_active_mask=edge_active_mask,
                     action_mask=action_mask,
+                    node_batch=node_batch,
+                    edge_batch=edge_batch,
                 )
 
                 policy_loss = soft_policy_loss(
@@ -377,14 +400,28 @@ def evaluate_training_samples(
         for i in range(n):
             sample = dataset[i]
 
-            bus_features = sample["bus_features"].unsqueeze(0).to(device)
-            branch_features = sample["branch_features"].unsqueeze(0).to(device)
-            edge_index = sample["edge_index"].unsqueeze(0).to(device)
-            edge_active_mask = (
-                sample["edge_active_mask"].unsqueeze(0).to(device)
+            batch = collate_graph_samples(
+                [sample]
             )
-            action_mask = sample["action_mask"].unsqueeze(0).to(device)
-            target_policy = sample["target_policy"].unsqueeze(0).to(device)
+            batch = move_batch_to_device(
+                batch,
+                device,
+            )
+
+            bus_features = batch["bus_features"]
+            branch_features = batch[
+                "branch_features"
+            ]
+            edge_index = batch["edge_index"]
+            edge_active_mask = batch[
+                "edge_active_mask"
+            ]
+            node_batch = batch["node_batch"]
+            edge_batch = batch["edge_batch"]
+            action_mask = batch["action_mask"]
+            target_policy = batch[
+                "target_policy"
+            ]
 
             target_value = float(sample["target_value"].item())
 
@@ -395,6 +432,8 @@ def evaluate_training_samples(
                 edge_index=edge_index,
                 edge_active_mask=edge_active_mask,
                 action_mask=action_mask,
+                node_batch=node_batch,
+                edge_batch=edge_batch,
             )
 
             probabilities = torch.softmax(logits, dim=1)
@@ -505,29 +544,47 @@ def _build_model(
             "'stop_plus_branch_status_v1'."
         )
 
-    expected_num_actions = (
-        dataset.num_branches + 1
-    )
-
-    if dataset.num_actions != expected_num_actions:
-        raise ValueError(
-            "The current branch policy head requires "
-            "num_actions = num_branches + 1. "
-            f"Expected {expected_num_actions}, "
-            f"got {dataset.num_actions}."
-        )
-
     if request.config.model_type == "graph_v2":
         return GraphPolicyValueNetV2(
-            num_bus_features=dataset.num_bus_features,
-            num_branch_features=dataset.num_branch_features,
-            num_actions=dataset.num_actions,
-            hidden_dim=request.config.hidden_dim,
-            num_layers=request.config.num_layers,
+            num_bus_features=(
+                dataset.num_bus_features
+            ),
+            num_branch_features=(
+                dataset.num_branch_features
+            ),
+            hidden_dim=(
+                request.config.hidden_dim
+            ),
+            num_layers=(
+                request.config.num_layers
+            ),
             dropout=request.config.dropout,
         ).to(device)
 
     if request.config.model_type == "graph_v1":
+
+        if dataset.action_layout_count != 1:
+            raise ValueError(
+                "Graph V1 requires one fixed "
+                "action layout for the entire "
+                "dataset."
+            )
+
+        expected_num_actions = (
+            dataset.num_branches + 1
+        )
+
+        if (
+            dataset.num_actions
+            != expected_num_actions
+        ):
+            raise ValueError(
+                "Graph V1 requires num_actions "
+                "= num_branches + 1. "
+                f"Expected {expected_num_actions}, "
+                f"got {dataset.num_actions}."
+            )
+
         return GraphPolicyValueNet(
             num_bus_features=dataset.num_bus_features,
             num_branch_features=dataset.num_branch_features,
@@ -683,22 +740,62 @@ def train_graph_policy_value_model(
             physics_config=dataset.physics_config,
         )
 
-    if (
-        val_dataset is not None
-        and val_dataset.action_layout_fingerprint
-        != dataset.action_layout_fingerprint
-    ):
-        raise ValueError(
-            "Training and validation action layouts "
-            "do not match."
-        )
+    if val_dataset is not None:
+        if (
+                val_dataset.policy_layout
+                != dataset.policy_layout
+        ):
+            raise ValueError(
+                "Training and validation policy "
+                "layouts do not match."
+            )
+
+        if (
+                val_dataset.topology_action_config
+                != dataset.topology_action_config
+        ):
+            raise ValueError(
+                "Training and validation topology "
+                "action configs do not match."
+            )
+
+        if (
+                val_dataset.num_bus_features
+                != dataset.num_bus_features
+        ):
+            raise ValueError(
+                "Training and validation bus "
+                "feature dimensions do not match."
+            )
+
+        if (
+                val_dataset.num_branch_features
+                != dataset.num_branch_features
+        ):
+            raise ValueError(
+                "Training and validation branch "
+                "feature dimensions do not match."
+            )
 
     validate_no_scenario_overlap(train_dataset=dataset, val_dataset=val_dataset)
 
     print(f"Examples:      {len(dataset)}")
-    print(f"Num buses:     {dataset.num_buses}")
-    print(f"Num branches:  {dataset.num_branches}")
-    print(f"Num actions:   {dataset.num_actions}")
+    print(
+        "Reference buses:    "
+        f"{dataset.reference_num_buses}"
+    )
+    print(
+        "Reference branches: "
+        f"{dataset.reference_num_branches}"
+    )
+    print(
+        "Reference actions:  "
+        f"{dataset.reference_num_actions}"
+    )
+    print(
+        "Action layouts:     "
+        f"{dataset.action_layout_count}"
+    )
     print(f"Bus features:  {dataset.num_bus_features}")
     print(f"Branch feats:  {dataset.num_branch_features}")
 
@@ -726,6 +823,12 @@ def train_graph_policy_value_model(
     train_generator = torch.Generator()
     train_generator.manual_seed(int(request.seed))
 
+    collate_fn = (
+        collate_graph_samples
+        if request.config.model_type == "graph_v2"
+        else None
+    )
+
     loader = DataLoader(
         dataset,
         batch_size=min(request.config.batch_size, len(dataset)),
@@ -733,6 +836,7 @@ def train_graph_policy_value_model(
         num_workers=int(request.config.num_workers),
         pin_memory=pin_memory,
         generator=train_generator,
+        collate_fn=collate_fn,
     )
 
     val_loader = None
@@ -743,6 +847,7 @@ def train_graph_policy_value_model(
             shuffle=False,
             num_workers=int(request.config.num_workers),
             pin_memory=pin_memory,
+            collate_fn=collate_fn,
         )
 
     model = _build_model(request=request, dataset=dataset, device=device)

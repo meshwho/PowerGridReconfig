@@ -21,6 +21,7 @@ from grid_topology_ai.self_play import _example_validation_core as _core
 from grid_topology_ai.self_play._example_validation_core import *  # noqa: F401,F403
 from grid_topology_ai.contracts import (
     require_outcome_objective_version,
+    require_topology_action_provenance,
 )
 
 _EVIDENCE_COLUMNS: tuple[str, ...] = (
@@ -85,7 +86,7 @@ def validate_examples_dataframe(
     )
     (
         action_space_config,
-        action_layout,
+        _representative_action_layout,
     ) = _core.validate_example_topology_action_contracts(
         examples,
         source_path=source,
@@ -115,7 +116,9 @@ def validate_examples_dataframe(
             f"CSV. File: {source}"
         )
 
-    expected_dimensions = None
+    expected_feature_dimensions: (
+            tuple[int, int] | None
+    ) = None
     for index, row in examples.iterrows():
         _core._require_integer(
             row["scenario_id"],
@@ -150,19 +153,46 @@ def validate_examples_dataframe(
                 f"File: {source}"
             )
 
-        dimensions, action_mask = _core._validate_npz_state(
-            state_path,
-            expected_physics_config=physics_config,
-            expected_action_space_config=action_space_config,
-            expected_action_layout=action_layout,
+        _, row_action_layout = (
+            require_topology_action_provenance(
+                row.to_dict(),
+                source=f"{source} row {index}",
+                expected_action_space_config=(
+                    action_space_config
+                ),
+            )
         )
-        if expected_dimensions is None:
-            expected_dimensions = dimensions
-        elif dimensions != expected_dimensions:
+
+        dimensions, action_mask = (
+            _core._validate_npz_state(
+                state_path,
+                expected_physics_config=physics_config,
+                expected_action_space_config=(
+                    action_space_config
+                ),
+                expected_action_layout=(
+                    row_action_layout
+                ),
+            )
+        )
+        feature_dimensions = (
+            dimensions.num_bus_features,
+            dimensions.num_branch_features,
+        )
+
+        if expected_feature_dimensions is None:
+            expected_feature_dimensions = (
+                feature_dimensions
+            )
+        elif (
+                feature_dimensions
+                != expected_feature_dimensions
+        ):
             raise ValueError(
-                f"Graph dimensions mismatch for {state_path}. "
-                f"Expected {expected_dimensions._asdict()}, "
-                f"observed {dimensions._asdict()}."
+                "Graph feature dimensions mismatch for "
+                f"{state_path}. Expected "
+                f"{expected_feature_dimensions}, observed "
+                f"{feature_dimensions}."
             )
 
         _validate_policy_against_mask(

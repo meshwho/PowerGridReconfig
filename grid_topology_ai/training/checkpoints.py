@@ -19,6 +19,9 @@ from grid_topology_ai.contracts import (
     topology_action_provenance,
     OUTCOME_OBJECTIVE_VERSION,
 )
+from grid_topology_ai.models.graph_batch import (
+    GRAPH_BATCHING_CONTRACT_VERSION,
+)
 from grid_topology_ai.models.graph_self_play_dataset import GraphSelfPlayDataset
 from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
 from grid_topology_ai.self_play.artifacts import sha256_file
@@ -243,6 +246,9 @@ def build_dataset_metadata(
         "examples_csv_abs": str(examples_csv_abs),
         "examples_csv_sha256": sha256_file(examples_csv_abs),
         "examples_count": int(len(dataset.examples)),
+        "action_layout_count": int(
+            dataset.action_layout_count
+        ),
         "scenario_count": int(dataset.examples["scenario_id"].nunique())
         if "scenario_id" in dataset.examples.columns
         else None,
@@ -308,6 +314,9 @@ def make_checkpoint(
 
     checkpoint = {
         "checkpoint_contract_version": CHECKPOINT_CONTRACT_VERSION,
+        "graph_batching_contract_version": (
+            GRAPH_BATCHING_CONTRACT_VERSION
+        ),
         "physical_objective_schema_version": (
             PHYSICAL_OBJECTIVE_SCHEMA_VERSION
         ),
@@ -326,12 +335,28 @@ def make_checkpoint(
             dataset.policy_layout
         ),
         "model_type": str(getattr(model, "model_type", "graph_policy_value_net")),
+        "topology_cardinality_independent": (
+                str(
+                    getattr(
+                        model,
+                        "model_type",
+                        "",
+                    )
+                )
+                == "graph_policy_value_net_v2"
+        ),
         "model_state_dict": model_state_dict_cpu,
         "num_bus_features": int(dataset.num_bus_features),
         "num_branch_features": int(dataset.num_branch_features),
-        "num_buses": int(dataset.num_buses),
-        "num_branches": int(dataset.num_branches),
-        "num_actions": int(dataset.num_actions),
+        "num_buses": int(
+            dataset.reference_num_buses
+        ),
+        "num_branches": int(
+            dataset.reference_num_branches
+        ),
+        "num_actions": int(
+            dataset.reference_num_actions
+        ),
         "hidden_dim": int(request.config.hidden_dim),
         "num_layers": int(request.config.num_layers),
         "dropout": float(request.config.dropout),
@@ -407,16 +432,25 @@ def load_initial_checkpoint_into_model(
         expected_physics_config=dataset.physics_config,
     )
 
-    require_topology_action_provenance(
-        checkpoint,
-        source=str(checkpoint_path),
-        expected_action_space_config=(
-            dataset.topology_action_config
-        ),
-        expected_action_layout=(
-            dataset.action_layout
-        ),
-    )
+    if model_type == "graph_v2":
+        require_topology_action_provenance(
+            checkpoint,
+            source=str(checkpoint_path),
+            expected_action_space_config=(
+                dataset.topology_action_config
+            ),
+        )
+    else:
+        require_topology_action_provenance(
+            checkpoint,
+            source=str(checkpoint_path),
+            expected_action_space_config=(
+                dataset.topology_action_config
+            ),
+            expected_action_layout=(
+                dataset.action_layout
+            ),
+        )
 
     if (
         checkpoint.get("policy_layout")
@@ -443,12 +477,20 @@ def load_initial_checkpoint_into_model(
         )
 
     checks = {
-        "num_bus_features": int(dataset.num_bus_features),
-        "num_branch_features": int(dataset.num_branch_features),
-        "num_actions": int(dataset.num_actions),
+        "num_bus_features": int(
+            dataset.num_bus_features
+        ),
+        "num_branch_features": int(
+            dataset.num_branch_features
+        ),
         "hidden_dim": int(hidden_dim),
         "num_layers": int(num_layers),
     }
+
+    if model_type == "graph_v1":
+        checks["num_actions"] = int(
+            dataset.num_actions
+        )
 
     for key, expected_value in checks.items():
         if key not in checkpoint:
@@ -481,7 +523,15 @@ def load_initial_checkpoint_into_model(
     print(f"Model type:     {actual_model_type}")
     print(f"Hidden dim:     {checkpoint['hidden_dim']}")
     print(f"Num layers:     {checkpoint['num_layers']}")
-    print(f"Num actions:    {checkpoint['num_actions']}")
+    if model_type == "graph_v1":
+        print(
+            "Num actions:    "
+            f"{checkpoint['num_actions']}"
+        )
+    else:
+        print(
+            "Policy actions: dynamic per graph"
+        )
 
 
 def checkpoint_variant_path(

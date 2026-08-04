@@ -9,6 +9,9 @@ from torch import nn
 from torch.utils.data import DataLoader
 
 from grid_topology_ai.models.graph_policy_value_net import GraphPolicyValueNet
+from grid_topology_ai.models.graph_batch import (
+    collate_graph_samples,
+)
 from grid_topology_ai.models.graph_policy_value_net_v2 import GraphPolicyValueNetV2
 from grid_topology_ai.models.graph_self_play_dataset import GraphSelfPlayDataset
 from grid_topology_ai.training.graph_policy_value import (
@@ -25,19 +28,47 @@ def load_model_from_checkpoint(checkpoint_path: Path, device: torch.device):
 
     model_type = str(checkpoint.get("model_type", "graph_policy_value_net"))
 
-    common_kwargs = dict(
-        num_bus_features=int(checkpoint["num_bus_features"]),
-        num_branch_features=int(checkpoint["num_branch_features"]),
-        num_actions=int(checkpoint["num_actions"]),
-        hidden_dim=int(checkpoint.get("hidden_dim", 128)),
-        num_layers=int(checkpoint.get("num_layers", 3)),
-        dropout=float(checkpoint.get("dropout", 0.0)),
-    )
+    common_kwargs = {
+        "num_bus_features": int(
+            checkpoint["num_bus_features"]
+        ),
+        "num_branch_features": int(
+            checkpoint["num_branch_features"]
+        ),
+        "hidden_dim": int(
+            checkpoint.get("hidden_dim", 128)
+        ),
+        "num_layers": int(
+            checkpoint.get("num_layers", 3)
+        ),
+        "dropout": float(
+            checkpoint.get("dropout", 0.0)
+        ),
+    }
 
-    if model_type in {"graph_v2", "graph_policy_value_net_v2"}:
-        model = GraphPolicyValueNetV2(**common_kwargs)
+    if model_type in {
+        "graph_v2",
+        "graph_policy_value_net_v2",
+    }:
+        model = GraphPolicyValueNetV2(
+            **common_kwargs
+        )
+    elif model_type in {
+        "graph_v1",
+        "graph_policy_value_net",
+    }:
+        model = GraphPolicyValueNet(
+            **common_kwargs,
+            num_actions=int(
+                checkpoint["num_actions"]
+            ),
+        )
     else:
-        model = GraphPolicyValueNet(**common_kwargs)
+        raise ValueError(
+            "Checkpoint evaluation requires a graph "
+            "policy-value model, got "
+            f"model_type={model_type!r}."
+        )
 
     model.load_state_dict(checkpoint["model_state_dict"])
     model.to(device)
@@ -80,15 +111,70 @@ def main() -> None:
 
     model, checkpoint = load_model_from_checkpoint(checkpoint_path, device)
 
+    model_type = str(
+        checkpoint.get(
+            "model_type",
+            "",
+        )
+    ).strip()
+
+    is_graph_v2 = model_type in {
+        "graph_v2",
+        "graph_policy_value_net_v2",
+    }
+
     # normalize_features=False prevents recomputing stats from this test file.
     # We immediately replace normalization stats with those saved in the checkpoint.
     dataset = GraphSelfPlayDataset(
         examples_csv=examples_csv,
-        value_scale=float(args.value_scale),
         normalize_features=False,
     )
 
     apply_checkpoint_normalization(dataset, checkpoint)
+
+    dimension_checks = {
+        "num_bus_features": (
+            dataset.num_bus_features
+        ),
+        "num_branch_features": (
+            dataset.num_branch_features
+        ),
+    }
+
+    if not is_graph_v2:
+        dimension_checks["num_actions"] = (
+            dataset.num_actions
+        )
+
+    mismatches = [
+        name
+        for name, expected in dimension_checks.items()
+        if int(checkpoint.get(name, -1))
+           != int(expected)
+    ]
+
+    if mismatches:
+        raise ValueError(
+            "Examples are incompatible with the "
+            "checkpoint: "
+            + ", ".join(mismatches)
+            + "."
+        )
+
+    if (
+            not is_graph_v2
+            and dataset.action_layout_count != 1
+    ):
+        raise ValueError(
+            "Graph V1 evaluation requires one fixed "
+            "action layout."
+        )
+
+    collate_fn = (
+        collate_graph_samples
+        if is_graph_v2
+        else None
+    )
 
     loader = DataLoader(
         dataset,
@@ -96,6 +182,7 @@ def main() -> None:
         shuffle=False,
         num_workers=int(args.num_workers),
         pin_memory=(device.type == "cuda"),
+        collate_fn=collate_fn,
     )
 
     value_loss_fn = nn.MSELoss()
