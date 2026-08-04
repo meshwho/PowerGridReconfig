@@ -46,9 +46,10 @@ def _context_probe_model() -> GraphPolicyValueNetV2:
         num_branch_features=hidden_dim,
         num_actions=3,
         hidden_dim=hidden_dim,
-        num_layers=0,
+        num_layers=1,
         dropout=0.0,
     )
+    model.layers = torch.nn.ModuleList()
 
     model.bus_encoder = torch.nn.Identity()
     model.branch_encoder = torch.nn.Identity()
