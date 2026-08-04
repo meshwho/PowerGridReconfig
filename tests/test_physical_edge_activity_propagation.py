@@ -150,7 +150,7 @@ def test_neural_evaluator_builds_v2_mask_from_branch_status():
 
     assert torch.equal(
         model.forward_kwargs["edge_active_mask"],
-        torch.tensor([[True, False]]),
+        torch.tensor([True, False]),
     )
     assert torch.equal(
         model.forward_kwargs["action_mask"],
