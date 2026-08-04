@@ -18,7 +18,8 @@ def test_validation_protocol_static_boundaries() -> None:
     assert "prepare_physical_iteration_split" in iteration
     assert "split_examples_by_scenario" not in iteration
     assert "physical_split_manifest" in iteration_split
-    assert "split_frame_by_manifest" in iteration_split
+    assert "update_validation_snapshot" in iteration_split
+    assert "physical_validation_snapshot" in iteration_split
     assert hasattr(TrainingRequest, "seed") or "seed: int = 42" in training
     assert "generator=train_generator" in training
     assert "checkpoint_selection_metric" in checkpoints
