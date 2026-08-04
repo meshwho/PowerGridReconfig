@@ -460,7 +460,6 @@ class NeuralPolicyValueEvaluator:
             state.branch_status,
             dtype=np.float32,
         )
-        edge_active_mask = branch_status > 0.5
 
         if (
                 bus_features.ndim != 2
@@ -528,6 +527,27 @@ class NeuralPolicyValueEvaluator:
                 f"got {branch_status.shape}."
             )
 
+        if not np.isfinite(
+            branch_status
+        ).all():
+            raise ValueError(
+                "branch_status must contain only "
+                "finite values."
+            )
+
+        if not np.isin(
+            branch_status,
+            (0.0, 1.0),
+        ).all():
+            raise ValueError(
+                "branch_status must contain only "
+                "0 or 1."
+            )
+
+        edge_active_mask = (
+            branch_status > 0.5
+        )
+
         if action_mask.shape != (
                 num_branches + 1,
         ):
@@ -594,12 +614,6 @@ class NeuralPolicyValueEvaluator:
                 device=self.device,
             )
         )
-
-        mask_tensor = torch.tensor(
-            action_mask.astype(bool),
-            dtype=torch.bool,
-            device=self.device,
-        ).unsqueeze(0)
 
         mask_tensor = torch.tensor(
             action_mask.astype(bool),
