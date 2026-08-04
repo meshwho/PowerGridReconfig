@@ -116,6 +116,11 @@ def validate_examples_dataframe(
             f"CSV. File: {source}"
         )
 
+    _validate_shared_feature_dimensions(
+        examples,
+        source=source,
+    )
+
     expected_feature_dimensions: (
             tuple[int, int] | None
     ) = None
@@ -239,6 +244,56 @@ def validate_examples_dataframe(
             index=index,
             source=source,
         )
+
+
+def _validate_shared_feature_dimensions(
+    examples: pd.DataFrame,
+    *,
+    source: Path,
+) -> None:
+    expected: tuple[int, int] | None = None
+
+    for state_path_value in examples["state_path"]:
+        state_path = Path(str(state_path_value).strip())
+        if not state_path.is_file():
+            continue
+
+        try:
+            with np.load(state_path, allow_pickle=False) as data:
+                if (
+                    "bus_features" not in data.files
+                    or "branch_features" not in data.files
+                ):
+                    continue
+                bus_features = np.asarray(
+                    data["bus_features"]
+                )
+                branch_features = np.asarray(
+                    data["branch_features"]
+                )
+        except (OSError, EOFError, ValueError):
+            continue
+
+        if (
+            bus_features.ndim != 2
+            or branch_features.ndim != 2
+        ):
+            continue
+
+        observed = (
+            int(bus_features.shape[1]),
+            int(branch_features.shape[1]),
+        )
+        if expected is None:
+            expected = observed
+            continue
+
+        if observed != expected:
+            raise ValueError(
+                "Graph feature dimensions mismatch for "
+                f"{state_path}. Expected {expected}, "
+                f"observed {observed}. File: {source}"
+            )
 
 
 def policy_vector_from_json(
