@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import torch
 
 from grid_topology_ai.models.graph_batch import (
@@ -7,6 +9,14 @@ from grid_topology_ai.models.graph_batch import (
 )
 from grid_topology_ai.models.graph_policy_value_net_v2 import (
     GraphPolicyValueNetV2,
+)
+from scripts.evaluation.evaluate_examples_with_checkpoint import (
+    validate_checkpoint_dataset_compatibility,
+)
+from tests.topology_contract_helpers import (
+    TEST_ACTION_SPACE_CONFIG,
+    checkpoint_topology_fields,
+    test_action_layout,
 )
 
 
@@ -295,4 +305,37 @@ def test_packed_graph_context_is_isolated_between_graphs() -> None:
         single_values[0],
         rtol=1e-5,
         atol=1e-6,
+    )
+
+
+def test_graph_v2_checkpoint_compatibility_ignores_reference_cardinality() -> None:
+    class Dataset:
+        num_bus_features = 4
+        num_branch_features = 6
+        num_actions = 5
+        topology_action_config = (
+            TEST_ACTION_SPACE_CONFIG
+        )
+        action_layout = test_action_layout(
+            (10, 11, 12, 13)
+        )
+        policy_layout = (
+            "stop_plus_branch_status_v1"
+        )
+        action_layout_count = 1
+
+    checkpoint = {
+        **checkpoint_topology_fields((0, 1)),
+        "num_bus_features": 4,
+        "num_branch_features": 6,
+        # The checkpoint was trained on a smaller
+        # representative graph.
+        "num_actions": 3,
+    }
+
+    validate_checkpoint_dataset_compatibility(
+        checkpoint=checkpoint,
+        checkpoint_path=Path("checkpoint.pt"),
+        dataset=Dataset(),
+        is_graph_v2=True,
     )
