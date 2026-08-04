@@ -36,12 +36,12 @@ def _load_model(
     *,
     device: torch.device,
 ) -> GraphModel:
-    model_type = str(checkpoint.get("model_type", "")).strip()
-
-    is_graph_v2 = model_type in {
-        "graph_v2",
-        "graph_policy_value_net_v2",
-    }
+    model_type = str(
+        checkpoint.get(
+            "model_type",
+            "",
+        )
+    ).strip()
 
     common_kwargs = {
         "num_bus_features": int(
@@ -96,19 +96,12 @@ def _load_model(
             f"got model_type={model_type!r}."
         )
 
-    if model_type in {"graph_v2", "graph_policy_value_net_v2"}:
-        model: GraphModel = GraphPolicyValueNetV2(**common_kwargs)
-    elif model_type in {"graph_v1", "graph_policy_value_net"}:
-        model = GraphPolicyValueNet(**common_kwargs)
-    else:
-        raise ValueError(
-            "Replay priority scoring requires a graph policy-value checkpoint, "
-            f"got model_type={model_type!r}."
-        )
-
-    model.load_state_dict(checkpoint["model_state_dict"])
+    model.load_state_dict(
+        checkpoint["model_state_dict"]
+    )
     model.to(device)
     model.eval()
+
     return model
 
 
@@ -169,6 +162,19 @@ def score_replay_prediction_errors(
             expected_physics_config=physics_config,
         )
     )
+
+    model_type = str(
+        checkpoint.get(
+            "model_type",
+            "",
+        )
+    ).strip()
+
+    is_graph_v2 = model_type in {
+        "graph_v2",
+        "graph_policy_value_net_v2",
+    }
+
     dataset = GraphSelfPlayDataset(
         examples_csv=examples_csv,
         normalize_features=False,

@@ -1042,7 +1042,9 @@ class RollingReplayBuffer:
                 expected_action_space_config=(
                     manifest_action_space_config
                 ),
-                expected_action_layout=manifest_action_layout,
+                expected_layout_fingerprints=(
+                    manifest_layout_fingerprints
+                ),
             )
 
             selected_chunks.append(rows)
@@ -1133,10 +1135,13 @@ class RollingReplayBuffer:
             source=f"replay iteration {iteration}",
         )
 
-        (
-            expected_action_space_config,
-            representative_action_layout,
-        ) = self._buffer_action_contract()
+        expected_action_space_config, _ = (
+            self._buffer_action_contract()
+        )
+
+        representative_action_layout: (
+                tuple[ActionSlot, ...] | None
+        ) = None
         normalized: list[dict[str, Any]] = []
 
         for row in examples:
@@ -1397,8 +1402,9 @@ class RollingReplayBuffer:
 
         producer = self._producer_checkpoint_provenance(
             self.producer_checkpoint,
-            expected_action_space_config=action_space_config,
-            expected_action_layout=action_layout,
+            expected_action_space_config=(
+                action_space_config
+            ),
             representative_action_layout=(
                 action_layout
             ),
