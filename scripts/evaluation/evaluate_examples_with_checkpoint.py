@@ -8,25 +8,47 @@ import torch
 from torch import nn
 from torch.utils.data import DataLoader
 
-from grid_topology_ai.models.graph_policy_value_net import GraphPolicyValueNet
+from grid_topology_ai.contracts import (
+    require_topology_action_provenance,
+)
 from grid_topology_ai.models.graph_batch import (
     collate_graph_samples,
 )
-from grid_topology_ai.models.graph_policy_value_net_v2 import GraphPolicyValueNetV2
-from grid_topology_ai.models.graph_self_play_dataset import GraphSelfPlayDataset
+from grid_topology_ai.models.graph_policy_value_net import (
+    GraphPolicyValueNet,
+)
+from grid_topology_ai.models.graph_policy_value_net_v2 import (
+    GraphPolicyValueNetV2,
+)
+from grid_topology_ai.models.graph_self_play_dataset import (
+    GraphSelfPlayDataset,
+)
+from grid_topology_ai.training.checkpoints import (
+    load_checkpoint_payload,
+)
 from grid_topology_ai.training.graph_policy_value import (
     evaluate_one_epoch,
     resolve_device,
 )
-from grid_topology_ai.training.checkpoints import load_checkpoint_payload
 
 
-def load_model_from_checkpoint(checkpoint_path: Path, device: torch.device):
+def load_model_from_checkpoint(
+    checkpoint_path: Path,
+    device: torch.device,
+):
     checkpoint = dict(
-        load_checkpoint_payload(checkpoint_path, map_location=device)
+        load_checkpoint_payload(
+            checkpoint_path,
+            map_location=device,
+        )
     )
 
-    model_type = str(checkpoint.get("model_type", "graph_policy_value_net"))
+    model_type = str(
+        checkpoint.get(
+            "model_type",
+            "graph_policy_value_net",
+        )
+    )
 
     common_kwargs = {
         "num_bus_features": int(
@@ -70,7 +92,9 @@ def load_model_from_checkpoint(checkpoint_path: Path, device: torch.device):
             f"model_type={model_type!r}."
         )
 
-    model.load_state_dict(checkpoint["model_state_dict"])
+    model.load_state_dict(
+        checkpoint["model_state_dict"]
+    )
     model.to(device)
     model.eval()
 
@@ -81,57 +105,27 @@ def apply_checkpoint_normalization(
     dataset: GraphSelfPlayDataset,
     checkpoint: dict[str, Any],
 ) -> None:
-    dataset.bus_feature_mean = checkpoint["bus_feature_mean"]
-    dataset.bus_feature_std = checkpoint["bus_feature_std"]
-    dataset.branch_feature_mean = checkpoint["branch_feature_mean"]
-    dataset.branch_feature_std = checkpoint["branch_feature_std"]
+    dataset.bus_feature_mean = checkpoint[
+        "bus_feature_mean"
+    ]
+    dataset.bus_feature_std = checkpoint[
+        "bus_feature_std"
+    ]
+    dataset.branch_feature_mean = checkpoint[
+        "branch_feature_mean"
+    ]
+    dataset.branch_feature_std = checkpoint[
+        "branch_feature_std"
+    ]
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Evaluate teacher examples against an existing graph checkpoint."
-    )
-
-    parser.add_argument("--examples-csv", type=str, required=True)
-    parser.add_argument("--checkpoint", type=str, required=True)
-    parser.add_argument("--device", type=str, default="auto", choices=["auto", "cuda", "cpu"])
-    parser.add_argument("--batch-size", type=int, default=64)
-    parser.add_argument("--value-scale", type=float, default=10000.0)
-    parser.add_argument("--value-loss-weight", type=float, default=1.0)
-    parser.add_argument("--amp", action="store_true")
-    parser.add_argument("--num-workers", type=int, default=0)
-
-    args = parser.parse_args()
-
-    device = resolve_device(args.device)
-    use_amp = bool(args.amp and device.type == "cuda")
-
-    checkpoint_path = Path(args.checkpoint)
-    examples_csv = Path(args.examples_csv)
-
-    model, checkpoint = load_model_from_checkpoint(checkpoint_path, device)
-
-    model_type = str(
-        checkpoint.get(
-            "model_type",
-            "",
-        )
-    ).strip()
-
-    is_graph_v2 = model_type in {
-        "graph_v2",
-        "graph_policy_value_net_v2",
-    }
-
-    # normalize_features=False prevents recomputing stats from this test file.
-    # We immediately replace normalization stats with those saved in the checkpoint.
-    dataset = GraphSelfPlayDataset(
-        examples_csv=examples_csv,
-        normalize_features=False,
-    )
-
-    apply_checkpoint_normalization(dataset, checkpoint)
-
+def validate_checkpoint_dataset_compatibility(
+    *,
+    checkpoint: dict[str, Any],
+    checkpoint_path: Path,
+    dataset: GraphSelfPlayDataset,
+    is_graph_v2: bool,
+) -> None:
     dimension_checks = {
         "num_bus_features": (
             dataset.num_bus_features
@@ -150,7 +144,7 @@ def main() -> None:
         name
         for name, expected in dimension_checks.items()
         if int(checkpoint.get(name, -1))
-           != int(expected)
+        != int(expected)
     ]
 
     if mismatches:
@@ -161,14 +155,140 @@ def main() -> None:
             + "."
         )
 
+    if is_graph_v2:
+        require_topology_action_provenance(
+            checkpoint,
+            source=str(checkpoint_path),
+            expected_action_space_config=(
+                dataset.topology_action_config
+            ),
+        )
+    else:
+        require_topology_action_provenance(
+            checkpoint,
+            source=str(checkpoint_path),
+            expected_action_space_config=(
+                dataset.topology_action_config
+            ),
+            expected_action_layout=(
+                dataset.action_layout
+            ),
+        )
+
     if (
-            not is_graph_v2
-            and dataset.action_layout_count != 1
+        checkpoint.get("policy_layout")
+        != dataset.policy_layout
+    ):
+        raise ValueError(
+            "Checkpoint policy layout does not "
+            "match the examples dataset. "
+            f"Checkpoint: {checkpoint_path}"
+        )
+
+    if (
+        not is_graph_v2
+        and dataset.action_layout_count != 1
     ):
         raise ValueError(
             "Graph V1 evaluation requires one fixed "
             "action layout."
         )
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Evaluate teacher examples against an "
+            "existing graph checkpoint."
+        )
+    )
+
+    parser.add_argument(
+        "--examples-csv",
+        type=str,
+        required=True,
+    )
+    parser.add_argument(
+        "--checkpoint",
+        type=str,
+        required=True,
+    )
+    parser.add_argument(
+        "--device",
+        type=str,
+        default="auto",
+        choices=["auto", "cuda", "cpu"],
+    )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=64,
+    )
+    parser.add_argument(
+        "--value-scale",
+        type=float,
+        default=10000.0,
+    )
+    parser.add_argument(
+        "--value-loss-weight",
+        type=float,
+        default=1.0,
+    )
+    parser.add_argument(
+        "--amp",
+        action="store_true",
+    )
+    parser.add_argument(
+        "--num-workers",
+        type=int,
+        default=0,
+    )
+
+    args = parser.parse_args()
+
+    device = resolve_device(args.device)
+    use_amp = bool(
+        args.amp and device.type == "cuda"
+    )
+
+    checkpoint_path = Path(args.checkpoint)
+    examples_csv = Path(args.examples_csv)
+
+    model, checkpoint = load_model_from_checkpoint(
+        checkpoint_path,
+        device,
+    )
+
+    model_type = str(
+        checkpoint.get(
+            "model_type",
+            "",
+        )
+    ).strip()
+
+    is_graph_v2 = model_type in {
+        "graph_v2",
+        "graph_policy_value_net_v2",
+    }
+
+    # Avoid recomputing statistics from the evaluation set.
+    # The checkpoint statistics are applied immediately below.
+    dataset = GraphSelfPlayDataset(
+        examples_csv=examples_csv,
+        normalize_features=False,
+    )
+
+    apply_checkpoint_normalization(
+        dataset,
+        checkpoint,
+    )
+
+    validate_checkpoint_dataset_compatibility(
+        checkpoint=checkpoint,
+        checkpoint_path=checkpoint_path,
+        dataset=dataset,
+        is_graph_v2=is_graph_v2,
+    )
 
     collate_fn = (
         collate_graph_samples
@@ -178,7 +298,10 @@ def main() -> None:
 
     loader = DataLoader(
         dataset,
-        batch_size=min(int(args.batch_size), len(dataset)),
+        batch_size=min(
+            int(args.batch_size),
+            len(dataset),
+        ),
         shuffle=False,
         num_workers=int(args.num_workers),
         pin_memory=(device.type == "cuda"),
@@ -193,7 +316,9 @@ def main() -> None:
         value_loss_fn=value_loss_fn,
         device=device,
         use_amp=use_amp,
-        value_loss_weight=float(args.value_loss_weight),
+        value_loss_weight=float(
+            args.value_loss_weight
+        ),
     )
 
     print("=" * 100)
@@ -201,48 +326,111 @@ def main() -> None:
     print("=" * 100)
     print(f"Examples CSV: {examples_csv}")
     print(f"Checkpoint:   {checkpoint_path}")
-    print(f"Model type:   {checkpoint.get('model_type', 'unknown')}")
+    print(
+        "Model type:   "
+        f"{checkpoint.get('model_type', 'unknown')}"
+    )
 
-    dataset_metadata = checkpoint.get("dataset_metadata")
+    dataset_metadata = checkpoint.get(
+        "dataset_metadata"
+    )
 
     if isinstance(dataset_metadata, dict):
         print("")
         print("Checkpoint dataset metadata:")
-        print(f"  train examples CSV: {dataset_metadata.get('examples_csv')}")
-        print(f"  train examples:     {dataset_metadata.get('examples_count')}")
-        print(f"  train scenarios:    {dataset_metadata.get('scenario_count')}")
-        print(f"  examples sha256:    {dataset_metadata.get('examples_csv_sha256')}")
-        print(f"  state refs:         {dataset_metadata.get('state_reference_count')}")
-        print(f"  unique states:      {dataset_metadata.get('unique_state_count')}")
-        print(f"  missing states:     {dataset_metadata.get('missing_state_count')}")
+        print(
+            "  train examples CSV: "
+            f"{dataset_metadata.get('examples_csv')}"
+        )
+        print(
+            "  train examples:     "
+            f"{dataset_metadata.get('examples_count')}"
+        )
+        print(
+            "  train scenarios:    "
+            f"{dataset_metadata.get('scenario_count')}"
+        )
+        print(
+            "  examples sha256:    "
+            f"{dataset_metadata.get('examples_csv_sha256')}"
+        )
+        print(
+            "  state refs:         "
+            f"{dataset_metadata.get('state_reference_count')}"
+        )
+        print(
+            "  unique states:      "
+            f"{dataset_metadata.get('unique_state_count')}"
+        )
+        print(
+            "  missing states:     "
+            f"{dataset_metadata.get('missing_state_count')}"
+        )
 
     if checkpoint.get("git_commit") is not None:
-        print(f"Checkpoint git commit: {checkpoint.get('git_commit')}")
+        print(
+            "Checkpoint git commit: "
+            f"{checkpoint.get('git_commit')}"
+        )
 
-    value_target_diagnostics = checkpoint.get("value_target_diagnostics")
+    value_target_diagnostics = checkpoint.get(
+        "value_target_diagnostics"
+    )
 
-    if isinstance(value_target_diagnostics, dict):
+    if isinstance(
+        value_target_diagnostics,
+        dict,
+    ):
         print("")
         print("Checkpoint value target diagnostics:")
-        print(f"  value_scale:      {value_target_diagnostics.get('value_scale')}")
-        print(f"  raw min:          {value_target_diagnostics.get('raw_min')}")
-        print(f"  raw max:          {value_target_diagnostics.get('raw_max')}")
-        print(f"  abs norm p95:     {value_target_diagnostics.get('abs_normalized_p95')}")
-        print(f"  abs norm p99:     {value_target_diagnostics.get('abs_normalized_p99')}")
-        print(f"  clipped count:    {value_target_diagnostics.get('clipped_count')}")
-        print(f"  clipped percent:  {value_target_diagnostics.get('clipped_percent')}")
+        print(
+            "  value_scale:      "
+            f"{value_target_diagnostics.get('value_scale')}"
+        )
+        print(
+            "  raw min:          "
+            f"{value_target_diagnostics.get('raw_min')}"
+        )
+        print(
+            "  raw max:          "
+            f"{value_target_diagnostics.get('raw_max')}"
+        )
+        print(
+            "  abs norm p95:     "
+            f"{value_target_diagnostics.get('abs_normalized_p95')}"
+        )
+        print(
+            "  abs norm p99:     "
+            f"{value_target_diagnostics.get('abs_normalized_p99')}"
+        )
+        print(
+            "  clipped count:    "
+            f"{value_target_diagnostics.get('clipped_count')}"
+        )
+        print(
+            "  clipped percent:  "
+            f"{value_target_diagnostics.get('clipped_percent')}"
+        )
 
     print("")
     print(f"Examples:     {int(metrics['examples'])}")
     print("")
     print(f"loss:         {metrics['loss']:.6f}")
-    print(f"policy_loss:  {metrics['policy_loss']:.6f}")
-    print(f"value_loss:   {metrics['value_loss']:.6f}")
+    print(
+        f"policy_loss:  {metrics['policy_loss']:.6f}"
+    )
+    print(
+        f"value_loss:   {metrics['value_loss']:.6f}"
+    )
     print(f"top1:         {metrics['top1']:.4f}")
     print(f"top3:         {metrics['top3']:.4f}")
     print(f"top5:         {metrics['top5']:.4f}")
-    print(f"stop_acc:     {metrics['stop_acc']:.4f}")
-    print(f"switch_acc:   {metrics['switch_acc']:.4f}")
+    print(
+        f"stop_acc:     {metrics['stop_acc']:.4f}"
+    )
+    print(
+        f"switch_acc:   {metrics['switch_acc']:.4f}"
+    )
 
 
 if __name__ == "__main__":
