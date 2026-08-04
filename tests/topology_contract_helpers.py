@@ -6,9 +6,7 @@ from pathlib import Path
 
 import numpy as np
 
-from grid_topology_ai.contracts import (
-    topology_action_provenance,
-)
+from grid_topology_ai.contracts import topology_action_provenance
 from grid_topology_ai.topology_actions import (
     STOP_PLUS_BRANCH_STATUS_POLICY_LAYOUT,
     ActionSpaceConfig,
@@ -23,19 +21,19 @@ def test_action_layout(
     branch_ids: Iterable[int] = (0,),
 ):
     return build_branch_action_slots(
-        tuple(
-            int(branch_id)
-            for branch_id in branch_ids
-        )
+        tuple(int(branch_id) for branch_id in branch_ids)
     )
+
+
+# This is a fixture helper, not a test function. It is imported by
+# test modules, so explicitly opt it out of pytest collection.
+test_action_layout.__test__ = False
 
 
 def topology_metadata(
     branch_ids: Iterable[int] = (0,),
     *,
-    action_space_config: ActionSpaceConfig = (
-        TEST_ACTION_SPACE_CONFIG
-    ),
+    action_space_config: ActionSpaceConfig = TEST_ACTION_SPACE_CONFIG,
 ) -> dict[str, object]:
     return topology_action_provenance(
         action_space_config,
@@ -46,9 +44,7 @@ def topology_metadata(
 def topology_csv_fields(
     branch_ids: Iterable[int] = (0,),
     *,
-    action_space_config: ActionSpaceConfig = (
-        TEST_ACTION_SPACE_CONFIG
-    ),
+    action_space_config: ActionSpaceConfig = TEST_ACTION_SPACE_CONFIG,
 ) -> dict[str, object]:
     provenance = topology_metadata(
         branch_ids,
@@ -56,9 +52,7 @@ def topology_csv_fields(
     )
     return {
         "topology_action_contract_version": int(
-            provenance[
-                "topology_action_contract_version"
-            ]
+            provenance["topology_action_contract_version"]
         ),
         "topology_action_config": json.dumps(
             provenance["topology_action_config"],
@@ -67,9 +61,7 @@ def topology_csv_fields(
             allow_nan=False,
         ),
         "topology_action_config_fingerprint": str(
-            provenance[
-                "topology_action_config_fingerprint"
-            ]
+            provenance["topology_action_config_fingerprint"]
         ),
         "action_layout": json.dumps(
             provenance["action_layout"],
@@ -78,9 +70,7 @@ def topology_csv_fields(
             allow_nan=False,
         ),
         "action_layout_fingerprint": str(
-            provenance[
-                "action_layout_fingerprint"
-            ]
+            provenance["action_layout_fingerprint"]
         ),
     }
 
@@ -88,20 +78,14 @@ def topology_csv_fields(
 def checkpoint_topology_fields(
     branch_ids: Iterable[int] = (0,),
     *,
-    action_space_config: ActionSpaceConfig = (
-        TEST_ACTION_SPACE_CONFIG
-    ),
+    action_space_config: ActionSpaceConfig = TEST_ACTION_SPACE_CONFIG,
 ) -> dict[str, object]:
     return {
         **topology_metadata(
             branch_ids,
-            action_space_config=(
-                action_space_config
-            ),
+            action_space_config=action_space_config,
         ),
-        "policy_layout": (
-            STOP_PLUS_BRANCH_STATUS_POLICY_LAYOUT
-        ),
+        "policy_layout": STOP_PLUS_BRANCH_STATUS_POLICY_LAYOUT,
     }
 
 
@@ -117,22 +101,11 @@ def branch_ids_from_state_path(
         return (0,)
 
     try:
-        with np.load(
-            path,
-            allow_pickle=False,
-        ) as data:
+        with np.load(path, allow_pickle=False) as data:
             if "branch_ids" in data.files:
-                values = np.asarray(
-                    data["branch_ids"]
-                )
-                if (
-                    values.ndim == 1
-                    and values.size > 0
-                ):
-                    return tuple(
-                        int(value)
-                        for value in values.tolist()
-                    )
+                values = np.asarray(data["branch_ids"])
+                if values.ndim == 1 and values.size > 0:
+                    return tuple(int(value) for value in values.tolist())
 
             if "branch_features" in data.files:
                 branch_features = np.asarray(
@@ -140,18 +113,9 @@ def branch_ids_from_state_path(
                 )
                 if branch_features.ndim >= 1:
                     return tuple(
-                        range(
-                            int(
-                                branch_features.shape[0]
-                            )
-                        )
+                        range(int(branch_features.shape[0]))
                     )
-    except (
-        OSError,
-        EOFError,
-        ValueError,
-        TypeError,
-    ):
+    except (OSError, EOFError, ValueError, TypeError):
         return (0,)
 
     return (0,)
@@ -196,20 +160,14 @@ def enrich_state_arrays(
         metadata = json.loads(
             str(raw_metadata.item())
         )
-    except (
-        json.JSONDecodeError,
-        ValueError,
-        TypeError,
-    ):
+    except (json.JSONDecodeError, ValueError, TypeError):
         return result
 
     if not isinstance(metadata, dict):
         return result
 
     metadata.update(
-        topology_metadata(
-            branch_ids.tolist()
-        )
+        topology_metadata(branch_ids.tolist())
     )
     result["metadata_json"] = np.array(
         json.dumps(metadata)
@@ -220,15 +178,12 @@ def enrich_state_arrays(
 def fake_dataset_topology_fields(
     num_branches: int,
 ) -> dict[str, object]:
-    num_branches = int(num_branches)
     layout = test_action_layout(
-        range(num_branches)
+        range(int(num_branches))
     )
-
+    num_actions = int(num_branches) + 1
     return {
-        "topology_action_config": (
-            TEST_ACTION_SPACE_CONFIG
-        ),
+        "topology_action_config": TEST_ACTION_SPACE_CONFIG,
         "action_layout": layout,
         "action_layout_fingerprint": (
             action_layout_fingerprint(layout)
@@ -237,10 +192,7 @@ def fake_dataset_topology_fields(
             STOP_PLUS_BRANCH_STATUS_POLICY_LAYOUT
         ),
         "action_layout_count": 1,
-        "reference_num_buses": max(
-            1,
-            num_branches,
-        ),
-        "reference_num_branches": num_branches,
-        "reference_num_actions": num_branches + 1,
+        "reference_num_buses": int(num_branches),
+        "reference_num_branches": int(num_branches),
+        "reference_num_actions": num_actions,
     }
