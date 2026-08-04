@@ -124,7 +124,7 @@ def test_pipeline_initialization_order(tmp_path: Path, monkeypatch) -> None:
     calls: list[str] = []
     _patch_basics(monkeypatch, tmp_path, calls, start=3, completed=(1, 2))
     run_self_play_pipeline(_request(tmp_path, n_iterations=2))
-    assert calls[:7] == ["resolve_run_state", "save_yaml", "initialize_best_state", "initialize_pool_metadata", "RollingReplayBuffer", "load_learning_curve"]
+    assert calls[:6] == ["resolve_run_state", "initialize_best_state", "save_yaml", "initialize_pool_metadata", "RollingReplayBuffer", "load_learning_curve"]
 
 
 def test_pipeline_passes_shared_state_between_iterations(tmp_path: Path, monkeypatch) -> None:
