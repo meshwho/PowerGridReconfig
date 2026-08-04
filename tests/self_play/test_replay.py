@@ -21,6 +21,9 @@ from grid_topology_ai.self_play import replay as replay_module
 from grid_topology_ai.self_play.artifacts import sha256_file
 from grid_topology_ai.self_play.replay import RollingReplayBuffer
 from grid_topology_ai.termination import TerminationReason
+from grid_topology_ai.topology_actions import (
+    STOP_PLUS_BRANCH_STATUS_POLICY_LAYOUT,
+)
 from tests.outcome_evidence_helpers import terminal_evidence_fields
 from tests.topology_contract_helpers import topology_metadata
 
@@ -52,6 +55,7 @@ def _producer_checkpoint_metadata() -> dict[str, object]:
         "action_layout_fingerprint": action[
             "action_layout_fingerprint"
         ],
+        "policy_layout": STOP_PLUS_BRANCH_STATUS_POLICY_LAYOUT,
     }
 
 
