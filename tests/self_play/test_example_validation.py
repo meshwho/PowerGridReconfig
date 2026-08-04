@@ -397,14 +397,18 @@ def test_edge_index_out_of_bounds_is_rejected(tmp_path: Path) -> None:
     )
 
 
-def test_inconsistent_graph_dimensions_are_rejected(tmp_path: Path) -> None:
+def test_inconsistent_graph_feature_dimensions_are_rejected(tmp_path: Path) -> None:
     s1 = write_state(tmp_path / "s1.npz")
-    s2 = write_state(tmp_path / "s2.npz", bus_features=np.zeros((3, 3)))
+    s2 = write_state(
+        tmp_path / "s2.npz",
+        bus_features=np.zeros((3, 4), dtype=np.float32),
+    )
     r1 = valid_row(s1)
     r2 = valid_row(s2)
     r2["state_id"] = "state-2"
     assert_rejected(
-        write_csv(tmp_path / "examples.csv", [r1, r2]), "dimensions mismatch"
+        write_csv(tmp_path / "examples.csv", [r1, r2]),
+        "feature dimensions mismatch",
     )
 
 
