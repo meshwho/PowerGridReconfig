@@ -355,6 +355,39 @@ def _required_quota_overlap(
     )
 
 
+def _cap_membership(
+    meta: Mapping[str, Any],
+    config: CurriculumSamplingConfig,
+) -> tuple[bool, bool]:
+    return _is_simple(meta), _is_frontier(meta, config)
+
+
+def _max_fill_under_caps(
+    *,
+    group_counts: Mapping[tuple[bool, bool], int],
+    simple_capacity: int,
+    frontier_capacity: int,
+) -> int:
+    simple_capacity = max(int(simple_capacity), 0)
+    frontier_capacity = max(int(frontier_capacity), 0)
+
+    neither = int(group_counts.get((False, False), 0))
+    simple_only = min(
+        int(group_counts.get((True, False), 0)),
+        simple_capacity,
+    )
+    frontier_only = min(
+        int(group_counts.get((False, True), 0)),
+        frontier_capacity,
+    )
+    both = min(
+        int(group_counts.get((True, True), 0)),
+        simple_capacity - simple_only,
+        frontier_capacity - frontier_only,
+    )
+    return neither + simple_only + frontier_only + both
+
+
 def sample_curriculum_from_pool(
     pool_metadata: dict[str, Any],
     n: int,
@@ -490,21 +523,54 @@ def sample_curriculum_from_pool(
             _is_frontier(scenarios[scenario_id], resolved_config)
             for scenario_id in selected
         )
+        group_counts = Counter(
+            _cap_membership(scenarios[scenario_id], resolved_config)
+            for scenario_id in remaining
+        )
 
         eligible: list[str] = []
+        slots_after_pick = target_count - len(selected) - 1
         for scenario_id in remaining:
             meta = scenarios[scenario_id]
+            is_simple, is_frontier = _cap_membership(
+                meta,
+                resolved_config,
+            )
             if (
                 enforce_simple_cap
-                and _is_simple(meta)
+                and is_simple
                 and selected_simple >= simple_limit
             ):
                 continue
             if (
                 enforce_frontier_cap
-                and _is_frontier(meta, resolved_config)
+                and is_frontier
                 and selected_frontier >= frontier_limit
             ):
+                continue
+
+            simple_after_pick = selected_simple + int(is_simple)
+            frontier_after_pick = selected_frontier + int(is_frontier)
+            simple_capacity = (
+                simple_limit - simple_after_pick
+                if enforce_simple_cap
+                else slots_after_pick
+            )
+            frontier_capacity = (
+                frontier_limit - frontier_after_pick
+                if enforce_frontier_cap
+                else slots_after_pick
+            )
+
+            membership = (is_simple, is_frontier)
+            group_counts[membership] -= 1
+            max_fill = _max_fill_under_caps(
+                group_counts=group_counts,
+                simple_capacity=simple_capacity,
+                frontier_capacity=frontier_capacity,
+            )
+            group_counts[membership] += 1
+            if max_fill < slots_after_pick:
                 continue
             eligible.append(scenario_id)
 
