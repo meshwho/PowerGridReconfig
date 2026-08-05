@@ -470,6 +470,8 @@ def run_self_play_iteration(
         pool_metadata=request.pool_metadata,
         n=config.n_scenarios_per_iteration,
         seed=self_play_seeds.scenario_sampling,
+        current_iter=iteration,
+        config=config.pool.curriculum,
     )
 
     selected_ids_path = iter_dir / "selected_scenario_ids.txt"
@@ -814,6 +816,9 @@ def run_self_play_iteration(
         current_iter=iteration,
         path=paths.pool_metadata,
         selected_scenario_ids=scenario_ids,
+        stale_after_iterations=(
+            config.pool.curriculum.stale_after_iterations
+        ),
     )
 
     candidate_metric = candidate_metrics.get(metric_name)
