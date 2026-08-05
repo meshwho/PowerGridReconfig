@@ -18,6 +18,8 @@ _REQUIRED_HASHES = {
     "candidate_checkpoint_sha256",
     "replay_iteration_sha256",
 }
+_CURRICULUM_REPORT_FILENAME = "curriculum_sampling.json"
+_CURRICULUM_HASH_KEY = "curriculum_sampling_sha256"
 
 
 def _validate_status(*, accepted: bool, status: str) -> None:
@@ -52,6 +54,88 @@ def _validate_metadata(path: Path, *, iteration: int, accepted: bool) -> None:
         raise ValueError(f"metadata.json accepted must be a bool: {path}")
     if metadata_accepted != accepted:
         raise ValueError(f"metadata.json accepted does not match {accepted}: {path}")
+
+
+def _validate_curriculum_sampling(metadata_path: Path) -> None:
+    metadata = load_json(metadata_path)
+    report_path = metadata_path.parent / _CURRICULUM_REPORT_FILENAME
+    hashes = metadata.get("hashes")
+    extra = metadata.get("extra")
+
+    has_curriculum_fields = (
+        isinstance(hashes, Mapping)
+        and _CURRICULUM_HASH_KEY in hashes
+    ) or (
+        isinstance(extra, Mapping)
+        and any(
+            key in extra
+            for key in (
+                _CURRICULUM_HASH_KEY,
+                "curriculum_sampling",
+                "curriculum_sampling_path",
+            )
+        )
+    )
+    if not report_path.exists() and not has_curriculum_fields:
+        return
+
+    if not isinstance(hashes, Mapping):
+        raise ValueError(
+            f"metadata.json hashes must contain curriculum data: {metadata_path}"
+        )
+    if not isinstance(extra, Mapping):
+        raise ValueError(
+            f"metadata.json extra must contain curriculum data: {metadata_path}"
+        )
+
+    expected_hash = hashes.get(_CURRICULUM_HASH_KEY)
+    if not isinstance(expected_hash, str) or not expected_hash:
+        raise ValueError(
+            "metadata.json is missing curriculum sampling hash: "
+            f"{metadata_path}"
+        )
+    if extra.get(_CURRICULUM_HASH_KEY) != expected_hash:
+        raise ValueError(
+            "metadata.json curriculum sampling hashes disagree: "
+            f"{metadata_path}"
+        )
+
+    _require_file(report_path, label=_CURRICULUM_REPORT_FILENAME)
+    actual_hash = sha256_file(report_path)
+    if actual_hash != expected_hash:
+        raise ValueError(
+            "Corrupt curriculum sampling report: "
+            f"{report_path}"
+        )
+
+    stored_path = extra.get("curriculum_sampling_path")
+    if (
+        not isinstance(stored_path, str)
+        or Path(stored_path).name != _CURRICULUM_REPORT_FILENAME
+    ):
+        raise ValueError(
+            "metadata.json has invalid curriculum sampling path: "
+            f"{metadata_path}"
+        )
+
+    stored_report = extra.get("curriculum_sampling")
+    if not isinstance(stored_report, Mapping):
+        raise ValueError(
+            "metadata.json is missing curriculum sampling payload: "
+            f"{metadata_path}"
+        )
+
+    report = load_json(report_path)
+    if dict(stored_report) != report:
+        raise ValueError(
+            "metadata.json curriculum sampling payload does not match report: "
+            f"{report_path}"
+        )
+    if int(report.get("iteration", -1)) != int(metadata.get("iteration", -1)):
+        raise ValueError(
+            "Curriculum sampling report iteration does not match metadata: "
+            f"{report_path}"
+        )
 
 
 def _validate_pool_metadata(path: Path, *, iteration: int) -> None:
@@ -138,6 +222,7 @@ def write_iteration_completion_marker(
         _require_file(Path(artifact_path), label=label)
 
     _validate_metadata(metadata_path, iteration=iteration, accepted=accepted)
+    _validate_curriculum_sampling(metadata_path)
     _validate_pool_metadata(pool_metadata_path, iteration=iteration)
     _validate_replay_manifest(
         replay_manifest_path,
@@ -242,4 +327,5 @@ def validate_iteration_completion(
                 f"Corrupt completed iteration artifact {hash_key}: {artifact_path}"
             )
 
+    _validate_curriculum_sampling(iteration_dir / "metadata.json")
     return marker
