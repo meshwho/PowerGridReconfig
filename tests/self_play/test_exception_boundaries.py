@@ -29,9 +29,9 @@ def test_self_play_broad_exception_boundaries_are_documented() -> None:
     )
 
     assert matches == [
+        "grid_topology_ai/self_play/_stages_base.py",
         "grid_topology_ai/self_play/examples.py",
         "grid_topology_ai/self_play/lineage_artifacts.py",
-        "grid_topology_ai/self_play/stages.py",
     ]
 
     examples_source = Path(
@@ -49,7 +49,7 @@ def test_self_play_broad_exception_boundaries_are_documented() -> None:
     assert "frame = pd.read_parquet(path)" in lineage_source
 
     stages_source = Path(
-        "grid_topology_ai/self_play/stages.py"
+        "grid_topology_ai/self_play/_stages_base.py"
     ).read_text(encoding="utf-8")
     assert "Intentional top-level logging boundary" in stages_source
 

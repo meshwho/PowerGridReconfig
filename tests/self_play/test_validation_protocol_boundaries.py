@@ -6,12 +6,14 @@ from grid_topology_ai.training.graph_policy_value import TrainingRequest
 
 
 def test_validation_protocol_static_boundaries() -> None:
-    stages = Path("grid_topology_ai/self_play/stages.py").read_text()
+    stages = Path("grid_topology_ai/self_play/_stages_base.py").read_text()
     iteration = Path("grid_topology_ai/self_play/iteration.py").read_text()
     iteration_split = Path(
         "grid_topology_ai/self_play/iteration_split.py"
     ).read_text()
-    training = Path("grid_topology_ai/training/graph_policy_value.py").read_text()
+    training = Path(
+        "grid_topology_ai/training/_graph_policy_value_base.py"
+    ).read_text()
     checkpoints = Path("grid_topology_ai/training/checkpoints.py").read_text()
 
     assert "validation_examples_csv=None" not in stages
