@@ -11,6 +11,7 @@ import torch
 
 from grid_topology_ai.config import SelfPlayConfig
 from grid_topology_ai.config.physics import DEFAULT_PHYSICS_CONFIG
+from grid_topology_ai.config.pool import CurriculumSamplingConfig
 from grid_topology_ai.contracts import (
     CHECKPOINT_CONTRACT_VERSION,
     EVALUATION_METRICS_CONTRACT_VERSION,
@@ -29,6 +30,10 @@ from grid_topology_ai.self_play.iteration import (
     run_self_play_iteration,
 )
 from grid_topology_ai.self_play.paths import SelfPlayPaths
+from grid_topology_ai.self_play.pool_sampling import (
+    _priority_weights,
+    sample_curriculum_from_pool,
+)
 from grid_topology_ai.evaluation.paired_results import (
     PAIRED_OUTCOME_FIELDS,
 )
@@ -251,6 +256,10 @@ def _config() -> SelfPlayConfig:
                 "transitions_csv": "pool/transitions.csv",
                 "raw_dir": "pool/raw",
                 "metadata_path": "runs/iteration_test/pool_metadata.json",
+                "curriculum": {
+                    "stale_after_iterations": 7,
+                    "priority_floor": 0.01,
+                },
             },
             "eval_csv": "eval/transitions.csv",
             "eval_raw_dir": "eval/raw",
@@ -388,7 +397,7 @@ def _install_stage_fakes(monkeypatch: pytest.MonkeyPatch, calls: list[str] | Non
     monkeypatch.setattr("grid_topology_ai.self_play.iteration.run_evaluate", fake_evaluate)
     monkeypatch.setattr(
         "grid_topology_ai.self_play.iteration.sample_from_pool",
-        lambda *, pool_metadata, n, seed: [2, 1],
+        lambda *, pool_metadata, n, seed, current_iter, config: [2, 1],
     )
     monkeypatch.setattr(
         "grid_topology_ai.self_play.iteration.update_and_save_pool_metadata",
@@ -420,20 +429,35 @@ def test_iteration_uses_seed_and_samples_scenarios(
     _install_stage_fakes(monkeypatch)
     captured: dict[str, object] = {}
 
-    def fake_sample(*, pool_metadata, n, seed):
+    def fake_sample(
+        *,
+        pool_metadata,
+        n,
+        seed,
+        current_iter,
+        config,
+    ):
+        captured["pool_metadata"] = pool_metadata
         captured["n"] = n
         captured["seed"] = seed
+        captured["current_iter"] = current_iter
+        captured["config"] = config
         return [1, 2]
 
     monkeypatch.setattr("grid_topology_ai.self_play.iteration.sample_from_pool", fake_sample)
 
-    run_self_play_iteration(_request(tmp_path, iteration=2))
+    request = _request(tmp_path, iteration=2)
+    run_self_play_iteration(request)
 
     expected_seed = iteration_module._self_play_seeds(
         base_seed=10,
         iteration=2,
     ).scenario_sampling
-    assert captured == {"n": 2, "seed": expected_seed}
+    assert captured["pool_metadata"] is request.pool_metadata
+    assert captured["n"] == 2
+    assert captured["seed"] == expected_seed
+    assert captured["current_iter"] == 2
+    assert captured["config"] is request.config.pool.curriculum
 
 
 def test_iteration_writes_selected_scenario_ids(
@@ -534,18 +558,21 @@ def test_pool_is_updated_for_rejected_candidate(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _install_stage_fakes(monkeypatch)
-    called = {"updated": False}
+    captured: dict[str, object] = {}
     monkeypatch.setattr("grid_topology_ai.self_play.iteration.accept_candidate", lambda **kwargs: False)
 
     def fake_update(**kwargs: Any) -> dict[str, Any]:
-        called["updated"] = True
+        captured.update(kwargs)
         return {"updated": True}
 
     monkeypatch.setattr("grid_topology_ai.self_play.iteration.update_and_save_pool_metadata", fake_update)
 
-    result = run_self_play_iteration(_request(tmp_path))
+    request = _request(tmp_path)
+    result = run_self_play_iteration(request)
 
-    assert called["updated"] is True
+    assert captured["current_iter"] == request.iteration
+    assert captured["selected_scenario_ids"] == [2, 1]
+    assert captured["stale_after_iterations"] == 7
     assert result.pool_metadata == {"updated": True}
 
 
@@ -785,7 +812,7 @@ def test_iteration_stops_before_training_when_replay_validation_fails(
     )
     monkeypatch.setattr(
         "grid_topology_ai.self_play.iteration.sample_from_pool",
-        lambda *, pool_metadata, n, seed: [1, 2],
+        lambda **kwargs: [1, 2],
     )
     base = _request(tmp_path)
     request = IterationRequest(
@@ -880,3 +907,68 @@ def test_iteration_rejects_candidate_metrics_pf_alg_before_acceptance(
 
     assert request.parent_checkpoint.read_bytes() == b"parent"
     assert not (_paths(tmp_path).iteration_completion_marker(request.iteration)).exists()
+
+
+def _curriculum_scenario(difficulty: str) -> dict[str, object]:
+    return {
+        "difficulty_class": difficulty,
+        "times_attempted": 1,
+        "times_solved": 0,
+        "solve_rate": 0.0,
+        "last_attempted_iter": 0,
+        "learning_progress": 0.0,
+        "uncertainty": 1.0,
+        "staleness": 0.0,
+        "priority": 0.05,
+    }
+
+
+@pytest.mark.parametrize("seed", [0, 1, 11, 91])
+def test_curriculum_sampling_reserves_required_quota_overlap(
+    seed: int,
+) -> None:
+    metadata = {
+        "schema_version": 3,
+        "last_updated_iteration": 0,
+        "scenarios": {
+            "1": _curriculum_scenario("medium"),
+            "2": _curriculum_scenario("medium"),
+            "3": _curriculum_scenario("hard"),
+            "4": _curriculum_scenario("hard"),
+        },
+    }
+    config = CurriculumSamplingConfig(
+        never_solved_min_fraction=2 / 3,
+        hard_min_fraction=2 / 3,
+        simple_max_fraction=1.0,
+        frontier_max_fraction=1.0,
+    )
+
+    sample = sample_curriculum_from_pool(
+        metadata,
+        n=3,
+        seed=seed,
+        current_iter=1,
+        config=config,
+    )
+
+    assert sample.report["never_solved"]["shortfall"] == 0
+    assert sample.report["hard"]["shortfall"] == 0
+    assert sample.report["never_solved"]["selected"] >= 2
+    assert sample.report["hard"]["selected"] >= 2
+
+
+def test_priority_weights_use_the_configured_floor() -> None:
+    scenarios = {
+        "1": {"priority": 0.01},
+        "2": {"priority": 0.11},
+        "3": {"priority": float("nan")},
+    }
+
+    weights = _priority_weights(
+        scenarios,
+        ["1", "2", "3"],
+        priority_floor=0.01,
+    )
+
+    assert weights.tolist() == pytest.approx([0.01, 0.11, 0.01])
