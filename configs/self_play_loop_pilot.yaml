@@ -8,6 +8,21 @@ pool:
   raw_dir: data/gridfm_generated/case118_bootstrap_v1/raw
   metadata_path: runs/self_play_pilot/inputs/pool_metadata_pilot.json
 
+  # Quotas are minimums. Caps apply to the remaining weighted fill.
+  curriculum:
+    never_solved_min_fraction: 0.20
+    hard_min_fraction: 0.25
+    simple_max_fraction: 0.35
+    frontier_max_fraction: 0.50
+    frontier_solve_rate_min: 0.25
+    frontier_solve_rate_max: 0.75
+    learning_progress_weight: 1.00
+    uncertainty_weight: 0.75
+    staleness_weight: 0.50
+    frontier_weight: 0.35
+    stale_after_iterations: 3
+    priority_floor: 0.05
+
 eval_csv: runs/self_play_pilot/inputs/eval_pilot.csv
 eval_raw_dir: data/gridfm_generated/case118_eval_v1/raw
 
