@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Mapping
+from collections import Counter
+from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
 from typing import Any
 
@@ -32,6 +33,12 @@ class PriorityBreakdown:
             "frontier": self.frontier,
             "difficulty_bonus": self.difficulty_bonus,
         }
+
+
+@dataclass(frozen=True, slots=True)
+class PoolSample:
+    scenario_ids: tuple[int, ...]
+    report: dict[str, Any]
 
 
 def _finite_unit_interval(value: Any) -> float:
@@ -272,44 +279,10 @@ def _scenario_staleness(
     )
 
 
-def sample_from_pool(
-    pool_metadata: dict[str, Any],
-    n: int,
-    seed: int | None = None,
-    *,
-    current_iter: int | None = None,
-    config: CurriculumSamplingConfig | None = None,
-) -> list[int]:
-    """
-    Prioritized sampling without replacement.
-
-    Schema-v3 pools refresh learning-signal priorities immediately before
-    sampling. Schema-v2 pools keep their stored legacy priorities.
-    """
-
-    n = int(n)
-    if n <= 0:
-        raise ValueError(f"n must be positive, got {n}.")
-
-    scenarios = pool_metadata.get("scenarios", {})
-    if not scenarios:
-        raise ValueError("Pool metadata contains no scenarios.")
-
-    if _metadata_schema_version(pool_metadata) >= (
-        _SCHEMA_WITH_LEARNING_SIGNALS
-    ):
-        if current_iter is None:
-            current_iter = (
-                int(pool_metadata.get("last_updated_iteration", 0))
-                + 1
-            )
-        refresh_priorities(
-            pool_metadata,
-            current_iter=int(current_iter),
-            config=config,
-        )
-
-    ids = list(scenarios.keys())
+def _priority_weights(
+    scenarios: Mapping[str, Mapping[str, Any]],
+    scenario_ids: Sequence[str],
+) -> np.ndarray:
     priorities = np.array(
         [
             float(
@@ -318,7 +291,7 @@ def sample_from_pool(
                     0.05,
                 )
             )
-            for scenario_id in ids
+            for scenario_id in scenario_ids
         ],
         dtype=np.float64,
     )
@@ -328,9 +301,24 @@ def sample_from_pool(
         posinf=0.05,
         neginf=0.05,
     )
-    priorities = np.maximum(priorities, 0.05)
+    return np.maximum(priorities, 0.05)
 
+
+def _weighted_pick(
+    *,
+    scenarios: Mapping[str, Mapping[str, Any]],
+    scenario_ids: Sequence[str],
+    count: int,
+    rng: np.random.Generator,
+) -> list[str]:
+    count = min(max(int(count), 0), len(scenario_ids))
+    if count == 0:
+        return []
+
+    ordered_ids = list(scenario_ids)
+    priorities = _priority_weights(scenarios, ordered_ids)
     total_priority = float(priorities.sum())
+
     if total_priority <= 0.0:
         probabilities = (
             np.ones_like(priorities) / len(priorities)
@@ -338,15 +326,364 @@ def sample_from_pool(
     else:
         probabilities = priorities / total_priority
 
-    rng = np.random.default_rng(seed)
     chosen = rng.choice(
-        ids,
-        size=min(n, len(ids)),
+        ordered_ids,
+        size=count,
         replace=False,
         p=probabilities,
     )
+    return [str(scenario_id) for scenario_id in chosen]
 
-    return [int(scenario_id) for scenario_id in chosen]
+
+def _is_never_solved(meta: Mapping[str, Any]) -> bool:
+    return (
+        int(meta.get("times_attempted", 0)) > 0
+        and int(meta.get("times_solved", 0)) == 0
+    )
+
+
+def _is_hard(meta: Mapping[str, Any]) -> bool:
+    return str(meta.get("difficulty_class", "")).lower() == "hard"
+
+
+def _is_simple(meta: Mapping[str, Any]) -> bool:
+    return str(meta.get("difficulty_class", "")).lower() == "simple"
+
+
+def _is_frontier(
+    meta: Mapping[str, Any],
+    config: CurriculumSamplingConfig,
+) -> bool:
+    solve_rate = _finite_unit_interval(
+        meta.get("solve_rate", 0.0)
+    )
+    return (
+        config.frontier_solve_rate_min
+        <= solve_rate
+        <= config.frontier_solve_rate_max
+    )
+
+
+def _legacy_sample(
+    *,
+    scenarios: Mapping[str, Mapping[str, Any]],
+    n: int,
+    rng: np.random.Generator,
+) -> tuple[int, ...]:
+    ids = list(scenarios.keys())
+    chosen = _weighted_pick(
+        scenarios=scenarios,
+        scenario_ids=ids,
+        count=min(n, len(ids)),
+        rng=rng,
+    )
+    return tuple(int(scenario_id) for scenario_id in chosen)
+
+
+def _fraction(count: int, total: int) -> float:
+    return 0.0 if total == 0 else float(count / total)
+
+
+def sample_curriculum_from_pool(
+    pool_metadata: dict[str, Any],
+    n: int,
+    seed: int | None = None,
+    *,
+    current_iter: int | None = None,
+    config: CurriculumSamplingConfig | None = None,
+) -> PoolSample:
+    n = int(n)
+    if n <= 0:
+        raise ValueError(f"n must be positive, got {n}.")
+
+    scenarios = pool_metadata.get("scenarios", {})
+    if not scenarios:
+        raise ValueError("Pool metadata contains no scenarios.")
+
+    rng = np.random.default_rng(seed)
+    schema_version = _metadata_schema_version(pool_metadata)
+
+    if schema_version < _SCHEMA_WITH_LEARNING_SIGNALS:
+        scenario_ids = _legacy_sample(
+            scenarios=scenarios,
+            n=n,
+            rng=rng,
+        )
+        return PoolSample(
+            scenario_ids=scenario_ids,
+            report={
+                "mode": "legacy",
+                "requested_count": n,
+                "selected_count": len(scenario_ids),
+            },
+        )
+
+    resolved_config = _resolve_curriculum_config(
+        pool_metadata,
+        config,
+    )
+    if current_iter is None:
+        current_iter = (
+            int(pool_metadata.get("last_updated_iteration", 0))
+            + 1
+        )
+
+    refresh_priorities(
+        pool_metadata,
+        current_iter=int(current_iter),
+        config=resolved_config,
+    )
+
+    ids = sorted(scenarios.keys(), key=int)
+    target_count = min(n, len(ids))
+
+    never_solved_ids = [
+        scenario_id
+        for scenario_id in ids
+        if _is_never_solved(scenarios[scenario_id])
+    ]
+    hard_ids = [
+        scenario_id
+        for scenario_id in ids
+        if _is_hard(scenarios[scenario_id])
+    ]
+
+    never_solved_target = math.ceil(
+        target_count
+        * resolved_config.never_solved_min_fraction
+    )
+    hard_target = math.ceil(
+        target_count
+        * resolved_config.hard_min_fraction
+    )
+
+    selected: list[str] = []
+    selected_set: set[str] = set()
+
+    def add_candidates(
+        candidate_ids: Sequence[str],
+        count: int,
+    ) -> None:
+        available = [
+            scenario_id
+            for scenario_id in candidate_ids
+            if scenario_id not in selected_set
+        ]
+        picks = _weighted_pick(
+            scenarios=scenarios,
+            scenario_ids=available,
+            count=min(count, target_count - len(selected)),
+            rng=rng,
+        )
+        selected.extend(picks)
+        selected_set.update(picks)
+
+    add_candidates(
+        never_solved_ids,
+        never_solved_target,
+    )
+
+    selected_hard = sum(
+        _is_hard(scenarios[scenario_id])
+        for scenario_id in selected
+    )
+    add_candidates(
+        hard_ids,
+        max(hard_target - selected_hard, 0),
+    )
+
+    simple_limit = math.floor(
+        target_count * resolved_config.simple_max_fraction
+    )
+    frontier_limit = math.floor(
+        target_count * resolved_config.frontier_max_fraction
+    )
+    enforce_simple_cap = True
+    enforce_frontier_cap = True
+    cap_relaxations: list[str] = []
+
+    while len(selected) < target_count:
+        remaining = [
+            scenario_id
+            for scenario_id in ids
+            if scenario_id not in selected_set
+        ]
+        if not remaining:
+            break
+
+        selected_simple = sum(
+            _is_simple(scenarios[scenario_id])
+            for scenario_id in selected
+        )
+        selected_frontier = sum(
+            _is_frontier(
+                scenarios[scenario_id],
+                resolved_config,
+            )
+            for scenario_id in selected
+        )
+
+        eligible: list[str] = []
+        for scenario_id in remaining:
+            meta = scenarios[scenario_id]
+
+            if (
+                enforce_simple_cap
+                and _is_simple(meta)
+                and selected_simple >= simple_limit
+            ):
+                continue
+
+            if (
+                enforce_frontier_cap
+                and _is_frontier(meta, resolved_config)
+                and selected_frontier >= frontier_limit
+            ):
+                continue
+
+            eligible.append(scenario_id)
+
+        if not eligible:
+            if (
+                enforce_frontier_cap
+                and any(
+                    _is_frontier(
+                        scenarios[scenario_id],
+                        resolved_config,
+                    )
+                    for scenario_id in remaining
+                )
+            ):
+                enforce_frontier_cap = False
+                cap_relaxations.append(
+                    "frontier_max_fraction"
+                )
+                continue
+
+            if (
+                enforce_simple_cap
+                and any(
+                    _is_simple(scenarios[scenario_id])
+                    for scenario_id in remaining
+                )
+            ):
+                enforce_simple_cap = False
+                cap_relaxations.append(
+                    "simple_max_fraction"
+                )
+                continue
+
+            eligible = remaining
+
+        add_candidates(eligible, 1)
+
+    selected_never_solved = sum(
+        _is_never_solved(scenarios[scenario_id])
+        for scenario_id in selected
+    )
+    selected_hard = sum(
+        _is_hard(scenarios[scenario_id])
+        for scenario_id in selected
+    )
+    selected_simple = sum(
+        _is_simple(scenarios[scenario_id])
+        for scenario_id in selected
+    )
+    selected_frontier = sum(
+        _is_frontier(
+            scenarios[scenario_id],
+            resolved_config,
+        )
+        for scenario_id in selected
+    )
+    selected_by_difficulty = Counter(
+        str(
+            scenarios[scenario_id].get(
+                "difficulty_class",
+                "unknown",
+            )
+        )
+        for scenario_id in selected
+    )
+
+    report = {
+        "mode": "curriculum",
+        "requested_count": n,
+        "target_count": target_count,
+        "selected_count": len(selected),
+        "never_solved": {
+            "available": len(never_solved_ids),
+            "target": never_solved_target,
+            "selected": selected_never_solved,
+            "shortfall": max(
+                never_solved_target - selected_never_solved,
+                0,
+            ),
+            "fraction": _fraction(
+                selected_never_solved,
+                len(selected),
+            ),
+        },
+        "hard": {
+            "available": len(hard_ids),
+            "target": hard_target,
+            "selected": selected_hard,
+            "shortfall": max(
+                hard_target - selected_hard,
+                0,
+            ),
+            "fraction": _fraction(
+                selected_hard,
+                len(selected),
+            ),
+        },
+        "simple": {
+            "limit": simple_limit,
+            "selected": selected_simple,
+            "fraction": _fraction(
+                selected_simple,
+                len(selected),
+            ),
+        },
+        "frontier": {
+            "limit": frontier_limit,
+            "selected": selected_frontier,
+            "fraction": _fraction(
+                selected_frontier,
+                len(selected),
+            ),
+        },
+        "selected_by_difficulty": dict(
+            sorted(selected_by_difficulty.items())
+        ),
+        "cap_relaxations": cap_relaxations,
+    }
+
+    return PoolSample(
+        scenario_ids=tuple(
+            int(scenario_id)
+            for scenario_id in selected
+        ),
+        report=report,
+    )
+
+
+def sample_from_pool(
+    pool_metadata: dict[str, Any],
+    n: int,
+    seed: int | None = None,
+    *,
+    current_iter: int | None = None,
+    config: CurriculumSamplingConfig | None = None,
+) -> list[int]:
+    sample = sample_curriculum_from_pool(
+        pool_metadata=pool_metadata,
+        n=n,
+        seed=seed,
+        current_iter=current_iter,
+        config=config,
+    )
+    return list(sample.scenario_ids)
 
 
 def refresh_priorities(
