@@ -2,9 +2,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 import torch
 
+from grid_topology_ai.contracts import (
+    require_graph_batching_checkpoint_contract,
+)
 from grid_topology_ai.models.graph_batch import (
+    GRAPH_BATCHING_CONTRACT_VERSION,
     collate_graph_samples,
 )
 from grid_topology_ai.models.graph_policy_value_net_v2 import (
@@ -339,3 +344,138 @@ def test_graph_v2_checkpoint_compatibility_ignores_reference_cardinality() -> No
         dataset=Dataset(),
         is_graph_v2=True,
     )
+
+
+def test_graph_v2_checkpoint_requires_variable_graph_contract() -> None:
+    legacy_checkpoint = {
+        "model_type": "graph_policy_value_net_v2",
+    }
+
+    with pytest.raises(
+        ValueError,
+        match="graph-batching contract",
+    ):
+        require_graph_batching_checkpoint_contract(
+            legacy_checkpoint,
+            source="legacy.pt",
+        )
+
+    current_checkpoint = {
+        "model_type": "graph_policy_value_net_v2",
+        "graph_batching_contract_version": (
+            GRAPH_BATCHING_CONTRACT_VERSION
+        ),
+        "topology_cardinality_independent": True,
+    }
+
+    require_graph_batching_checkpoint_contract(
+        current_checkpoint,
+        source="current.pt",
+    )
+
+    current_checkpoint[
+        "topology_cardinality_independent"
+    ] = False
+
+    with pytest.raises(
+        ValueError,
+        match="topology_cardinality_independent",
+    ):
+        require_graph_batching_checkpoint_contract(
+            current_checkpoint,
+            source="invalid.pt",
+        )
+
+
+def test_graph_v2_checkpoint_weights_cross_topology_cardinality(
+    tmp_path: Path,
+) -> None:
+    small, large = _variable_samples()
+
+    torch.manual_seed(29)
+    source_model = GraphPolicyValueNetV2(
+        num_bus_features=4,
+        num_branch_features=6,
+        hidden_dim=16,
+        num_layers=2,
+        dropout=0.0,
+        num_actions=int(
+            small["action_mask"].numel()
+        ),
+    )
+    source_model.eval()
+
+    checkpoint_path = tmp_path / "graph_v2.pt"
+    torch.save(
+        {
+            "model_type": (
+                "graph_policy_value_net_v2"
+            ),
+            "graph_batching_contract_version": (
+                GRAPH_BATCHING_CONTRACT_VERSION
+            ),
+            "topology_cardinality_independent": True,
+            "num_bus_features": 4,
+            "num_branch_features": 6,
+            "hidden_dim": 16,
+            "num_layers": 2,
+            "dropout": 0.0,
+            # Reference cardinality from the small graph
+            # remains metadata only.
+            "num_actions": int(
+                small["action_mask"].numel()
+            ),
+            "model_state_dict": (
+                source_model.state_dict()
+            ),
+        },
+        checkpoint_path,
+    )
+
+    checkpoint = torch.load(
+        checkpoint_path,
+        map_location="cpu",
+        weights_only=False,
+    )
+    require_graph_batching_checkpoint_contract(
+        checkpoint,
+        source=str(checkpoint_path),
+    )
+
+    restored_model = GraphPolicyValueNetV2(
+        num_bus_features=int(
+            checkpoint["num_bus_features"]
+        ),
+        num_branch_features=int(
+            checkpoint["num_branch_features"]
+        ),
+        hidden_dim=int(checkpoint["hidden_dim"]),
+        num_layers=int(checkpoint["num_layers"]),
+        dropout=float(checkpoint["dropout"]),
+    )
+    restored_model.load_state_dict(
+        checkpoint["model_state_dict"]
+    )
+    restored_model.eval()
+
+    batch = collate_graph_samples([large])
+
+    with torch.no_grad():
+        policy_logits, values = restored_model(
+            bus_features=batch["bus_features"],
+            branch_features=batch[
+                "branch_features"
+            ],
+            edge_index=batch["edge_index"],
+            edge_active_mask=batch[
+                "edge_active_mask"
+            ],
+            action_mask=batch["action_mask"],
+            node_batch=batch["node_batch"],
+            edge_batch=batch["edge_batch"],
+        )
+
+    assert policy_logits.shape == (1, 5)
+    assert values.shape == (1,)
+    assert torch.isfinite(policy_logits).all()
+    assert torch.isfinite(values).all()
