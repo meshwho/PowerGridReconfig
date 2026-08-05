@@ -214,9 +214,59 @@ Training batches are split by `scenario_id`. A scenario cannot appear in both tr
 
 Normalization arrays are part of the checkpoint contract. Fine-tuning from an initial checkpoint requires normalized features and reuses the parent checkpoint normalization statistics.
 
-## 10. Checkpoint selection
+## 10. Closed-loop checkpoint selection
 
-The main candidate checkpoint records `checkpoint_selection_metric=validation_loss` when validation data exists and `training_loss` otherwise. Additional variants record exact selector metadata: best loss uses `validation_loss`, best top-1 uses `validation_top1`, best top-5 uses `validation_top5`, best switch uses `validation_switch_accuracy`, best policy uses `policy_selection_score`, and last uses `last_epoch`.
+When `checkpoint_selection.enabled=true`, training must also set
+`training.save_multiple_best=true`. The trainer retains one best epoch for each
+of four validation objectives:
+
+- combined validation loss;
+- policy loss;
+- value loss;
+- value calibration error.
+
+`candidates_per_metric` is therefore fixed to `1`, and `max_candidates` cannot
+exceed `4`. The candidate pool is deduplicated by checkpoint SHA-256 before the
+arena runs.
+
+The validation pass records policy entropy and KL divergence, top-k target mass,
+value Brier score and calibration error, value bias and MAE, legal-action and
+target-support coverage, stop/switch fractions, and the same diagnostics split
+by `simple`, `medium`, `hard`, and `unknown` difficulty classes.
+
+The reduced closed-loop arena uses a separate tuning set. Preflight rejects
+scenario-ID or physical-lineage overlap between tuning and the self-play pool,
+regular evaluation set, or final test set. The winner is selected by
+`checkpoint_selection.metric`; `metric_direction` must be explicitly compatible
+with the metric and is either `maximize` or `minimize`.
+
+Before evaluation, every selected candidate is copied to an immutable location
+under:
+
+```text
+iter_XXX/checkpoint_selection/candidates/
+```
+
+The arena evaluates those archived copies, not mutable training paths. Its full
+report is written to:
+
+```text
+iter_XXX/checkpoint_selection/checkpoint_selection.json
+```
+
+The winning archived checkpoint is copied into the canonical
+`candidate_checkpoint.pt` and annotated with
+`checkpoint_selection_metric=closed_loop_arena`, the arena metric, selected
+value, candidate count, and report path. Only that winner proceeds to regular
+fixed evaluation and the acceptance decision.
+
+The arena report, archived candidate hashes, selected checkpoint hash, tuning
+scenario IDs, validation metrics, closed-loop metrics, and arena configuration
+are retained for audit. The report path, hash, and selection summary are copied
+into iteration metadata and `learning_curve.csv`. The completion marker also
+seals the report hash. Resume validation rejects a missing or modified report,
+a modified archived candidate, or a selected checkpoint that no longer matches
+the report.
 
 ## 11. Fixed evaluation
 
@@ -230,14 +280,16 @@ action provenance, or with a different allowlist/layout, is rejected rather
 than evaluated under different semantics.
 
 The regular evaluation set is a selection set: it is used after each iteration
-to decide whether a candidate checkpoint is promoted. The final test set is
-independent and is never used for training, self-play generation, candidate
-selection, or promotion. It is reserved for one evaluation of the final best
-checkpoint after the loop has completed.
+to decide whether the arena winner is promoted. The final test set is
+independent and is never used for training, self-play generation, epoch
+selection, arena ranking, or promotion. It is reserved for one evaluation of
+the final best checkpoint after the loop has completed.
 
 ## 12. PF_ALG provenance
 
-Generation config, evaluation config, evaluation requests, and fixed metrics must use exact integer `PF_ALG` values. Fractional or boolean values are rejected instead of rounded.
+Generation config, evaluation config, checkpoint-arena config, evaluation
+requests, and fixed metrics must use exact integer `PF_ALG` values. Fractional
+or boolean values are rejected instead of rounded.
 
 ## 13. Acceptance
 
@@ -245,21 +297,23 @@ Acceptance compares candidate metrics with the best accepted metrics. The primar
 
 ## 14. Atomic completion marker
 
-An iteration is complete only when `iteration_complete.json` exists and is valid. This marker is written after all required artifacts for the iteration are complete.
+An iteration is complete only when `iteration_complete.json` exists and is valid. This marker is written after all required artifacts for the iteration are complete. When closed-loop checkpoint selection is enabled, the marker also contains the SHA-256 of `checkpoint_selection.json`.
 
 ## 15. Resume behavior
 
-`--resume` continues after the latest valid completed iteration. If a later iteration directory exists without a valid `iteration_complete.json`, the loop refuses to continue until the operator removes or repairs the incomplete directory.
+`--resume` continues after the latest valid completed iteration. If a later iteration directory exists without a valid `iteration_complete.json`, the loop refuses to continue until the operator removes or repairs the incomplete directory. Resume also revalidates checkpoint-selection metadata, the arena report, the canonical winner, and every archived arena candidate.
 
 ## 16. Artifact hashes
 
-Dataset and state references are hashed in metadata so a run can be audited against the inputs used to create checkpoints and metrics.
+Dataset and state references are hashed in metadata so a run can be audited against the inputs used to create checkpoints and metrics. Closed-loop selection adds hashes for the arena report, immutable candidate copies, and selected canonical checkpoint.
 
 ## 17. Learning curve columns
 
 `learning_curve.csv` tracks iteration-level progress such as iteration index, candidate checkpoint, evaluation metrics, acceptance decision, and best metric state.
 It also records `self_play_*` exploration diagnostics so policy entropy
-and action coverage can be compared across iterations.
+and action coverage can be compared across iterations. Closed-loop runs record
+`checkpoint_selection_metric=closed_loop_arena`, the arena metric and selected
+value, candidate count, report path, and report SHA-256.
 
 ## 18. Failure recovery
 
@@ -269,8 +323,9 @@ For config or artifact validation failures, fix the referenced paths or metadata
 
 A pilot workflow is: prepare bootstrap artifacts, set verified
 `closeable_branch_ids` in the pilot YAML when tie-line closing is intended, run
-`--validate-only`, run `--plan-only`, execute one iteration, inspect training and
-evaluation artifacts, then resume for additional iterations.
+`--validate-only`, run `--plan-only`, execute one iteration, inspect training,
+checkpoint-selection, and evaluation artifacts, then resume for additional
+iterations.
 
 ## 20. Bootstrap metrics recalculation rules
 
