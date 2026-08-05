@@ -13,6 +13,7 @@ from grid_topology_ai.config.pool import CurriculumSamplingConfig
 
 _SCHEMA_WITH_LEARNING_SIGNALS = 3
 _BETA_UNIFORM_STD = math.sqrt(1.0 / 12.0)
+_LEGACY_PRIORITY_FLOOR = 0.05
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,10 +47,8 @@ def _finite_unit_interval(value: Any) -> float:
         number = float(value)
     except (TypeError, ValueError, OverflowError):
         return 0.0
-
     if not math.isfinite(number):
         return 0.0
-
     return float(np.clip(number, 0.0, 1.0))
 
 
@@ -68,7 +67,6 @@ def _legacy_priority(
 
     frontier_score = 4.0 * solve_rate * (1.0 - solve_rate)
     exploration_bonus = 1.0 if times_attempted == 0 else 0.0
-
     if times_attempted == 0:
         staleness_bonus = 0.0
     else:
@@ -80,14 +78,10 @@ def _legacy_priority(
         "medium": 1.0,
         "hard": 1.2,
     }.get(str(difficulty_class), 1.0)
-
     raw_priority = (
-        frontier_score
-        + exploration_bonus
-        + staleness_bonus
+        frontier_score + exploration_bonus + staleness_bonus
     ) * difficulty_weight
-
-    return float(max(raw_priority, 0.05))
+    return float(max(raw_priority, _LEGACY_PRIORITY_FLOOR))
 
 
 def _difficulty_bonus(difficulty_class: str) -> float:
@@ -108,28 +102,17 @@ def compute_priority_breakdown(
     config: CurriculumSamplingConfig | None = None,
 ) -> PriorityBreakdown:
     config = config or CurriculumSamplingConfig()
-
     solve_rate = _finite_unit_interval(solve_rate)
     progress_signal = _finite_unit_interval(learning_progress)
     uncertainty_signal = _finite_unit_interval(uncertainty)
     staleness_signal = _finite_unit_interval(staleness)
-
     frontier_signal = 4.0 * solve_rate * (1.0 - solve_rate)
 
-    progress_component = (
-        config.learning_progress_weight * progress_signal
-    )
-    uncertainty_component = (
-        config.uncertainty_weight * uncertainty_signal
-    )
-    staleness_component = (
-        config.staleness_weight * staleness_signal
-    )
-    frontier_component = (
-        config.frontier_weight * frontier_signal
-    )
+    progress_component = config.learning_progress_weight * progress_signal
+    uncertainty_component = config.uncertainty_weight * uncertainty_signal
+    staleness_component = config.staleness_weight * staleness_signal
+    frontier_component = config.frontier_weight * frontier_signal
     difficulty_component = _difficulty_bonus(difficulty_class)
-
     total = (
         config.priority_floor
         + progress_component
@@ -138,7 +121,6 @@ def compute_priority_breakdown(
         + frontier_component
         + difficulty_component
     )
-
     return PriorityBreakdown(
         total=float(total),
         learning_progress=float(progress_component),
@@ -161,13 +143,7 @@ def compute_priority(
     staleness: float | None = None,
     config: CurriculumSamplingConfig | None = None,
 ) -> float:
-    """
-    Compute a scenario priority.
-
-    Calls without learning signals preserve the legacy formula for compatibility
-    with schema-v2 metadata. Schema-v3 callers use the explicit signal inputs.
-    """
-
+    """Compute a scenario priority while preserving schema-v2 behavior."""
     if (
         learning_progress is None
         and uncertainty is None
@@ -184,24 +160,19 @@ def compute_priority(
 
     resolved_config = config or CurriculumSamplingConfig()
     attempts = max(int(times_attempted), 0)
-
     if uncertainty is None:
         uncertainty = 1.0 if attempts == 0 else 0.0
-
     if staleness is None:
         if attempts == 0:
             staleness = 1.0
         else:
-            age = max(
-                int(current_iter) - int(last_attempted_iter),
-                0,
-            )
+            age = max(int(current_iter) - int(last_attempted_iter), 0)
             staleness = min(
                 age / resolved_config.stale_after_iterations,
                 1.0,
             )
 
-    breakdown = compute_priority_breakdown(
+    return compute_priority_breakdown(
         solve_rate=solve_rate,
         learning_progress=(
             0.0 if learning_progress is None else learning_progress
@@ -210,8 +181,7 @@ def compute_priority(
         staleness=staleness,
         difficulty_class=difficulty_class,
         config=resolved_config,
-    )
-    return breakdown.total
+    ).total
 
 
 def _metadata_schema_version(pool_metadata: Mapping[str, Any]) -> int:
@@ -228,28 +198,19 @@ def _resolve_curriculum_config(
     if config is not None:
         pool_metadata["curriculum_sampling"] = asdict(config)
         return config
-
     stored = pool_metadata.get("curriculum_sampling")
     if isinstance(stored, Mapping):
         return CurriculumSamplingConfig.from_mapping(stored)
-
     return CurriculumSamplingConfig()
 
 
 def _posterior_uncertainty(meta: Mapping[str, Any]) -> float:
     attempts = max(int(meta.get("times_attempted", 0)), 0)
-    solved = min(
-        max(int(meta.get("times_solved", 0)), 0),
-        attempts,
-    )
-
+    solved = min(max(int(meta.get("times_solved", 0)), 0), attempts)
     alpha = float(solved + 1)
     beta = float(attempts - solved + 1)
     total = alpha + beta
-    variance = alpha * beta / (
-        total * total * (total + 1.0)
-    )
-
+    variance = alpha * beta / (total * total * (total + 1.0))
     return float(
         np.clip(
             math.sqrt(variance) / _BETA_UNIFORM_STD,
@@ -268,40 +229,33 @@ def _scenario_staleness(
     attempts = max(int(meta.get("times_attempted", 0)), 0)
     if attempts == 0:
         return 1.0
-
     age = max(
-        int(current_iter)
-        - int(meta.get("last_attempted_iter", 0)),
+        int(current_iter) - int(meta.get("last_attempted_iter", 0)),
         0,
     )
-    return float(
-        min(age / config.stale_after_iterations, 1.0)
-    )
+    return float(min(age / config.stale_after_iterations, 1.0))
 
 
 def _priority_weights(
     scenarios: Mapping[str, Mapping[str, Any]],
     scenario_ids: Sequence[str],
+    *,
+    priority_floor: float = _LEGACY_PRIORITY_FLOOR,
 ) -> np.ndarray:
     priorities = np.array(
         [
-            float(
-                scenarios[scenario_id].get(
-                    "priority",
-                    0.05,
-                )
-            )
+            float(scenarios[scenario_id].get("priority", priority_floor))
             for scenario_id in scenario_ids
         ],
         dtype=np.float64,
     )
     priorities = np.nan_to_num(
         priorities,
-        nan=0.05,
-        posinf=0.05,
-        neginf=0.05,
+        nan=priority_floor,
+        posinf=priority_floor,
+        neginf=priority_floor,
     )
-    return np.maximum(priorities, 0.05)
+    return np.maximum(priorities, priority_floor)
 
 
 def _weighted_pick(
@@ -310,22 +264,22 @@ def _weighted_pick(
     scenario_ids: Sequence[str],
     count: int,
     rng: np.random.Generator,
+    priority_floor: float = _LEGACY_PRIORITY_FLOOR,
 ) -> list[str]:
     count = min(max(int(count), 0), len(scenario_ids))
     if count == 0:
         return []
-
     ordered_ids = list(scenario_ids)
-    priorities = _priority_weights(scenarios, ordered_ids)
+    priorities = _priority_weights(
+        scenarios,
+        ordered_ids,
+        priority_floor=priority_floor,
+    )
     total_priority = float(priorities.sum())
-
     if total_priority <= 0.0:
-        probabilities = (
-            np.ones_like(priorities) / len(priorities)
-        )
+        probabilities = np.ones_like(priorities) / len(priorities)
     else:
         probabilities = priorities / total_priority
-
     chosen = rng.choice(
         ordered_ids,
         size=count,
@@ -354,9 +308,7 @@ def _is_frontier(
     meta: Mapping[str, Any],
     config: CurriculumSamplingConfig,
 ) -> bool:
-    solve_rate = _finite_unit_interval(
-        meta.get("solve_rate", 0.0)
-    )
+    solve_rate = _finite_unit_interval(meta.get("solve_rate", 0.0))
     return (
         config.frontier_solve_rate_min
         <= solve_rate
@@ -384,6 +336,25 @@ def _fraction(count: int, total: int) -> float:
     return 0.0 if total == 0 else float(count / total)
 
 
+def _required_quota_overlap(
+    *,
+    target_count: int,
+    never_solved_target: int,
+    hard_target: int,
+    never_solved_count: int,
+    hard_count: int,
+    overlap_count: int,
+) -> int:
+    never_only_count = never_solved_count - overlap_count
+    hard_only_count = hard_count - overlap_count
+    return max(
+        0,
+        never_solved_target - never_only_count,
+        hard_target - hard_only_count,
+        never_solved_target + hard_target - target_count,
+    )
+
+
 def sample_curriculum_from_pool(
     pool_metadata: dict[str, Any],
     n: int,
@@ -395,14 +366,12 @@ def sample_curriculum_from_pool(
     n = int(n)
     if n <= 0:
         raise ValueError(f"n must be positive, got {n}.")
-
     scenarios = pool_metadata.get("scenarios", {})
     if not scenarios:
         raise ValueError("Pool metadata contains no scenarios.")
 
     rng = np.random.default_rng(seed)
     schema_version = _metadata_schema_version(pool_metadata)
-
     if schema_version < _SCHEMA_WITH_LEARNING_SIGNALS:
         scenario_ids = _legacy_sample(
             scenarios=scenarios,
@@ -418,16 +387,9 @@ def sample_curriculum_from_pool(
             },
         )
 
-    resolved_config = _resolve_curriculum_config(
-        pool_metadata,
-        config,
-    )
+    resolved_config = _resolve_curriculum_config(pool_metadata, config)
     if current_iter is None:
-        current_iter = (
-            int(pool_metadata.get("last_updated_iteration", 0))
-            + 1
-        )
-
+        current_iter = int(pool_metadata.get("last_updated_iteration", 0)) + 1
     refresh_priorities(
         pool_metadata,
         current_iter=int(current_iter),
@@ -436,7 +398,6 @@ def sample_curriculum_from_pool(
 
     ids = sorted(scenarios.keys(), key=int)
     target_count = min(n, len(ids))
-
     never_solved_ids = [
         scenario_id
         for scenario_id in ids
@@ -447,23 +408,32 @@ def sample_curriculum_from_pool(
         for scenario_id in ids
         if _is_hard(scenarios[scenario_id])
     ]
+    hard_set = set(hard_ids)
+    overlapping_quota_ids = [
+        scenario_id
+        for scenario_id in never_solved_ids
+        if scenario_id in hard_set
+    ]
 
     never_solved_target = math.ceil(
-        target_count
-        * resolved_config.never_solved_min_fraction
+        target_count * resolved_config.never_solved_min_fraction
     )
     hard_target = math.ceil(
-        target_count
-        * resolved_config.hard_min_fraction
+        target_count * resolved_config.hard_min_fraction
+    )
+    required_overlap = _required_quota_overlap(
+        target_count=target_count,
+        never_solved_target=never_solved_target,
+        hard_target=hard_target,
+        never_solved_count=len(never_solved_ids),
+        hard_count=len(hard_ids),
+        overlap_count=len(overlapping_quota_ids),
     )
 
     selected: list[str] = []
     selected_set: set[str] = set()
 
-    def add_candidates(
-        candidate_ids: Sequence[str],
-        count: int,
-    ) -> None:
+    def add_candidates(candidate_ids: Sequence[str], count: int) -> None:
         available = [
             scenario_id
             for scenario_id in candidate_ids
@@ -474,23 +444,25 @@ def sample_curriculum_from_pool(
             scenario_ids=available,
             count=min(count, target_count - len(selected)),
             rng=rng,
+            priority_floor=resolved_config.priority_floor,
         )
         selected.extend(picks)
         selected_set.update(picks)
 
+    add_candidates(overlapping_quota_ids, required_overlap)
+    selected_never_solved = sum(
+        _is_never_solved(scenarios[scenario_id])
+        for scenario_id in selected
+    )
     add_candidates(
         never_solved_ids,
-        never_solved_target,
+        max(never_solved_target - selected_never_solved, 0),
     )
-
     selected_hard = sum(
         _is_hard(scenarios[scenario_id])
         for scenario_id in selected
     )
-    add_candidates(
-        hard_ids,
-        max(hard_target - selected_hard, 0),
-    )
+    add_candidates(hard_ids, max(hard_target - selected_hard, 0))
 
     simple_limit = math.floor(
         target_count * resolved_config.simple_max_fraction
@@ -510,56 +482,43 @@ def sample_curriculum_from_pool(
         ]
         if not remaining:
             break
-
         selected_simple = sum(
             _is_simple(scenarios[scenario_id])
             for scenario_id in selected
         )
         selected_frontier = sum(
-            _is_frontier(
-                scenarios[scenario_id],
-                resolved_config,
-            )
+            _is_frontier(scenarios[scenario_id], resolved_config)
             for scenario_id in selected
         )
 
         eligible: list[str] = []
         for scenario_id in remaining:
             meta = scenarios[scenario_id]
-
             if (
                 enforce_simple_cap
                 and _is_simple(meta)
                 and selected_simple >= simple_limit
             ):
                 continue
-
             if (
                 enforce_frontier_cap
                 and _is_frontier(meta, resolved_config)
                 and selected_frontier >= frontier_limit
             ):
                 continue
-
             eligible.append(scenario_id)
 
         if not eligible:
             if (
                 enforce_frontier_cap
                 and any(
-                    _is_frontier(
-                        scenarios[scenario_id],
-                        resolved_config,
-                    )
+                    _is_frontier(scenarios[scenario_id], resolved_config)
                     for scenario_id in remaining
                 )
             ):
                 enforce_frontier_cap = False
-                cap_relaxations.append(
-                    "frontier_max_fraction"
-                )
+                cap_relaxations.append("frontier_max_fraction")
                 continue
-
             if (
                 enforce_simple_cap
                 and any(
@@ -568,13 +527,9 @@ def sample_curriculum_from_pool(
                 )
             ):
                 enforce_simple_cap = False
-                cap_relaxations.append(
-                    "simple_max_fraction"
-                )
+                cap_relaxations.append("simple_max_fraction")
                 continue
-
             eligible = remaining
-
         add_candidates(eligible, 1)
 
     selected_never_solved = sum(
@@ -590,19 +545,11 @@ def sample_curriculum_from_pool(
         for scenario_id in selected
     )
     selected_frontier = sum(
-        _is_frontier(
-            scenarios[scenario_id],
-            resolved_config,
-        )
+        _is_frontier(scenarios[scenario_id], resolved_config)
         for scenario_id in selected
     )
     selected_by_difficulty = Counter(
-        str(
-            scenarios[scenario_id].get(
-                "difficulty_class",
-                "unknown",
-            )
-        )
+        str(scenarios[scenario_id].get("difficulty_class", "unknown"))
         for scenario_id in selected
     )
 
@@ -619,51 +566,32 @@ def sample_curriculum_from_pool(
                 never_solved_target - selected_never_solved,
                 0,
             ),
-            "fraction": _fraction(
-                selected_never_solved,
-                len(selected),
-            ),
+            "fraction": _fraction(selected_never_solved, len(selected)),
         },
         "hard": {
             "available": len(hard_ids),
             "target": hard_target,
             "selected": selected_hard,
-            "shortfall": max(
-                hard_target - selected_hard,
-                0,
-            ),
-            "fraction": _fraction(
-                selected_hard,
-                len(selected),
-            ),
+            "shortfall": max(hard_target - selected_hard, 0),
+            "fraction": _fraction(selected_hard, len(selected)),
         },
         "simple": {
             "limit": simple_limit,
             "selected": selected_simple,
-            "fraction": _fraction(
-                selected_simple,
-                len(selected),
-            ),
+            "fraction": _fraction(selected_simple, len(selected)),
         },
         "frontier": {
             "limit": frontier_limit,
             "selected": selected_frontier,
-            "fraction": _fraction(
-                selected_frontier,
-                len(selected),
-            ),
+            "fraction": _fraction(selected_frontier, len(selected)),
         },
         "selected_by_difficulty": dict(
             sorted(selected_by_difficulty.items())
         ),
         "cap_relaxations": cap_relaxations,
     }
-
     return PoolSample(
-        scenario_ids=tuple(
-            int(scenario_id)
-            for scenario_id in selected
-        ),
+        scenario_ids=tuple(int(scenario_id) for scenario_id in selected),
         report=report,
     )
 
@@ -695,16 +623,13 @@ def refresh_priorities(
     scenarios = pool_metadata.get("scenarios", {})
     if not scenarios:
         return pool_metadata
-
     if _metadata_schema_version(pool_metadata) < (
         _SCHEMA_WITH_LEARNING_SIGNALS
     ):
         for meta in scenarios.values():
             meta["priority"] = _legacy_priority(
                 solve_rate=float(meta.get("solve_rate", 0.0)),
-                times_attempted=int(
-                    meta.get("times_attempted", 0)
-                ),
+                times_attempted=int(meta.get("times_attempted", 0)),
                 last_attempted_iter=int(
                     meta.get("last_attempted_iter", 0)
                 ),
@@ -715,11 +640,7 @@ def refresh_priorities(
             )
         return pool_metadata
 
-    resolved_config = _resolve_curriculum_config(
-        pool_metadata,
-        config,
-    )
-
+    resolved_config = _resolve_curriculum_config(pool_metadata, config)
     for meta in scenarios.values():
         uncertainty = (
             _finite_unit_interval(meta["uncertainty"])
@@ -733,7 +654,6 @@ def refresh_priorities(
         )
         meta["uncertainty"] = uncertainty
         meta["staleness"] = staleness
-
         breakdown = compute_priority_breakdown(
             solve_rate=float(meta.get("solve_rate", 0.0)),
             learning_progress=float(
@@ -746,8 +666,6 @@ def refresh_priorities(
             ),
             config=resolved_config,
         )
-
         meta["priority"] = breakdown.total
         meta["priority_components"] = breakdown.as_dict()
-
     return pool_metadata
