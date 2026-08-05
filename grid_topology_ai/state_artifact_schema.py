@@ -100,7 +100,8 @@ def _feature_matrix(
         or matrix.shape[1] != expected_columns
     ):
         raise ValueError(
-            f"{path}: {name} must be {expected}, got {matrix.shape}"
+            f"{path}: {name} feature dimensions mismatch: "
+            f"expected {expected}, got {matrix.shape}"
         )
     if not np.isfinite(matrix).all():
         raise ValueError(f"{path}: {name} must contain only finite values")
