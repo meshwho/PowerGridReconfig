@@ -54,6 +54,10 @@ def load_and_validate_examples_csv(path: str | Path) -> pd.DataFrame:
         raise ValueError(
             f"Examples CSV has no readable columns: {path}"
         ) from exc
+    _validate_shared_feature_dimensions(
+        examples,
+        source=path,
+    )
     validate_examples_dataframe(examples, source_path=path)
     return examples
 
@@ -115,11 +119,6 @@ def validate_examples_dataframe(
             f"Duplicate state_id '{duplicated.iloc[0]}' in examples "
             f"CSV. File: {source}"
         )
-
-    _validate_shared_feature_dimensions(
-        examples,
-        source=source,
-    )
 
     expected_feature_dimensions: (
             tuple[int, int] | None
@@ -251,6 +250,9 @@ def _validate_shared_feature_dimensions(
     *,
     source: Path,
 ) -> None:
+    if "state_path" not in examples.columns:
+        return
+
     expected: tuple[int, int] | None = None
 
     for state_path_value in examples["state_path"]:
