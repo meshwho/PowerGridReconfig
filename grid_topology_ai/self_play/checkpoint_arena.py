@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import shutil
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -24,7 +25,7 @@ from grid_topology_ai.training.checkpoints import (
 )
 
 
-_ARENA_SCHEMA_VERSION = 1
+_ARENA_SCHEMA_VERSION = 2
 _RANKING_METRICS = (
     ("validation_loss", "loss"),
     ("validation_policy_loss", "policy_loss"),
@@ -167,6 +168,39 @@ def _select_candidate_pool(
     return selected[: config.max_candidates]
 
 
+def _archive_candidates(
+    candidates: Sequence[dict[str, Any]],
+    output_dir: Path,
+) -> list[dict[str, Any]]:
+    archive_dir = output_dir / "candidates"
+    archive_dir.mkdir(parents=True, exist_ok=True)
+    archived: list[dict[str, Any]] = []
+
+    for index, candidate in enumerate(candidates, start=1):
+        source = Path(candidate["path"])
+        destination = archive_dir / f"candidate_{index:02d}_{source.name}"
+        if destination.exists():
+            raise FileExistsError(
+                f"Checkpoint arena candidate archive already exists: {destination}"
+            )
+        shutil.copy2(source, destination)
+        digest = sha256_file(destination)
+        if digest != str(candidate["sha256"]):
+            raise RuntimeError(
+                "Checkpoint arena candidate changed while being archived: "
+                f"{source}"
+            )
+        archived.append(
+            {
+                **candidate,
+                "source_path": source,
+                "archived_path": destination,
+            }
+        )
+
+    return archived
+
+
 def _scenario_ids(path: Path) -> set[int]:
     if not path.is_file():
         raise FileNotFoundError(
@@ -300,11 +334,13 @@ def select_checkpoint_in_tuning_arena(
     candidates = _select_candidate_pool(loaded, config)
 
     output_dir.mkdir(parents=True, exist_ok=True)
+    candidates = _archive_candidates(candidates, output_dir)
     evaluated: list[dict[str, Any]] = []
     for index, candidate in enumerate(candidates, start=1):
-        checkpoint = Path(candidate["path"])
+        checkpoint = Path(candidate["archived_path"])
+        source_checkpoint = Path(candidate["source_path"])
         candidate_dir = output_dir / (
-            f"candidate_{index:02d}_{checkpoint.stem}"
+            f"candidate_{index:02d}_{source_checkpoint.stem}"
         )
         metrics = evaluate(
             project_root=project_root,
@@ -336,15 +372,16 @@ def select_checkpoint_in_tuning_arena(
         key=lambda item: (
             -float(item["arena_metric_value"]),
             int(item["failed_scenarios"]),
-            str(item["path"]),
+            str(item["source_path"]),
         )
     )
     winner = evaluated[0]
     report_path = output_dir / "checkpoint_selection.json"
-    selected_source = Path(winner["path"])
+    selected_source = Path(winner["source_path"])
+    selected_archive = Path(winner["archived_path"])
 
     _annotate_selected_checkpoint(
-        source=selected_source,
+        source=selected_archive,
         destination=canonical,
         metric_name=config.metric,
         metric_value=float(winner["arena_metric_value"]),
@@ -367,12 +404,14 @@ def select_checkpoint_in_tuning_arena(
         "max_candidates": config.max_candidates,
         "arena_config": make_json_safe(asdict(config.arena)),
         "selected_source_checkpoint": str(selected_source),
+        "selected_archived_checkpoint": str(selected_archive),
         "selected_checkpoint": str(canonical),
         "selected_checkpoint_sha256": sha256_file(canonical),
         "selected_metric_value": float(winner["arena_metric_value"]),
         "candidates": [
             {
-                "checkpoint": str(item["path"]),
+                "source_checkpoint": str(item["source_path"]),
+                "archived_checkpoint": str(item["archived_path"]),
                 "checkpoint_sha256": str(item["sha256"]),
                 "saved_epoch": int(item["saved_epoch"]),
                 "training_selector": item["training_selector"],
