@@ -400,6 +400,50 @@ def require_physics_provenance(
     return observed_config
 
 
+def require_graph_batching_checkpoint_contract(
+    payload: Mapping[str, object],
+    *,
+    source: str,
+) -> None:
+    """Reject legacy fixed-cardinality Graph V2 checkpoints early."""
+
+    model_type = str(
+        payload.get("model_type", "")
+    ).strip()
+
+    if model_type not in {
+        "graph_v2",
+        "graph_policy_value_net_v2",
+    }:
+        return
+
+    from grid_topology_ai.models.graph_batch import (
+        GRAPH_BATCHING_CONTRACT_VERSION,
+    )
+
+    require_exact_contract_version(
+        payload.get("graph_batching_contract_version"),
+        expected=GRAPH_BATCHING_CONTRACT_VERSION,
+        name="graph-batching contract",
+        source=source,
+        regeneration_command=(
+            "retrain the Graph V2 checkpoint with "
+            "python -m scripts.self_play.train_graph_baseline"
+        ),
+    )
+
+    if (
+        payload.get("topology_cardinality_independent")
+        is not True
+    ):
+        raise ValueError(
+            "Graph V2 checkpoint must declare "
+            "topology_cardinality_independent=True for "
+            f"{source}. Retrain the checkpoint with the "
+            "current variable-graph architecture."
+        )
+
+
 def _require_graph_checkpoint_feature_dimensions(
     payload: Mapping[str, object],
     *,
@@ -497,6 +541,10 @@ def require_checkpoint_contracts(
             "python -m scripts.self_play.generate ... followed by "
             "python -m scripts.self_play.train_graph_baseline ..."
         ),
+    )
+    require_graph_batching_checkpoint_contract(
+        payload,
+        source=source,
     )
 
     require_topology_action_provenance(payload, source=source)
