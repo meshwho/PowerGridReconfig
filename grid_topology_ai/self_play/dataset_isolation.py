@@ -107,7 +107,14 @@ def validate_physical_dataset_isolation(
     eval_raw_dir: str | Path,
     final_test_transitions_csv: str | Path,
     final_test_raw_dir: str | Path,
+    tuning_transitions_csv: str | Path | None = None,
+    tuning_raw_dir: str | Path | None = None,
 ) -> dict[str, PhysicalDatasetLineages]:
+    if (tuning_transitions_csv is None) != (tuning_raw_dir is None):
+        raise ValueError(
+            "Tuning transitions and raw directory must be provided together."
+        )
+
     datasets = {
         "pool": load_dataset_physical_lineages(
             transitions_csv=pool_transitions_csv,
@@ -126,16 +133,19 @@ def validate_physical_dataset_isolation(
         ),
     }
 
-    require_disjoint_physical_lineages(
-        datasets["pool"],
-        datasets["eval"],
-    )
-    require_disjoint_physical_lineages(
-        datasets["pool"],
-        datasets["final_test"],
-    )
-    require_disjoint_physical_lineages(
-        datasets["eval"],
-        datasets["final_test"],
-    )
+    if tuning_transitions_csv is not None and tuning_raw_dir is not None:
+        datasets["tuning"] = load_dataset_physical_lineages(
+            transitions_csv=tuning_transitions_csv,
+            raw_dir=tuning_raw_dir,
+            label="Tuning",
+        )
+
+    names = tuple(datasets)
+    for index, first_name in enumerate(names):
+        for second_name in names[index + 1 :]:
+            require_disjoint_physical_lineages(
+                datasets[first_name],
+                datasets[second_name],
+            )
+
     return datasets

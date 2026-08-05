@@ -81,6 +81,15 @@ def validate_inputs(
         "Final-test raw directory",
     )
 
+    tuning_enabled = paths.tuning_csv is not None
+    if tuning_enabled != (paths.tuning_raw_dir is not None):
+        raise ValueError(
+            "Tuning transitions and raw directory must be configured together."
+        )
+    if tuning_enabled:
+        _require_file(paths.tuning_csv, "Tuning transitions CSV")
+        _require_directory(paths.tuning_raw_dir, "Tuning raw directory")
+
     bootstrap_files = (
         (
             paths.bootstrap_checkpoint,
@@ -111,6 +120,19 @@ def validate_inputs(
         "final-test",
     )
 
+    if paths.tuning_csv is not None:
+        for other_csv, other_label in (
+            (paths.pool_transitions_csv, "Pool"),
+            (paths.eval_csv, "Evaluation"),
+            (paths.final_test_csv, "final-test"),
+        ):
+            _require_disjoint_scenario_ids(
+                paths.tuning_csv,
+                "Tuning",
+                other_csv,
+                other_label,
+            )
+
     validate_physical_dataset_isolation(
         pool_transitions_csv=paths.pool_transitions_csv,
         pool_raw_dir=paths.pool_raw_dir,
@@ -118,6 +140,8 @@ def validate_inputs(
         eval_raw_dir=paths.eval_raw_dir,
         final_test_transitions_csv=paths.final_test_csv,
         final_test_raw_dir=paths.final_test_raw_dir,
+        tuning_transitions_csv=paths.tuning_csv,
+        tuning_raw_dir=paths.tuning_raw_dir,
     )
 
     if require_bootstrap:

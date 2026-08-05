@@ -29,6 +29,35 @@ eval_raw_dir: data/gridfm_generated/case118_eval_v1/raw
 final_test_csv: data/gridfm_transitions/case118_final_test_v1/transitions_balanced.csv
 final_test_raw_dir: data/gridfm_generated/case118_final_test_v1/raw
 
+checkpoint_selection:
+  enabled: true
+  tuning_csv: runs/self_play_pilot/inputs/tuning_pilot.csv
+  tuning_raw_dir: data/gridfm_generated/case118_tuning_v1/raw
+  candidates_per_metric: 1
+  max_candidates: 4
+  calibration_bins: 10
+  metric: physically_secure_rate_requested
+  arena:
+    simulations: 15
+    pf_alg: 3
+    depth: 2
+    max_steps: 3
+    top_k: 10
+    widening_coefficient: 2.0
+    widening_exponent: 0.5
+    exploration_quota: 2
+    random_seed: 42
+    gamma: 1.0
+    c_puct: 2.0
+    prior_exponent: 0.5
+    use_continuation_gate: true
+    allow_handoff_with_hard_overloads: false
+    num_workers: 1
+    batch_size: 5
+    device: cpu
+    output_csv_name: tuning_results.csv
+    output_json_name: tuning_metrics.json
+
 bootstrap_checkpoint: runs/bootstrap/best_checkpoint.pt
 bootstrap_eval_metrics: runs/bootstrap/eval_metrics_pilot.json
 checkpoint_dir: runs/self_play_pilot

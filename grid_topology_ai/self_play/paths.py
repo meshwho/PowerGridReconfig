@@ -56,6 +56,9 @@ class SelfPlayPaths:
     best_checkpoint: Path
     best_metrics: Path
 
+    tuning_csv: Path | None = None
+    tuning_raw_dir: Path | None = None
+
     @classmethod
     def from_config(
         cls,
@@ -63,6 +66,17 @@ class SelfPlayPaths:
         project_root: str | Path,
     ) -> "SelfPlayPaths":
         root = Path(project_root).resolve()
+        checkpoint_selection = config.checkpoint_selection
+        tuning_csv = (
+            checkpoint_selection.tuning_csv
+            if checkpoint_selection.enabled
+            else None
+        )
+        tuning_raw_dir = (
+            checkpoint_selection.tuning_raw_dir
+            if checkpoint_selection.enabled
+            else None
+        )
 
         return cls(
             project_root=root,
@@ -104,6 +118,16 @@ class SelfPlayPaths:
             best_metrics=_resolve(
                 root,
                 config.best_metrics_path,
+            ),
+            tuning_csv=(
+                None
+                if tuning_csv is None
+                else _resolve(root, tuning_csv)
+            ),
+            tuning_raw_dir=(
+                None
+                if tuning_raw_dir is None
+                else _resolve(root, tuning_raw_dir)
             ),
         )
 

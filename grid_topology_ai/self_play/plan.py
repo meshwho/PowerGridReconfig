@@ -8,8 +8,8 @@ from grid_topology_ai.config import SelfPlayConfig
 from grid_topology_ai.self_play.paths import SelfPlayPaths
 
 
-def _count_unique_scenarios(path: Path) -> int:
-    if not path.exists():
+def _count_unique_scenarios(path: Path | None) -> int:
+    if path is None or not path.exists():
         return 0
 
     df = pd.read_csv(path)
@@ -20,7 +20,10 @@ def _count_unique_scenarios(path: Path) -> int:
     return int(df["scenario_id"].nunique())
 
 
-def _path_status(path: Path) -> str:
+def _path_status(path: Path | None) -> str:
+    if path is None:
+        return "DISABLED"
+
     if path.exists():
         if path.is_dir():
             return "OK dir"
@@ -40,6 +43,7 @@ def render_execution_plan(
     config_path: Path,
 ) -> str:
     pool_size = _count_unique_scenarios(paths.pool_transitions_csv)
+    tuning_size = _count_unique_scenarios(paths.tuning_csv)
     eval_size = _count_unique_scenarios(paths.eval_csv)
     final_test_size = _count_unique_scenarios(
         paths.final_test_csv
@@ -52,6 +56,7 @@ def render_execution_plan(
         or estimated_examples_per_iteration
     )
     first_iter_dir = paths.iteration_dir(1)
+    checkpoint_selection = config.checkpoint_selection
 
     lines: list[str] = []
     lines.extend(
@@ -73,6 +78,21 @@ def render_execution_plan(
             f"  metadata_path:            {paths.pool_metadata}",
             f"  metadata status:          {_path_status(paths.pool_metadata)}",
             f"  unique scenarios:         {pool_size}",
+            "",
+            "Checkpoint tuning set:",
+            f"  enabled:                  {checkpoint_selection.enabled}",
+            f"  tuning_csv:               {paths.tuning_csv}",
+            f"  tuning csv status:        {_path_status(paths.tuning_csv)}",
+            f"  tuning_raw_dir:           {paths.tuning_raw_dir}",
+            f"  tuning raw status:        {_path_status(paths.tuning_raw_dir)}",
+            f"  unique tuning scenarios:  {tuning_size}",
+            f"  candidates per metric:    {checkpoint_selection.candidates_per_metric}",
+            f"  max candidates:           {checkpoint_selection.max_candidates}",
+            f"  calibration bins:         {checkpoint_selection.calibration_bins}",
+            f"  closed-loop metric:       {checkpoint_selection.metric}",
+            f"  arena simulations:        {checkpoint_selection.arena.simulations}",
+            f"  arena depth:              {checkpoint_selection.arena.depth}",
+            f"  arena max_steps:          {checkpoint_selection.arena.max_steps}",
             "",
             "Evaluation set:",
             f"  eval_csv:                 {paths.eval_csv}",

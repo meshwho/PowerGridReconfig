@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +17,9 @@ from grid_topology_ai.config._validation import (
 )
 from grid_topology_ai.config.acceptance import (
     AcceptanceConfig,
+)
+from grid_topology_ai.config.checkpoint_selection import (
+    CheckpointSelectionConfig,
 )
 from grid_topology_ai.config.evaluation import (
     EvaluationConfig,
@@ -101,6 +104,9 @@ class SelfPlayConfig:
     acceptance: AcceptanceConfig
     metadata: MetadataConfig
     physics: PhysicsConfig = DEFAULT_PHYSICS_CONFIG
+    checkpoint_selection: CheckpointSelectionConfig = field(
+        default_factory=CheckpointSelectionConfig
+    )
 
     def __post_init__(self) -> None:
         if not self.run_name:
@@ -135,6 +141,18 @@ class SelfPlayConfig:
                 "Power-flow algorithm mismatch: generation.pf_alg="
                 f"{values[0]}, evaluation.pf_alg={values[1]}, "
                 f"physics.pf_alg={values[2]}."
+            )
+
+        if (
+            self.checkpoint_selection.enabled
+            and int(self.checkpoint_selection.arena.pf_alg)
+            != self.physics.pf_alg
+        ):
+            raise ValueError(
+                "Power-flow algorithm mismatch: "
+                "checkpoint_selection.arena.pf_alg="
+                f"{self.checkpoint_selection.arena.pf_alg}, "
+                f"physics.pf_alg={self.physics.pf_alg}."
             )
 
     @classmethod
@@ -234,6 +252,15 @@ class SelfPlayConfig:
                     pf_alg=GenerationConfig.from_mapping(
                         get_section(data, "generation")
                     ).pf_alg
+                )
+            ),
+            checkpoint_selection=(
+                CheckpointSelectionConfig.from_mapping(
+                    get_section(
+                        data,
+                        "checkpoint_selection",
+                        required=False,
+                    )
                 )
             ),
         )
