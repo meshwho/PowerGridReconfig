@@ -38,6 +38,7 @@ def _minimal_self_play_mapping() -> dict[str, object]:
             "examples_per_iteration": 1,
             "batch_size": 1,
             "learning_rate": 0.001,
+            "save_multiple_best": True,
         },
         "evaluation": {"pf_alg": 3},
         "acceptance": {},
@@ -73,6 +74,7 @@ def test_pilot_config_preserves_current_values() -> None:
     assert config.n_iterations == 3
     assert config.training.epochs == 3
     assert config.training.examples_per_iteration == 128
+    assert config.training.save_multiple_best is True
     assert config.generation.simulations == 25
     assert config.generation.pf_alg == 3
     assert config.evaluation.simulations == 50
@@ -88,6 +90,7 @@ def test_checkpoint_selection_defaults_to_disabled() -> None:
     assert config.checkpoint_selection.tuning_csv is None
     assert config.checkpoint_selection.tuning_raw_dir is None
     assert config.checkpoint_selection.max_candidates == 4
+    assert config.checkpoint_selection.metric_direction == "maximize"
 
 
 def test_checkpoint_selection_reads_tuning_contract() -> None:
@@ -96,10 +99,11 @@ def test_checkpoint_selection_reads_tuning_contract() -> None:
         "enabled": True,
         "tuning_csv": "tuning.csv",
         "tuning_raw_dir": "tuning_raw",
-        "candidates_per_metric": 2,
-        "max_candidates": 6,
+        "candidates_per_metric": 1,
+        "max_candidates": 4,
         "calibration_bins": 12,
-        "metric": "solve_rate_requested",
+        "metric": "failed_scenario_rate_requested",
+        "metric_direction": "MINIMIZE",
         "arena": {
             "simulations": 9,
             "pf_alg": 3,
@@ -115,10 +119,11 @@ def test_checkpoint_selection_reads_tuning_contract() -> None:
     assert selection.enabled is True
     assert selection.tuning_csv == Path("tuning.csv")
     assert selection.tuning_raw_dir == Path("tuning_raw")
-    assert selection.candidates_per_metric == 2
-    assert selection.max_candidates == 6
+    assert selection.candidates_per_metric == 1
+    assert selection.max_candidates == 4
     assert selection.calibration_bins == 12
-    assert selection.metric == "solve_rate_requested"
+    assert selection.metric == "failed_scenario_rate_requested"
+    assert selection.metric_direction == "minimize"
     assert selection.arena.simulations == 9
     assert selection.arena.depth == 2
 
@@ -133,17 +138,39 @@ def test_checkpoint_selection_paths_must_be_paired() -> None:
         CheckpointSelectionConfig(tuning_csv=Path("tuning.csv"))
 
 
-def test_checkpoint_selection_rejects_candidate_count_inversion() -> None:
-    with pytest.raises(ValueError, match="must not exceed"):
-        CheckpointSelectionConfig(
-            candidates_per_metric=3,
-            max_candidates=2,
-        )
+def test_checkpoint_selection_rejects_multiple_candidates_per_metric() -> None:
+    with pytest.raises(ValueError, match="must be 1"):
+        CheckpointSelectionConfig(candidates_per_metric=2)
+
+
+def test_checkpoint_selection_rejects_more_than_four_candidates() -> None:
+    with pytest.raises(ValueError, match="must not exceed 4"):
+        CheckpointSelectionConfig(max_candidates=5)
+
+
+def test_checkpoint_selection_rejects_invalid_metric_direction() -> None:
+    with pytest.raises(ValueError, match="metric_direction"):
+        CheckpointSelectionConfig(metric_direction="sideways")
 
 
 def test_checkpoint_selection_rejects_fractional_counts() -> None:
     with pytest.raises(ValueError, match="exact integer"):
         CheckpointSelectionConfig(max_candidates=2.5)
+
+
+def test_enabled_checkpoint_selection_requires_multiple_best_training() -> None:
+    raw = _minimal_self_play_mapping()
+    training = dict(raw["training"])
+    training["save_multiple_best"] = False
+    raw["training"] = training
+    raw["checkpoint_selection"] = {
+        "enabled": True,
+        "tuning_csv": "tuning.csv",
+        "tuning_raw_dir": "tuning_raw",
+    }
+
+    with pytest.raises(ValueError, match="save_multiple_best=true"):
+        SelfPlayConfig.from_mapping(raw)
 
 
 def test_checkpoint_selection_arena_pf_alg_must_match_physics() -> None:
@@ -173,7 +200,10 @@ def test_repository_configs_enable_checkpoint_tuning() -> None:
         assert selection.enabled is True
         assert selection.tuning_csv is not None
         assert selection.tuning_raw_dir is not None
-        assert selection.max_candidates > 0
+        assert selection.candidates_per_metric == 1
+        assert selection.max_candidates == 4
+        assert selection.metric_direction == "maximize"
+        assert config.training.save_multiple_best is True
         assert selection.arena.pf_alg == config.physics.pf_alg
 
 
