@@ -72,10 +72,12 @@ def run_generate(*args: Any, **kwargs: Any) -> Path:
     try:
         examples_csv = _base.run_generate(*args, **kwargs)
         output_dir = Path(arguments["output_dir"])
-        annotate_example_difficulty(
-            examples_csv=examples_csv,
-            transitions_csv=output_dir / "selected_transitions.csv",
-        )
+        columns = set(pd.read_csv(examples_csv, nrows=0).columns)
+        if "scenario_id" in columns:
+            annotate_example_difficulty(
+                examples_csv=examples_csv,
+                transitions_csv=output_dir / "selected_transitions.csv",
+            )
         return examples_csv
     finally:
         _restore_stage_overrides(previous)
