@@ -119,6 +119,21 @@ def create_required_inputs(paths: SelfPlayPaths) -> None:
         {3: (30.0, (2,))},
     )
 
+    assert paths.tuning_csv is not None
+    assert paths.tuning_raw_dir is not None
+    paths.tuning_csv.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+    paths.tuning_csv.write_text(
+        "scenario_id\n4\n",
+        encoding="utf-8",
+    )
+    _write_raw_dataset(
+        paths.tuning_raw_dir,
+        {4: (40.0, (3,))},
+    )
+
 
 def test_validation_allows_missing_bootstrap_in_plan_mode(
     tmp_path: Path,
@@ -165,6 +180,21 @@ def test_validation_requires_final_test_csv(
             paths,
             require_bootstrap=False,
         )
+
+
+def test_validation_requires_tuning_csv(
+    tmp_path: Path,
+) -> None:
+    paths = make_paths(tmp_path)
+    create_required_inputs(paths)
+    assert paths.tuning_csv is not None
+    paths.tuning_csv.unlink()
+
+    with pytest.raises(
+        FileNotFoundError,
+        match="Tuning transitions CSV",
+    ):
+        validate_inputs(paths, require_bootstrap=False)
 
 
 def test_validation_rejects_pool_eval_scenario_overlap(
@@ -225,6 +255,31 @@ def test_validation_rejects_pool_final_overlap(
 
 
 @pytest.mark.parametrize(
+    ("scenario_id", "message"),
+    [
+        (1, "Tuning and Pool"),
+        (2, "Tuning and Evaluation"),
+        (3, "Tuning and final-test"),
+    ],
+)
+def test_validation_rejects_tuning_scenario_overlap(
+    tmp_path: Path,
+    scenario_id: int,
+    message: str,
+) -> None:
+    paths = make_paths(tmp_path)
+    create_required_inputs(paths)
+    assert paths.tuning_csv is not None
+    paths.tuning_csv.write_text(
+        f"scenario_id\n{scenario_id}\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match=message):
+        validate_inputs(paths, require_bootstrap=False)
+
+
+@pytest.mark.parametrize(
     ("target", "message"),
     [
         ("eval", "Pool and Evaluation physical lineages overlap"),
@@ -260,6 +315,24 @@ def test_validation_rejects_physical_overlap_with_different_ids(
         )
 
     with pytest.raises(ValueError, match=message):
+        validate_inputs(paths, require_bootstrap=False)
+
+
+def test_validation_rejects_tuning_physical_overlap(
+    tmp_path: Path,
+) -> None:
+    paths = make_paths(tmp_path)
+    create_required_inputs(paths)
+    assert paths.tuning_raw_dir is not None
+    _write_raw_dataset(
+        paths.tuning_raw_dir,
+        {4: (10.0, (1,))},
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="Pool and Tuning physical lineages overlap",
+    ):
         validate_inputs(paths, require_bootstrap=False)
 
 

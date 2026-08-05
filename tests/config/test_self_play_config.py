@@ -2,7 +2,10 @@ from pathlib import Path
 
 import pytest
 
-from grid_topology_ai.config import SelfPlayConfig
+from grid_topology_ai.config import (
+    CheckpointSelectionConfig,
+    SelfPlayConfig,
+)
 
 
 def _minimal_self_play_mapping() -> dict[str, object]:
@@ -74,6 +77,104 @@ def test_pilot_config_preserves_current_values() -> None:
     assert config.generation.pf_alg == 3
     assert config.evaluation.simulations == 50
     assert config.replay_buffer.fresh_fraction == 0.70
+
+
+def test_checkpoint_selection_defaults_to_disabled() -> None:
+    config = SelfPlayConfig.from_mapping(
+        _minimal_self_play_mapping()
+    )
+
+    assert config.checkpoint_selection.enabled is False
+    assert config.checkpoint_selection.tuning_csv is None
+    assert config.checkpoint_selection.tuning_raw_dir is None
+    assert config.checkpoint_selection.max_candidates == 4
+
+
+def test_checkpoint_selection_reads_tuning_contract() -> None:
+    raw = _minimal_self_play_mapping()
+    raw["checkpoint_selection"] = {
+        "enabled": True,
+        "tuning_csv": "tuning.csv",
+        "tuning_raw_dir": "tuning_raw",
+        "candidates_per_metric": 2,
+        "max_candidates": 6,
+        "calibration_bins": 12,
+        "metric": "solve_rate_requested",
+        "arena": {
+            "simulations": 9,
+            "pf_alg": 3,
+            "depth": 2,
+            "max_steps": 3,
+            "top_k": 7,
+        },
+    }
+
+    config = SelfPlayConfig.from_mapping(raw)
+    selection = config.checkpoint_selection
+
+    assert selection.enabled is True
+    assert selection.tuning_csv == Path("tuning.csv")
+    assert selection.tuning_raw_dir == Path("tuning_raw")
+    assert selection.candidates_per_metric == 2
+    assert selection.max_candidates == 6
+    assert selection.calibration_bins == 12
+    assert selection.metric == "solve_rate_requested"
+    assert selection.arena.simulations == 9
+    assert selection.arena.depth == 2
+
+
+def test_enabled_checkpoint_selection_requires_tuning_paths() -> None:
+    with pytest.raises(ValueError, match="requires tuning_csv"):
+        CheckpointSelectionConfig(enabled=True)
+
+
+def test_checkpoint_selection_paths_must_be_paired() -> None:
+    with pytest.raises(ValueError, match="must be set together"):
+        CheckpointSelectionConfig(tuning_csv=Path("tuning.csv"))
+
+
+def test_checkpoint_selection_rejects_candidate_count_inversion() -> None:
+    with pytest.raises(ValueError, match="must not exceed"):
+        CheckpointSelectionConfig(
+            candidates_per_metric=3,
+            max_candidates=2,
+        )
+
+
+def test_checkpoint_selection_rejects_fractional_counts() -> None:
+    with pytest.raises(ValueError, match="exact integer"):
+        CheckpointSelectionConfig(max_candidates=2.5)
+
+
+def test_checkpoint_selection_arena_pf_alg_must_match_physics() -> None:
+    raw = _minimal_self_play_mapping()
+    raw["checkpoint_selection"] = {
+        "enabled": True,
+        "tuning_csv": "tuning.csv",
+        "tuning_raw_dir": "tuning_raw",
+        "arena": {"pf_alg": 2},
+    }
+
+    with pytest.raises(
+        ValueError,
+        match="checkpoint_selection.arena.pf_alg",
+    ):
+        SelfPlayConfig.from_mapping(raw)
+
+
+def test_repository_configs_enable_checkpoint_tuning() -> None:
+    for path in [
+        "configs/self_play_loop.yaml",
+        "configs/self_play_loop_pilot.yaml",
+        "configs/self_play_loop_smoke.yaml",
+    ]:
+        config = SelfPlayConfig.load(path)
+        selection = config.checkpoint_selection
+        assert selection.enabled is True
+        assert selection.tuning_csv is not None
+        assert selection.tuning_raw_dir is not None
+        assert selection.max_candidates > 0
+        assert selection.arena.pf_alg == config.physics.pf_alg
 
 
 def test_final_test_csv_must_differ_from_eval_csv() -> None:
