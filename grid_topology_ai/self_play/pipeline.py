@@ -12,6 +12,11 @@ from grid_topology_ai.self_play.acceptance import (
 from grid_topology_ai.self_play.artifacts import save_yaml
 from grid_topology_ai.self_play.checkpoint_state import initialize_best_state
 from grid_topology_ai.self_play.completion import write_iteration_completion_marker
+from grid_topology_ai.self_play.curriculum_reporting import (
+    persist_curriculum_pool_state,
+    prepare_curriculum_sampling,
+    record_curriculum_sampling,
+)
 from grid_topology_ai.self_play.final_test import (
     FinalTestEvaluation,
     load_final_test_evaluation,
@@ -19,6 +24,7 @@ from grid_topology_ai.self_play.final_test import (
 )
 from grid_topology_ai.self_play.iteration import (
     IterationRequest,
+    _self_play_seeds,
     run_self_play_iteration,
 )
 from grid_topology_ai.self_play.learning_curve import (
@@ -155,6 +161,9 @@ def run_self_play_pipeline(
         path=paths.pool_metadata,
         current_iter=0,
         overwrite=False,
+        stale_after_iterations=(
+            config.pool.curriculum.stale_after_iterations
+        ),
     )
 
     replay_buffer = RollingReplayBuffer(
@@ -232,6 +241,21 @@ def run_self_play_pipeline(
         if callable(set_producer_checkpoint):
             set_producer_checkpoint(best_checkpoint)
 
+        sampling_report = prepare_curriculum_sampling(
+            pool_metadata=pool_metadata,
+            n_scenarios=config.n_scenarios_per_iteration,
+            current_iter=iteration,
+            scenario_sampling_seed=_self_play_seeds(
+                base_seed=int(config.seed),
+                iteration=iteration,
+            ).scenario_sampling,
+            config=config.pool.curriculum,
+            report_path=(
+                paths.iteration_dir(iteration)
+                / "curriculum_sampling.json"
+            ),
+        )
+
         result = run_self_play_iteration(
             IterationRequest(
                 iteration=iteration,
@@ -247,6 +271,21 @@ def run_self_play_pipeline(
         best_checkpoint = result.best_checkpoint
         best_metrics = dict(result.best_metrics)
         pool_metadata = result.pool_metadata
+
+        record_curriculum_sampling(
+            prepared=sampling_report,
+            selected_scenario_ids=(
+                result.selected_scenario_ids
+            ),
+            iteration_metadata_path=result.metadata_path,
+            learning_curve_row=result.learning_curve_row,
+        )
+        persist_curriculum_pool_state(
+            pool_metadata=pool_metadata,
+            current_iter=iteration,
+            config=config.pool.curriculum,
+            path=paths.pool_metadata,
+        )
 
         learning_curve = upsert_iteration_row(
             rows=learning_curve,
