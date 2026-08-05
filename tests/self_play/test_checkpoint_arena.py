@@ -176,7 +176,7 @@ def test_tuning_arena_promotes_best_closed_loop_candidate(
     loaded = [
         _candidate(
             canonical,
-            "canonical",
+            checkpoint_arena.sha256_file(canonical),
             loss=0.10,
             policy_loss=0.40,
             value_loss=0.40,
@@ -184,7 +184,7 @@ def test_tuning_arena_promotes_best_closed_loop_candidate(
         ),
         _candidate(
             best_loss,
-            "loss",
+            checkpoint_arena.sha256_file(best_loss),
             loss=0.20,
             policy_loss=0.10,
             value_loss=0.30,
@@ -192,7 +192,7 @@ def test_tuning_arena_promotes_best_closed_loop_candidate(
         ),
         _candidate(
             best_policy,
-            "policy",
+            checkpoint_arena.sha256_file(best_policy),
             loss=0.30,
             policy_loss=0.30,
             value_loss=0.10,
@@ -234,8 +234,9 @@ def test_tuning_arena_promotes_best_closed_loop_candidate(
     def fake_evaluate(**kwargs: Any) -> dict[str, Any]:
         checkpoint = Path(kwargs["checkpoint"])
         evaluated.append(checkpoint)
+        source_name = checkpoint.read_bytes().decode("utf-8")
         return {
-            "physically_secure_rate_requested": scores[checkpoint.name],
+            "physically_secure_rate_requested": scores[source_name],
             "failed_scenarios": 0,
         }
 
@@ -261,14 +262,26 @@ def test_tuning_arena_promotes_best_closed_loop_candidate(
     assert result.selected_source == best_policy
     assert result.metric_value == pytest.approx(0.70)
     assert result.candidate_count == 3
-    assert annotated["source"] == best_policy
+    assert Path(annotated["source"]).parent.name == "candidates"
+    assert Path(annotated["source"]).read_bytes() == best_policy.read_bytes()
     assert canonical.read_bytes() == best_policy.read_bytes()
-    assert set(evaluated) == {canonical, best_loss, best_policy}
+    assert len(evaluated) == 3
+    assert all(path.parent.name == "candidates" for path in evaluated)
+    assert {path.read_bytes() for path in evaluated} == {
+        canonical.name.encode("utf-8"),
+        best_loss.name.encode("utf-8"),
+        best_policy.name.encode("utf-8"),
+    }
 
     report = json.loads(result.report_path.read_text(encoding="utf-8"))
     assert report["selection_method"] == "closed_loop_tuning_arena"
     assert report["selected_source_checkpoint"] == str(best_policy)
+    assert Path(report["selected_archived_checkpoint"]).is_file()
     assert report["tuning_scenario_ids"] == [1, 2]
+    assert all(
+        Path(item["archived_checkpoint"]).is_file()
+        for item in report["candidates"]
+    )
 
 
 def test_run_train_routes_candidate_through_tuning_arena(
