@@ -296,6 +296,13 @@ def _annotate_selected_checkpoint(
     torch.save(payload, destination)
 
 
+def _arena_sort_value(
+    value: float,
+    direction: str,
+) -> float:
+    return -value if direction == "maximize" else value
+
+
 def select_checkpoint_in_tuning_arena(
     *,
     canonical_checkpoint: str | Path,
@@ -370,7 +377,10 @@ def select_checkpoint_in_tuning_arena(
 
     evaluated.sort(
         key=lambda item: (
-            -float(item["arena_metric_value"]),
+            _arena_sort_value(
+                float(item["arena_metric_value"]),
+                config.metric_direction,
+            ),
             int(item["failed_scenarios"]),
             str(item["source_path"]),
         )
@@ -394,7 +404,7 @@ def select_checkpoint_in_tuning_arena(
         "schema_version": _ARENA_SCHEMA_VERSION,
         "selection_method": "closed_loop_tuning_arena",
         "metric": config.metric,
-        "metric_direction": "maximize",
+        "metric_direction": config.metric_direction,
         "tuning_csv": str(tuning_csv),
         "tuning_csv_sha256": sha256_file(tuning_csv),
         "tuning_raw_dir": str(tuning_raw_dir),

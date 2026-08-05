@@ -143,17 +143,22 @@ class SelfPlayConfig:
                 f"physics.pf_alg={values[2]}."
             )
 
-        if (
-            self.checkpoint_selection.enabled
-            and int(self.checkpoint_selection.arena.pf_alg)
-            != self.physics.pf_alg
-        ):
-            raise ValueError(
-                "Power-flow algorithm mismatch: "
-                "checkpoint_selection.arena.pf_alg="
-                f"{self.checkpoint_selection.arena.pf_alg}, "
-                f"physics.pf_alg={self.physics.pf_alg}."
-            )
+        if self.checkpoint_selection.enabled:
+            if not self.training.save_multiple_best:
+                raise ValueError(
+                    "Enabled checkpoint selection requires "
+                    "training.save_multiple_best=true."
+                )
+            if (
+                int(self.checkpoint_selection.arena.pf_alg)
+                != self.physics.pf_alg
+            ):
+                raise ValueError(
+                    "Power-flow algorithm mismatch: "
+                    "checkpoint_selection.arena.pf_alg="
+                    f"{self.checkpoint_selection.arena.pf_alg}, "
+                    f"physics.pf_alg={self.physics.pf_alg}."
+                )
 
     @classmethod
     def from_mapping(

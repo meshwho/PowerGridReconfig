@@ -35,6 +35,8 @@ _ARENA_DEFAULTS = {
     "output_csv_name": "tuning_results.csv",
     "output_json_name": "tuning_metrics.json",
 }
+_SUPPORTED_OBJECTIVE_COUNT = 4
+_METRIC_DIRECTIONS = {"maximize", "minimize"}
 
 
 def _default_arena_config() -> EvaluationConfig:
@@ -51,6 +53,7 @@ class CheckpointSelectionConfig:
     max_candidates: int = 4
     calibration_bins: int = 10
     metric: str = "physically_secure_rate_requested"
+    metric_direction: str = "maximize"
 
     arena: EvaluationConfig = field(
         default_factory=_default_arena_config
@@ -83,16 +86,27 @@ class CheckpointSelectionConfig:
             calibration_bins,
         )
 
-        if candidates_per_metric > max_candidates:
+        if candidates_per_metric != 1:
             raise ValueError(
-                "checkpoint_selection.candidates_per_metric must not "
-                "exceed checkpoint_selection.max_candidates."
+                "checkpoint_selection.candidates_per_metric must be 1; "
+                "the trainer retains one best epoch per validation objective."
+            )
+        if max_candidates > _SUPPORTED_OBJECTIVE_COUNT:
+            raise ValueError(
+                "checkpoint_selection.max_candidates must not exceed 4 "
+                "validation objectives."
             )
 
         metric = str(self.metric).strip()
         if not metric:
             raise ValueError(
                 "checkpoint_selection.metric must not be empty."
+            )
+        metric_direction = str(self.metric_direction).strip().lower()
+        if metric_direction not in _METRIC_DIRECTIONS:
+            raise ValueError(
+                "checkpoint_selection.metric_direction must be "
+                "'maximize' or 'minimize'."
             )
 
         has_tuning_csv = self.tuning_csv is not None
@@ -116,6 +130,7 @@ class CheckpointSelectionConfig:
         object.__setattr__(self, "max_candidates", max_candidates)
         object.__setattr__(self, "calibration_bins", calibration_bins)
         object.__setattr__(self, "metric", metric)
+        object.__setattr__(self, "metric_direction", metric_direction)
 
     @classmethod
     def from_mapping(
@@ -156,6 +171,9 @@ class CheckpointSelectionConfig:
                     "metric",
                     "physically_secure_rate_requested",
                 )
+            ),
+            metric_direction=str(
+                data.get("metric_direction", "maximize")
             ),
             arena=EvaluationConfig.from_mapping(arena_data),
         )
