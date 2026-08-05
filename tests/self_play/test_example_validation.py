@@ -18,6 +18,7 @@ from grid_topology_ai.self_play.example_validation import (
     load_and_validate_examples_csv,
     validate_example_outcome_contracts,
 )
+from grid_topology_ai.state_schema import BUS_FEATURE_COLUMNS
 
 
 def write_state(path: Path, **overrides: object) -> Path:
@@ -401,7 +402,10 @@ def test_inconsistent_graph_feature_dimensions_are_rejected(tmp_path: Path) -> N
     s1 = write_state(tmp_path / "s1.npz")
     s2 = write_state(
         tmp_path / "s2.npz",
-        bus_features=np.zeros((3, 4), dtype=np.float32),
+        bus_features=np.zeros(
+            (3, len(BUS_FEATURE_COLUMNS) + 1),
+            dtype=np.float32,
+        ),
     )
     r1 = valid_row(s1)
     r2 = valid_row(s2)
