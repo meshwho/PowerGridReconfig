@@ -37,6 +37,7 @@ checkpoint_selection:
   max_candidates: 4
   calibration_bins: 10
   metric: physically_secure_rate_requested
+  metric_direction: maximize
   arena:
     simulations: 15
     pf_alg: 3
@@ -109,7 +110,7 @@ training:
   hidden_dim: 128
   num_layers: 3
   dropout: 0.0
-  save_multiple_best: false
+  save_multiple_best: true
   no_tensorboard: true
 evaluation:
   simulations: 50
