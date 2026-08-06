@@ -54,6 +54,7 @@ def _arena_metrics(
     return {
         "primary_policy_mode": "ungated",
         "physically_secure_rate_requested": ungated,
+        "failed_scenarios": failed_scenarios,
         "mode_metrics": {
             "ungated": {
                 "physically_secure_rate_requested": ungated,

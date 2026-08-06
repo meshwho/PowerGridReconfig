@@ -82,6 +82,7 @@ def test_tuning_arena_minimizes_configured_metric(
         return {
             "primary_policy_mode": "ungated",
             "failed_scenario_rate_requested": ungated,
+            "failed_scenarios": 0,
             "mode_metrics": {
                 "ungated": {
                     "failed_scenario_rate_requested": ungated,
