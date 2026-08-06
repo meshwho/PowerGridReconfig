@@ -377,7 +377,7 @@ def test_run_train_routes_candidate_through_tuning_arena(
         validation_examples_csv=tmp_path / "validation.csv",
         init_checkpoint=tmp_path / "parent.pt",
         output_dir=output_dir,
-        config=TrainingConfig(),
+        config=TrainingConfig(save_multiple_best=True),
         physics_config=DEFAULT_PHYSICS_CONFIG,
         iteration=1,
         seed=43,
