@@ -35,11 +35,11 @@ def _analysis(*allowed_action_ids: int) -> SimpleNamespace:
     return SimpleNamespace(allowed_action_ids=allowed_action_ids)
 
 
-def test_comparison_mode_evaluates_ungated_and_constrained() -> None:
+def test_comparison_mode_evaluates_constrained_as_secondary() -> None:
     assert evaluation_policy_modes(False) == (PolicyMode.UNGATED,)
     assert evaluation_policy_modes(True) == (
-        PolicyMode.UNGATED,
         PolicyMode.CONSTRAINED,
+        PolicyMode.UNGATED,
     )
 
 
@@ -93,12 +93,14 @@ def test_constrained_policy_reports_empty_support_without_fallback() -> None:
     assert decision.empty_constrained_support is True
 
 
-def test_comparison_metrics_report_mode_deltas_and_constraint_counts(
+def test_better_constrained_result_does_not_replace_ungated_headline(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def fake_metrics(*, df, failed_results, requested_scenarios, task_config):
+        secure_rate = float(df["solved"].mean())
         return {
-            "solve_rate": float(df["solved"].mean()),
+            "solve_rate": secure_rate,
+            "physically_secure_rate_requested": secure_rate,
             "avg_discounted_return": float(df["discounted_return"].mean()),
             "avg_safety_score": float(df["safety_score"].mean()),
             "avg_final_loading_percent": float(
@@ -153,14 +155,65 @@ def test_comparison_metrics_report_mode_deltas_and_constraint_counts(
         df=df,
         failed_results=[],
         requested_scenarios=1,
-        task_config={"evaluation_modes": ["ungated", "constrained"]},
+        task_config={
+            "evaluation_modes": ["constrained", "ungated"],
+            "primary_policy_mode": "ungated",
+        },
     )
 
-    assert metrics["primary_policy_mode"] == "constrained"
+    assert metrics["primary_policy_mode"] == "ungated"
+    assert metrics["solve_rate"] == pytest.approx(0.0)
+    assert metrics["physically_secure_rate_requested"] == pytest.approx(0.0)
     assert set(metrics["mode_metrics"]) == {"ungated", "constrained"}
+    assert metrics["mode_metrics"]["constrained"]["solve_rate"] == pytest.approx(
+        1.0
+    )
+    assert metrics["ungated_physically_secure_rate_requested"] == pytest.approx(
+        0.0
+    )
+    assert metrics[
+        "constrained_physically_secure_rate_requested"
+    ] == pytest.approx(1.0)
+    assert metrics["continuation_gate_gain"] == pytest.approx(1.0)
+
     comparison = metrics["comparison"]
     assert comparison["paired_scenarios"] == 1
     assert comparison["action_sequence_changed_scenarios"] == 1
     assert comparison["policy_changed_scenarios"] == 1
-    assert comparison["solve_rate_delta"] == 1.0
-    assert comparison["avg_discounted_return_delta"] == 2.0
+    assert comparison["solve_rate_delta"] == pytest.approx(1.0)
+    assert comparison[
+        "physically_secure_rate_requested_delta"
+    ] == pytest.approx(1.0)
+    assert comparison["avg_discounted_return_delta"] == pytest.approx(2.0)
+
+
+def test_primary_policy_mode_must_produce_metrics(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        policy_comparison,
+        "build_evaluation_metrics",
+        lambda **kwargs: {"solve_rate": 1.0},
+    )
+    df = pd.DataFrame(
+        [
+            {
+                "scenario_id": 1,
+                "policy_mode": "ungated",
+            }
+        ]
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="primary policy mode did not produce metrics",
+    ):
+        build_policy_comparison_metrics(
+            df=df,
+            failed_results=[],
+            requested_scenarios=1,
+            task_config={
+                "evaluation_modes": ["ungated"],
+                "primary_policy_mode": "constrained",
+            },
+        )
