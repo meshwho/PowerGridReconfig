@@ -22,6 +22,34 @@ fixed physical scenario pool
   -> next iteration
 ```
 
+## Evaluation and checkpoint selection contract
+
+The learned controller is evaluated in the `ungated` policy mode: neural policy
+plus MCTS, without continuation-gate filtering. When continuation analysis is
+enabled, `constrained` is evaluated as a secondary hybrid-controller diagnostic.
+It does not replace the learned controller's result.
+
+Checkpoint-arena ranking, regular promotion, paired confidence checks, aggregate
+acceptance gates, learning-curve headline values, and final-test headline values
+all use `ungated`. A checkpoint cannot be selected or promoted only because the
+continuation gate repairs a weaker learned policy.
+
+Evaluation artifacts expose the contract explicitly:
+
+- `primary_policy_mode` is `ungated`;
+- top-level metrics are copies of the primary ungated metrics;
+- complete groups are stored under `mode_metrics.ungated` and, when enabled,
+  `mode_metrics.constrained`;
+- `continuation_gate_gain` is constrained minus ungated physical-security rate
+  and measures the external gate's contribution, not learned-policy quality;
+- `checkpoint_selection.json` records `policy_mode: ungated`;
+- the sealed final-test report records the primary mode and both mode-specific
+  physical-security rates.
+
+Selection paths fail closed. Missing ungated metrics, a non-ungated primary mode,
+an inconsistent top-level headline, or a missing required policy-mode group is a
+contract error rather than a fallback to constrained results.
+
 ## Scientific invariants
 
 - `solved=True` means exactly `assessment.physically_secure=True`; thermal
@@ -36,7 +64,7 @@ fixed physical scenario pool
 - Feature normalization is part of the checkpoint contract.
 - Fine-tuning preserves normalization statistics from the parent checkpoint.
 - The train/validation split is performed by `scenario_id`, not by individual rows.
-- The candidate checkpoint is selected by validation loss when a validation set exists.
+- Validation objectives retain candidate epoch checkpoints; the optional closed-loop tuning arena selects the canonical candidate using ungated metrics.
 - The evaluation set is fixed across candidates.
 - The acceptance metric is normally `solve_rate`.
 - Bootstrap metrics must include compatible `pf_alg` provenance.
