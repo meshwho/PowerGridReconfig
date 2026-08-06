@@ -43,6 +43,12 @@ def _default_arena_config() -> EvaluationConfig:
     return EvaluationConfig.from_mapping(_ARENA_DEFAULTS)
 
 
+def _coerce_bool(name: str, value: object) -> bool:
+    if not isinstance(value, bool):
+        raise ValueError(f"{name} must be a boolean, got {value!r}.")
+    return value
+
+
 @dataclass(frozen=True, slots=True)
 class CheckpointSelectionConfig:
     enabled: bool = False
@@ -60,6 +66,10 @@ class CheckpointSelectionConfig:
     )
 
     def __post_init__(self) -> None:
+        enabled = _coerce_bool(
+            "checkpoint_selection.enabled",
+            self.enabled,
+        )
         candidates_per_metric = coerce_exact_int(
             "checkpoint_selection.candidates_per_metric",
             self.candidates_per_metric,
@@ -96,6 +106,11 @@ class CheckpointSelectionConfig:
                 "checkpoint_selection.max_candidates must not exceed 4 "
                 "validation objectives."
             )
+        if enabled and max_candidates < 2:
+            raise ValueError(
+                "Enabled checkpoint selection requires max_candidates >= 2 "
+                "so the closed-loop arena can compare epoch checkpoints."
+            )
 
         metric = str(self.metric).strip()
         if not metric:
@@ -116,12 +131,13 @@ class CheckpointSelectionConfig:
                 "checkpoint_selection.tuning_csv and "
                 "checkpoint_selection.tuning_raw_dir must be set together."
             )
-        if self.enabled and not has_tuning_csv:
+        if enabled and not has_tuning_csv:
             raise ValueError(
                 "Enabled checkpoint selection requires tuning_csv and "
                 "tuning_raw_dir."
             )
 
+        object.__setattr__(self, "enabled", enabled)
         object.__setattr__(
             self,
             "candidates_per_metric",
@@ -145,7 +161,10 @@ class CheckpointSelectionConfig:
         }
 
         return cls(
-            enabled=bool(data.get("enabled", False)),
+            enabled=_coerce_bool(
+                "checkpoint_selection.enabled",
+                data.get("enabled", False),
+            ),
             tuning_csv=(
                 None if tuning_csv is None else Path(tuning_csv)
             ),

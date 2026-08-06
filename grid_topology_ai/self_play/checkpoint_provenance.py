@@ -28,10 +28,14 @@ def _checkpoint_selection_required(
     if not isinstance(config, Mapping):
         return False
     selection = config.get("checkpoint_selection")
-    return (
-        isinstance(selection, Mapping)
-        and selection.get("enabled") is True
-    )
+    if not isinstance(selection, Mapping):
+        return False
+    enabled = selection.get("enabled", False)
+    if not isinstance(enabled, bool):
+        raise ValueError(
+            "metadata.json checkpoint_selection.enabled must be a boolean."
+        )
+    return enabled
 
 
 def _summary(report: Mapping[str, object]) -> dict[str, object]:

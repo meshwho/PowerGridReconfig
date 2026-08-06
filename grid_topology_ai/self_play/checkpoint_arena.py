@@ -204,7 +204,7 @@ def _archive_candidates(
 def _scenario_ids(path: Path) -> set[int]:
     if not path.is_file():
         raise FileNotFoundError(
-            f"Checkpoint tuning transitions CSV not found: {path}"
+            f"Checkpoint selection transitions CSV not found: {path}"
         )
     return {
         int(value)
@@ -252,6 +252,15 @@ def _validate_tuning_independence(
             raise ValueError(
                 "Checkpoint tuning CSV duplicates "
                 f"{role}: {tuning_csv}"
+            )
+
+        overlap_ids = tuning_ids & _scenario_ids(path)
+        if overlap_ids:
+            preview = sorted(overlap_ids)[:20]
+            raise ValueError(
+                "Checkpoint tuning scenario-ID leakage detected "
+                f"against {role}: count={len(overlap_ids)}, "
+                f"examples={preview}."
             )
 
         other_lineages = _lineage_fingerprints(path)

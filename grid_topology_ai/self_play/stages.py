@@ -96,6 +96,15 @@ def run_train(*args: Any, **kwargs: Any) -> Path:
             "Multiple checkpoint candidates require the resolved self-play "
             f"config before training: {config_path}"
         )
+    if (
+        self_play_config is not None
+        and self_play_config.checkpoint_selection.enabled
+        and not bool(training_config.save_multiple_best)
+    ):
+        raise RuntimeError(
+            "Enabled checkpoint selection requires this training request "
+            "to set save_multiple_best=true."
+        )
 
     bins = (
         10
