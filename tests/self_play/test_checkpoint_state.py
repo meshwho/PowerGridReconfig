@@ -93,11 +93,19 @@ def _write_bootstrap(
     *,
     checkpoint: str = "bootstrap",
     solve_rate: float = 0.75,
+    policy_mode: str = "ungated",
+    task_policy_mode: str | None = None,
 ) -> None:
     paths.bootstrap_checkpoint.parent.mkdir(parents=True, exist_ok=True)
     _write_checkpoint(paths.bootstrap_checkpoint, tag=checkpoint)
     paths.bootstrap_metrics.write_text(
-        json.dumps(_metrics(solve_rate)),
+        json.dumps(
+            _metrics(
+                solve_rate,
+                policy_mode=policy_mode,
+                task_policy_mode=task_policy_mode,
+            )
+        ),
         encoding="utf-8",
     )
 
@@ -118,9 +126,19 @@ def _write_checkpoint(path: Path, *, tag: str) -> None:
     )
 
 
-def _metrics(solve_rate: float) -> dict[str, object]:
+def _metrics(
+    solve_rate: float,
+    *,
+    policy_mode: str = "ungated",
+    task_policy_mode: str | None = None,
+) -> dict[str, object]:
+    configured_mode = policy_mode if task_policy_mode is None else task_policy_mode
     return {
         "solve_rate": solve_rate,
+        "primary_policy_mode": policy_mode,
+        "task_config": {
+            "primary_policy_mode": configured_mode,
+        },
         "evaluation_metrics_contract_version": EVALUATION_METRICS_CONTRACT_VERSION,
         **physics_provenance(DEFAULT_PHYSICS_CONFIG),
         "physical_objective_contract": physical_objective_contract(),
@@ -172,6 +190,35 @@ def test_initialize_best_state_rejects_non_mapping_metrics(
         initialize_best_state(paths=paths)
 
 
+def test_initialize_best_state_rejects_constrained_bootstrap_metrics(
+    tmp_path: Path,
+) -> None:
+    paths = _paths(tmp_path)
+    _write_bootstrap(
+        paths,
+        policy_mode="constrained",
+    )
+
+    with pytest.raises(ValueError, match="primary policy mode"):
+        initialize_best_state(paths=paths)
+
+    assert not paths.best_metrics.exists()
+
+
+def test_initialize_best_state_rejects_policy_mode_mismatch(
+    tmp_path: Path,
+) -> None:
+    paths = _paths(tmp_path)
+    _write_bootstrap(
+        paths,
+        policy_mode="ungated",
+        task_policy_mode="constrained",
+    )
+
+    with pytest.raises(ValueError, match="primary policy mode"):
+        initialize_best_state(paths=paths)
+
+
 def test_promote_candidate_replaces_canonical_best(
     tmp_path: Path,
 ) -> None:
@@ -195,6 +242,27 @@ def test_promote_candidate_replaces_canonical_best(
     assert json.loads(paths.best_metrics.read_text(encoding="utf-8")) == _metrics(0.95)
     assert state.checkpoint == paths.best_checkpoint
     assert state.metrics == _metrics(0.95)
+
+
+def test_promote_candidate_rejects_constrained_metrics(
+    tmp_path: Path,
+) -> None:
+    paths = _paths(tmp_path)
+    candidate = tmp_path / "candidate.pt"
+    _write_checkpoint(candidate, tag="candidate")
+
+    with pytest.raises(ValueError, match="primary policy mode"):
+        promote_candidate(
+            candidate_checkpoint=candidate,
+            candidate_metrics=_metrics(
+                0.95,
+                policy_mode="constrained",
+            ),
+            paths=paths,
+        )
+
+    assert not paths.best_checkpoint.exists()
+    assert not paths.best_metrics.exists()
 
 
 def test_promote_candidate_requires_checkpoint_file(
