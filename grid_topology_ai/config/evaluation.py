@@ -12,6 +12,8 @@ from grid_topology_ai.config._validation import (
     require_positive,
 )
 
+_POLICY_MODES = {"ungated", "constrained"}
+
 
 @dataclass(frozen=True, slots=True)
 class EvaluationConfig:
@@ -28,6 +30,7 @@ class EvaluationConfig:
     c_puct: float = 2.0
     prior_exponent: float = 0.5
 
+    primary_policy_mode: str = "ungated"
     use_continuation_gate: bool = True
     allow_handoff_with_hard_overloads: bool = False
 
@@ -112,6 +115,26 @@ class EvaluationConfig:
             "evaluation.device",
             self.device,
             {"auto", "cpu", "cuda"},
+        )
+
+        primary_policy_mode = str(self.primary_policy_mode).strip().lower()
+        require_choice(
+            "evaluation.primary_policy_mode",
+            primary_policy_mode,
+            _POLICY_MODES,
+        )
+        if (
+            primary_policy_mode == "constrained"
+            and not self.use_continuation_gate
+        ):
+            raise ValueError(
+                "evaluation.primary_policy_mode='constrained' requires "
+                "evaluation.use_continuation_gate=true."
+            )
+        object.__setattr__(
+            self,
+            "primary_policy_mode",
+            primary_policy_mode,
         )
 
         if not self.output_csv_name:
@@ -207,6 +230,9 @@ class EvaluationConfig:
             c_puct=float(data.get("c_puct", 2.0)),
             prior_exponent=float(
                 data.get("prior_exponent", 0.5)
+            ),
+            primary_policy_mode=str(
+                data.get("primary_policy_mode", "ungated")
             ),
             use_continuation_gate=bool(
                 data.get("use_continuation_gate", True)

@@ -688,7 +688,7 @@ def _make_task_config(request: EvaluationRequest) -> dict[str, Any]:
         "disable_cache": bool(request.disable_cache),
         "use_continuation_gate": bool(config.use_continuation_gate),
         "evaluation_modes": [mode.value for mode in modes],
-        "primary_policy_mode": modes[-1].value,
+        "primary_policy_mode": config.primary_policy_mode,
         "min_hard_improvement": float(request.min_hard_improvement),
         "min_soft_improvement": float(request.min_soft_improvement),
         "min_gate_visits": int(request.min_gate_visits),

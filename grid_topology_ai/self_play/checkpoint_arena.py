@@ -15,6 +15,11 @@ from grid_topology_ai.config.checkpoint_selection import (
 )
 from grid_topology_ai.config.physics import PhysicsConfig
 from grid_topology_ai.evaluation.checkpoint import load_scenario_ids
+from grid_topology_ai.evaluation.policy_comparison import (
+    PolicyMode,
+    require_policy_mode_metrics,
+    require_primary_policy_mode,
+)
 from grid_topology_ai.self_play.physical_lineage import (
     PHYSICAL_LINEAGE_FINGERPRINT_FIELD,
 )
@@ -25,7 +30,7 @@ from grid_topology_ai.training.checkpoints import (
 )
 
 
-_ARENA_SCHEMA_VERSION = 2
+_ARENA_SCHEMA_VERSION = 3
 _RANKING_METRICS = (
     ("validation_loss", "loss"),
     ("validation_policy_loss", "policy_loss"),
@@ -296,6 +301,7 @@ def _annotate_selected_checkpoint(
     training_selector = payload.get("checkpoint_selection_metric")
     payload["training_checkpoint_selection_metric"] = training_selector
     payload["checkpoint_selection_metric"] = "closed_loop_arena"
+    payload["checkpoint_arena_policy_mode"] = PolicyMode.UNGATED.value
     payload["checkpoint_arena_metric"] = metric_name
     payload["checkpoint_arena_metric_value"] = float(metric_value)
     payload["checkpoint_arena_source_checkpoint"] = str(source)
@@ -368,12 +374,24 @@ def select_checkpoint_in_tuning_arena(
             physics_config=physics_config,
             scenario_ids=scenario_ids,
         )
-        metric_value = _finite_metric(
+        require_primary_policy_mode(
             metrics,
+            PolicyMode.UNGATED,
+            source=str(candidate_dir),
+        )
+        ungated_metrics = require_policy_mode_metrics(
+            metrics,
+            PolicyMode.UNGATED,
+            source=str(candidate_dir),
+        )
+        metric_value = _finite_metric(
+            ungated_metrics,
             config.metric,
             source=str(candidate_dir),
         )
-        failed_scenarios = int(metrics.get("failed_scenarios", 0))
+        failed_scenarios = int(
+            ungated_metrics.get("failed_scenarios", 0)
+        )
         evaluated.append(
             {
                 **candidate,
@@ -412,6 +430,7 @@ def select_checkpoint_in_tuning_arena(
     report = {
         "schema_version": _ARENA_SCHEMA_VERSION,
         "selection_method": "closed_loop_tuning_arena",
+        "policy_mode": PolicyMode.UNGATED.value,
         "metric": config.metric,
         "metric_direction": config.metric_direction,
         "tuning_csv": str(tuning_csv),

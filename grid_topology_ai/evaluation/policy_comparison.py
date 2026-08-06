@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
@@ -39,11 +40,56 @@ class RootPolicyDecision:
 
 def evaluation_policy_modes(compare_constrained: bool) -> tuple[PolicyMode, ...]:
     if compare_constrained:
-        # Evaluation task metadata currently records the last configured mode
-        # as primary. Keep ungated last so checkpoint selection, promotion,
-        # and headline reporting match the policy used by self-play.
-        return (PolicyMode.CONSTRAINED, PRIMARY_POLICY_MODE)
-    return (PRIMARY_POLICY_MODE,)
+        return (PolicyMode.UNGATED, PolicyMode.CONSTRAINED)
+    return (PolicyMode.UNGATED,)
+
+
+def require_primary_policy_mode(
+    metrics: Mapping[str, object],
+    expected: PolicyMode | str,
+    *,
+    source: str,
+) -> None:
+    expected_mode = PolicyMode(expected)
+    raw_mode = metrics.get("primary_policy_mode")
+
+    try:
+        observed_mode = PolicyMode(raw_mode)
+    except (TypeError, ValueError):
+        raise ValueError(
+            f"Evaluation metrics have an invalid primary_policy_mode: {source}."
+        ) from None
+
+    if observed_mode is not expected_mode:
+        raise ValueError(
+            "Evaluation primary policy mode mismatch for "
+            f"{source}: expected {expected_mode.value!r}, "
+            f"observed {observed_mode.value!r}."
+        )
+
+
+def require_policy_mode_metrics(
+    metrics: Mapping[str, object],
+    mode: PolicyMode | str,
+    *,
+    source: str,
+) -> Mapping[str, object]:
+    parsed_mode = PolicyMode(mode)
+    raw_mode_metrics = metrics.get("mode_metrics")
+
+    if not isinstance(raw_mode_metrics, Mapping):
+        raise ValueError(
+            f"Evaluation metrics are missing mode_metrics: {source}."
+        )
+
+    selected = raw_mode_metrics.get(parsed_mode.value)
+    if not isinstance(selected, Mapping):
+        raise ValueError(
+            "Evaluation metrics are missing policy mode "
+            f"{parsed_mode.value!r}: {source}."
+        )
+
+    return selected
 
 
 def select_evaluation_root_policy(

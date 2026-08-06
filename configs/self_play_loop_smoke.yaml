@@ -55,6 +55,7 @@ checkpoint_selection:
     gamma: 1.0
     c_puct: 2.0
     prior_exponent: 0.5
+    primary_policy_mode: ungated
     use_continuation_gate: true
     allow_handoff_with_hard_overloads: false
     num_workers: 1
@@ -151,6 +152,7 @@ evaluation:
   gamma: 1.0
   c_puct: 2.0
   prior_exponent: 0.5
+  primary_policy_mode: ungated
   use_continuation_gate: true
   allow_handoff_with_hard_overloads: false
   num_workers: 1

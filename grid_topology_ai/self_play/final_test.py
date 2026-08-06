@@ -1,12 +1,20 @@
 from __future__ import annotations
 
+import math
+from collections.abc import Mapping
 from dataclasses import dataclass
+from numbers import Real
 from pathlib import Path
 from typing import Any
 
 from grid_topology_ai.config import EvaluationConfig
 from grid_topology_ai.config.physics import PhysicsConfig
 from grid_topology_ai.evaluation.checkpoint import load_scenario_ids
+from grid_topology_ai.evaluation.policy_comparison import (
+    PolicyMode,
+    require_policy_mode_metrics,
+    require_primary_policy_mode,
+)
 from grid_topology_ai.self_play.acceptance import (
     require_metrics_pf_alg,
     require_metrics_physics_config,
@@ -21,8 +29,9 @@ from grid_topology_ai.self_play.artifacts import (
 from grid_topology_ai.self_play.paths import SelfPlayPaths
 from grid_topology_ai.self_play.stages import run_evaluate
 
-FINAL_TEST_REPORT_SCHEMA_VERSION = 2
+FINAL_TEST_REPORT_SCHEMA_VERSION = 3
 FINAL_TEST_EVALUATION_ROLE = "reporting_only"
+_SECURE_RATE_METRIC = "physically_secure_rate_requested"
 _FINAL_TEST_RAW_FILES = (
     "bus_data.parquet",
     "branch_data.parquet",
@@ -37,6 +46,124 @@ class FinalTestEvaluation:
     results_path: Path
     report_path: Path
     checkpoint: Path
+
+
+@dataclass(frozen=True, slots=True)
+class _PolicyReportValues:
+    ungated_rate: float
+    constrained_rate: float | None
+    continuation_gate_gain: float | None
+
+
+def _require_ungated_config(config: EvaluationConfig) -> None:
+    if config.primary_policy_mode != PolicyMode.UNGATED.value:
+        raise ValueError(
+            "Final-test primary_policy_mode must be 'ungated'."
+        )
+
+
+def _require_rate(
+    metrics: Mapping[str, object],
+    *,
+    source: str,
+) -> float:
+    value = metrics.get(_SECURE_RATE_METRIC)
+    if isinstance(value, bool) or not isinstance(value, Real):
+        raise ValueError(
+            f"Final-test metric {_SECURE_RATE_METRIC!r} is invalid: {source}."
+        )
+
+    rate = float(value)
+    if not math.isfinite(rate) or not 0.0 <= rate <= 1.0:
+        raise ValueError(
+            f"Final-test metric {_SECURE_RATE_METRIC!r} is invalid: {source}."
+        )
+    return rate
+
+
+def _policy_report_values(
+    metrics: Mapping[str, object],
+    *,
+    source: str,
+    expect_constrained: bool,
+) -> _PolicyReportValues:
+    require_primary_policy_mode(
+        metrics,
+        PolicyMode.UNGATED,
+        source=source,
+    )
+    ungated_metrics = require_policy_mode_metrics(
+        metrics,
+        PolicyMode.UNGATED,
+        source=source,
+    )
+    ungated_rate = _require_rate(
+        ungated_metrics,
+        source=f"{source} ungated metrics",
+    )
+
+    raw_mode_metrics = metrics.get("mode_metrics")
+    assert isinstance(raw_mode_metrics, Mapping)
+    raw_constrained = raw_mode_metrics.get(
+        PolicyMode.CONSTRAINED.value
+    )
+
+    if raw_constrained is None:
+        if expect_constrained:
+            raise ValueError(
+                f"Final-test constrained metrics are missing: {source}."
+            )
+        constrained_rate = None
+    elif not isinstance(raw_constrained, Mapping):
+        raise ValueError(
+            f"Final-test constrained metrics are invalid: {source}."
+        )
+    else:
+        constrained_rate = _require_rate(
+            raw_constrained,
+            source=f"{source} constrained metrics",
+        )
+
+    gain = (
+        None
+        if constrained_rate is None
+        else constrained_rate - ungated_rate
+    )
+    return _PolicyReportValues(
+        ungated_rate=ungated_rate,
+        constrained_rate=constrained_rate,
+        continuation_gate_gain=gain,
+    )
+
+
+def _require_report_value(
+    report: Mapping[str, object],
+    *,
+    name: str,
+    expected: float | None,
+    source: Path,
+) -> None:
+    observed = report.get(name)
+    if expected is None:
+        if observed is not None:
+            raise ValueError(
+                f"Invalid final-test report field {name}: {source}."
+            )
+        return
+
+    if isinstance(observed, bool) or not isinstance(observed, Real):
+        raise ValueError(
+            f"Invalid final-test report field {name}: {source}."
+        )
+    if not math.isclose(
+        float(observed),
+        expected,
+        rel_tol=0.0,
+        abs_tol=1e-12,
+    ):
+        raise ValueError(
+            f"Invalid final-test report field {name}: {source}."
+        )
 
 
 def _require_selected_best_checkpoint(
@@ -97,6 +224,7 @@ def load_final_test_evaluation(
     config: EvaluationConfig,
     physics_config: PhysicsConfig,
 ) -> FinalTestEvaluation | None:
+    _require_ungated_config(config)
     report_path = paths.final_test_report
     if not report_path.exists():
         partial = [
@@ -121,6 +249,10 @@ def load_final_test_evaluation(
         )
     if report.get("evaluation_role") != FINAL_TEST_EVALUATION_ROLE:
         raise ValueError(f"Invalid final-test evaluation role: {report_path}.")
+    if report.get("primary_policy_mode") != PolicyMode.UNGATED.value:
+        raise ValueError(
+            f"Invalid final-test primary policy mode: {report_path}."
+        )
     required_flags = {
         "checkpoint_selection_allowed": False,
         "checkpoint_promotion_allowed": False,
@@ -182,6 +314,29 @@ def load_final_test_evaluation(
         expected_physics_config=physics_config,
         source=str(metrics_path),
     )
+    policy_values = _policy_report_values(
+        metrics,
+        source=str(metrics_path),
+        expect_constrained=config.use_continuation_gate,
+    )
+    _require_report_value(
+        report,
+        name="ungated_physically_secure_rate_requested",
+        expected=policy_values.ungated_rate,
+        source=report_path,
+    )
+    _require_report_value(
+        report,
+        name="constrained_physically_secure_rate_requested",
+        expected=policy_values.constrained_rate,
+        source=report_path,
+    )
+    _require_report_value(
+        report,
+        name="continuation_gate_gain",
+        expected=policy_values.continuation_gate_gain,
+        source=report_path,
+    )
     return FinalTestEvaluation(
         metrics=metrics,
         metrics_path=metrics_path,
@@ -198,6 +353,7 @@ def run_final_test_evaluation(
     config: EvaluationConfig,
     physics_config: PhysicsConfig,
 ) -> FinalTestEvaluation:
+    _require_ungated_config(config)
     selected_checkpoint = Path(checkpoint)
     _require_selected_best_checkpoint(selected_checkpoint, paths)
     if paths.final_test_report.exists():
@@ -252,6 +408,11 @@ def run_final_test_evaluation(
         expected_physics_config=physics_config,
         source=str(metrics_path),
     )
+    policy_values = _policy_report_values(
+        metrics,
+        source=str(metrics_path),
+        expect_constrained=config.use_continuation_gate,
+    )
 
     checkpoint_sha_after = sha256_file(selected_checkpoint)
     best_metrics_sha_after = sha256_file(paths.best_metrics)
@@ -267,6 +428,16 @@ def run_final_test_evaluation(
     report: dict[str, Any] = {
         "schema_version": FINAL_TEST_REPORT_SCHEMA_VERSION,
         "evaluation_role": FINAL_TEST_EVALUATION_ROLE,
+        "primary_policy_mode": PolicyMode.UNGATED.value,
+        "ungated_physically_secure_rate_requested": (
+            policy_values.ungated_rate
+        ),
+        "constrained_physically_secure_rate_requested": (
+            policy_values.constrained_rate
+        ),
+        "continuation_gate_gain": (
+            policy_values.continuation_gate_gain
+        ),
         "checkpoint_selection_allowed": False,
         "checkpoint_promotion_allowed": False,
         "checkpoint_selected_before_evaluation": True,

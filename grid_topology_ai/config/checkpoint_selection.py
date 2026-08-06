@@ -27,6 +27,7 @@ _ARENA_DEFAULTS = {
     "gamma": 1.0,
     "c_puct": 2.0,
     "prior_exponent": 0.5,
+    "primary_policy_mode": "ungated",
     "use_continuation_gate": True,
     "allow_handoff_with_hard_overloads": False,
     "num_workers": 1,
@@ -122,6 +123,12 @@ class CheckpointSelectionConfig:
             raise ValueError(
                 "checkpoint_selection.metric_direction must be "
                 "'maximize' or 'minimize'."
+            )
+
+        if self.arena.primary_policy_mode != "ungated":
+            raise ValueError(
+                "checkpoint_selection.arena.primary_policy_mode must be "
+                "'ungated'."
             )
 
         has_tuning_csv = self.tuning_csv is not None

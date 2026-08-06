@@ -34,6 +34,11 @@ from grid_topology_ai.evaluation.checkpoint import load_scenario_ids
 from grid_topology_ai.evaluation.paired_results import (
     compare_evaluation_results,
 )
+from grid_topology_ai.evaluation.policy_comparison import (
+    PolicyMode,
+    require_policy_mode_metrics,
+    require_primary_policy_mode,
+)
 
 _MATCHING_EVALUATION_FIELDS = (
         "transitions_sha256",
@@ -312,38 +317,39 @@ def _require_matching_evaluation_inputs(
         + details
     )
 
-def _configured_primary_policy_mode(
+
+def _metrics_for_policy_mode(
     metrics: Mapping[str, object],
+    mode: PolicyMode,
     *,
     source: str,
-) -> str:
-    task_config = metrics.get("task_config")
-
-    if not isinstance(task_config, Mapping):
-        raise ValueError(
-            f"Evaluation metrics are missing task_config: "
-            f"{source}"
-        )
-
-    policy_mode = task_config.get(
-        "primary_policy_mode"
+) -> dict[str, object]:
+    require_primary_policy_mode(
+        metrics,
+        mode,
+        source=source,
     )
 
-    if not isinstance(policy_mode, str):
+    task_config = metrics.get("task_config")
+    if (
+        not isinstance(task_config, Mapping)
+        or task_config.get("primary_policy_mode") != mode.value
+    ):
         raise ValueError(
-            f"Evaluation task_config is missing "
-            f"primary_policy_mode: {source}"
+            "Evaluation task_config primary policy mode mismatch for "
+            f"{source}: expected {mode.value!r}."
         )
 
-    policy_mode = policy_mode.strip()
+    mode_metrics = require_policy_mode_metrics(
+        metrics,
+        mode,
+        source=source,
+    )
+    view = dict(metrics)
+    view.update(mode_metrics)
+    view["primary_policy_mode"] = mode.value
+    return view
 
-    if not policy_mode:
-        raise ValueError(
-            f"Evaluation primary_policy_mode is empty: "
-            f"{source}"
-        )
-
-    return policy_mode
 
 def _count_examples_csv(path: str | Path) -> int:
     path = Path(path)
@@ -630,26 +636,16 @@ def run_self_play_iteration(
         candidate_metrics,
     )
 
-    parent_policy_mode = (
-        _configured_primary_policy_mode(
-            parent_metrics,
-            source=str(parent_metrics_path),
-        )
+    parent_ungated_metrics = _metrics_for_policy_mode(
+        parent_metrics,
+        PolicyMode.UNGATED,
+        source=str(parent_metrics_path),
     )
-    candidate_policy_mode = (
-        _configured_primary_policy_mode(
-            candidate_metrics,
-            source=str(candidate_metrics_path),
-        )
+    candidate_ungated_metrics = _metrics_for_policy_mode(
+        candidate_metrics,
+        PolicyMode.UNGATED,
+        source=str(candidate_metrics_path),
     )
-
-    if parent_policy_mode != candidate_policy_mode:
-        raise ValueError(
-            "Parent and candidate evaluations use "
-            "different primary policy modes: "
-            f"parent={parent_policy_mode!r}, "
-            f"candidate={candidate_policy_mode!r}."
-        )
 
     parent_results_path = (
             parent_evaluation_dir
@@ -663,7 +659,7 @@ def run_self_play_iteration(
     comparison = compare_evaluation_results(
         parent_csv=parent_results_path,
         candidate_csv=candidate_results_path,
-        policy_mode=parent_policy_mode,
+        policy_mode=PolicyMode.UNGATED.value,
         confidence_level=(
             config.acceptance.confidence_level
         ),
@@ -683,8 +679,8 @@ def run_self_play_iteration(
     )
 
     aggregate_gates_passed = accept_candidate(
-        new_metrics=candidate_metrics,
-        best_metrics=parent_metrics,
+        new_metrics=candidate_ungated_metrics,
+        best_metrics=parent_ungated_metrics,
         config=config.acceptance,
     )
 
@@ -723,9 +719,10 @@ def run_self_play_iteration(
         config=dict(request.raw_config),
         extra={
             "status": status,
+            "primary_policy_mode": PolicyMode.UNGATED.value,
             "metric_name": metric_name,
-            "candidate_metric": candidate_metrics.get(metric_name),
-            "best_metric_before": parent_metrics.get(metric_name),
+            "candidate_metric": candidate_ungated_metrics.get(metric_name),
+            "best_metric_before": parent_ungated_metrics.get(metric_name),
             "n_evaluation_scenarios": len(evaluation_scenario_ids),
             "parent_evaluation_dir": str(parent_evaluation_dir),
             "candidate_evaluation_dir": str(candidate_evaluation_dir),
@@ -821,13 +818,19 @@ def run_self_play_iteration(
         ),
     )
 
-    candidate_metric = candidate_metrics.get(metric_name)
-    best_metric_after = best_metrics.get(metric_name)
+    candidate_metric = candidate_ungated_metrics.get(metric_name)
+    best_ungated_metrics = _metrics_for_policy_mode(
+        best_metrics,
+        PolicyMode.UNGATED,
+        source="best metrics after iteration",
+    )
+    best_metric_after = best_ungated_metrics.get(metric_name)
 
     row: dict[str, object] = {
         "iteration": int(iteration),
         "accepted": bool(accepted),
         "status": status,
+        "primary_policy_mode": PolicyMode.UNGATED.value,
         "candidate_metric": candidate_metric,
         "best_metric_after": best_metric_after,
         "n_sampled_scenarios": int(len(scenario_ids)),

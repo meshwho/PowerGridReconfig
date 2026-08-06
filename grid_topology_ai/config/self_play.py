@@ -131,6 +131,11 @@ class SelfPlayConfig:
                 "final_test_raw_dir must differ from eval_raw_dir."
             )
 
+        if self.evaluation.primary_policy_mode != "ungated":
+            raise ValueError(
+                "Self-play evaluation.primary_policy_mode must be 'ungated'."
+            )
+
         values = (
             int(self.generation.pf_alg),
             int(self.evaluation.pf_alg),
