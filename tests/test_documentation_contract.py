@@ -10,7 +10,7 @@ def test_readme_documents_current_self_play_contract() -> None:
         "pool-guided",
         "MCTS visit",
         "scenario_id",
-        "validation loss",
+        "Validation objectives",
         "PF_ALG",
         "outcome_value_target",
         "normalization",
