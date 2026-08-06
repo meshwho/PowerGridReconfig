@@ -133,15 +133,21 @@ def _metrics(
     task_policy_mode: str | None = None,
 ) -> dict[str, object]:
     configured_mode = policy_mode if task_policy_mode is None else task_policy_mode
-    return {
+    headline = {
         "solve_rate": solve_rate,
-        "primary_policy_mode": policy_mode,
         "task_config": {
             "primary_policy_mode": configured_mode,
         },
         "evaluation_metrics_contract_version": EVALUATION_METRICS_CONTRACT_VERSION,
         **physics_provenance(DEFAULT_PHYSICS_CONFIG),
         "physical_objective_contract": physical_objective_contract(),
+    }
+    return {
+        **headline,
+        "primary_policy_mode": policy_mode,
+        "mode_metrics": {
+            policy_mode: dict(headline),
+        },
     }
 
 
