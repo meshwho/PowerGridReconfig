@@ -95,10 +95,21 @@ def test_enabled_arena_rejects_training_request_without_candidates(
     )
     training_started = False
 
-    def fake_train(**kwargs):
+    def fake_train(
+        *,
+        project_root,
+        examples_csv,
+        validation_examples_csv,
+        init_checkpoint,
+        output_dir,
+        config,
+        physics_config,
+        iteration,
+        seed,
+    ) -> Path:
         nonlocal training_started
         training_started = True
-        return output_dir / "candidate_checkpoint.pt"
+        return Path(output_dir) / "candidate_checkpoint.pt"
 
     monkeypatch.setattr(
         stages,
