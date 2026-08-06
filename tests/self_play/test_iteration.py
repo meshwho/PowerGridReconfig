@@ -105,21 +105,41 @@ def _metrics(
     *,
     pf_alg: int = 3,
     failed_scenarios: int = 0,
+    constrained_solve_rate: float | None = None,
+    primary_policy_mode: str = "ungated",
 ) -> dict[str, object]:
     physics_config = replace(
         DEFAULT_PHYSICS_CONFIG,
         pf_alg=pf_alg,
     )
     provenance = physics_provenance(physics_config)
-    return {
+    constrained_rate = (
+        solve_rate
+        if constrained_solve_rate is None
+        else constrained_solve_rate
+    )
+    ungated_metrics = {
         "solve_rate": solve_rate,
         "failed_scenarios": failed_scenarios,
+        "physically_secure_rate_requested": solve_rate,
+    }
+    constrained_metrics = {
+        "solve_rate": constrained_rate,
+        "failed_scenarios": failed_scenarios,
+        "physically_secure_rate_requested": constrained_rate,
+    }
+    return {
+        **ungated_metrics,
         "pf_alg": pf_alg,
         "task_config": {
             "pf_alg": pf_alg,
-            "primary_policy_mode": "ungated",
+            "primary_policy_mode": primary_policy_mode,
         },
-        "primary_policy_mode": "ungated",
+        "primary_policy_mode": primary_policy_mode,
+        "mode_metrics": {
+            "ungated": ungated_metrics,
+            "constrained": constrained_metrics,
+        },
         "evaluation_metrics_contract_version": EVALUATION_METRICS_CONTRACT_VERSION,
         **provenance,
         "physical_objective_contract": physical_objective_contract(
@@ -638,6 +658,61 @@ def test_parent_is_reevaluated_before_selection(
     assert captured["candidate"]["solve_rate"] == 0.6
     assert captured["parent"]["solve_rate"] == 0.5
     assert result.parent_metrics["solve_rate"] == 0.5
+
+
+def test_constrained_gain_does_not_override_ungated_rejection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_stage_fakes(monkeypatch)
+    captured: dict[str, dict[str, object]] = {}
+
+    def fake_evaluate(**kwargs: Any) -> dict[str, object]:
+        checkpoint = Path(kwargs["checkpoint"])
+        is_candidate = checkpoint.name != "parent.pt"
+        _write_evaluation_results(
+            output_dir=Path(kwargs["output_dir"]),
+            output_csv_name=kwargs["config"].output_csv_name,
+            scenario_ids=tuple(kwargs["scenario_ids"]),
+            secure=not is_candidate,
+        )
+        if is_candidate:
+            return _metrics(0.60, constrained_solve_rate=0.90)
+        return _metrics(0.70, constrained_solve_rate=0.72)
+
+    def fake_accept_candidate(
+        *,
+        new_metrics,
+        best_metrics,
+        config,
+    ) -> bool:
+        captured["candidate"] = dict(new_metrics)
+        captured["parent"] = dict(best_metrics)
+        return False
+
+    monkeypatch.setattr(iteration_module, "run_evaluate", fake_evaluate)
+    monkeypatch.setattr(
+        iteration_module,
+        "accept_candidate",
+        fake_accept_candidate,
+    )
+    monkeypatch.setattr(
+        iteration_module,
+        "passes_confidence_gates",
+        lambda **kwargs: True,
+    )
+
+    result = run_self_play_iteration(_request(tmp_path))
+
+    assert result.accepted is False
+    assert captured["candidate"]["solve_rate"] == pytest.approx(0.60)
+    assert captured["parent"]["solve_rate"] == pytest.approx(0.70)
+    assert captured["candidate"][
+        "physically_secure_rate_requested"
+    ] == pytest.approx(0.60)
+    assert result.candidate_metrics["mode_metrics"]["constrained"][
+        "solve_rate"
+    ] == pytest.approx(0.90)
 
 
 def test_parent_and_candidate_use_the_same_evaluation_scenarios(

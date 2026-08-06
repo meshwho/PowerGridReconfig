@@ -38,8 +38,8 @@ def _analysis(*allowed_action_ids: int) -> SimpleNamespace:
 def test_comparison_mode_evaluates_constrained_as_secondary() -> None:
     assert evaluation_policy_modes(False) == (PolicyMode.UNGATED,)
     assert evaluation_policy_modes(True) == (
-        PolicyMode.CONSTRAINED,
         PolicyMode.UNGATED,
+        PolicyMode.CONSTRAINED,
     )
 
 

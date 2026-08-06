@@ -70,6 +70,28 @@ def _patch_evaluation_contracts(
     )
 
 
+def _evaluation_metrics(
+    *,
+    ungated_rate: float = 0.5,
+    constrained_rate: float = 0.75,
+) -> dict[str, object]:
+    return {
+        "physically_secure_rate_requested": ungated_rate,
+        "primary_policy_mode": "ungated",
+        "mode_metrics": {
+            "ungated": {
+                "physically_secure_rate_requested": ungated_rate,
+            },
+            "constrained": {
+                "physically_secure_rate_requested": constrained_rate,
+            },
+        },
+        "ungated_physically_secure_rate_requested": ungated_rate,
+        "constrained_physically_secure_rate_requested": constrained_rate,
+        "continuation_gate_gain": constrained_rate - ungated_rate,
+    }
+
+
 def _write_fake_evaluation(
     *,
     output_dir: Path,
@@ -98,7 +120,7 @@ def test_final_test_is_reporting_only_and_preserves_best_state(
 
     def fake_run_evaluate(**kwargs):
         captured.update(kwargs)
-        metrics = {"physically_secure_rate_requested": 0.5}
+        metrics = _evaluation_metrics()
         _write_fake_evaluation(
             output_dir=Path(kwargs["output_dir"]),
             config=kwargs["config"],
@@ -131,6 +153,17 @@ def test_final_test_is_reporting_only_and_preserves_best_state(
     assert report["checkpoint_selection_allowed"] is False
     assert report["checkpoint_promotion_allowed"] is False
     assert report["checkpoint_selected_before_evaluation"] is True
+    assert report["primary_policy_mode"] == "ungated"
+    assert report["ungated_physically_secure_rate_requested"] == pytest.approx(
+        0.5
+    )
+    assert report[
+        "constrained_physically_secure_rate_requested"
+    ] == pytest.approx(0.75)
+    assert report["continuation_gate_gain"] == pytest.approx(0.25)
+    assert result.metrics["physically_secure_rate_requested"] == pytest.approx(
+        0.5
+    )
     assert paths.best_checkpoint.read_bytes() == checkpoint_before
     assert paths.best_metrics.read_bytes() == metrics_before
 
@@ -163,7 +196,7 @@ def test_final_test_detects_selection_artifact_mutation(
     _patch_evaluation_contracts(monkeypatch)
 
     def fake_run_evaluate(**kwargs):
-        metrics = {"physically_secure_rate_requested": 0.5}
+        metrics = _evaluation_metrics()
         _write_fake_evaluation(
             output_dir=Path(kwargs["output_dir"]),
             config=kwargs["config"],

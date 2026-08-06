@@ -77,11 +77,21 @@ def test_tuning_arena_minimizes_configured_metric(
 
     def fake_evaluate(**kwargs: Any) -> dict[str, Any]:
         content = Path(kwargs["checkpoint"]).read_bytes()
+        ungated = 0.4 if content == b"canonical" else 0.1
+        constrained = 0.05 if content == b"canonical" else 0.9
         return {
-            "failed_scenario_rate_requested": (
-                0.4 if content == b"canonical" else 0.1
-            ),
-            "failed_scenarios": 0,
+            "primary_policy_mode": "ungated",
+            "failed_scenario_rate_requested": ungated,
+            "mode_metrics": {
+                "ungated": {
+                    "failed_scenario_rate_requested": ungated,
+                    "failed_scenarios": 0,
+                },
+                "constrained": {
+                    "failed_scenario_rate_requested": constrained,
+                    "failed_scenarios": 0,
+                },
+            },
         }
 
     config = CheckpointSelectionConfig(
@@ -109,5 +119,6 @@ def test_tuning_arena_minimizes_configured_metric(
     assert canonical.read_bytes() == b"alternative"
 
     report = json.loads(result.report_path.read_text(encoding="utf-8"))
+    assert report["policy_mode"] == "ungated"
     assert report["metric_direction"] == "minimize"
     assert report["selected_source_checkpoint"] == str(alternative)

@@ -1,12 +1,19 @@
+from dataclasses import replace
+
 import pytest
 
 from grid_topology_ai.config import (
     AcceptanceConfig,
+    EvaluationConfig,
     GenerationConfig,
     ReplayBufferConfig,
+    SelfPlayConfig,
     TrainingConfig,
 )
 from grid_topology_ai.config.acceptance import PRIMARY_ACCEPTANCE_METRIC
+from grid_topology_ai.config.checkpoint_selection import (
+    CheckpointSelectionConfig,
+)
 
 
 def test_generation_rejects_zero_simulations() -> None:
@@ -37,6 +44,39 @@ def test_training_config_from_mapping_rejects_unknown_model_type() -> None:
 def test_training_config_accepts_supported_model_types() -> None:
     assert TrainingConfig(model_type="graph_v1").model_type == "graph_v1"
     assert TrainingConfig(model_type="graph_v2").model_type == "graph_v2"
+
+
+def test_evaluation_rejects_unknown_primary_policy_mode() -> None:
+    with pytest.raises(ValueError, match="primary_policy_mode"):
+        EvaluationConfig(primary_policy_mode="hybrid")
+
+
+def test_constrained_primary_mode_requires_continuation_gate() -> None:
+    with pytest.raises(ValueError, match="requires"):
+        EvaluationConfig(
+            primary_policy_mode="constrained",
+            use_continuation_gate=False,
+        )
+
+
+def test_checkpoint_arena_requires_ungated_primary_mode() -> None:
+    with pytest.raises(ValueError, match="arena.primary_policy_mode"):
+        CheckpointSelectionConfig(
+            arena=EvaluationConfig(
+                primary_policy_mode="constrained",
+            )
+        )
+
+
+def test_self_play_requires_ungated_primary_mode() -> None:
+    config = SelfPlayConfig.load("configs/self_play_loop_smoke.yaml")
+    constrained = replace(
+        config.evaluation,
+        primary_policy_mode="constrained",
+    )
+
+    with pytest.raises(ValueError, match="evaluation.primary_policy_mode"):
+        replace(config, evaluation=constrained)
 
 
 def test_acceptance_defaults_to_requested_physical_metric() -> None:
@@ -72,6 +112,7 @@ def test_acceptance_rejects_invalid_min_improvement(
         AcceptanceConfig(
             min_improvement=invalid_value,  # type: ignore[arg-type]
         )
+
 
 @pytest.mark.parametrize(
     "invalid_value",
@@ -118,6 +159,7 @@ def test_acceptance_rejects_invalid_bootstrap_samples(
         AcceptanceConfig(
             bootstrap_samples=invalid_value,  # type: ignore[arg-type]
         )
+
 
 @pytest.mark.parametrize(
     "invalid_value",

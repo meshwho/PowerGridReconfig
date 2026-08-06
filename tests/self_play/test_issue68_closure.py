@@ -290,7 +290,21 @@ def test_final_test_report_seals_and_reuses_run(
     def fake_run_evaluate(**kwargs: Any) -> dict[str, object]:
         output_dir = Path(kwargs["output_dir"])
         output_dir.mkdir(parents=True, exist_ok=True)
-        metrics = {"physically_secure_rate_requested": 0.5}
+        metrics = {
+            "physically_secure_rate_requested": 0.5,
+            "primary_policy_mode": "ungated",
+            "mode_metrics": {
+                "ungated": {
+                    "physically_secure_rate_requested": 0.5,
+                },
+                "constrained": {
+                    "physically_secure_rate_requested": 0.75,
+                },
+            },
+            "ungated_physically_secure_rate_requested": 0.5,
+            "constrained_physically_secure_rate_requested": 0.75,
+            "continuation_gate_gain": 0.25,
+        }
         (output_dir / config.output_json_name).write_text(
             json.dumps(metrics),
             encoding="utf-8",
@@ -314,6 +328,8 @@ def test_final_test_report_seals_and_reuses_run(
     )
     report = json.loads(first.report_path.read_text(encoding="utf-8"))
     assert report["run_sealed"] is True
+    assert report["primary_policy_mode"] == "ungated"
+    assert report["continuation_gate_gain"] == pytest.approx(0.25)
 
     loaded = load_final_test_evaluation(
         paths=paths,

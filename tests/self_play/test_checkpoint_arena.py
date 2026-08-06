@@ -45,6 +45,28 @@ def _candidate(
     }
 
 
+def _arena_metrics(
+    *,
+    ungated: float,
+    constrained: float,
+    failed_scenarios: int = 0,
+) -> dict[str, Any]:
+    return {
+        "primary_policy_mode": "ungated",
+        "physically_secure_rate_requested": ungated,
+        "mode_metrics": {
+            "ungated": {
+                "physically_secure_rate_requested": ungated,
+                "failed_scenarios": failed_scenarios,
+            },
+            "constrained": {
+                "physically_secure_rate_requested": constrained,
+                "failed_scenarios": failed_scenarios,
+            },
+        },
+    }
+
+
 def test_candidate_pool_covers_each_validation_objective(
     tmp_path: Path,
 ) -> None:
@@ -225,9 +247,9 @@ def test_tuning_arena_promotes_best_closed_loop_candidate(
     )
 
     scores = {
-        canonical.name: 0.40,
-        best_loss.name: 0.55,
-        best_policy.name: 0.70,
+        canonical.name: (0.40, 0.90),
+        best_loss.name: (0.55, 0.80),
+        best_policy.name: (0.70, 0.71),
     }
     evaluated: list[Path] = []
 
@@ -235,10 +257,11 @@ def test_tuning_arena_promotes_best_closed_loop_candidate(
         checkpoint = Path(kwargs["checkpoint"])
         evaluated.append(checkpoint)
         source_name = checkpoint.read_bytes().decode("utf-8")
-        return {
-            "physically_secure_rate_requested": scores[source_name],
-            "failed_scenarios": 0,
-        }
+        ungated, constrained = scores[source_name]
+        return _arena_metrics(
+            ungated=ungated,
+            constrained=constrained,
+        )
 
     config = CheckpointSelectionConfig(
         enabled=True,
@@ -275,6 +298,7 @@ def test_tuning_arena_promotes_best_closed_loop_candidate(
 
     report = json.loads(result.report_path.read_text(encoding="utf-8"))
     assert report["selection_method"] == "closed_loop_tuning_arena"
+    assert report["policy_mode"] == "ungated"
     assert report["selected_source_checkpoint"] == str(best_policy)
     assert Path(report["selected_archived_checkpoint"]).is_file()
     assert report["tuning_scenario_ids"] == [1, 2]
@@ -282,6 +306,83 @@ def test_tuning_arena_promotes_best_closed_loop_candidate(
         Path(item["archived_checkpoint"]).is_file()
         for item in report["candidates"]
     )
+
+
+def test_tuning_arena_ignores_better_constrained_score(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    candidate_a = tmp_path / "candidate_checkpoint.pt"
+    candidate_b = tmp_path / "candidate_checkpoint_best_policy.pt"
+    candidate_a.write_bytes(b"a")
+    candidate_b.write_bytes(b"b")
+
+    tuning_csv = tmp_path / "tuning.csv"
+    pd.DataFrame({"scenario_id": [1]}).to_csv(tuning_csv, index=False)
+    tuning_raw_dir = tmp_path / "raw"
+    tuning_raw_dir.mkdir()
+
+    monkeypatch.setattr(
+        checkpoint_arena,
+        "_validate_tuning_independence",
+        lambda **kwargs: (1,),
+    )
+    monkeypatch.setattr(
+        checkpoint_arena,
+        "_load_candidates",
+        lambda **kwargs: [
+            _candidate(
+                candidate_a,
+                checkpoint_arena.sha256_file(candidate_a),
+                loss=0.1,
+                policy_loss=0.2,
+                value_loss=0.2,
+                calibration=0.2,
+            ),
+            _candidate(
+                candidate_b,
+                checkpoint_arena.sha256_file(candidate_b),
+                loss=0.2,
+                policy_loss=0.1,
+                value_loss=0.1,
+                calibration=0.1,
+            ),
+        ],
+    )
+    monkeypatch.setattr(
+        checkpoint_arena,
+        "_annotate_selected_checkpoint",
+        lambda **kwargs: Path(kwargs["destination"]).write_bytes(
+            Path(kwargs["source"]).read_bytes()
+        ),
+    )
+
+    def fake_evaluate(**kwargs: Any) -> dict[str, Any]:
+        content = Path(kwargs["checkpoint"]).read_bytes()
+        if content == b"a":
+            return _arena_metrics(ungated=0.80, constrained=0.82)
+        return _arena_metrics(ungated=0.70, constrained=0.95)
+
+    config = CheckpointSelectionConfig(
+        enabled=True,
+        tuning_csv=tuning_csv,
+        tuning_raw_dir=tuning_raw_dir,
+        max_candidates=2,
+    )
+    result = checkpoint_arena.select_checkpoint_in_tuning_arena(
+        canonical_checkpoint=candidate_a,
+        project_root=tmp_path,
+        output_dir=tmp_path / "selection",
+        config=config,
+        physics_config=DEFAULT_PHYSICS_CONFIG,
+        tuning_csv=tuning_csv,
+        tuning_raw_dir=tuning_raw_dir,
+        excluded_csvs={},
+        evaluate=fake_evaluate,
+    )
+
+    assert result.selected_source == candidate_a
+    assert result.metric_value == pytest.approx(0.80)
 
 
 def test_run_train_routes_candidate_through_tuning_arena(
