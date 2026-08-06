@@ -15,10 +15,39 @@ from grid_topology_ai.self_play.acceptance import (
 )
 
 
+_PRIMARY_POLICY_MODE = "ungated"
+
+
 @dataclass(frozen=True, slots=True)
 class BestState:
     checkpoint: Path
     metrics: dict[str, object]
+
+
+def _require_primary_policy_mode(
+    metrics: Mapping[str, object],
+    *,
+    source: str,
+) -> None:
+    primary_mode = metrics.get("primary_policy_mode")
+    task_config = metrics.get("task_config")
+    configured_mode = (
+        task_config.get("primary_policy_mode")
+        if isinstance(task_config, Mapping)
+        else None
+    )
+
+    if (
+        primary_mode != _PRIMARY_POLICY_MODE
+        or configured_mode != _PRIMARY_POLICY_MODE
+    ):
+        raise ValueError(
+            "Incompatible evaluation primary policy mode for "
+            f"{source}: expected {_PRIMARY_POLICY_MODE!r}, "
+            f"observed headline={primary_mode!r}, "
+            f"task_config={configured_mode!r}. Regenerate fixed "
+            "evaluation metrics with the current ungated policy contract."
+        )
 
 
 def initialize_best_state(
@@ -45,6 +74,10 @@ def initialize_best_state(
             bootstrap_metrics,
             source=str(paths.bootstrap_metrics),
         )
+        _require_primary_policy_mode(
+            bootstrap_metrics,
+            source=str(paths.bootstrap_metrics),
+        )
         print("Initializing self-play best metrics from bootstrap.")
         print(f"Bootstrap metrics: {paths.bootstrap_metrics}")
         print(f"Best metrics:      {paths.best_metrics}")
@@ -52,6 +85,10 @@ def initialize_best_state(
 
     best_metrics = load_json(paths.best_metrics)
     require_metrics_semantic_versions(
+        best_metrics,
+        source=str(paths.best_metrics),
+    )
+    _require_primary_policy_mode(
         best_metrics,
         source=str(paths.best_metrics),
     )
@@ -77,6 +114,10 @@ def promote_candidate(
 
     load_checkpoint_payload(candidate_checkpoint, map_location="cpu")
     require_metrics_semantic_versions(
+        candidate_metrics,
+        source="candidate metrics",
+    )
+    _require_primary_policy_mode(
         candidate_metrics,
         source="candidate metrics",
     )
