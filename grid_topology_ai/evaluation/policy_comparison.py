@@ -22,6 +22,9 @@ class PolicyMode(StrEnum):
     CONSTRAINED = "constrained"
 
 
+PRIMARY_POLICY_MODE = PolicyMode.UNGATED
+
+
 @dataclass(frozen=True, slots=True)
 class RootPolicyDecision:
     mode: PolicyMode
@@ -36,8 +39,11 @@ class RootPolicyDecision:
 
 def evaluation_policy_modes(compare_constrained: bool) -> tuple[PolicyMode, ...]:
     if compare_constrained:
-        return (PolicyMode.UNGATED, PolicyMode.CONSTRAINED)
-    return (PolicyMode.UNGATED,)
+        # Evaluation task metadata currently records the last configured mode
+        # as primary. Keep ungated last so checkpoint selection, promotion,
+        # and headline reporting match the policy used by self-play.
+        return (PolicyMode.CONSTRAINED, PRIMARY_POLICY_MODE)
+    return (PRIMARY_POLICY_MODE,)
 
 
 def select_evaluation_root_policy(
@@ -133,7 +139,10 @@ def build_policy_comparison_metrics(
 ) -> dict[str, Any]:
     modes = tuple(
         PolicyMode(mode)
-        for mode in task_config.get("evaluation_modes", [PolicyMode.UNGATED.value])
+        for mode in task_config.get(
+            "evaluation_modes",
+            [PRIMARY_POLICY_MODE.value],
+        )
     )
     mode_metrics: dict[str, dict[str, Any]] = {}
 
@@ -161,11 +170,24 @@ def build_policy_comparison_metrics(
     if not mode_metrics:
         raise RuntimeError("No evaluation mode produced metrics.")
 
-    primary_mode = (
-        PolicyMode.CONSTRAINED.value
-        if PolicyMode.CONSTRAINED.value in mode_metrics
-        else PolicyMode.UNGATED.value
-    )
+    try:
+        primary_mode = PolicyMode(
+            task_config.get(
+                "primary_policy_mode",
+                PRIMARY_POLICY_MODE.value,
+            )
+        ).value
+    except ValueError as exc:
+        raise ValueError(
+            "Evaluation task has an unsupported primary_policy_mode."
+        ) from exc
+
+    if primary_mode not in mode_metrics:
+        raise ValueError(
+            "Evaluation primary policy mode did not produce metrics: "
+            f"{primary_mode}."
+        )
+
     metrics = dict(mode_metrics[primary_mode])
     metrics["evaluation_mode"] = (
         "comparison" if len(mode_metrics) > 1 else primary_mode
@@ -177,10 +199,27 @@ def build_policy_comparison_metrics(
         PolicyMode.UNGATED.value,
         PolicyMode.CONSTRAINED.value,
     }.issubset(mode_metrics):
-        metrics["comparison"] = _comparison_summary(
+        comparison = _comparison_summary(
             df=df,
             mode_metrics=mode_metrics,
         )
+        metrics["comparison"] = comparison
+
+        metric_name = "physically_secure_rate_requested"
+        ungated_value = mode_metrics[PolicyMode.UNGATED.value].get(
+            metric_name
+        )
+        constrained_value = mode_metrics[PolicyMode.CONSTRAINED.value].get(
+            metric_name
+        )
+        if ungated_value is not None and constrained_value is not None:
+            ungated_rate = float(ungated_value)
+            constrained_rate = float(constrained_value)
+            metrics[f"ungated_{metric_name}"] = ungated_rate
+            metrics[f"constrained_{metric_name}"] = constrained_rate
+            metrics["continuation_gate_gain"] = (
+                constrained_rate - ungated_rate
+            )
 
     return metrics
 
@@ -211,6 +250,10 @@ def print_policy_comparison_summary(metrics: dict[str, Any]) -> None:
     print(
         "Solve-rate delta:                 "
         f"{_format_delta(comparison['solve_rate_delta'])}"
+    )
+    print(
+        "Physical-security delta:          "
+        f"{_format_delta(comparison['physically_secure_rate_requested_delta'])}"
     )
     print(
         "Average return delta:             "
@@ -259,6 +302,11 @@ def _comparison_summary(
             constrained_metrics,
             ungated_metrics,
             "solve_rate",
+        ),
+        "physically_secure_rate_requested_delta": _metric_delta(
+            constrained_metrics,
+            ungated_metrics,
+            "physically_secure_rate_requested",
         ),
         "avg_discounted_return_delta": _metric_delta(
             constrained_metrics,
