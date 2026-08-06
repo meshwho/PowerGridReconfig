@@ -240,6 +240,11 @@ regular evaluation set, or final test set. The winner is selected by
 `checkpoint_selection.metric`; `metric_direction` must be explicitly compatible
 with the metric and is either `maximize` or `minimize`.
 
+The arena metric always comes from the ungated policy mode: neural policy plus
+MCTS, without continuation-gate filtering. This is the same controller that
+produces the self-play behavior and policy targets. A candidate cannot win the
+arena only because the secondary constrained controller repairs its actions.
+
 Before evaluation, every selected candidate is copied to an immutable location
 under:
 
@@ -270,7 +275,31 @@ the report.
 
 ## 11. Fixed evaluation
 
-Candidate checkpoints are evaluated on the fixed evaluation transitions and raw states. This keeps acceptance comparable across iterations. `solve_count` and `solve_rate` count only physically secure outcomes and therefore equal `physically_secure_count` and `physically_secure_rate`. Thermal feasibility remains a separate diagnostic rate. Evaluation also records counts/rates for PF convergence, finite values, topology connectivity, thermal, voltage, generator P/Q, and angle feasibility, plus violation diagnostics.
+Candidate checkpoints are evaluated on the fixed evaluation transitions and raw
+states. When continuation analysis is enabled, every checkpoint is evaluated in
+two explicitly different policy modes:
+
+- `ungated`: neural policy plus MCTS; this is the primary scientific policy and
+  matches self-play behavior;
+- `constrained`: neural policy plus MCTS followed by continuation-gate filtering;
+  this is a secondary hybrid-controller diagnostic.
+
+Top-level evaluation metrics, including `solve_rate` and
+`physically_secure_rate_requested`, always come from `ungated`. Both complete
+metric groups remain available under `mode_metrics.ungated` and
+`mode_metrics.constrained`. Evaluation also records
+`ungated_physically_secure_rate_requested`,
+`constrained_physically_secure_rate_requested`, and `continuation_gate_gain`,
+where the gain is constrained minus ungated physical-security rate. A positive
+gain measures the contribution of the external continuation gate; it is not
+credited to the learned policy.
+
+This keeps acceptance comparable across iterations. `solve_count` and
+`solve_rate` count only physically secure outcomes and therefore equal
+`physically_secure_count` and `physically_secure_rate`. Thermal feasibility
+remains a separate diagnostic rate. Evaluation also records counts/rates for PF
+convergence, finite values, topology connectivity, thermal, voltage, generator
+P/Q, and angle feasibility, plus violation diagnostics.
 
 Before workers are initialized, evaluation loads the checkpoint's exact
 topology-action configuration and ordered layout. Each worker constructs
@@ -280,10 +309,16 @@ action provenance, or with a different allowlist/layout, is rejected rather
 than evaluated under different semantics.
 
 The regular evaluation set is a selection set: it is used after each iteration
-to decide whether the arena winner is promoted. The final test set is
-independent and is never used for training, self-play generation, epoch
-selection, arena ranking, or promotion. It is reserved for one evaluation of
-the final best checkpoint after the loop has completed.
+to decide whether the arena winner is promoted. Promotion, paired confidence
+checks, and aggregate acceptance gates use the ungated rows and ungated
+headline metrics. Better constrained performance cannot promote a checkpoint
+whose ungated policy is worse.
+
+The final test set is independent and is never used for training, self-play
+generation, epoch selection, arena ranking, or promotion. It is reserved for
+one evaluation of the final best checkpoint after the loop has completed. Its
+headline metrics are ungated; constrained metrics remain a separately reported
+hybrid-controller result.
 
 ## 12. PF_ALG provenance
 
@@ -293,7 +328,15 @@ or boolean values are rejected instead of rounded.
 
 ## 13. Acceptance
 
-Acceptance compares candidate metrics with the best accepted metrics. The primary configured metric is usually `solve_rate`; thresholds and safety constraints decide whether the candidate replaces the best checkpoint. Candidate and best metrics must match the configured `PF_ALG`, current evaluation/physical semantic versions, topology-action configuration fingerprint, and ordered action-layout fingerprint. Historical metrics or checkpoints from different action semantics cannot influence promotion.
+Acceptance compares the ungated candidate metrics with the ungated metrics of
+the best accepted checkpoint. The primary configured metric is usually
+`physically_secure_rate_requested`; thresholds and safety constraints decide
+whether the candidate replaces the best checkpoint. Constrained metrics and
+`continuation_gate_gain` are diagnostic only and cannot affect promotion.
+Candidate and best metrics must match the configured `PF_ALG`, current
+evaluation/physical semantic versions, topology-action configuration
+fingerprint, and ordered action-layout fingerprint. Historical metrics or
+checkpoints from different action semantics cannot influence promotion.
 
 ## 14. Atomic completion marker
 
@@ -313,7 +356,10 @@ Dataset and state references are hashed in metadata so a run can be audited agai
 It also records `self_play_*` exploration diagnostics so policy entropy
 and action coverage can be compared across iterations. Closed-loop runs record
 `checkpoint_selection_metric=closed_loop_arena`, the arena metric and selected
-value, candidate count, report path, and report SHA-256.
+value, candidate count, report path, and report SHA-256. Selection and
+acceptance columns refer to ungated metrics. Constrained results and
+`continuation_gate_gain` remain in the evaluation artifacts for separate
+hybrid-controller analysis.
 
 ## 18. Failure recovery
 
