@@ -21,6 +21,19 @@ def _require_file(path: Path, *, label: str) -> None:
         raise FileNotFoundError(f"Missing required {label}: {path}")
 
 
+def _checkpoint_selection_required(
+    metadata: Mapping[str, object],
+) -> bool:
+    config = metadata.get("config")
+    if not isinstance(config, Mapping):
+        return False
+    selection = config.get("checkpoint_selection")
+    return (
+        isinstance(selection, Mapping)
+        and selection.get("enabled") is True
+    )
+
+
 def _summary(report: Mapping[str, object]) -> dict[str, object]:
     candidates = report.get("candidates")
     return {
@@ -173,7 +186,13 @@ def attach_checkpoint_selection_provenance(
     iteration: int,
 ) -> Path | None:
     report_path = metadata_path.parent / CHECKPOINT_SELECTION_REPORT
+    metadata = load_json(metadata_path)
     if not report_path.is_file():
+        if _checkpoint_selection_required(metadata):
+            _require_file(
+                report_path,
+                label="checkpoint selection report",
+            )
         return None
 
     report = _validate_report(
@@ -181,7 +200,6 @@ def attach_checkpoint_selection_provenance(
         report_path=report_path,
     )
     report_hash = sha256_file(report_path)
-    metadata = load_json(metadata_path)
     hashes = metadata.setdefault("hashes", {})
     extra = metadata.setdefault("extra", {})
     if not isinstance(hashes, dict) or not isinstance(extra, dict):
@@ -227,6 +245,11 @@ def validate_checkpoint_selection_provenance(
         )
     )
     if not report_path.exists() and not has_fields:
+        if _checkpoint_selection_required(metadata):
+            _require_file(
+                report_path,
+                label="checkpoint selection report",
+            )
         return None
     if not isinstance(hashes, Mapping) or not isinstance(extra, Mapping):
         raise ValueError(

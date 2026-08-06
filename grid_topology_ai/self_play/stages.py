@@ -63,13 +63,6 @@ def _resolved_self_play_config(
     return SelfPlayConfig.from_mapping(payload)
 
 
-def _calibration_bins(output_dir: Path) -> int:
-    config = _resolved_self_play_config(output_dir)
-    if config is None:
-        return 10
-    return int(config.checkpoint_selection.calibration_bins)
-
-
 @wraps(_base.run_generate)
 def run_generate(*args: Any, **kwargs: Any) -> Path:
     arguments = _bound_arguments(_base.run_generate, args, kwargs)
@@ -92,7 +85,25 @@ def run_generate(*args: Any, **kwargs: Any) -> Path:
 def run_train(*args: Any, **kwargs: Any) -> Path:
     arguments = _bound_arguments(_base.run_train, args, kwargs)
     output_dir = Path(arguments["output_dir"])
-    bins = _calibration_bins(output_dir)
+    self_play_config = _resolved_self_play_config(output_dir)
+    training_config = arguments["config"]
+    if (
+        self_play_config is None
+        and bool(training_config.save_multiple_best)
+    ):
+        config_path = output_dir.parent / "self_play_loop.resolved.yaml"
+        raise RuntimeError(
+            "Multiple checkpoint candidates require the resolved self-play "
+            f"config before training: {config_path}"
+        )
+
+    bins = (
+        10
+        if self_play_config is None
+        else int(
+            self_play_config.checkpoint_selection.calibration_bins
+        )
+    )
     previous = _install_stage_overrides()
     try:
         with validation_diagnostic_options(calibration_bins=bins):
@@ -100,7 +111,6 @@ def run_train(*args: Any, **kwargs: Any) -> Path:
     finally:
         _restore_stage_overrides(previous)
 
-    self_play_config = _resolved_self_play_config(output_dir)
     if (
         self_play_config is None
         or not self_play_config.checkpoint_selection.enabled
