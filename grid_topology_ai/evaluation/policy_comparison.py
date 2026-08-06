@@ -67,6 +67,32 @@ def require_primary_policy_mode(
             f"observed {observed_mode.value!r}."
         )
 
+    primary_metrics = require_policy_mode_metrics(
+        metrics,
+        expected_mode,
+        source=source,
+    )
+    missing = sorted(
+        name
+        for name in primary_metrics
+        if name not in metrics
+    )
+    mismatched = sorted(
+        name
+        for name, value in primary_metrics.items()
+        if name in metrics and metrics[name] != value
+    )
+    if missing or mismatched:
+        details: list[str] = []
+        if missing:
+            details.append("missing=" + ", ".join(missing))
+        if mismatched:
+            details.append("mismatched=" + ", ".join(mismatched))
+        raise ValueError(
+            "Evaluation headline metrics do not match the primary policy mode "
+            f"for {source}: {'; '.join(details)}."
+        )
+
 
 def require_policy_mode_metrics(
     metrics: Mapping[str, object],

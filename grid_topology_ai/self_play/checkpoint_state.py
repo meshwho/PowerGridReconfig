@@ -5,6 +5,10 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
+from grid_topology_ai.evaluation.policy_comparison import (
+    PolicyMode,
+    require_primary_policy_mode as require_evaluation_primary_policy_mode,
+)
 from grid_topology_ai.self_play.artifacts import (
     load_json,
     save_json,
@@ -15,7 +19,7 @@ from grid_topology_ai.self_play.acceptance import (
 )
 
 
-_PRIMARY_POLICY_MODE = "ungated"
+_PRIMARY_POLICY_MODE = PolicyMode.UNGATED.value
 
 
 @dataclass(frozen=True, slots=True)
@@ -29,7 +33,12 @@ def _require_primary_policy_mode(
     *,
     source: str,
 ) -> None:
-    primary_mode = metrics.get("primary_policy_mode")
+    require_evaluation_primary_policy_mode(
+        metrics,
+        PolicyMode.UNGATED,
+        source=source,
+    )
+
     task_config = metrics.get("task_config")
     configured_mode = (
         task_config.get("primary_policy_mode")
@@ -37,15 +46,11 @@ def _require_primary_policy_mode(
         else None
     )
 
-    if (
-        primary_mode != _PRIMARY_POLICY_MODE
-        or configured_mode != _PRIMARY_POLICY_MODE
-    ):
+    if configured_mode != _PRIMARY_POLICY_MODE:
         raise ValueError(
             "Incompatible evaluation primary policy mode for "
             f"{source}: expected {_PRIMARY_POLICY_MODE!r}, "
-            f"observed headline={primary_mode!r}, "
-            f"task_config={configured_mode!r}. Regenerate fixed "
+            f"observed task_config={configured_mode!r}. Regenerate fixed "
             "evaluation metrics with the current ungated policy contract."
         )
 
