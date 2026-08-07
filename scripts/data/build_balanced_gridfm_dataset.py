@@ -169,6 +169,7 @@ def compute_class_targets(
         medium=int(medium),
         hard=int(hard),
     )
+
 def make_generation_perturbation_text(
     perturbation_type: str,
     sigma: float,
@@ -312,7 +313,7 @@ topology_perturbation:
   type: "random"
   k: {int(topology_k)}
   n_topology_variants: {int(topology_variants)}
-  elements: [line, trafo]
+  elements: [branch]
 
 {generation_perturbation_text}
 {admittance_perturbation_text}
@@ -514,6 +515,7 @@ def class_counts(df: pd.DataFrame) -> dict[str, int]:
         "medium": int(counts.get("medium", 0)),
         "hard": int(counts.get("hard", 0)),
     }
+
 def compute_max_balanced_targets(
     candidates: pd.DataFrame,
     simple_fraction: float,
@@ -575,6 +577,7 @@ def compute_max_balanced_targets(
         maximum_total -= 1
 
     return ClassTargets(simple=0, medium=0, hard=0)
+
 def quotas_met(selected: pd.DataFrame, targets: ClassTargets) -> bool:
     counts = class_counts(selected)
 
@@ -833,6 +836,7 @@ def process_chunk(
             sys.executable,
             "-m",
             "gridfm_datakit.cli",
+            "generate",
             str(config_path),
         ]
 

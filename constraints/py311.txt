@@ -7,6 +7,7 @@ PyYAML==6.0.2
 torch==2.5.1
 tensorboard==2.18.0
 PYPOWER==5.1.19
+gridfm-datakit==1.0.5
 pandapower==2.14.11
 numba==0.60.0
 pyarrow==18.1.0
