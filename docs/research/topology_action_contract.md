@@ -157,7 +157,7 @@ The current versions are:
 | Contract | Version |
 | --- | ---: |
 | physical objective | `3` |
-| outcome/value target | `4` |
+| outcome/value target | `5` |
 | evaluation metrics | `6` |
 | checkpoint | `6` |
 | replay buffer schema | `5` |
