@@ -239,42 +239,203 @@ python -m scripts.self_play.train_graph_baseline <NEW_EXAMPLES_CSV> --output <NE
 python -m scripts.evaluation.evaluate_checkpoint <EVAL_RAW_DIR> --transitions <EVAL_TRANSITIONS.csv> --checkpoint <NEW_CHECKPOINT.pt> --pf-alg 3 --output-csv <NEW_EVAL_RESULTS.csv> --output-json <NEW_EVAL_METRICS.json>
 ```
 
-## Repository layout
+Archive the old replay/run directory, point the self-play YAML bootstrap paths
+at the new checkpoint and metrics, then start a new run. Do not mix old and new
+examples, replay chunks, checkpoints, or evaluation metrics.
+
+## Action space
+
+The topology-control policy layout is `stop_plus_branch_status_v1`:
+
+- `0` -> stop/handoff;
+- `1 + branch_pos` -> the stable branch-status slot for `branch_ids[branch_pos]`.
+
+The command represented by a branch slot depends on the current state:
+
+- active branch -> `switch_off_branch`, `target_status=0`;
+- inactive branch listed in `closeable_branch_ids` -> `switch_on_branch`, `target_status=1`.
+
+`require_connected_after_switch` and `min_loading_for_switch_percent` constrain
+branch opening. The loading threshold never filters a permitted closure.
+Inactive branches not present in the explicit allowlist remain masked. Handoff
+means the topology-control episode ends and the case is passed to an external
+or future redispatch layer. Production redispatch optimization is not
+implemented here.
+
+## Installation
+
+Use Python 3.11.
+
+Windows PowerShell:
+
+```powershell
+py -3.11 -m venv .venv311
+.\.venv311\Scripts\Activate.ps1
+python -m pip install --upgrade pip setuptools wheel
+python -m pip install -r requirements.txt
+```
+
+Linux:
+
+```bash
+python3.11 -m venv .venv311
+source .venv311/bin/activate
+python -m pip install --upgrade pip setuptools wheel
+python -m pip install -r requirements.txt
+```
+
+Dependency files:
+
+- `pyproject.toml` is the canonical dependency definition.
+- `constraints/py311.txt` records the tested Python 3.11 compatibility constraints.
+- `requirements.txt` is the full developer installation entry point.
+
+## Quick validation
+
+```bash
+python -m compileall -q grid_topology_ai scripts tests
+python -m pytest -q
+python -m scripts.self_play.loop --help
+python -m scripts.self_play.loop configs/self_play_loop_pilot.yaml --plan-only
+```
+
+## Running self-play
+
+Run the pilot loop with:
+
+```bash
+python -m scripts.self_play.loop configs/self_play_loop_pilot.yaml
+```
+
+Useful modes:
+
+- `--plan-only` prints and validates the execution plan without running generation, training, or evaluation.
+- `--validate-only` validates configuration and required artifact references.
+- `--resume` continues only after the latest iteration that has a valid `iteration_complete.json` marker. Incomplete iteration directories cause refusal instead of silent reuse.
+
+## Configuration
+
+The self-play YAML is organized into these sections:
+
+- `pool`: fixed scenario pool transitions and raw state directory.
+- `replay_buffer`: accumulated replay storage and sampling limits.
+- `generation`: neural MCTS generation settings, including `PF_ALG` and the semantic topology-action settings.
+- `training`: graph policy-value fine-tuning settings.
+- `evaluation`: fixed evaluation transitions, raw states, checkpoint evaluation, and `PF_ALG`.
+- `acceptance`: candidate acceptance metric and thresholds.
+- `metadata`: run naming and reproducibility metadata.
+
+A generation block exposes the bidirectional action settings explicitly:
+
+```yaml
+generation:
+  require_connected_after_switch: true
+  min_loading_for_switch_percent: 0.0
+  # Populate only with verified normally-open/tie branch IDs.
+  closeable_branch_ids: []
+```
+
+`closeable_branch_ids: []` preserves opening-only behavior. Evaluation does not
+have an independent override: it loads the exact topology-action configuration
+and ordered layout from the checkpoint and rejects incompatible artifacts.
+
+## Iteration artifacts
+
+A typical run directory contains:
 
 ```text
-grid_topology_ai/
-  config/
-  evaluation/
-  models/
-  search/
-  self_play/
-  training/
-
-scripts/
-  data/
-  diagnostics/
-  evaluation/
-  planning/
-  self_play/
-
-configs/
-  self_play_loop_pilot.yaml
-  self_play_loop_smoke.yaml
-  self_play_loop.yaml
-
-tests/
+runs/<run_name>/
+  run_state.json
+  learning_curve.csv
+  replay/
+  checkpoints/
+    best.pt
+    best_metrics.json
+  iter_001/
+    selected_scenario_ids.txt
+    raw/
+      selected_transitions.csv
+      examples.csv
+      generate.log
+    train_batch.csv
+    train_examples.csv
+    validation_examples.csv
+    train_validation_split.json
+    candidate_checkpoint.pt
+    train_metrics.csv
+    eval_results.csv
+    eval_metrics.json
+    metadata.json
+    iteration_complete.json
 ```
 
-## Validation
+The atomic completion marker is `iteration_complete.json`.
 
-Run the complete suite with:
+## Package structure
+
+- `grid_topology_ai/config`: typed configuration and validation.
+- `grid_topology_ai/self_play`: pool state, sampling, replay, acceptance, artifacts, and loop support.
+- `grid_topology_ai/training`: graph policy-value training, checkpoints, metrics, and splits.
+- `grid_topology_ai/evaluation`: checkpoint evaluation and metrics.
+- `grid_topology_ai/search`: MCTS planning components.
+- `grid_topology_ai/models`: graph datasets and neural models.
+- `scripts/self_play`: self-play loop and training CLIs.
+- `scripts/evaluation`: evaluation CLIs including `python -m scripts.evaluation.evaluate_checkpoint`.
+- `tests`: unit, contract, and smoke tests.
+
+Public entry points kept stable:
 
 ```bash
-python -m pytest -q
+python -m scripts.self_play.loop
+python -m scripts.self_play.train_graph_baseline
+python -m scripts.evaluation.evaluate_checkpoint
 ```
 
-Run the self-play configuration preflight with:
+## Bootstrap preparation
 
-```bash
-python -m scripts.self_play.loop configs/self_play_loop.yaml --validate-only
-```
+Before the first real run, prepare:
+
+- scenario pool transitions CSV;
+- raw state directory for the pool;
+- bootstrap checkpoint;
+- fixed evaluation transitions CSV;
+- fixed evaluation raw state directory;
+- bootstrap evaluation metrics.
+
+Bootstrap evaluation metrics must be computed with the same `PF_ALG` configured
+for generation and evaluation. The bootstrap checkpoint must also match the
+current state-feature schema, configured topology-action fingerprint, and
+ordered action layout.
+
+## Testing and CI
+
+GitHub Actions cover:
+
+- Ubuntu tests;
+- Windows tests;
+- package build;
+- data tools smoke.
+
+Local graph dataset integration tests are opt-in because they need prepared local data artifacts.
+
+## Current limitations
+
+- Topology actions are branch-status changes plus stop/handoff; inactive branches can be closed only when explicitly allowlisted.
+- The main research setup is one case118 configuration.
+- Scenarios come from a fixed pool rather than unrestricted environment generation.
+- There is no production redispatch optimizer.
+- No iteration is guaranteed to improve `solve_rate`.
+- Real self-play is expensive and requires prepared data and checkpoint artifacts.
+- This is research code, not operational grid control software.
+
+## Legacy teacher pipeline
+
+Teacher generators remain useful for bootstrap datasets, baseline comparison, and debugging. They are no longer the only documented training route; the implemented self-play loop is the current integrated pipeline.
+
+## Reproducibility
+
+Reproducibility relies on Python 3.11, pinned constraints, explicit seeds,
+artifact hashes, fixed evaluation data, checkpoint provenance, and CI checks.
+Checkpoints store selection metadata, normalization metadata, dataset metadata,
+physics configuration, topology-action configuration, the ordered action layout,
+and training configuration.
