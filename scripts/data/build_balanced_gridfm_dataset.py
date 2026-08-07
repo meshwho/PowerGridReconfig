@@ -836,7 +836,6 @@ def process_chunk(
             sys.executable,
             "-m",
             "gridfm_datakit.cli",
-            "generate",
             str(config_path),
         ]
 
