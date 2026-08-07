@@ -4,7 +4,6 @@ from dataclasses import replace
 from typing import Any
 
 import pandas as pd
-from pypower.api import runpf
 
 from grid_topology_ai._pypower_backend_core import *  # noqa: F401,F403
 from grid_topology_ai._pypower_backend_core import (
@@ -22,6 +21,7 @@ from grid_topology_ai.physical_constraints import (
 )
 from grid_topology_ai.power_flow_errors import PowerFlowNotConverged
 from grid_topology_ai.power_flow_state_builder import PowerFlowStateBuilder
+from grid_topology_ai.pypower_compat import runpf
 from grid_topology_ai.topology_actions import GridFMAction
 
 
