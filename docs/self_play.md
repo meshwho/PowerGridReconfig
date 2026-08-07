@@ -91,7 +91,7 @@ exact action configuration and ordered layout from the checkpoint, reconstructs
 the runtime action space from that provenance, and rejects a mismatch before an
 episode is evaluated.
 
-See [topology_action_contract.md](topology_action_contract.md) for the serialized
+See [topology_action_contract.md](research/topology_action_contract.md) for the serialized
 layout, fingerprints, and artifact compatibility rules.
 
 ### 5.2 Progressive widening

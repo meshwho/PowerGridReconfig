@@ -6,7 +6,7 @@ PowerGridReconfig is a Python 3.11 research framework for emergency topology con
 
 This is not a full classical AlphaZero system. The scenario pool is fixed, generation is model-guided, the continuation gate is diagnostic only, replay accumulates across iterations, candidates are fine-tuned from checkpoints, evaluation is fixed, and acceptance/rejection is based on configured metrics.
 
-For implementation details, see [docs/self_play.md](docs/self_play.md). The stable bidirectional branch-status policy and artifact compatibility rules are specified in [docs/topology_action_contract.md](docs/topology_action_contract.md).
+For implementation details, see [docs/self_play.md](docs/self_play.md). For a complete beginner-friendly Russian explanation of the data pipeline, AC physics, graph neural network, MCTS, replay, curriculum, training, and checkpoint acceptance, see [docs/full_project_article_ru.md](docs/research/full_project_article_ru.md). The stable bidirectional branch-status policy and artifact compatibility rules are specified in [docs/topology_action_contract.md](docs/research/topology_action_contract.md).
 
 ## Current implemented pipeline
 
@@ -196,7 +196,7 @@ The current exact contract versions are:
 | Contract | Version |
 | --- | ---: |
 | physical objective | `3` |
-| outcome/value target | `4` |
+| outcome/value target | `5` |
 | state feature schema | `3` |
 | evaluation metrics | `6` |
 | checkpoint | `7` |
