@@ -67,6 +67,11 @@ class GridFMPowerFlowBackend(_CoreGridFMPowerFlowBackend):
                 "PhysicsConfig fingerprint."
             )
 
+    def _build_pp_options(self) -> dict[str, object]:
+        options = super()._build_pp_options()
+        options["OPF_VIOLATION"] = self.physics_config.generator_q_tolerance_mvar
+        return options
+
     def _make_cache_key_from_state(
         self,
         state: GridFMState,
