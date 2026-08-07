@@ -5,7 +5,7 @@ import yaml
 from scripts.data.build_balanced_gridfm_dataset import make_gridfm_config_text
 
 
-def test_gridfm_config_uses_pandapower_topology_elements(tmp_path: Path) -> None:
+def test_gridfm_config_uses_branch_topology_element(tmp_path: Path) -> None:
     config_text = make_gridfm_config_text(
         network_name="case118_ieee",
         network_source="pglib",
@@ -28,4 +28,4 @@ def test_gridfm_config_uses_pandapower_topology_elements(tmp_path: Path) -> None
 
     config = yaml.safe_load(config_text)
 
-    assert config["topology_perturbation"]["elements"] == ["line", "trafo"]
+    assert config["topology_perturbation"]["elements"] == ["branch"]
