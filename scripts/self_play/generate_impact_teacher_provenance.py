@@ -31,6 +31,8 @@ from scripts.self_play import generate_impact_teacher_parallel_fast as teacher
 _original_make_task_config = teacher.make_task_config
 _original_load_scenario_checkpoints = teacher.load_scenario_checkpoints
 _original_process_scenario_batch = teacher.process_scenario_batch
+_original_append_scenario_checkpoint = teacher.append_scenario_checkpoint
+_original_planner_search = teacher.ImpactBeamSearchPlanner.search
 
 _REQUIRED_CHECKPOINT_ROW_FIELDS = (
     "run_id",
@@ -46,6 +48,9 @@ _REQUIRED_CHECKPOINT_ROW_FIELDS = (
     "action_layout",
     "action_layout_fingerprint",
 )
+
+_SEARCH_WORKLOAD_BY_SCENARIO: dict[int, dict[str, object]] = {}
+_PARENT_WORKLOAD_BY_SCENARIO: dict[int, dict[str, object]] = {}
 
 
 def make_task_config(args: argparse.Namespace) -> dict[str, Any]:
@@ -116,6 +121,138 @@ def load_scenario_checkpoints(
         for scenario_id, result in results.items()
         if _checkpoint_result_is_current(result)
     }
+
+
+def _counter_delta(
+    before: dict[str, object],
+    after: dict[str, object],
+    key: str,
+) -> int:
+    return max(int(after.get(key, 0)) - int(before.get(key, 0)), 0)
+
+
+def _search_workload(
+    before: dict[str, object],
+    after: dict[str, object],
+    logical_evaluations: int,
+) -> dict[str, object]:
+    cache_hits = _counter_delta(before, after, "hits")
+    cache_misses = _counter_delta(before, after, "misses")
+    stock_runpf_calls = _counter_delta(before, after, "stock_runpf_calls")
+    q_limit_resolves = _counter_delta(before, after, "q_limit_resolves")
+    cache_lookups = cache_hits + cache_misses
+
+    return {
+        "logical_evaluations": int(logical_evaluations),
+        "cache_hits": int(cache_hits),
+        "cache_misses": int(cache_misses),
+        "cache_hit_rate": (
+            float(cache_hits) / float(cache_lookups)
+            if cache_lookups > 0
+            else 0.0
+        ),
+        "stock_runpf_calls": int(stock_runpf_calls),
+        "q_limit_resolves": int(q_limit_resolves),
+        "solves_per_cache_miss": (
+            float(stock_runpf_calls) / float(cache_misses)
+            if cache_misses > 0
+            else 0.0
+        ),
+    }
+
+
+def _instrumented_planner_search(self, env, scenario_id: int):
+    backend = env.backend
+    before = backend.performance_info()
+    result = None
+
+    try:
+        result = _original_planner_search(
+            self,
+            env=env,
+            scenario_id=int(scenario_id),
+        )
+        return result
+    finally:
+        after = backend.performance_info()
+        logical_evaluations = (
+            int(result.evaluated_actions)
+            if result is not None
+            else int(getattr(self, "evaluated_actions", 0))
+        )
+        _SEARCH_WORKLOAD_BY_SCENARIO[int(scenario_id)] = _search_workload(
+            before=before,
+            after=after,
+            logical_evaluations=logical_evaluations,
+        )
+
+
+def _install_worker_instrumentation() -> None:
+    if teacher.ImpactBeamSearchPlanner.search is not _instrumented_planner_search:
+        teacher.ImpactBeamSearchPlanner.search = _instrumented_planner_search
+
+
+def append_scenario_checkpoint(
+    checkpoint_path: Path,
+    result: dict[str, Any],
+) -> None:
+    _original_append_scenario_checkpoint(
+        checkpoint_path=checkpoint_path,
+        result=result,
+    )
+
+    performance = result.get("performance")
+    if isinstance(performance, dict):
+        _PARENT_WORKLOAD_BY_SCENARIO[int(result["scenario_id"])] = dict(
+            performance
+        )
+
+
+def _print_power_flow_workload_summary() -> None:
+    print("\n" + "=" * 100)
+    print("Power-flow workload for scenarios processed in this run")
+    print("=" * 100)
+
+    if not _PARENT_WORKLOAD_BY_SCENARIO:
+        print("Instrumented scenarios: 0")
+        print("No new scenarios were processed in this run.")
+        return
+
+    items = list(_PARENT_WORKLOAD_BY_SCENARIO.values())
+    logical_evaluations = sum(
+        int(item.get("logical_evaluations", 0))
+        for item in items
+    )
+    cache_hits = sum(int(item.get("cache_hits", 0)) for item in items)
+    cache_misses = sum(int(item.get("cache_misses", 0)) for item in items)
+    stock_runpf_calls = sum(
+        int(item.get("stock_runpf_calls", 0))
+        for item in items
+    )
+    q_limit_resolves = sum(
+        int(item.get("q_limit_resolves", 0))
+        for item in items
+    )
+    cache_lookups = cache_hits + cache_misses
+    cache_hit_rate = (
+        float(cache_hits) / float(cache_lookups)
+        if cache_lookups > 0
+        else 0.0
+    )
+    solves_per_cache_miss = (
+        float(stock_runpf_calls) / float(cache_misses)
+        if cache_misses > 0
+        else 0.0
+    )
+
+    print(f"Instrumented scenarios:    {len(items)}")
+    print(f"Logical evaluations:       {logical_evaluations}")
+    print(f"PF cache hits:             {cache_hits}")
+    print(f"PF cache misses:           {cache_misses}")
+    print(f"Cache hit rate:            {cache_hit_rate:.1%}")
+    print(f"Stock PYPOWER solves:      {stock_runpf_calls}")
+    print(f"Q-limit re-solves:         {q_limit_resolves}")
+    print(f"Solves / cache miss:       {solves_per_cache_miss:.3f}")
 
 
 def _worker_run_id() -> str:
@@ -381,20 +518,32 @@ def _finalize_success_result(result: dict[str, Any]) -> dict[str, Any]:
 def process_scenario_batch(
     scenario_ids: list[int],
 ) -> list[dict[str, Any]]:
+    _install_worker_instrumentation()
     results = _original_process_scenario_batch(scenario_ids)
-    return [
-        _finalize_success_result(result)
-        if bool(result.get("ok", False))
-        else result
-        for result in results
-    ]
+
+    finalized: list[dict[str, Any]] = []
+    for result in results:
+        scenario_id = int(result["scenario_id"])
+        performance = _SEARCH_WORKLOAD_BY_SCENARIO.pop(scenario_id, None)
+        if performance is not None:
+            result["performance"] = performance
+
+        if bool(result.get("ok", False)):
+            result = _finalize_success_result(result)
+        finalized.append(result)
+
+    return finalized
 
 
 def main() -> None:
+    _PARENT_WORKLOAD_BY_SCENARIO.clear()
+    _install_worker_instrumentation()
     teacher.make_task_config = make_task_config
     teacher.load_scenario_checkpoints = load_scenario_checkpoints
     teacher.process_scenario_batch = process_scenario_batch
+    teacher.append_scenario_checkpoint = append_scenario_checkpoint
     teacher.main()
+    _print_power_flow_workload_summary()
 
 
 if __name__ == "__main__":
