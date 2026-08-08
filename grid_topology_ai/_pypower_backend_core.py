@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from typing import Any
 
@@ -84,6 +85,35 @@ from grid_topology_ai.topology_actions import (
 )
 
 
+_CACHE_BUS_INPUT_COLUMNS = (
+    "Pd",
+    "Qd",
+    "PQ",
+    "PV",
+    "REF",
+    "vn_kv",
+    "GS",
+    "BS",
+    "min_vm_pu",
+    "max_vm_pu",
+)
+_CACHE_BRANCH_INPUT_COLUMNS = (
+    "r",
+    "x",
+    "b",
+    "tap",
+    "shift",
+    "rate_a",
+)
+_CACHE_BUS_INPUT_INDICES = tuple(
+    BUS_FEATURE_COLUMNS.index(name)
+    for name in _CACHE_BUS_INPUT_COLUMNS
+)
+_CACHE_BRANCH_INPUT_INDICES = tuple(
+    BRANCH_FEATURE_COLUMNS.index(name)
+    for name in _CACHE_BRANCH_INPUT_COLUMNS
+)
+
 
 def pf_algorithm_name(pf_alg: int) -> str:
     names = {
@@ -145,6 +175,7 @@ class GridFMPowerFlowBackend:
 
         # Cache stores only next_state, not full PYPOWER raw_result.
         self._cache: dict[tuple, GridFMState] = {}
+        self._scenario_static_input_fingerprints: dict[int, str] = {}
 
         self.cache_hits = 0
         self.cache_misses = 0
@@ -183,6 +214,7 @@ class GridFMPowerFlowBackend:
         """
 
         self._cache.clear()
+        self._scenario_static_input_fingerprints.clear()
         self.cache_hits = 0
         self.cache_misses = 0
 
@@ -335,6 +367,8 @@ class GridFMPowerFlowBackend:
             action: GridFMAction | None = None,
             switched_off_branch_id: int | None = None,
     ) -> tuple:
+        """Return the strict source-state cache identity kept for compatibility."""
+
         branch_id, target_status = (
             self._resolve_branch_status_action(
                 action=action,
@@ -360,6 +394,165 @@ class GridFMPowerFlowBackend:
             branch_id,
             target_status,
             tuple(sorted(outaged)),
+        )
+
+    @staticmethod
+    def _hash_array(digest: Any, values: Any) -> None:
+        array = np.ascontiguousarray(values)
+        digest.update(str(array.dtype).encode("ascii"))
+        digest.update(np.asarray(array.shape, dtype=np.int64).tobytes())
+        digest.update(array.tobytes())
+
+    def _scenario_static_input_fingerprint(self, scenario_id: int) -> str:
+        scenario_id = int(scenario_id)
+        cache = getattr(self, "_scenario_static_input_fingerprints", None)
+        if cache is None:
+            cache = {}
+            self._scenario_static_input_fingerprints = cache
+        if scenario_id in cache:
+            return cache[scenario_id]
+
+        digest = hashlib.sha256()
+        digest.update(f"scenario:{scenario_id}".encode("ascii"))
+
+        bus_df = getattr(self.adapter, "bus_df", None)
+        if isinstance(bus_df, pd.DataFrame) and "scenario" in bus_df.columns:
+            buses = bus_df[
+                bus_df["scenario"] == scenario_id
+            ].sort_values("bus")
+            if not buses.empty and {"bus", "Vm"}.issubset(buses.columns):
+                self._hash_array(
+                    digest,
+                    buses[["bus", "Vm"]].to_numpy(dtype=np.float64),
+                )
+
+        gen_df = getattr(self.adapter, "gen_df", None)
+        generator_columns = [
+            "idx",
+            "bus",
+            "p_mw",
+            "q_mvar",
+            "max_q_mvar",
+            "min_q_mvar",
+            "in_service",
+            "max_p_mw",
+            "min_p_mw",
+        ]
+        if isinstance(gen_df, pd.DataFrame) and "scenario" in gen_df.columns:
+            generators = gen_df[
+                gen_df["scenario"] == scenario_id
+            ].sort_values("idx")
+            if not generators.empty:
+                missing = set(generator_columns) - set(generators.columns)
+                if missing:
+                    raise ValueError(
+                        "Generator data is missing power-flow cache columns: "
+                        f"{sorted(missing)}."
+                    )
+                self._hash_array(
+                    digest,
+                    generators[generator_columns].to_numpy(dtype=np.float64),
+                )
+
+        fingerprint = digest.hexdigest()
+        cache[scenario_id] = fingerprint
+        return fingerprint
+
+    def _power_flow_input_fingerprint(self, state: GridFMState) -> str:
+        digest = hashlib.sha256()
+        digest.update(
+            self._scenario_static_input_fingerprint(
+                int(state.scenario_id)
+            ).encode("ascii")
+        )
+
+        bus_ids = getattr(state, "bus_ids", None)
+        if bus_ids is not None:
+            self._hash_array(
+                digest,
+                np.asarray(bus_ids, dtype=np.int64),
+            )
+
+        self._hash_array(
+            digest,
+            np.asarray(state.edge_index, dtype=np.int64),
+        )
+        self._hash_array(
+            digest,
+            np.asarray(state.bus_features)[
+                :, _CACHE_BUS_INPUT_INDICES
+            ],
+        )
+        self._hash_array(
+            digest,
+            np.asarray(state.branch_features)[
+                :, _CACHE_BRANCH_INPUT_INDICES
+            ],
+        )
+        return digest.hexdigest()
+
+    def _resulting_topology_signature(
+        self,
+        state: GridFMState,
+        *,
+        action: GridFMAction | None = None,
+        switched_off_branch_id: int | None = None,
+    ) -> tuple[tuple[int, int], ...]:
+        branch_ids = np.asarray(state.branch_ids, dtype=np.int64)
+        statuses = (
+            np.asarray(state.branch_status, dtype=np.float64) > 0.5
+        ).astype(np.int8)
+
+        if branch_ids.ndim != 1 or statuses.ndim != 1:
+            raise ValueError("Branch ids and status must be one-dimensional.")
+        if len(branch_ids) != len(statuses):
+            raise ValueError("Branch ids and status length mismatch.")
+
+        branch_id, target_status = self._resolve_branch_status_action(
+            action=action,
+            switched_off_branch_id=switched_off_branch_id,
+        )
+
+        if branch_id is not None:
+            assert target_status is not None
+            matches = np.flatnonzero(branch_ids == int(branch_id))
+            if len(matches) != 1:
+                raise ValueError(
+                    f"Expected exactly one branch id {branch_id} in state, "
+                    f"found {len(matches)}."
+                )
+            branch_pos = int(matches[0])
+            current_status = int(statuses[branch_pos])
+            if current_status == target_status:
+                raise ValueError(
+                    f"Branch id {branch_id} already has status "
+                    f"{target_status} in current state."
+                )
+            statuses = statuses.copy()
+            statuses[branch_pos] = int(target_status)
+
+        order = np.argsort(branch_ids, kind="stable")
+        return tuple(
+            (int(branch_ids[pos]), int(statuses[pos]))
+            for pos in order
+        )
+
+    def _make_topology_cache_key_from_state(
+        self,
+        state: GridFMState,
+        *,
+        action: GridFMAction | None = None,
+        switched_off_branch_id: int | None = None,
+    ) -> tuple:
+        return (
+            self.physics_config.fingerprint(),
+            int(state.scenario_id),
+            self._power_flow_input_fingerprint(state),
+            self._resulting_topology_signature(
+                state,
+                action=action,
+                switched_off_branch_id=switched_off_branch_id,
+            ),
         )
 
     def run_power_flow(
@@ -509,15 +702,24 @@ class GridFMPowerFlowBackend:
         bus_df = self._state_to_bus_df(state)
         branch_df = self._state_to_branch_df(state)
 
+        scenario_id = int(state.scenario_id)
+        source_bus_df = self.adapter.bus_df[
+            self.adapter.bus_df["scenario"] == scenario_id
+        ].copy()
         gen_df = self.adapter.gen_df[
-            self.adapter.gen_df["scenario"] == int(state.scenario_id)
+            self.adapter.gen_df["scenario"] == scenario_id
         ].copy()
 
+        if source_bus_df.empty:
+            raise ValueError(
+                f"Scenario {state.scenario_id} not found in bus_data."
+            )
         if gen_df.empty:
             raise ValueError(
                 f"Scenario {state.scenario_id} not found in gen_data."
             )
 
+        source_bus_df = source_bus_df.sort_values("bus").reset_index(drop=True)
         gen_df = gen_df.sort_values("idx").reset_index(drop=True)
 
         branch_id, target_status = (
@@ -547,7 +749,10 @@ class GridFMPowerFlowBackend:
             "baseMVA": self.base_mva,
             "bus": self._build_bus_matrix(bus_df),
             "branch": self._build_branch_matrix(branch_df),
-            "gen": self._build_gen_matrix(gen_df, bus_df),
+            # Generator voltage control is a scenario input.  The solved Vm in
+            # the parent state is only a warm-start value and must not become a
+            # new setpoint after every topology action.
+            "gen": self._build_gen_matrix(gen_df, source_bus_df),
         }
 
         frames = {
@@ -652,7 +857,7 @@ class GridFMPowerFlowBackend:
             )
         )
 
-        cache_key = self._make_cache_key_from_state(
+        cache_key = self._make_topology_cache_key_from_state(
             state=state,
             action=action,
             switched_off_branch_id=(
