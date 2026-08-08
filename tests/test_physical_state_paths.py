@@ -134,7 +134,7 @@ def test_slow_fast_and_cache_paths_preserve_identical_assessment() -> None:
         original_frames=frames,
     )
 
-    cache_key = backend._make_cache_key_from_state(slow, None)
+    cache_key = backend._make_topology_cache_key_from_state(slow)
     backend._cache[cache_key] = fast
     cached = backend.run_power_flow_from_state(slow, None)
 
