@@ -8,6 +8,7 @@ from pypower.idx_gen import QG, QMAX, QMIN
 
 from grid_topology_ai.config.physics import PhysicsConfig
 from grid_topology_ai.pypower_backend import GridFMPowerFlowBackend
+from grid_topology_ai import pypower_compat as compat
 from grid_topology_ai.pypower_compat import (
     get_power_flow_workload_counters,
     reset_power_flow_workload_counters,
@@ -49,10 +50,15 @@ def test_plain_runpf_counts_one_stock_solve() -> None:
     )
 
     assert bool(success)
-    assert get_power_flow_workload_counters() == {
-        "stock_runpf_calls": 1,
-        "q_limit_resolves": 0,
-    }
+    counters = get_power_flow_workload_counters()
+    assert counters["stock_runpf_calls"] == 1
+    assert counters["q_limit_resolves"] == 0
+    assert counters["q_limit_sequences"] == 0
+    assert counters["q_limit_failures"] == 0
+    assert counters["q_limit_infeasible"] == 0
+    assert counters["q_limit_resolve_histogram"] == {}
+    assert float(counters["stock_runpf_seconds"]) >= 0.0
+    assert float(counters["q_limit_bookkeeping_seconds"]) == 0.0
 
 
 def test_q_limit_resolve_counts_additional_stock_solves() -> None:
@@ -67,8 +73,89 @@ def test_q_limit_resolve_counts_additional_stock_solves() -> None:
 
     assert bool(success)
     counters = get_power_flow_workload_counters()
-    assert counters["stock_runpf_calls"] >= 2
-    assert counters["q_limit_resolves"] == counters["stock_runpf_calls"] - 1
+    assert int(counters["stock_runpf_calls"]) >= 2
+    assert counters["q_limit_resolves"] == int(counters["stock_runpf_calls"]) - 1
+    assert counters["q_limit_sequences"] == 1
+    assert counters["q_limit_failures"] == 0
+    assert counters["q_limit_infeasible"] == 0
+    assert counters["q_limit_resolve_histogram"] == {
+        int(counters["q_limit_resolves"]): 1
+    }
+    assert float(counters["stock_runpf_seconds"]) >= 0.0
+    assert float(counters["q_limit_bookkeeping_seconds"]) >= 0.0
+
+
+def test_q_limit_infeasibility_is_profiled() -> None:
+    ppc = case9()
+    baseline, success = stock_runpf(
+        deepcopy(ppc),
+        _options(qlim=0),
+    )
+    assert bool(success)
+
+    for gen_index in range(len(ppc["gen"])):
+        q_limit = float(baseline["gen"][gen_index, QG]) - 1.0
+        ppc["gen"][gen_index, QMAX] = q_limit
+        if ppc["gen"][gen_index, QMIN] >= q_limit:
+            ppc["gen"][gen_index, QMIN] = q_limit - 1000.0
+
+    reset_power_flow_workload_counters()
+    _, success = runpf(
+        deepcopy(ppc),
+        _options(qlim=1),
+    )
+
+    assert not bool(success)
+    counters = get_power_flow_workload_counters()
+    assert counters["q_limit_sequences"] == 1
+    assert counters["q_limit_failures"] == 1
+    assert counters["q_limit_infeasible"] == 1
+
+
+def test_q_limit_sequence_reuses_bus_row_mapping(monkeypatch) -> None:
+    ppc = case9()
+    _force_one_upper_q_limit(ppc)
+    original = compat._bus_rows
+    calls = 0
+
+    def counted(bus, gen):
+        nonlocal calls
+        calls += 1
+        return original(bus, gen)
+
+    monkeypatch.setattr(compat, "_bus_rows", counted)
+
+    _, success = runpf(
+        deepcopy(ppc),
+        _options(qlim=1),
+    )
+
+    assert bool(success)
+    assert calls == 1
+
+
+def test_q_limit_resolve_uses_minimal_solver_case(monkeypatch) -> None:
+    ppc = case9()
+    _force_one_upper_q_limit(ppc)
+    original = compat._runpf
+    seen_keys: list[set[str]] = []
+
+    def recorded(casedata, *args, **kwargs):
+        if isinstance(casedata, dict):
+            seen_keys.append(set(casedata))
+        return original(casedata, *args, **kwargs)
+
+    monkeypatch.setattr(compat, "_runpf", recorded)
+
+    _, success = runpf(
+        deepcopy(ppc),
+        _options(qlim=1),
+    )
+
+    assert bool(success)
+    assert len(seen_keys) >= 2
+    assert "order" not in seen_keys[1]
+    assert seen_keys[1] <= {"version", "baseMVA", "bus", "gen", "branch"}
 
 
 def test_backend_reports_its_own_solver_workload() -> None:
