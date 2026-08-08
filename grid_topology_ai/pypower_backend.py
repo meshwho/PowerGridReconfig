@@ -373,7 +373,7 @@ class GridFMPowerFlowBackend(_CoreGridFMPowerFlowBackend):
             raise InvalidPhysicalState(
                 "Generator in_service contains NaN or infinity."
             )
-        if not np.isin(status, (0.0, 1.0)).all():
+        if np.any((status != 0.0) & (status != 1.0)):
             raise InvalidPhysicalState(
                 "Generator in_service must contain only 0 or 1."
             )
