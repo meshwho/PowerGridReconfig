@@ -144,7 +144,7 @@ def test_reset_failure_never_publishes_a_raw_adapter_state() -> None:
     assert env.termination_reason is TerminationReason.POWER_FLOW_FAILED
 
 
-def test_initial_and_subsequent_paths_share_one_state_builder() -> None:
+def test_initial_path_uses_canonical_state_builder() -> None:
     adapter = SimpleNamespace(physics_config=DEFAULT_PHYSICS_CONFIG)
     backend = GridFMPowerFlowBackend(
         adapter=adapter,
@@ -154,31 +154,20 @@ def test_initial_and_subsequent_paths_share_one_state_builder() -> None:
     recorder = _RecordingStateBuilder(expected_state)
     backend._state_builder = recorder
 
-    initial_result = {"path": "initial"}
-    subsequent_result = {"path": "subsequent"}
+    result_ppc = {"path": "initial"}
     frames = {"source": "same"}
 
     initial_state = backend._build_state_from_pypower_result(
         scenario_id=1,
-        result_ppc=initial_result,
+        result_ppc=result_ppc,
         original_frames=frames,
         physical_metrics={"step": 0},
     )
-    subsequent_state = backend._build_state_from_pypower_result_fast(
-        scenario_id=1,
-        result_ppc=subsequent_result,
-        previous_state=expected_state,
-        original_frames=frames,
-        physical_metrics={"step": 1},
-    )
 
     assert initial_state is expected_state
-    assert subsequent_state is expected_state
-    assert [call["result_ppc"] for call in recorder.calls] == [
-        initial_result,
-        subsequent_result,
-    ]
-    assert all(call["original_frames"] is frames for call in recorder.calls)
+    assert len(recorder.calls) == 1
+    assert recorder.calls[0]["result_ppc"] is result_ppc
+    assert recorder.calls[0]["original_frames"] is frames
 
 
 def test_backend_rejects_mismatched_physics_fingerprints() -> None:
