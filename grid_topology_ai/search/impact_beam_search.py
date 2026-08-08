@@ -378,22 +378,39 @@ class ImpactBeamSearchPlanner:
         self._progress_bar = None
         self._current_depth = 0
 
+    def _estimated_actions_per_node(self) -> int | None:
+        """Estimate expensive evaluations for one expanded node."""
+
+        candidate_limit = int(self.config.candidate_pool_size)
+        screened_limit = getattr(self, "lodf_screen_top_k", None)
+
+        if screened_limit is not None and int(screened_limit) > 0:
+            if candidate_limit <= 0:
+                candidate_limit = int(screened_limit)
+            else:
+                candidate_limit = min(candidate_limit, int(screened_limit))
+
+        if candidate_limit <= 0:
+            return None
+
+        if self.config.include_stop_action:
+            candidate_limit += 1
+
+        return candidate_limit
+
     def _estimated_progress_total(self) -> int | None:
         """
         Estimate the number of expensive action evaluations.
 
-        For beam search:
-        - depth 1 expands only the root node;
-        - later depths expand up to beam_width nodes.
-
-        Estimated total:
-            candidate_pool_size * (1 + beam_width * (max_depth - 1))
-
-        This matches the common case when every node has at least candidate_pool_size
-        valid candidate actions.
+        Depth 1 expands only the root node. Later depths expand up to beam_width
+        nodes. Screened planners expose their pre-AC limit through
+        lodf_screen_top_k, so the estimate follows the number of actions that can
+        actually reach env.step() instead of the larger cheap candidate pool.
         """
 
-        if self.config.candidate_pool_size <= 0:
+        actions_per_node = self._estimated_actions_per_node()
+
+        if actions_per_node is None:
             return None
 
         if self.config.max_depth <= 0:
@@ -404,8 +421,7 @@ class ImpactBeamSearchPlanner:
             0,
         )
 
-        return int(self.config.candidate_pool_size * estimated_nodes)
-
+        return int(actions_per_node * estimated_nodes)
 
     def _start_progress(self) -> None:
         if not self.config.show_progress:
@@ -421,26 +437,30 @@ class ImpactBeamSearchPlanner:
         self._progress_bar = tqdm(
             total=self._estimated_progress_total(),
             desc="Impact beam search",
-            unit="pf",
+            unit="eval",
             dynamic_ncols=True,
             leave=True,
         )
 
     def _update_progress(
-            self,
-            n: int = 1,
-            postfix: dict | None = None,
+        self,
+        postfix: dict | None = None,
     ) -> None:
         if self._progress_bar is None:
             return
 
         update_every = max(int(self.config.progress_update_every), 1)
 
-        if self.evaluated_actions % update_every == 0:
-            self._progress_bar.update(n)
+        if self.evaluated_actions % update_every != 0:
+            return
 
-            if postfix:
-                self._progress_bar.set_postfix(postfix)
+        delta = int(self.evaluated_actions) - int(self._progress_bar.n)
+
+        if delta > 0:
+            self._progress_bar.update(delta)
+
+        if postfix:
+            self._progress_bar.set_postfix(postfix)
 
     def _set_progress_postfix(self, postfix: dict) -> None:
         if self._progress_bar is None:
@@ -451,6 +471,15 @@ class ImpactBeamSearchPlanner:
     def _close_progress(self) -> None:
         if self._progress_bar is None:
             return
+
+        delta = int(self.evaluated_actions) - int(self._progress_bar.n)
+
+        if delta > 0:
+            self._progress_bar.update(delta)
+
+        if self._progress_bar.total is not None:
+            self._progress_bar.total = int(self.evaluated_actions)
+            self._progress_bar.refresh()
 
         self._progress_bar.close()
         self._progress_bar = None
@@ -776,7 +805,6 @@ class ImpactBeamSearchPlanner:
         self.evaluated_actions += 1
 
         self._update_progress(
-            n=1,
             postfix={
                 "depth": self._current_depth,
                 "evaluated": self.evaluated_actions,
