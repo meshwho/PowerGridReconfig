@@ -21,7 +21,10 @@ from grid_topology_ai.physical_constraints import (
 )
 from grid_topology_ai.power_flow_errors import PowerFlowNotConverged
 from grid_topology_ai.power_flow_state_builder import PowerFlowStateBuilder
-from grid_topology_ai.pypower_compat import runpf
+from grid_topology_ai.pypower_compat import (
+    get_power_flow_workload_counters,
+    runpf,
+)
 from grid_topology_ai.topology_actions import GridFMAction
 
 
@@ -47,6 +50,36 @@ class GridFMPowerFlowBackend(_CoreGridFMPowerFlowBackend):
             store_raw_result=store_raw_result,
         )
         self._state_builder = PowerFlowStateBuilder(self.physics_config)
+        self.stock_runpf_calls = 0
+        self.q_limit_resolves = 0
+
+    def performance_info(self) -> dict[str, object]:
+        """Return backend-local cache and PYPOWER workload counters."""
+
+        info = dict(self.cache_info())
+        misses = int(info["misses"])
+        stock_calls = int(self.stock_runpf_calls)
+
+        info.update(
+            {
+                "stock_runpf_calls": stock_calls,
+                "q_limit_resolves": int(self.q_limit_resolves),
+                "solves_per_cache_miss": (
+                    float(stock_calls) / float(misses)
+                    if misses > 0
+                    else 0.0
+                ),
+            }
+        )
+        return info
+
+    def reset_performance_counters(self) -> None:
+        """Reset counters without discarding cached power-flow states."""
+
+        self.cache_hits = 0
+        self.cache_misses = 0
+        self.stock_runpf_calls = 0
+        self.q_limit_resolves = 0
 
     @staticmethod
     def _require_matching_physics_contract(
@@ -146,7 +179,22 @@ class GridFMPowerFlowBackend(_CoreGridFMPowerFlowBackend):
         """
 
         validate_ppc_input(ppc, self.physics_config, context=context)
-        result_ppc, success = runpf(ppc, self._build_pp_options())
+        before = get_power_flow_workload_counters()
+
+        try:
+            result_ppc, success = runpf(ppc, self._build_pp_options())
+        finally:
+            after = get_power_flow_workload_counters()
+            self.stock_runpf_calls += max(
+                int(after["stock_runpf_calls"])
+                - int(before["stock_runpf_calls"]),
+                0,
+            )
+            self.q_limit_resolves += max(
+                int(after["q_limit_resolves"])
+                - int(before["q_limit_resolves"]),
+                0,
+            )
 
         if not bool(success):
             raise PowerFlowNotConverged(

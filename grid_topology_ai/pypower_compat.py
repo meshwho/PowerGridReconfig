@@ -21,6 +21,35 @@ from pypower.printpf import printpf
 from pypower.savecase import savecase
 
 
+_WORKLOAD_COUNTERS = {
+    "stock_runpf_calls": 0,
+    "q_limit_resolves": 0,
+}
+
+
+def get_power_flow_workload_counters() -> dict[str, int]:
+    """Return process-local counters for stock PYPOWER solves."""
+
+    return {
+        "stock_runpf_calls": int(_WORKLOAD_COUNTERS["stock_runpf_calls"]),
+        "q_limit_resolves": int(_WORKLOAD_COUNTERS["q_limit_resolves"]),
+    }
+
+
+def reset_power_flow_workload_counters() -> None:
+    """Reset process-local PYPOWER workload counters."""
+
+    _WORKLOAD_COUNTERS["stock_runpf_calls"] = 0
+    _WORKLOAD_COUNTERS["q_limit_resolves"] = 0
+
+
+def _record_stock_runpf(*, q_limit_resolve: bool = False) -> None:
+    _WORKLOAD_COUNTERS["stock_runpf_calls"] += 1
+
+    if q_limit_resolve:
+        _WORKLOAD_COUNTERS["q_limit_resolves"] += 1
+
+
 def _load_case(casedata: Any) -> dict[str, Any]:
     case = loadcase(case9() if casedata is None else casedata)
     if not isinstance(case, dict):
@@ -290,7 +319,8 @@ def _run_with_q_limits(
     elapsed = 0.0
     working = case
 
-    for _ in range(ng + 1):
+    for iteration in range(ng + 1):
+        _record_stock_runpf(q_limit_resolve=iteration > 0)
         result, success = _runpf(
             working,
             solver_options,
@@ -403,6 +433,7 @@ def runpf(
         not bool(options["ENFORCE_Q_LIMS"])
         or bool(options["PF_DC"])
     ):
+        _record_stock_runpf()
         return _runpf(
             casedata,
             options,
