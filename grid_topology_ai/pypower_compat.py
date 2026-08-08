@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from sys import stderr, stdout
+from time import perf_counter
 from typing import Any
 
 import numpy as np
@@ -24,15 +25,29 @@ from pypower.savecase import savecase
 _WORKLOAD_COUNTERS = {
     "stock_runpf_calls": 0,
     "q_limit_resolves": 0,
+    "q_limit_sequences": 0,
+    "q_limit_failures": 0,
+    "q_limit_infeasible": 0,
+    "stock_runpf_seconds": 0.0,
+    "q_limit_bookkeeping_seconds": 0.0,
 }
+_Q_LIMIT_RESOLVE_HISTOGRAM: dict[int, int] = {}
 
 
-def get_power_flow_workload_counters() -> dict[str, int]:
+def get_power_flow_workload_counters() -> dict[str, object]:
     """Return process-local counters for stock PYPOWER solves."""
 
     return {
         "stock_runpf_calls": int(_WORKLOAD_COUNTERS["stock_runpf_calls"]),
         "q_limit_resolves": int(_WORKLOAD_COUNTERS["q_limit_resolves"]),
+        "q_limit_sequences": int(_WORKLOAD_COUNTERS["q_limit_sequences"]),
+        "q_limit_failures": int(_WORKLOAD_COUNTERS["q_limit_failures"]),
+        "q_limit_infeasible": int(_WORKLOAD_COUNTERS["q_limit_infeasible"]),
+        "stock_runpf_seconds": float(_WORKLOAD_COUNTERS["stock_runpf_seconds"]),
+        "q_limit_bookkeeping_seconds": float(
+            _WORKLOAD_COUNTERS["q_limit_bookkeeping_seconds"]
+        ),
+        "q_limit_resolve_histogram": dict(_Q_LIMIT_RESOLVE_HISTOGRAM),
     }
 
 
@@ -41,13 +56,51 @@ def reset_power_flow_workload_counters() -> None:
 
     _WORKLOAD_COUNTERS["stock_runpf_calls"] = 0
     _WORKLOAD_COUNTERS["q_limit_resolves"] = 0
+    _WORKLOAD_COUNTERS["q_limit_sequences"] = 0
+    _WORKLOAD_COUNTERS["q_limit_failures"] = 0
+    _WORKLOAD_COUNTERS["q_limit_infeasible"] = 0
+    _WORKLOAD_COUNTERS["stock_runpf_seconds"] = 0.0
+    _WORKLOAD_COUNTERS["q_limit_bookkeeping_seconds"] = 0.0
+    _Q_LIMIT_RESOLVE_HISTOGRAM.clear()
 
 
-def _record_stock_runpf(*, q_limit_resolve: bool = False) -> None:
+def _record_stock_runpf(
+    *,
+    q_limit_resolve: bool = False,
+    elapsed_seconds: float = 0.0,
+) -> None:
     _WORKLOAD_COUNTERS["stock_runpf_calls"] += 1
+    _WORKLOAD_COUNTERS["stock_runpf_seconds"] += max(
+        float(elapsed_seconds),
+        0.0,
+    )
 
     if q_limit_resolve:
         _WORKLOAD_COUNTERS["q_limit_resolves"] += 1
+
+
+def _record_q_limit_sequence(
+    *,
+    resolves: int,
+    success: bool,
+    infeasible: bool,
+    elapsed_seconds: float,
+    stock_runpf_seconds: float,
+) -> None:
+    resolves = max(int(resolves), 0)
+    _WORKLOAD_COUNTERS["q_limit_sequences"] += 1
+    if not bool(success):
+        _WORKLOAD_COUNTERS["q_limit_failures"] += 1
+    if bool(infeasible):
+        _WORKLOAD_COUNTERS["q_limit_infeasible"] += 1
+
+    _Q_LIMIT_RESOLVE_HISTOGRAM[resolves] = (
+        _Q_LIMIT_RESOLVE_HISTOGRAM.get(resolves, 0) + 1
+    )
+    _WORKLOAD_COUNTERS["q_limit_bookkeeping_seconds"] += max(
+        float(elapsed_seconds) - float(stock_runpf_seconds),
+        0.0,
+    )
 
 
 def _load_case(casedata: Any) -> dict[str, Any]:
@@ -106,8 +159,8 @@ def _violations(
 def _remaining_voltage_controlled(
     bus: np.ndarray,
     gen: np.ndarray,
+    rows: np.ndarray,
 ) -> np.ndarray:
-    rows = _bus_rows(bus, gen)
     types = bus[rows, BUS_TYPE]
     active = gen[:, GEN_STATUS] > 0
     return np.flatnonzero(
@@ -139,6 +192,25 @@ def _largest_violation_only(
     )
 
 
+def _minimal_solver_case(
+    result: dict[str, Any],
+    *,
+    bus: np.ndarray,
+    gen: np.ndarray,
+) -> dict[str, Any]:
+    """Build the smallest case stock runpf needs for another AC solve."""
+
+    case: dict[str, Any] = {
+        "baseMVA": result["baseMVA"],
+        "bus": bus,
+        "gen": gen,
+        "branch": result["branch"],
+    }
+    if "version" in result:
+        case["version"] = result["version"]
+    return case
+
+
 def _next_case(
     result: dict[str, Any],
     upper: np.ndarray,
@@ -146,15 +218,10 @@ def _next_case(
     fixed_pg: np.ndarray,
     fixed_qg: np.ndarray,
     limited: list[int],
+    rows: np.ndarray,
 ) -> dict[str, Any]:
-    case = {
-        key: deepcopy(value)
-        for key, value in result.items()
-        if key not in {"et", "order", "success"}
-    }
-    bus = np.asarray(case["bus"], dtype=float)
-    gen = np.asarray(case["gen"], dtype=float)
-    rows = _bus_rows(bus, gen)
+    bus = np.array(result["bus"], dtype=float, copy=True)
+    gen = np.array(result["gen"], dtype=float, copy=True)
 
     selected = np.r_[upper, lower].astype(np.int64, copy=False)
     reference_rows = set(
@@ -195,7 +262,6 @@ def _next_case(
         bus[bus_row, QD] -= fixed_qg[gen_index]
         bus[bus_row, BUS_TYPE] = PQ
 
-    rows = _bus_rows(bus, gen)
     active_bus_rows = sorted(
         set(int(row) for row in rows[gen[:, GEN_STATUS] > 0])
     )
@@ -218,9 +284,11 @@ def _next_case(
             )
         bus[active_pvs[0], BUS_TYPE] = REF
 
-    case["bus"] = bus
-    case["gen"] = gen
-    return case
+    return _minimal_solver_case(
+        result,
+        bus=bus,
+        gen=gen,
+    )
 
 
 def _restore(
@@ -230,14 +298,13 @@ def _restore(
     fixed_qg: np.ndarray,
     original_ref: tuple[int, float] | None,
     original_order: Any,
+    rows: np.ndarray,
 ) -> dict[str, Any]:
-    restored = deepcopy(result)
-    bus = np.asarray(restored["bus"], dtype=float)
-    gen = np.asarray(restored["gen"], dtype=float)
+    restored = dict(result)
+    bus = np.array(result["bus"], dtype=float, copy=True)
+    gen = np.array(result["gen"], dtype=float, copy=True)
 
     if limited:
-        rows = _bus_rows(bus, gen)
-
         for gen_index in limited:
             bus_row = int(rows[gen_index])
             gen[gen_index, PG] = fixed_pg[gen_index]
@@ -260,7 +327,7 @@ def _restore(
     restored["gen"] = gen
 
     if original_order is not None:
-        restored["order"] = deepcopy(original_order)
+        restored["order"] = original_order
 
     return restored
 
@@ -290,8 +357,12 @@ def _run_with_q_limits(
     fname: str,
     solvedcase: str,
 ) -> tuple[dict[str, Any], bool]:
+    sequence_started = perf_counter()
+    sequence_stock_seconds = 0.0
     case = _load_case(casedata)
     initial_bus = np.asarray(case["bus"], dtype=float)
+    initial_gen = np.asarray(case["gen"], dtype=float)
+    rows = _bus_rows(initial_bus, initial_gen)
     ref_rows = np.flatnonzero(initial_bus[:, BUS_TYPE] == REF)
     original_ref = None
 
@@ -310,7 +381,7 @@ def _run_with_q_limits(
     )
     tolerance = float(options["OPF_VIOLATION"])
     qlim_mode = int(options["ENFORCE_Q_LIMS"])
-    ng = int(np.asarray(case["gen"]).shape[0])
+    ng = int(initial_gen.shape[0])
 
     fixed_pg = np.full(ng, np.nan, dtype=float)
     fixed_qg = np.full(ng, np.nan, dtype=float)
@@ -319,70 +390,87 @@ def _run_with_q_limits(
     elapsed = 0.0
     working = case
 
-    for iteration in range(ng + 1):
-        _record_stock_runpf(q_limit_resolve=iteration > 0)
-        result, success = _runpf(
-            working,
-            solver_options,
-            "",
-            "",
+    def finish(
+        result: dict[str, Any],
+        *,
+        success: bool,
+        resolves: int,
+        infeasible: bool = False,
+    ) -> tuple[dict[str, Any], bool]:
+        final = _restore(
+            result,
+            limited,
+            fixed_pg,
+            fixed_qg,
+            original_ref,
+            original_order,
+            rows,
         )
+        final["success"] = bool(success)
+        final["et"] = elapsed
+        _record_q_limit_sequence(
+            resolves=resolves,
+            success=success,
+            infeasible=infeasible,
+            elapsed_seconds=perf_counter() - sequence_started,
+            stock_runpf_seconds=sequence_stock_seconds,
+        )
+        _emit(final, options, fname, solvedcase)
+        return final, bool(success)
+
+    for iteration in range(ng + 1):
+        solve_started = perf_counter()
+        try:
+            result, success = _runpf(
+                working,
+                solver_options,
+                "",
+                "",
+            )
+        finally:
+            solve_seconds = perf_counter() - solve_started
+            sequence_stock_seconds += solve_seconds
+            _record_stock_runpf(
+                q_limit_resolve=iteration > 0,
+                elapsed_seconds=solve_seconds,
+            )
+
         elapsed += float(result.get("et", 0.0))
 
         if original_order is None:
             original_order = deepcopy(result.get("order"))
 
         if not bool(success):
-            final = _restore(
+            return finish(
                 result,
-                limited,
-                fixed_pg,
-                fixed_qg,
-                original_ref,
-                original_order,
+                success=False,
+                resolves=iteration,
             )
-            final["success"] = False
-            final["et"] = elapsed
-            _emit(final, options, fname, solvedcase)
-            return final, False
 
         bus = np.asarray(result["bus"], dtype=float)
         gen = np.asarray(result["gen"], dtype=float)
         upper, lower = _violations(gen, tolerance)
 
         if not len(upper) and not len(lower):
-            final = _restore(
+            return finish(
                 result,
-                limited,
-                fixed_pg,
-                fixed_qg,
-                original_ref,
-                original_order,
+                success=True,
+                resolves=iteration,
             )
-            final["success"] = True
-            final["et"] = elapsed
-            _emit(final, options, fname, solvedcase)
-            return final, True
 
         infeasible = np.union1d(upper, lower)
-        remaining = _remaining_voltage_controlled(bus, gen)
+        remaining = _remaining_voltage_controlled(bus, gen, rows)
 
         if (
             len(infeasible) == len(remaining)
             and np.array_equal(infeasible, remaining)
         ):
-            final = _restore(
+            return finish(
                 result,
-                limited,
-                fixed_pg,
-                fixed_qg,
-                original_ref,
-                original_order,
+                success=False,
+                resolves=iteration,
+                infeasible=True,
             )
-            final["success"] = False
-            final["et"] = elapsed
-            _emit(final, options, fname, solvedcase)
-            return final, False
 
         if qlim_mode == 2:
             upper, lower = _largest_violation_only(
@@ -399,20 +487,15 @@ def _run_with_q_limits(
                 fixed_pg,
                 fixed_qg,
                 limited,
+                rows,
             )
         except RuntimeError:
-            final = _restore(
+            return finish(
                 result,
-                limited,
-                fixed_pg,
-                fixed_qg,
-                original_ref,
-                original_order,
+                success=False,
+                resolves=iteration,
+                infeasible=True,
             )
-            final["success"] = False
-            final["et"] = elapsed
-            _emit(final, options, fname, solvedcase)
-            return final, False
 
     raise RuntimeError(
         "Q-limit enforcement exceeded the number of available generators."
@@ -433,13 +516,18 @@ def runpf(
         not bool(options["ENFORCE_Q_LIMS"])
         or bool(options["PF_DC"])
     ):
-        _record_stock_runpf()
-        return _runpf(
-            casedata,
-            options,
-            fname,
-            solvedcase,
-        )
+        solve_started = perf_counter()
+        try:
+            return _runpf(
+                casedata,
+                options,
+                fname,
+                solvedcase,
+            )
+        finally:
+            _record_stock_runpf(
+                elapsed_seconds=perf_counter() - solve_started,
+            )
 
     return _run_with_q_limits(
         casedata,
