@@ -20,6 +20,11 @@ from grid_topology_ai.outcome_contract import (
     redispatch_status_for_reason,
 )
 from grid_topology_ai.physical_objective import assess_physical_state
+from grid_topology_ai.redispatch import (
+    MinimalRedispatchResult,
+    empty_redispatch_diagnostics,
+    run_minimal_ac_redispatch,
+)
 from grid_topology_ai.termination import (
     TerminationReason,
     parse_termination_reason,
@@ -34,6 +39,16 @@ _original_process_scenario_batch = teacher.process_scenario_batch
 _original_append_scenario_checkpoint = teacher.append_scenario_checkpoint
 _original_planner_search = teacher.ImpactBeamSearchPlanner.search
 
+_REDISPATCH_ROW_FIELDS = (
+    "redispatch_attempted",
+    "redispatch_opf_success",
+    "redispatch_validated",
+    "redispatch_l1_mw",
+    "redispatch_up_mw",
+    "redispatch_down_mw",
+    "redispatch_max_generator_delta_mw",
+    "redispatch_message",
+)
 _REQUIRED_CHECKPOINT_ROW_FIELDS = (
     "run_id",
     "iteration",
@@ -47,6 +62,9 @@ _REQUIRED_CHECKPOINT_ROW_FIELDS = (
     "topology_action_config_fingerprint",
     "action_layout",
     "action_layout_fingerprint",
+    "redispatch_attempted",
+    "redispatch_opf_success",
+    "redispatch_validated",
 )
 
 _SEARCH_WORKLOAD_BY_SCENARIO: dict[int, dict[str, object]] = {}
@@ -273,11 +291,26 @@ def _worker_run_id() -> str:
     return f"impact_teacher_{digest[:24]}"
 
 
+def _set_redispatch_diagnostics(
+    rows: list[dict[str, Any]],
+    result: MinimalRedispatchResult | None,
+) -> None:
+    diagnostics = (
+        empty_redispatch_diagnostics()
+        if result is None
+        else result.diagnostics()
+    )
+    for row in rows:
+        row.update(diagnostics)
+
+
 def _replay_terminal_evidence(
     scenario_id: int,
     rows: list[dict[str, Any]],
 ) -> TerminalOutcomeEvidence:
     ctx = teacher._require_worker_context()
+    _set_redispatch_diagnostics(rows, None)
+
     ordered_rows = sorted(rows, key=lambda row: int(row["step"]))
     steps = [int(row["step"]) for row in ordered_rows]
     if steps != list(range(len(steps))):
@@ -346,6 +379,27 @@ def _replay_terminal_evidence(
         and not assessment.hard_overload_free
     ):
         reason = TerminationReason.HANDOFF_TO_REDISPATCH_WITH_HARD_OVERLOAD
+
+    if (
+        reason is TerminationReason.HANDOFF_TO_REDISPATCH_TEACHER
+        and assessment.hard_overload_free
+    ):
+        redispatch = run_minimal_ac_redispatch(
+            ctx["backend"],
+            final_state,
+        )
+        _set_redispatch_diagnostics(rows, redispatch)
+
+        if redispatch.validated:
+            assert redispatch.assessment is not None
+            validated_reason = TerminationReason.REDISPATCH_VALIDATED
+            return TerminalOutcomeEvidence(
+                solved=False,
+                termination_reason=validated_reason,
+                assessment=assessment,
+                redispatch_status=redispatch_status_for_reason(validated_reason),
+                redispatch_assessment=redispatch.assessment,
+            )
 
     return TerminalOutcomeEvidence(
         solved=solved,
@@ -500,6 +554,10 @@ def _finalize_success_result(result: dict[str, Any]) -> dict[str, Any]:
                 "outcome_value_target_contract_version": (
                     OUTCOME_VALUE_TARGET_CONTRACT_VERSION
                 ),
+                **{
+                    field: row.get(field)
+                    for field in _REDISPATCH_ROW_FIELDS
+                },
                 **action_provenance,
             }
         )
