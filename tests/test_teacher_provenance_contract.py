@@ -11,6 +11,8 @@ from grid_topology_ai.outcome_contract import (
     TERMINAL_OUTCOME_EVIDENCE_SCHEMA_VERSION,
     TerminalOutcomeEvidence,
 )
+from grid_topology_ai.redispatch import MinimalRedispatchResult
+from grid_topology_ai.return_contract import terminal_utility_from_outcome
 from grid_topology_ai.termination import TerminationReason
 from scripts.self_play import generate_impact_teacher_provenance as provenance
 from tests.outcome_evidence_helpers import terminal_evidence
@@ -38,6 +40,9 @@ def _current_checkpoint_row() -> dict[str, object]:
         "topology_action_config_fingerprint": "config-fingerprint",
         "action_layout": "[]",
         "action_layout_fingerprint": "layout-fingerprint",
+        "redispatch_attempted": False,
+        "redispatch_opf_success": False,
+        "redispatch_validated": False,
     }
 
 
@@ -86,10 +91,16 @@ def test_success_result_gets_identity_evidence_and_state_provenance(
         "_worker_run_id",
         lambda: "impact_teacher_test",
     )
+
+    def replay_with_defaults(scenario_id, rows):
+        del scenario_id
+        provenance._set_redispatch_diagnostics(rows, None)
+        return evidence
+
     monkeypatch.setattr(
         provenance,
         "_replay_terminal_evidence",
-        lambda scenario_id, rows: evidence,
+        replay_with_defaults,
     )
     monkeypatch.setattr(
         provenance.teacher,
@@ -124,6 +135,7 @@ def test_success_result_gets_identity_evidence_and_state_provenance(
     assert row["iteration"] == 1
     assert row["episode_id"] == "impact_teacher_test_scenario_000005"
     assert row["terminal_outcome_evidence_json"] == evidence.to_json()
+    assert row["redispatch_attempted"] is False
     assert json.loads(row["bus_feature_columns"]) == ["Pd", "Qd"]
     assert json.loads(row["branch_feature_columns"]) == ["pf", "qf"]
     assert json.loads(row["topology_action_config"])[
@@ -139,23 +151,24 @@ def test_success_result_gets_identity_evidence_and_state_provenance(
     assert metadata["episode_id"] == row["episode_id"]
     assert metadata["terminal_outcome_evidence"] == evidence.to_dict()
     assert metadata["topology_action_contract_version"] == 1
+    assert metadata["redispatch_attempted"] is False
     assert metadata["episode_termination_reason"] == (
         TerminationReason.HANDOFF_TO_REDISPATCH_TEACHER.value
     )
 
 
-def test_teacher_handoff_with_hard_overload_uses_explicit_hard_handoff(
+def _patch_replay_context(
     monkeypatch: pytest.MonkeyPatch,
+    assessment,
+    *,
+    done: bool = False,
+    terminal_evidence_value: TerminalOutcomeEvidence | None = None,
 ) -> None:
-    hard_evidence = terminal_evidence(
-        TerminationReason.HANDOFF_TO_REDISPATCH_WITH_HARD_OVERLOAD
-    )
-
     class FakeEnv:
         def __init__(self, **kwargs: object) -> None:
             del kwargs
-            self.done = False
-            self.terminal_outcome_evidence = None
+            self.done = done
+            self.terminal_outcome_evidence = terminal_evidence_value
             self.current_state = SimpleNamespace(metrics={})
 
         def reset(self, scenario_id: int) -> object:
@@ -166,11 +179,12 @@ def test_teacher_handoff_with_hard_overload_uses_explicit_hard_handoff(
             raise AssertionError(f"unexpected action {action_id}")
 
     monkeypatch.setattr(provenance, "TopologySwitchingEnv", FakeEnv)
-    monkeypatch.setattr(
-        provenance,
-        "assess_physical_state",
-        lambda metrics: hard_evidence.assessment,
-    )
+    if assessment is not None:
+        monkeypatch.setattr(
+            provenance,
+            "assess_physical_state",
+            lambda metrics: assessment,
+        )
     monkeypatch.setattr(
         provenance.teacher,
         "_require_worker_context",
@@ -183,20 +197,39 @@ def test_teacher_handoff_with_hard_overload_uses_explicit_hard_handoff(
         },
     )
 
-    evidence = provenance._replay_terminal_evidence(
-        5,
-        [
-            {
-                "scenario_id": 5,
-                "step": 0,
-                "selected_action_id": 0,
-                "solved": False,
-                "termination_reason": (
-                    TerminationReason.HANDOFF_TO_REDISPATCH_TEACHER.value
-                ),
-            }
-        ],
+
+def _handoff_row() -> dict[str, object]:
+    return {
+        "scenario_id": 5,
+        "step": 0,
+        "selected_action_id": 0,
+        "solved": False,
+        "termination_reason": (
+            TerminationReason.HANDOFF_TO_REDISPATCH_TEACHER.value
+        ),
+    }
+
+
+def test_teacher_handoff_with_hard_overload_uses_explicit_hard_handoff(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    hard_evidence = terminal_evidence(
+        TerminationReason.HANDOFF_TO_REDISPATCH_WITH_HARD_OVERLOAD
     )
+    _patch_replay_context(
+        monkeypatch,
+        hard_evidence.assessment,
+    )
+    monkeypatch.setattr(
+        provenance,
+        "run_minimal_ac_redispatch",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("redispatch must not run for a hard-overloaded handoff")
+        ),
+    )
+
+    rows = [_handoff_row()]
+    evidence = provenance._replay_terminal_evidence(5, rows)
 
     assert isinstance(evidence, TerminalOutcomeEvidence)
     assert evidence.termination_reason is (
@@ -204,3 +237,128 @@ def test_teacher_handoff_with_hard_overload_uses_explicit_hard_handoff(
     )
     assert evidence.assessment is not None
     assert evidence.assessment.hard_overload_free is False
+    assert rows[0]["redispatch_attempted"] is False
+
+
+def test_teacher_handoff_becomes_validated_redispatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    handoff = terminal_evidence(
+        TerminationReason.HANDOFF_TO_REDISPATCH_TEACHER
+    )
+    secure = terminal_evidence(TerminationReason.SOLVED)
+    assert handoff.assessment is not None
+    assert secure.assessment is not None
+
+    _patch_replay_context(monkeypatch, handoff.assessment)
+    monkeypatch.setattr(
+        provenance,
+        "run_minimal_ac_redispatch",
+        lambda backend, state: MinimalRedispatchResult(
+            opf_success=True,
+            assessment=secure.assessment,
+            message="validated",
+            redispatch_l1_mw=20.0,
+            redispatch_up_mw=10.0,
+            redispatch_down_mw=10.0,
+            redispatch_max_generator_delta_mw=6.0,
+        ),
+    )
+
+    rows = [_handoff_row()]
+    evidence = provenance._replay_terminal_evidence(5, rows)
+
+    assert evidence.termination_reason is TerminationReason.REDISPATCH_VALIDATED
+    assert evidence.redispatch_assessment is secure.assessment
+    assert rows[0]["redispatch_attempted"] is True
+    assert rows[0]["redispatch_validated"] is True
+    assert rows[0]["redispatch_l1_mw"] == pytest.approx(20.0)
+    assert terminal_utility_from_outcome(
+        False,
+        evidence.termination_reason,
+        evidence=evidence,
+    )[0] == 0.0
+
+
+@pytest.mark.parametrize(
+    "redispatch_result",
+    [
+        MinimalRedispatchResult(
+            opf_success=False,
+            assessment=None,
+            message="infeasible",
+        ),
+        MinimalRedispatchResult(
+            opf_success=True,
+            assessment=terminal_evidence(
+                TerminationReason.HANDOFF_TO_REDISPATCH_TEACHER
+            ).assessment,
+            message="unsafe",
+            redispatch_l1_mw=5.0,
+            redispatch_up_mw=2.5,
+            redispatch_down_mw=2.5,
+            redispatch_max_generator_delta_mw=2.5,
+        ),
+    ],
+)
+def test_failed_or_unsafe_redispatch_keeps_negative_handoff(
+    monkeypatch: pytest.MonkeyPatch,
+    redispatch_result: MinimalRedispatchResult,
+) -> None:
+    handoff = terminal_evidence(
+        TerminationReason.HANDOFF_TO_REDISPATCH_TEACHER
+    )
+    assert handoff.assessment is not None
+    _patch_replay_context(monkeypatch, handoff.assessment)
+    monkeypatch.setattr(
+        provenance,
+        "run_minimal_ac_redispatch",
+        lambda backend, state: redispatch_result,
+    )
+
+    rows = [_handoff_row()]
+    evidence = provenance._replay_terminal_evidence(5, rows)
+
+    assert evidence.termination_reason is (
+        TerminationReason.HANDOFF_TO_REDISPATCH_TEACHER
+    )
+    assert rows[0]["redispatch_attempted"] is True
+    assert rows[0]["redispatch_validated"] is False
+    assert terminal_utility_from_outcome(
+        False,
+        evidence.termination_reason,
+        evidence=evidence,
+    )[0] == -1.0
+
+
+def test_topology_only_solved_episode_bypasses_redispatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    solved = terminal_evidence(TerminationReason.SOLVED)
+    _patch_replay_context(
+        monkeypatch,
+        assessment=None,
+        done=True,
+        terminal_evidence_value=solved,
+    )
+    monkeypatch.setattr(
+        provenance,
+        "run_minimal_ac_redispatch",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("redispatch must not run after topology-only success")
+        ),
+    )
+
+    rows = [
+        {
+            "scenario_id": 5,
+            "step": 0,
+            "selected_action_id": 0,
+            "solved": True,
+            "termination_reason": TerminationReason.SOLVED.value,
+        }
+    ]
+    evidence = provenance._replay_terminal_evidence(5, rows)
+
+    assert evidence is solved
+    assert rows[0]["redispatch_attempted"] is False
