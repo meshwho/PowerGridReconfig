@@ -31,6 +31,9 @@ def _current_row() -> dict[str, object]:
         "topology_action_config_fingerprint": "config-fingerprint",
         "action_layout": "[]",
         "action_layout_fingerprint": "layout-fingerprint",
+        "redispatch_attempted": False,
+        "redispatch_opf_success": False,
+        "redispatch_validated": False,
     }
 
 
