@@ -6,6 +6,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -81,6 +82,61 @@ DEFAULT_TEACHER_PROFILES: dict[str, TeacherProfile] = {
 }
 
 
+SMOKE_TEACHER_PROFILES: dict[str, TeacherProfile] = {
+    "simple": TeacherProfile(
+        depth=2,
+        beam_width=4,
+        candidate_pool=24,
+        top_k=12,
+        lodf_top_k=12,
+        max_steps=2,
+        max_teacher_steps=2,
+        batch_size=1,
+        auto_worker_max=3,
+    ),
+    "medium": TeacherProfile(
+        depth=3,
+        beam_width=5,
+        candidate_pool=36,
+        top_k=18,
+        lodf_top_k=18,
+        max_steps=3,
+        max_teacher_steps=3,
+        batch_size=1,
+        auto_worker_max=3,
+    ),
+    "hard": TeacherProfile(
+        depth=3,
+        beam_width=6,
+        candidate_pool=48,
+        top_k=24,
+        lodf_top_k=24,
+        max_steps=3,
+        max_teacher_steps=3,
+        batch_size=1,
+        auto_worker_max=3,
+    ),
+}
+
+
+SMOKE_PROFILE_PURPOSE = (
+    "pipeline correctness only; it does not measure teacher quality or "
+    "production search runtime"
+)
+
+
+def resolve_teacher_profiles(
+    profile_name: str,
+) -> tuple[str, dict[str, TeacherProfile]]:
+    """Resolve the search budget independently from scenario-count limits."""
+
+    if profile_name == "smoke":
+        return "smoke", SMOKE_TEACHER_PROFILES
+    if profile_name == "full":
+        return "production", DEFAULT_TEACHER_PROFILES
+    raise ValueError(f"Unsupported teacher pipeline profile: {profile_name!r}")
+
+
 @dataclass(frozen=True)
 class Paths:
     dataset_name: str
@@ -92,6 +148,7 @@ class Paths:
     output_root: Path
     logs_dir: Path
     state_path: Path
+
 
 class PipelineError(RuntimeError):
     """Raised for an expected pipeline validation failure."""
@@ -126,6 +183,7 @@ def resolve_from_root(project_root: Path, value: str | Path) -> Path:
         path = project_root / path
     return path.resolve()
 
+
 def validate_path_component(
     value: str,
     option_name: str,
@@ -157,6 +215,7 @@ def validate_path_component(
         )
 
     return normalized
+
 
 def detect_difficulty_column(frame: pd.DataFrame) -> str:
     for column in DIFFICULTY_COLUMN_CANDIDATES:
@@ -324,6 +383,7 @@ def archive_incomplete_output(output_dir: Path) -> Path:
     output_dir.rename(archived)
     return archived
 
+
 def has_resumable_teacher_checkpoint(
     output_dir: Path,
 ) -> bool:
@@ -337,6 +397,7 @@ def has_resumable_teacher_checkpoint(
         and checkpoint_path.is_file()
         and checkpoint_path.stat().st_size > 0
     )
+
 
 def terminate_process_tree(process: subprocess.Popen[str]) -> None:
     try:
@@ -926,13 +987,19 @@ def parse_args() -> argparse.Namespace:
         "--profile",
         choices=["full", "smoke"],
         default="full",
-        help="Smoke uses a small deterministic sample per class.",
+        help=(
+            "Smoke uses a deterministic sample and a bounded search budget for "
+            "pipeline validation. Full uses the production teacher budget."
+        ),
     )
     parser.add_argument(
         "--limit-per-class",
         type=int,
         default=None,
-        help="Maximum scenarios per class and split. Overrides --profile.",
+        help=(
+            "Maximum scenarios per class and split. This changes scenario count "
+            "only; the search budget is selected by --profile."
+        ),
     )
     parser.add_argument("--seed", type=int, default=42)
 
@@ -994,7 +1061,7 @@ def parse_args() -> argparse.Namespace:
             "Explicit transitions directory. "
             "Default: data/gridfm_transitions/<dataset-name>."
         ),
-)
+    )
     parser.add_argument(
         "--train-file",
         default="transitions_train.csv",
@@ -1103,7 +1170,9 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
+    pipeline_started = time.perf_counter()
     args = parse_args()
+    search_budget_name, teacher_profiles = resolve_teacher_profiles(args.profile)
 
     project_root = Path(
         args.project_root
@@ -1196,6 +1265,7 @@ def main() -> None:
             "status": "running",
             "stage": args.stage,
             "profile": args.profile,
+            "search_budget": search_budget_name,
             "dataset_name": paths.dataset_name,
             "run_name": paths.run_name,
             "project_root": str(paths.project_root),
@@ -1212,7 +1282,7 @@ def main() -> None:
             "lodf_enabled": not bool(args.disable_lodf),
             "teacher_profiles": {
                 name: asdict(profile)
-                for name, profile in DEFAULT_TEACHER_PROFILES.items()
+                for name, profile in teacher_profiles.items()
             },
         }
     )
@@ -1221,6 +1291,9 @@ def main() -> None:
     banner("Teacher pipeline by difficulty")
     print(f"Stage:             {args.stage}")
     print(f"Profile:           {args.profile}")
+    print(f"Search budget:     {search_budget_name}")
+    if args.profile == "smoke":
+        print(f"Smoke purpose:     {SMOKE_PROFILE_PURPOSE}")
     print(f"Dataset name:      {paths.dataset_name}")
     print(f"Run name:          {paths.run_name}")
     print(f"Project root:      {paths.project_root}")
@@ -1268,7 +1341,7 @@ def main() -> None:
                         paths=paths,
                         split_name=split_name,
                         difficulty=difficulty,
-                        profile=DEFAULT_TEACHER_PROFILES[difficulty],
+                        profile=teacher_profiles[difficulty],
                         args=args,
                         env=env,
                     )
@@ -1302,22 +1375,27 @@ def main() -> None:
             state["updated_at"] = utc_now_iso()
             save_state(paths.state_path, state)
 
+        wall_time_seconds = time.perf_counter() - pipeline_started
         state["status"] = "completed"
+        state["wall_time_seconds"] = float(wall_time_seconds)
         state["updated_at"] = utc_now_iso()
         save_state(paths.state_path, state)
 
         banner("Teacher pipeline completed")
         for split_name in args.splits:
             print(f"{split_name}: {paths.output_root / f'examples_{split_name}.csv'}")
+        print(f"Wall time: {wall_time_seconds:.1f} s")
         print(f"State: {paths.state_path}")
 
     except KeyboardInterrupt:
         state["status"] = "interrupted"
+        state["wall_time_seconds"] = float(time.perf_counter() - pipeline_started)
         state["updated_at"] = utc_now_iso()
         save_state(paths.state_path, state)
         raise SystemExit(130)
     except Exception as exc:
         state["status"] = "failed"
+        state["wall_time_seconds"] = float(time.perf_counter() - pipeline_started)
         state["updated_at"] = utc_now_iso()
         state["last_error"] = f"{type(exc).__name__}: {exc}"
         save_state(paths.state_path, state)
