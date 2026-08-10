@@ -8,6 +8,7 @@ from grid_topology_ai.action_space import GridFMAction
 from grid_topology_ai.config.physics import DEFAULT_PHYSICS_CONFIG, PhysicsConfig
 from grid_topology_ai.data_adapter import BRANCH_FEATURE_COLUMNS, GridFMState
 from grid_topology_ai.environment import TopologyStepResult, TopologySwitchingEnv
+from grid_topology_ai.grid_utility import state_security_penalty
 from grid_topology_ai.termination import TerminationReason
 
 from tqdm import tqdm
@@ -168,52 +169,12 @@ def safety_score(
     state: GridFMState,
     physics_config: PhysicsConfig | None = None,
 ) -> float:
-    """
-    Emergency-oriented safety score.
+    """Return the canonical lower-is-better physical-state penalty."""
 
-    Lower is better.
-
-    Design goal:
-    - do not blindly switch off the most overloaded line;
-    - do not create a single catastrophic 200%+ overload;
-    - do not reduce max loading by spreading hard overloads over many branches;
-    - prefer actions that reduce the total emergency severity.
-
-    Components:
-    - squared hard overload: strongly punishes catastrophic peaks;
-    - number of hard-overloaded branches: prevents spreading emergency overloads;
-    - total hard overload: measures emergency severity;
-    - max hard excess: keeps peak loading under control;
-    - total normal overload: secondary soft overload term;
-    - number of overloaded branches: discourages spreading violations;
-    - voltage violations: keeps voltage safety in the score.
-    """
-
-    config = physics_config or DEFAULT_PHYSICS_CONFIG
-    num_overloaded = int(state.metrics["num_overloaded_branches"])
-    num_hard = int(state.metrics["num_hard_overloaded_branches"])
-
-    hard_sq = squared_hard_overload(state, physics_config=config)
-    hard_sum = total_hard_overload(state, physics_config=config)
-    over_sum = total_overload(state, physics_config=config)
-
-    max_hard = max_hard_excess(state, physics_config=config)
-    max_over = max_overload_excess(state, physics_config=config)
-
-    voltage_violation = float(state.metrics.get("total_voltage_violation", 0.0))
-
-    score = (
-        3.0 * hard_sq
-        + 1500.0 * float(num_hard)
-        + 50.0 * hard_sum
-        + 30.0 * max_hard
-        + 5.0 * over_sum
-        + 100.0 * float(num_overloaded)
-        + 2.0 * max_over
-        + 5000.0 * voltage_violation
+    return state_security_penalty(
+        state,
+        physics_config=physics_config,
     )
-
-    return float(score)
 
 
 # ======================================================================================
@@ -354,8 +315,8 @@ class ImpactBeamSearchPlanner:
 
     Main idea:
         At each state, candidate actions are actually simulated with power flow.
-        The planner then ranks actions by emergency safety improvement, not by
-        current branch loading.
+        The planner then ranks actions by canonical physical-state improvement,
+        not by current branch loading.
 
     Safety guard:
         If hard overloads exist, the planner avoids actions that increase the
@@ -945,23 +906,16 @@ class ImpactBeamSearchPlanner:
         nodes: list[ImpactBeamSearchNode],
     ) -> list[ImpactBeamSearchNode]:
         """
-        Sort nodes by emergency safety.
+        Sort nodes by canonical final physical-state quality.
 
         Priority:
         1. solved states;
         2. avoid hard-overload count above initial state;
-        3. lower safety score;
+        3. lower canonical physical-state penalty;
         4. higher discounted improvement;
         5. shorter sequence.
 
-        The safety_score already combines:
-        - squared hard overload;
-        - number of hard overloaded branches;
-        - total hard overload;
-        - max loading excess;
-        - total overload;
-        - number of overloaded branches;
-        - voltage violation.
+        Hard-overload safety guards remain separate from the canonical score.
         """
 
         return sorted(
