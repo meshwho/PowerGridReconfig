@@ -61,7 +61,7 @@ def _assessment(*, overloaded: int, hard_overloaded: int = 0):
         TerminationReason.HANDOFF_TO_REDISPATCH_WITH_HARD_OVERLOAD,
     ],
 )
-def test_unvalidated_handoff_is_negative(reason: TerminationReason) -> None:
+def test_evidence_free_handoff_keeps_legacy_fallback(reason: TerminationReason) -> None:
     assert terminal_utility_from_outcome(False, reason) == (
         -1.0,
         reason.value,
@@ -76,12 +76,13 @@ def test_validated_redispatch_requires_evidence() -> None:
         )
 
 
-def test_validated_redispatch_is_the_only_neutral_outcome() -> None:
+def test_validated_redispatch_uses_pre_redispatch_topology_utility() -> None:
     evidence = TerminalOutcomeEvidence(
         solved=False,
         termination_reason=TerminationReason.REDISPATCH_VALIDATED,
         assessment=_assessment(overloaded=1),
         redispatch_status=RedispatchStatus.VALIDATED,
+        topology_utility=0.35,
         redispatch_assessment=_assessment(overloaded=0),
     )
 
@@ -89,7 +90,40 @@ def test_validated_redispatch_is_the_only_neutral_outcome() -> None:
         False,
         TerminationReason.REDISPATCH_VALIDATED,
         evidence=evidence,
-    ) == (0.0, "redispatch_validated")
+    ) == (0.35, "redispatch_validated")
+
+
+def test_redispatch_status_does_not_change_primary_topology_utility() -> None:
+    assessment = _assessment(overloaded=1)
+    handoff = TerminalOutcomeEvidence(
+        solved=False,
+        termination_reason=TerminationReason.HANDOFF_TO_REDISPATCH_TEACHER,
+        assessment=assessment,
+        redispatch_status=RedispatchStatus.REQUESTED,
+        topology_utility=0.35,
+    )
+    validated = TerminalOutcomeEvidence(
+        solved=False,
+        termination_reason=TerminationReason.REDISPATCH_VALIDATED,
+        assessment=assessment,
+        redispatch_status=RedispatchStatus.VALIDATED,
+        topology_utility=0.35,
+        redispatch_assessment=_assessment(overloaded=0),
+    )
+
+    handoff_value, _ = terminal_utility_from_outcome(
+        False,
+        handoff.termination_reason,
+        evidence=handoff,
+    )
+    validated_value, _ = terminal_utility_from_outcome(
+        False,
+        validated.termination_reason,
+        evidence=validated,
+    )
+
+    assert handoff_value == pytest.approx(0.35)
+    assert validated_value == pytest.approx(0.35)
 
 
 def test_validated_redispatch_rejects_unsafe_result() -> None:
@@ -99,6 +133,7 @@ def test_validated_redispatch_rejects_unsafe_result() -> None:
             termination_reason=TerminationReason.REDISPATCH_VALIDATED,
             assessment=_assessment(overloaded=1),
             redispatch_status=RedispatchStatus.VALIDATED,
+            topology_utility=0.35,
             redispatch_assessment=_assessment(overloaded=1),
         )
 
@@ -113,6 +148,7 @@ def test_validated_redispatch_rejects_hard_overload_handoff() -> None:
                 hard_overloaded=1,
             ),
             redispatch_status=RedispatchStatus.VALIDATED,
+            topology_utility=-0.5,
             redispatch_assessment=_assessment(overloaded=0),
         )
 
@@ -123,6 +159,7 @@ def test_utility_rejects_mismatched_evidence() -> None:
         termination_reason=TerminationReason.MAX_STEPS_REACHED,
         assessment=_assessment(overloaded=1),
         redispatch_status=RedispatchStatus.NOT_REQUESTED,
+        topology_utility=0.2,
     )
 
     with pytest.raises(ValueError, match="termination_reason"):

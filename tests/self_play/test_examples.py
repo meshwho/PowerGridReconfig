@@ -9,6 +9,7 @@ import pandas as pd
 import pytest
 
 from grid_topology_ai.config.physics import DEFAULT_PHYSICS_CONFIG
+from grid_topology_ai.return_contract import VALUE_TARGET_MODE
 from grid_topology_ai.self_play.examples import ExampleWriter, SelfPlayExample
 from grid_topology_ai.termination import TerminationReason
 from tests.outcome_evidence_helpers import terminal_evidence
@@ -185,7 +186,7 @@ def test_example_writer_adds_complete_episode_targets(
     assert {
         example.outcome_value_target_mode
         for example in writer.examples
-    } == {"alphazero_terminal_utility"}
+    } == {VALUE_TARGET_MODE}
     assert {example.outcome_gamma for example in writer.examples} == {1.0}
 
     path = writer.save()

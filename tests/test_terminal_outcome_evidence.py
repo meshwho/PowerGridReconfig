@@ -46,6 +46,7 @@ def test_solved_evidence_round_trips() -> None:
         termination_reason=TerminationReason.SOLVED,
         assessment=_assessment(),
         redispatch_status=RedispatchStatus.NOT_REQUESTED,
+        topology_utility=1.0,
     )
     payload = evidence.to_dict()
     assert payload["schema_version"] == (
@@ -71,6 +72,7 @@ def test_safe_handoff_requires_requested_redispatch(reason) -> None:
             total_thermal_overload_mva=4.0,
         ),
         redispatch_status=RedispatchStatus.REQUESTED,
+        topology_utility=-1.0,
     )
     assert evidence.assessment is not None
     assert evidence.assessment.hard_overload_free is True
@@ -103,6 +105,7 @@ def test_hard_overload_outcomes_require_hard_overload_evidence(
             total_thermal_overload_mva=12.0,
         ),
         redispatch_status=redispatch_status,
+        topology_utility=-1.0,
     )
     assert evidence.assessment is not None
     assert evidence.assessment.hard_overload_free is False
@@ -114,6 +117,7 @@ def test_power_flow_failure_allows_missing_assessment() -> None:
         termination_reason=TerminationReason.POWER_FLOW_FAILED,
         assessment=None,
         redispatch_status=RedispatchStatus.NOT_REQUESTED,
+        topology_utility=-1.0,
     )
     assert TerminalOutcomeEvidence.from_mapping(
         evidence.to_dict()
@@ -127,6 +131,7 @@ def test_unsolved_reason_rejects_secure_assessment() -> None:
             termination_reason=TerminationReason.MAX_STEPS_REACHED,
             assessment=_assessment(),
             redispatch_status=RedispatchStatus.NOT_REQUESTED,
+            topology_utility=1.0,
         )
 
 
@@ -142,6 +147,7 @@ def test_safe_handoff_rejects_hard_overload() -> None:
                 total_thermal_overload_mva=12.0,
             ),
             redispatch_status=RedispatchStatus.REQUESTED,
+            topology_utility=-1.0,
         )
 
 
@@ -158,6 +164,7 @@ def test_hard_overload_reason_rejects_safe_assessment() -> None:
                 total_thermal_overload_mva=4.0,
             ),
             redispatch_status=RedispatchStatus.NOT_REQUESTED,
+            topology_utility=-1.0,
         )
 
 
@@ -185,6 +192,7 @@ def test_redispatch_status_must_match_reason(reason, status) -> None:
                 total_thermal_overload_mva=4.0,
             ),
             redispatch_status=status,
+            topology_utility=-1.0,
         )
 
 
@@ -195,6 +203,7 @@ def test_non_failure_reason_requires_assessment() -> None:
             termination_reason=TerminationReason.MAX_STEPS_REACHED,
             assessment=None,
             redispatch_status=RedispatchStatus.NOT_REQUESTED,
+            topology_utility=-1.0,
         )
 
 
@@ -209,6 +218,7 @@ def test_converged_assessment_rejected_for_power_flow_failure() -> None:
                 total_thermal_overload_mva=4.0,
             ),
             redispatch_status=RedispatchStatus.NOT_REQUESTED,
+            topology_utility=-1.0,
         )
 
 
@@ -218,6 +228,7 @@ def test_mapping_rejects_wrong_schema_version() -> None:
         termination_reason=TerminationReason.SOLVED,
         assessment=_assessment(),
         redispatch_status=RedispatchStatus.NOT_REQUESTED,
+        topology_utility=1.0,
     ).to_dict()
     payload["schema_version"] = 999
     with pytest.raises(ValueError, match="schema version"):
@@ -230,6 +241,7 @@ def test_mapping_rejects_unknown_fields() -> None:
         termination_reason=TerminationReason.SOLVED,
         assessment=_assessment(),
         redispatch_status=RedispatchStatus.NOT_REQUESTED,
+        topology_utility=1.0,
     ).to_dict()
     payload["debug"] = True
     with pytest.raises(ValueError, match="unexpected"):
@@ -247,6 +259,7 @@ def test_mapping_rejects_inconsistent_derived_flags() -> None:
         termination_reason=TerminationReason.MAX_STEPS_REACHED,
         assessment=assessment,
         redispatch_status=RedispatchStatus.NOT_REQUESTED,
+        topology_utility=-1.0,
     ).to_dict()
     assessment_payload = dict(payload["assessment"])
     assessment_payload["thermal_feasible"] = True
@@ -268,4 +281,5 @@ def test_direct_assessment_rejects_inconsistent_flags() -> None:
             termination_reason=TerminationReason.MAX_STEPS_REACHED,
             assessment=inconsistent,
             redispatch_status=RedispatchStatus.NOT_REQUESTED,
+            topology_utility=-1.0,
         )

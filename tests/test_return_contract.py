@@ -97,7 +97,7 @@ def test_discounted_terminal_utility_remains_a_generic_helper() -> None:
 
 def test_policy_value_contract_is_undiscounted() -> None:
     assert TERMINAL_UTILITY_GAMMA == 1.0
-    assert VALUE_TARGET_MODE == "alphazero_terminal_utility"
+    assert VALUE_TARGET_MODE == "final_topology_state_utility"
     assert require_discount_factor(0.5) == 1.0
     assert require_reward_discount_factor(0.5) == 0.5
 

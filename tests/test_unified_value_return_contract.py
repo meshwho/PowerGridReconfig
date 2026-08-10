@@ -236,7 +236,7 @@ def test_evaluation_reward_uses_run_gamma_everywhere() -> None:
 
 def test_unified_return_contract_versions_are_pinned() -> None:
     assert TERMINAL_UTILITY_GAMMA == 1.0
-    assert VALUE_TARGET_MODE == "alphazero_terminal_utility"
-    assert OUTCOME_VALUE_TARGET_CONTRACT_VERSION == 5
+    assert VALUE_TARGET_MODE == "final_topology_state_utility"
+    assert OUTCOME_VALUE_TARGET_CONTRACT_VERSION == 6
     assert CHECKPOINT_CONTRACT_VERSION == 7
     assert REPLAY_BUFFER_SCHEMA_VERSION == 6

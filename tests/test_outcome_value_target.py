@@ -132,7 +132,7 @@ def test_valid_caller_gamma_assigns_fixed_terminal_contract(
     assert rows[0]["outcome_value_target"] == pytest.approx(1.0)
     assert rows[0]["outcome_steps_to_terminal"] == 1
     assert rows[0]["outcome_value_target_mode"] == VALUE_TARGET_MODE
-    assert VALUE_TARGET_MODE == "alphazero_terminal_utility"
+    assert VALUE_TARGET_MODE == "final_topology_state_utility"
     assert "outcome_value_target_contract_version" in rows[0]
 
 

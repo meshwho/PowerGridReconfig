@@ -108,6 +108,7 @@ def test_stop_classification_builds_consistent_terminal_evidence(
         termination_reason=outcome.termination_reason,
         assessment=assessment,
         redispatch_status=expected_status,
+        topology_utility=1.0 if assessment.physically_secure else -1.0,
     )
 
     assert evidence.termination_reason is expected_reason
@@ -127,10 +128,12 @@ def test_max_steps_accepts_an_unsecure_converged_assessment() -> None:
         termination_reason=TerminationReason.MAX_STEPS_REACHED,
         assessment=assessment,
         redispatch_status=RedispatchStatus.NOT_REQUESTED,
+        topology_utility=-0.25,
     )
 
     assert evidence.assessment is assessment
     assert evidence.termination_reason is TerminationReason.MAX_STEPS_REACHED
+    assert evidence.topology_utility == pytest.approx(-0.25)
 
 
 def test_power_flow_failure_payload_is_explicitly_assessment_free() -> None:
@@ -139,6 +142,7 @@ def test_power_flow_failure_payload_is_explicitly_assessment_free() -> None:
         termination_reason=TerminationReason.POWER_FLOW_FAILED,
         assessment=None,
         redispatch_status=RedispatchStatus.NOT_REQUESTED,
+        topology_utility=-1.0,
     )
 
     payload = evidence.to_dict()
@@ -146,3 +150,4 @@ def test_power_flow_failure_payload_is_explicitly_assessment_free() -> None:
     assert payload["assessment"] is None
     assert payload["termination_reason"] == "power_flow_failed"
     assert payload["redispatch_status"] == "not_requested"
+    assert payload["topology_utility"] == pytest.approx(-1.0)

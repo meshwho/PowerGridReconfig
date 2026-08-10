@@ -51,6 +51,8 @@ def _metrics(
 
 def terminal_evidence(
     termination_reason: TerminationReason | str,
+    *,
+    topology_utility: float | None = None,
 ) -> TerminalOutcomeEvidence:
     reason = parse_termination_reason(
         termination_reason,
@@ -85,20 +87,33 @@ def terminal_evidence(
             _metrics(overloaded=0)
         )
 
+    if topology_utility is None:
+        topology_utility = (
+            1.0
+            if reason is TerminationReason.SOLVED
+            else -1.0
+        )
+
     return TerminalOutcomeEvidence(
         solved=reason is TerminationReason.SOLVED,
         termination_reason=reason,
         assessment=assessment,
         redispatch_status=redispatch_status_for_reason(reason),
+        topology_utility=float(topology_utility),
         redispatch_assessment=redispatch_assessment,
     )
 
 
 def terminal_evidence_fields(
     termination_reason: object,
+    *,
+    topology_utility: float | None = None,
 ) -> dict[str, object]:
     try:
-        evidence = terminal_evidence(termination_reason)  # type: ignore[arg-type]
+        evidence = terminal_evidence(  # type: ignore[arg-type]
+            termination_reason,
+            topology_utility=topology_utility,
+        )
         payload = evidence.to_json()
     except (TypeError, ValueError):
         payload = "{}"
@@ -113,8 +128,13 @@ def terminal_evidence_fields(
 
 def terminal_evidence_metadata(
     termination_reason: TerminationReason | str,
+    *,
+    topology_utility: float | None = None,
 ) -> dict[str, object]:
-    evidence = terminal_evidence(termination_reason)
+    evidence = terminal_evidence(
+        termination_reason,
+        topology_utility=topology_utility,
+    )
     return {
         "terminal_outcome_evidence_schema_version": (
             TERMINAL_OUTCOME_EVIDENCE_SCHEMA_VERSION

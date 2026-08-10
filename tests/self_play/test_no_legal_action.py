@@ -8,14 +8,18 @@ import pandas as pd
 import pytest
 
 from grid_topology_ai.config import GenerationConfig
-from grid_topology_ai.data_adapter import GridFMState
+from grid_topology_ai.config.physics import DEFAULT_PHYSICS_CONFIG
+from grid_topology_ai.data_adapter import BRANCH_FEATURE_COLUMNS, GridFMState
 from grid_topology_ai.environment import TopologySwitchingEnv
 from grid_topology_ai.outcome_contract import (
     RedispatchStatus,
     TerminalOutcomeEvidence,
 )
 from grid_topology_ai.pypower_backend import GridFMPowerFlowResult
-from grid_topology_ai.return_contract import terminal_utility_from_outcome
+from grid_topology_ai.return_contract import (
+    VALUE_TARGET_MODE,
+    terminal_utility_from_outcome,
+)
 from grid_topology_ai.self_play import generation
 from grid_topology_ai.self_play.generation import (
     GenerationRequest,
@@ -26,11 +30,24 @@ from tests.outcome_evidence_helpers import terminal_evidence
 
 
 def _unsafe_state() -> GridFMState:
+    branch_features = np.zeros(
+        (1, len(BRANCH_FEATURE_COLUMNS)),
+        dtype=np.float32,
+    )
+    branch_features[
+        0,
+        BRANCH_FEATURE_COLUMNS.index("br_status"),
+    ] = 1.0
+    branch_features[
+        0,
+        BRANCH_FEATURE_COLUMNS.index("loading_percent"),
+    ] = 110.0
+
     return GridFMState(
         scenario_id=1,
         load_scenario_idx=0.0,
         bus_features=np.zeros((2, 3), dtype=np.float32),
-        branch_features=np.zeros((1, 4), dtype=np.float32),
+        branch_features=branch_features,
         edge_index=np.array([[0], [1]], dtype=np.int64),
         branch_ids=np.array([10], dtype=np.int64),
         branch_status=np.array([1], dtype=np.int64),
@@ -59,6 +76,7 @@ def _unsafe_state() -> GridFMState:
 class _InitialStateBackend:
     def __init__(self, state: GridFMState) -> None:
         self.state = state
+        self.physics_config = DEFAULT_PHYSICS_CONFIG
 
     def run_power_flow(
         self,
@@ -93,6 +111,7 @@ def test_environment_classifies_no_legal_action() -> None:
     assert evidence.redispatch_status is RedispatchStatus.NOT_REQUESTED
     assert evidence.assessment is not None
     assert evidence.assessment.physically_secure is False
+    assert -1.0 < evidence.topology_utility < 1.0
     assert env.step_count == 0
     assert env.applied_actions == []
 
@@ -116,6 +135,7 @@ def test_no_legal_action_evidence_and_utility_contract() -> None:
             termination_reason=TerminationReason.NO_LEGAL_ACTION,
             assessment=None,
             redispatch_status=RedispatchStatus.NOT_REQUESTED,
+            topology_utility=-1.0,
         )
 
     secure_assessment = terminal_evidence(
@@ -128,6 +148,7 @@ def test_no_legal_action_evidence_and_utility_contract() -> None:
             termination_reason=TerminationReason.NO_LEGAL_ACTION,
             assessment=secure_assessment,
             redispatch_status=RedispatchStatus.NOT_REQUESTED,
+            topology_utility=1.0,
         )
 
 
@@ -203,9 +224,7 @@ class _Writer:
                     "outcome_value_target": -1.0,
                     "outcome_class": termination_reason.value,
                     "outcome_steps_to_terminal": total_steps - step,
-                    "outcome_value_target_mode": (
-                        "alphazero_terminal_utility"
-                    ),
+                    "outcome_value_target_mode": VALUE_TARGET_MODE,
                     "outcome_gamma": 1.0,
                 }
             )
@@ -375,6 +394,7 @@ def test_generation_labels_prior_decisions_as_no_legal_action(
     assert row["outcome_value_target"] == pytest.approx(-1.0)
     assert row["outcome_class"] == "no_legal_action"
     assert row["outcome_gamma"] == pytest.approx(1.0)
+    assert row["outcome_value_target_mode"] == VALUE_TARGET_MODE
     assert row["terminal_outcome_evidence_json"] == terminal_evidence(
         TerminationReason.NO_LEGAL_ACTION
     ).to_json()
