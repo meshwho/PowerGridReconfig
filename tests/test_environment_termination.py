@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 
 from grid_topology_ai.action_space import GridFMAction
-from grid_topology_ai.data_adapter import GridFMState
+from grid_topology_ai.data_adapter import BRANCH_FEATURE_COLUMNS, GridFMState
 from grid_topology_ai.environment import TopologySwitchingEnv
 from grid_topology_ai.pypower_backend import GridFMPowerFlowResult
 from grid_topology_ai.reward import GridFMRewardBreakdown
@@ -20,11 +20,24 @@ def _state(
     angle_difference_feasible=True,
     topology_connected=True,
 ):
+    branch_features = np.zeros(
+        (1, len(BRANCH_FEATURE_COLUMNS)),
+        dtype=np.float32,
+    )
+    branch_features[
+        0,
+        BRANCH_FEATURE_COLUMNS.index("br_status"),
+    ] = 1.0
+    branch_features[
+        0,
+        BRANCH_FEATURE_COLUMNS.index("loading_percent"),
+    ] = float(max_loading_percent)
+
     return GridFMState(
         scenario_id=scenario_id,
         load_scenario_idx=0.0,
         bus_features=np.zeros((2, 3), dtype=np.float32),
-        branch_features=np.zeros((1, 4), dtype=np.float32),
+        branch_features=branch_features,
         edge_index=np.array([[0], [1]], dtype=np.int64),
         branch_ids=np.array([10], dtype=np.int64),
         branch_status=np.array([1], dtype=np.int64),

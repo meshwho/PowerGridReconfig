@@ -59,8 +59,12 @@ def _write_episode(
     tmp_path: Path,
     *,
     reason: TerminationReason = TerminationReason.SOLVED,
+    topology_utility: float | None = None,
 ) -> tuple[Path, Path]:
-    evidence = terminal_evidence(reason)
+    evidence = terminal_evidence(
+        reason,
+        topology_utility=topology_utility,
+    )
     writer = ExampleWriter(
         tmp_path,
         physics_config=DEFAULT_PHYSICS_CONFIG,
@@ -134,17 +138,21 @@ def test_valid_terminal_evidence_artifacts_are_accepted(
     assert examples.loc[0, "iteration"] == 1
 
 
-def test_validated_redispatch_neutral_target_is_accepted(
+def test_validated_redispatch_preserves_topology_target(
     tmp_path: Path,
 ) -> None:
+    topology_utility = 0.35
     examples_path, _ = _write_episode(
         tmp_path,
         reason=TerminationReason.REDISPATCH_VALIDATED,
+        topology_utility=topology_utility,
     )
 
     examples = load_and_validate_examples_csv(examples_path)
 
-    assert examples.loc[0, "outcome_value_target"] == pytest.approx(0.0)
+    assert examples.loc[0, "outcome_value_target"] == pytest.approx(
+        topology_utility
+    )
     assert examples.loc[0, "outcome_class"] == (
         TerminationReason.REDISPATCH_VALIDATED.value
     )

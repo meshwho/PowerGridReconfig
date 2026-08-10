@@ -7,6 +7,11 @@ import numpy as np
 import pytest
 
 from grid_topology_ai.action_space import GridFMActionSpace
+from grid_topology_ai.config.physics import DEFAULT_PHYSICS_CONFIG
+from grid_topology_ai.contracts import (
+    OUTCOME_OBJECTIVE_VERSION,
+    OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
+)
 from grid_topology_ai.outcome_contract import (
     TERMINAL_OUTCOME_EVIDENCE_SCHEMA_VERSION,
     TerminalOutcomeEvidence,
@@ -33,8 +38,10 @@ def _current_checkpoint_row() -> dict[str, object]:
             TERMINAL_OUTCOME_EVIDENCE_SCHEMA_VERSION
         ),
         "terminal_outcome_evidence_json": evidence.to_json(),
-        "outcome_objective_version": 1,
-        "outcome_value_target_contract_version": 5,
+        "outcome_objective_version": OUTCOME_OBJECTIVE_VERSION,
+        "outcome_value_target_contract_version": (
+            OUTCOME_VALUE_TARGET_CONTRACT_VERSION
+        ),
         "topology_action_contract_version": 1,
         "topology_action_config": "{}",
         "topology_action_config_fingerprint": "config-fingerprint",
@@ -163,6 +170,7 @@ def _patch_replay_context(
     *,
     done: bool = False,
     terminal_evidence_value: TerminalOutcomeEvidence | None = None,
+    topology_utility: float = -0.4,
 ) -> None:
     class FakeEnv:
         def __init__(self, **kwargs: object) -> None:
@@ -179,6 +187,11 @@ def _patch_replay_context(
             raise AssertionError(f"unexpected action {action_id}")
 
     monkeypatch.setattr(provenance, "TopologySwitchingEnv", FakeEnv)
+    monkeypatch.setattr(
+        provenance,
+        "state_utility",
+        lambda state, physics_config=None: float(topology_utility),
+    )
     if assessment is not None:
         monkeypatch.setattr(
             provenance,
@@ -193,6 +206,7 @@ def _patch_replay_context(
             "backend": object(),
             "action_space": object(),
             "reward_fn": object(),
+            "physics_config": DEFAULT_PHYSICS_CONFIG,
             "task_config": {"max_steps": 5},
         },
     )
@@ -250,7 +264,12 @@ def test_teacher_handoff_becomes_validated_redispatch(
     assert handoff.assessment is not None
     assert secure.assessment is not None
 
-    _patch_replay_context(monkeypatch, handoff.assessment)
+    topology_utility = 0.35
+    _patch_replay_context(
+        monkeypatch,
+        handoff.assessment,
+        topology_utility=topology_utility,
+    )
     monkeypatch.setattr(
         provenance,
         "run_minimal_ac_redispatch",
@@ -270,6 +289,7 @@ def test_teacher_handoff_becomes_validated_redispatch(
 
     assert evidence.termination_reason is TerminationReason.REDISPATCH_VALIDATED
     assert evidence.redispatch_assessment is secure.assessment
+    assert evidence.topology_utility == pytest.approx(topology_utility)
     assert rows[0]["redispatch_attempted"] is True
     assert rows[0]["redispatch_validated"] is True
     assert rows[0]["redispatch_l1_mw"] == pytest.approx(20.0)
@@ -277,7 +297,7 @@ def test_teacher_handoff_becomes_validated_redispatch(
         False,
         evidence.termination_reason,
         evidence=evidence,
-    )[0] == 0.0
+    )[0] == pytest.approx(topology_utility)
 
 
 @pytest.mark.parametrize(
@@ -301,7 +321,7 @@ def test_teacher_handoff_becomes_validated_redispatch(
         ),
     ],
 )
-def test_failed_or_unsafe_redispatch_keeps_negative_handoff(
+def test_failed_or_unsafe_redispatch_preserves_topology_utility(
     monkeypatch: pytest.MonkeyPatch,
     redispatch_result: MinimalRedispatchResult,
 ) -> None:
@@ -309,7 +329,13 @@ def test_failed_or_unsafe_redispatch_keeps_negative_handoff(
         TerminationReason.HANDOFF_TO_REDISPATCH_TEACHER
     )
     assert handoff.assessment is not None
-    _patch_replay_context(monkeypatch, handoff.assessment)
+
+    topology_utility = -0.35
+    _patch_replay_context(
+        monkeypatch,
+        handoff.assessment,
+        topology_utility=topology_utility,
+    )
     monkeypatch.setattr(
         provenance,
         "run_minimal_ac_redispatch",
@@ -322,13 +348,14 @@ def test_failed_or_unsafe_redispatch_keeps_negative_handoff(
     assert evidence.termination_reason is (
         TerminationReason.HANDOFF_TO_REDISPATCH_TEACHER
     )
+    assert evidence.topology_utility == pytest.approx(topology_utility)
     assert rows[0]["redispatch_attempted"] is True
     assert rows[0]["redispatch_validated"] is False
     assert terminal_utility_from_outcome(
         False,
         evidence.termination_reason,
         evidence=evidence,
-    )[0] == -1.0
+    )[0] == pytest.approx(topology_utility)
 
 
 def test_topology_only_solved_episode_bypasses_redispatch(

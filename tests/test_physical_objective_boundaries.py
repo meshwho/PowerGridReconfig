@@ -66,6 +66,7 @@ def test_custom_runtime_thresholds_are_used_consistently():
         GridFMState,
     )
     from grid_topology_ai.evaluation.metrics import compute_safety_score
+    from grid_topology_ai.grid_utility import state_security_penalty
     from grid_topology_ai.search.continuation_gate import topology_penalty
     from grid_topology_ai.search.dc_action_screener import DCActionScreener
     from grid_topology_ai.search.impact_beam_search import safety_score
@@ -112,7 +113,13 @@ def test_custom_runtime_thresholds_are_used_consistently():
     }
 
     assert topology_penalty(state, physics_config=physics_config) == 315.0
-    assert safety_score(state, physics_config=physics_config) == 1205.0
+    assert safety_score(
+        state,
+        physics_config=physics_config,
+    ) == state_security_penalty(
+        state,
+        physics_config=physics_config,
+    )
 
     dc_branch = np.zeros((2, 17), dtype=float)
     dc_branch[:, BR_STATUS] = 1.0
