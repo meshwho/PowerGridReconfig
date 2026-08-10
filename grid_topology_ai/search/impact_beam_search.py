@@ -9,6 +9,10 @@ from grid_topology_ai.config.physics import DEFAULT_PHYSICS_CONFIG, PhysicsConfi
 from grid_topology_ai.data_adapter import BRANCH_FEATURE_COLUMNS, GridFMState
 from grid_topology_ai.environment import TopologyStepResult, TopologySwitchingEnv
 from grid_topology_ai.grid_utility import state_security_penalty
+from grid_topology_ai.search.trajectory_selection import (
+    select_epsilon_optimal_trajectory,
+    update_pareto_archive,
+)
 from grid_topology_ai.termination import TerminationReason
 
 from tqdm import tqdm
@@ -219,8 +223,13 @@ class ImpactBeamSearchConfig:
         If False, the planner filters out actions that increase the number of
         hard-overloaded branches whenever at least one non-worsening action exists.
 
+    relative_physical_epsilon:
+        Maximum fraction of the best discovered physical improvement that may be
+        traded for a shorter switching sequence. Zero recovers exact physical
+        minimization; 0.01 retains at least 99% of the discovered improvement.
+
     switch_penalty:
-        Small cost for each topology switching action.
+        Small search-score cost for each topology switching action.
 
     failure_penalty:
         Penalty for power-flow failure.
@@ -237,6 +246,7 @@ class ImpactBeamSearchConfig:
 
     include_stop_action: bool = True
     allow_hard_count_increase: bool = False
+    relative_physical_epsilon: float = 0.01
 
     switch_penalty: float = 5.0
     failure_penalty: float = 1_000_000.0
@@ -244,6 +254,13 @@ class ImpactBeamSearchConfig:
 
     show_progress: bool = False
     progress_update_every: int = 1
+
+    def __post_init__(self) -> None:
+        epsilon = float(self.relative_physical_epsilon)
+        if not 0.0 <= epsilon < 1.0:
+            raise ValueError(
+                "relative_physical_epsilon must satisfy 0 <= epsilon < 1"
+            )
 
 
 @dataclass
@@ -297,8 +314,13 @@ class ImpactBeamSearchResult:
     scenario_id: int
     best_node: ImpactBeamSearchNode
     final_beam: list[ImpactBeamSearchNode]
+    pareto_front: list[ImpactBeamSearchNode]
     config: ImpactBeamSearchConfig
     evaluated_actions: int
+    best_physical_safety: float
+    selected_safety: float
+    selected_switch_count: int
+    retained_improvement_fraction: float
 
 
 # ======================================================================================
@@ -482,7 +504,7 @@ class ImpactBeamSearchPlanner:
             )
 
             beam: list[ImpactBeamSearchNode] = [root]
-            completed: list[ImpactBeamSearchNode] = []
+            pareto_archive: list[ImpactBeamSearchNode] = [root]
 
             for _depth in range(self.config.max_depth):
                 self._current_depth = int(_depth) + 1
@@ -499,25 +521,25 @@ class ImpactBeamSearchPlanner:
 
                 for node in beam:
                     if node.done:
-                        completed.append(node)
                         candidates.append(node)
                         continue
 
                     expanded = self._expand_best_impact_actions(node)
 
                     if not expanded:
-                        completed.append(node)
                         candidates.append(node)
                         continue
 
                     candidates.extend(expanded)
 
-                    for child in expanded:
-                        if child.done:
-                            completed.append(child)
-
                 if not candidates:
                     break
+
+                pareto_archive = update_pareto_archive(
+                    pareto_archive,
+                    candidates,
+                    max_hard_overloaded=self.root_num_hard_overloaded,
+                )
 
                 candidates = self._sort_nodes(candidates)
                 beam = candidates[: self.config.beam_width]
@@ -536,21 +558,31 @@ class ImpactBeamSearchPlanner:
                 if beam and beam[0].solved:
                     break
 
-            all_final = completed + beam
+            selection = select_epsilon_optimal_trajectory(
+                root,
+                pareto_archive,
+                relative_physical_epsilon=self.config.relative_physical_epsilon,
+                max_hard_overloaded=self.root_num_hard_overloaded,
+            )
 
-            if not all_final:
-                best_node = root
-                final_beam = [root]
-            else:
-                final_beam = self._sort_nodes(all_final)
-                best_node = final_beam[0]
+            best_node = selection.node
+            final_beam = list(selection.candidate_pool)
+            if not final_beam:
+                final_beam = [best_node]
 
             result = ImpactBeamSearchResult(
                 scenario_id=int(scenario_id),
                 best_node=best_node,
                 final_beam=final_beam[: self.config.beam_width],
+                pareto_front=list(selection.pareto_front),
                 config=self.config,
                 evaluated_actions=int(self.evaluated_actions),
+                best_physical_safety=float(selection.best_physical_safety),
+                selected_safety=float(selection.selected_safety),
+                selected_switch_count=int(selection.selected_switch_count),
+                retained_improvement_fraction=float(
+                    selection.retained_improvement_fraction
+                ),
             )
 
             return result
@@ -906,7 +938,7 @@ class ImpactBeamSearchPlanner:
         nodes: list[ImpactBeamSearchNode],
     ) -> list[ImpactBeamSearchNode]:
         """
-        Sort nodes by canonical final physical-state quality.
+        Sort nodes by canonical final physical-state quality during exploration.
 
         Priority:
         1. solved states;
@@ -915,7 +947,9 @@ class ImpactBeamSearchPlanner:
         4. higher discounted improvement;
         5. shorter sequence.
 
-        Hard-overload safety guards remain separate from the canonical score.
+        Final teacher selection is performed separately from the Pareto archive,
+        so beam exploration remains focused on physical quality and can pass
+        through locally worse intermediate states.
         """
 
         return sorted(
