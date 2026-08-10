@@ -7,7 +7,10 @@ from numbers import Integral, Real
 
 from grid_topology_ai.config.physics import PhysicsConfig
 from grid_topology_ai.data_adapter import GridFMState
-from grid_topology_ai.grid_utility import state_security_penalty
+from grid_topology_ai.grid_utility import (
+    DEFAULT_STATE_UTILITY_SCALE,
+    state_utility,
+)
 from grid_topology_ai.outcome_contract import (
     RedispatchStatus,
     TerminalOutcomeEvidence,
@@ -19,7 +22,7 @@ from grid_topology_ai.termination import (
 
 VALUE_TARGET_MODE = "alphazero_terminal_utility"
 TERMINAL_UTILITY_GAMMA = 1.0
-DEFAULT_HEURISTIC_UTILITY_SCALE = 500.0
+DEFAULT_HEURISTIC_UTILITY_SCALE = DEFAULT_STATE_UTILITY_SCALE
 _UTILITY_TOLERANCE = 1e-7
 
 
@@ -137,21 +140,17 @@ def heuristic_terminal_utility_estimate(
     physics_config: PhysicsConfig | None = None,
     utility_scale: float = DEFAULT_HEURISTIC_UTILITY_SCALE,
 ) -> float:
-    """Return a bounded fallback estimate with terminal-utility semantics.
+    """Return the canonical bounded physical-state utility as a fallback.
 
-    This is used only when no neural value is available. It monotonically maps
-    the shared physical penalty to ``[-1, 1]``: a zero-penalty state estimates
-    ``+1`` and increasingly unsafe states approach ``-1``. It is a search
-    heuristic, never a training target.
+    This is used only when no neural value is available. It remains a search
+    heuristic in the current value-target contract; the target semantics are
+    changed separately.
     """
-    scale = float(utility_scale)
-    if not math.isfinite(scale) or scale <= 0.0:
-        raise ValueError("utility_scale must be finite and > 0")
-    penalty = state_security_penalty(
+    estimate = state_utility(
         state,
         physics_config=physics_config,
+        utility_scale=utility_scale,
     )
-    estimate = 1.0 - 2.0 * penalty / (penalty + scale)
     return require_bounded_utility(
         estimate,
         context="heuristic terminal utility estimate",

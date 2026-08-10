@@ -12,6 +12,9 @@ from grid_topology_ai.config.physics import DEFAULT_PHYSICS_CONFIG, PhysicsConfi
 from grid_topology_ai.data_adapter import BRANCH_FEATURE_COLUMNS, GridFMState
 
 
+DEFAULT_STATE_UTILITY_SCALE = 500.0
+
+
 @dataclass(frozen=True, slots=True)
 class GridUtilityWeights:
     """Weights for one lower-is-better physical security penalty."""
@@ -22,6 +25,10 @@ class GridUtilityWeights:
     num_hard_overloaded: float = 30.0
     voltage_violation: float = 500.0
     max_loading_excess: float = 0.0
+    generator_p_violation: float = 1.0
+    generator_q_violation: float = 1.0
+    angle_difference_violation: float = 1.0
+    invalid_physical_state: float = 1.0
 
     def __post_init__(self) -> None:
         for name, value in (
@@ -31,6 +38,10 @@ class GridUtilityWeights:
             ("num_hard_overloaded", self.num_hard_overloaded),
             ("voltage_violation", self.voltage_violation),
             ("max_loading_excess", self.max_loading_excess),
+            ("generator_p_violation", self.generator_p_violation),
+            ("generator_q_violation", self.generator_q_violation),
+            ("angle_difference_violation", self.angle_difference_violation),
+            ("invalid_physical_state", self.invalid_physical_state),
         ):
             numeric = float(value)
             if not math.isfinite(numeric) or numeric < 0.0:
@@ -63,6 +74,13 @@ class GridUtilityBreakdown:
     voltage_violation: float
     max_loading_excess: float
     penalty: float
+    generator_p_violation_mw: float = 0.0
+    num_generator_p_violations: int = 0
+    generator_q_violation_mvar: float = 0.0
+    num_generator_q_violations: int = 0
+    angle_difference_violation_degrees: float = 0.0
+    num_angle_difference_violations: int = 0
+    invalid_physical_state_flags: int = 0
 
 
 def _resolved_limits(
@@ -113,6 +131,40 @@ def _require_discount_factor(value: object) -> float:
             f"discount_factor must be a finite real number in [0, 1], got {value!r}"
         )
     return discount
+
+
+def _nonnegative_metric(state: GridFMState, key: str) -> float:
+    value = float(state.metrics.get(key, 0.0))
+    if not math.isfinite(value) or value < 0.0:
+        raise ValueError(f"{key} must be finite and non-negative.")
+    return value
+
+
+def _nonnegative_count(state: GridFMState, key: str) -> int:
+    raw = state.metrics.get(key, 0)
+    if isinstance(raw, bool):
+        raise ValueError(f"{key} must be a non-negative integer.")
+    value = int(raw)
+    if value < 0 or float(raw) != float(value):
+        raise ValueError(f"{key} must be a non-negative integer.")
+    return value
+
+
+def _invalid_physical_state_flags(state: GridFMState) -> int:
+    count = 0
+    for key in (
+        "power_flow_converged",
+        "all_values_finite",
+        "topology_connected",
+    ):
+        if key not in state.metrics:
+            continue
+        value = state.metrics[key]
+        if not isinstance(value, (bool, np.bool_)):
+            raise ValueError(f"{key} must be a bool.")
+        if not bool(value):
+            count += 1
+    return count
 
 
 def active_branch_loadings(state: GridFMState) -> np.ndarray:
@@ -193,6 +245,43 @@ def grid_utility_breakdown(
         else 0.0
     )
 
+    generator_p_violation_mw = _nonnegative_metric(
+        state,
+        "total_generator_p_violation_mw",
+    )
+    num_generator_p_violations = _nonnegative_count(
+        state,
+        "num_generator_p_violations",
+    )
+    generator_q_violation_mvar = _nonnegative_metric(
+        state,
+        "total_generator_q_violation_mvar",
+    )
+    num_generator_q_violations = _nonnegative_count(
+        state,
+        "num_generator_q_violations",
+    )
+    angle_difference_violation_degrees = _nonnegative_metric(
+        state,
+        "total_angle_difference_violation_degrees",
+    )
+    num_angle_difference_violations = _nonnegative_count(
+        state,
+        "num_angle_difference_violations",
+    )
+    invalid_physical_state_flags = _invalid_physical_state_flags(state)
+
+    generator_p_violation = (
+        generator_p_violation_mw + float(num_generator_p_violations)
+    )
+    generator_q_violation = (
+        generator_q_violation_mvar + float(num_generator_q_violations)
+    )
+    angle_difference_violation = (
+        angle_difference_violation_degrees
+        + float(num_angle_difference_violations)
+    )
+
     penalty = (
         weights.total_overload * total_overload
         + weights.hard_overload * total_hard_overload
@@ -200,6 +289,10 @@ def grid_utility_breakdown(
         + weights.num_hard_overloaded * num_hard_overloaded
         + weights.voltage_violation * voltage_violation
         + weights.max_loading_excess * max_loading_excess
+        + weights.generator_p_violation * generator_p_violation
+        + weights.generator_q_violation * generator_q_violation
+        + weights.angle_difference_violation * angle_difference_violation
+        + weights.invalid_physical_state * invalid_physical_state_flags
     )
     if not math.isfinite(penalty):
         raise ValueError("Grid utility penalty must be finite.")
@@ -212,6 +305,13 @@ def grid_utility_breakdown(
         voltage_violation=voltage_violation,
         max_loading_excess=float(max_loading_excess),
         penalty=float(penalty),
+        generator_p_violation_mw=generator_p_violation_mw,
+        num_generator_p_violations=num_generator_p_violations,
+        generator_q_violation_mvar=generator_q_violation_mvar,
+        num_generator_q_violations=num_generator_q_violations,
+        angle_difference_violation_degrees=angle_difference_violation_degrees,
+        num_angle_difference_violations=num_angle_difference_violations,
+        invalid_physical_state_flags=invalid_physical_state_flags,
     )
 
 
@@ -234,6 +334,26 @@ def state_security_penalty(
         thermal_tolerance_percent=thermal_tolerance_percent,
         weights=weights,
     ).penalty
+
+
+def state_utility(
+    state: GridFMState,
+    *,
+    physics_config: PhysicsConfig | None = None,
+    utility_scale: float = DEFAULT_STATE_UTILITY_SCALE,
+    weights: GridUtilityWeights = DEFAULT_GRID_UTILITY_WEIGHTS,
+) -> float:
+    """Map the canonical physical penalty monotonically into ``[-1, 1]``."""
+
+    scale = float(utility_scale)
+    if not math.isfinite(scale) or scale <= 0.0:
+        raise ValueError("utility_scale must be finite and > 0")
+    penalty = state_security_penalty(
+        state,
+        physics_config=physics_config,
+        weights=weights,
+    )
+    return float(1.0 - 2.0 * penalty / (penalty + scale))
 
 
 def state_potential(
