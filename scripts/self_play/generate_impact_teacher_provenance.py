@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -41,6 +42,16 @@ _original_append_scenario_checkpoint = teacher.append_scenario_checkpoint
 _original_planner_search = teacher.ImpactBeamSearchPlanner.search
 _original_action_is_valid = teacher._action_is_valid
 
+_TEACHER_SELECTION_MODE = "epsilon_optimal_minimum_switch"
+_SELECTION_ROW_FIELDS = (
+    "teacher_selection_mode",
+    "relative_physical_epsilon",
+    "teacher_best_physical_safety",
+    "teacher_selected_safety",
+    "teacher_selected_switch_count",
+    "teacher_retained_improvement_fraction",
+    "teacher_pareto_front_size",
+)
 _REDISPATCH_ROW_FIELDS = (
     "redispatch_attempted",
     "redispatch_opf_success",
@@ -67,9 +78,11 @@ _REQUIRED_CHECKPOINT_ROW_FIELDS = (
     "redispatch_attempted",
     "redispatch_opf_success",
     "redispatch_validated",
+    *_SELECTION_ROW_FIELDS,
 )
 
 _SEARCH_WORKLOAD_BY_SCENARIO: dict[int, dict[str, object]] = {}
+_SELECTION_PROVENANCE_BY_SCENARIO: dict[int, dict[str, object]] = {}
 _PARENT_WORKLOAD_BY_SCENARIO: dict[int, dict[str, object]] = {}
 
 
@@ -132,6 +145,33 @@ def _install_worker_replay_contract() -> None:
     teacher.should_continue_teacher_action = _selected_teacher_replay_decision
 
 
+def _selection_provenance_is_valid(row: dict[str, Any]) -> bool:
+    if row.get("teacher_selection_mode") != _TEACHER_SELECTION_MODE:
+        return False
+
+    try:
+        epsilon = float(row["relative_physical_epsilon"])
+        best_safety = float(row["teacher_best_physical_safety"])
+        selected_safety = float(row["teacher_selected_safety"])
+        switch_count = int(row["teacher_selected_switch_count"])
+        retained_fraction = float(row["teacher_retained_improvement_fraction"])
+        pareto_front_size = int(row["teacher_pareto_front_size"])
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return False
+
+    if not 0.0 <= epsilon < 1.0:
+        return False
+    if not math.isfinite(best_safety) or not math.isfinite(selected_safety):
+        return False
+    if selected_safety + 1e-9 < best_safety:
+        return False
+    if switch_count < 0 or pareto_front_size <= 0:
+        return False
+    if not math.isfinite(retained_fraction) or not 0.0 <= retained_fraction <= 1.0:
+        return False
+    return True
+
+
 def _checkpoint_result_is_current(result: dict[str, Any]) -> bool:
     if not bool(result.get("ok", False)):
         return result.get("reason") != "exception"
@@ -144,6 +184,8 @@ def _checkpoint_result_is_current(result: dict[str, Any]) -> bool:
         if not isinstance(row, dict):
             return False
         if any(row.get(field) is None for field in _REQUIRED_CHECKPOINT_ROW_FIELDS):
+            return False
+        if not _selection_provenance_is_valid(row):
             return False
 
         run_id = row.get("run_id")
@@ -231,16 +273,37 @@ def _search_workload(
     }
 
 
+def _selection_provenance(result) -> dict[str, object]:
+    return {
+        "teacher_selection_mode": _TEACHER_SELECTION_MODE,
+        "relative_physical_epsilon": float(
+            result.config.relative_physical_epsilon
+        ),
+        "teacher_best_physical_safety": float(result.best_physical_safety),
+        "teacher_selected_safety": float(result.selected_safety),
+        "teacher_selected_switch_count": int(result.selected_switch_count),
+        "teacher_retained_improvement_fraction": float(
+            result.retained_improvement_fraction
+        ),
+        "teacher_pareto_front_size": int(len(result.pareto_front)),
+    }
+
+
 def _instrumented_planner_search(self, env, scenario_id: int):
+    scenario_id = int(scenario_id)
     backend = env.backend
     before = backend.performance_info()
     result = None
+    _SELECTION_PROVENANCE_BY_SCENARIO.pop(scenario_id, None)
 
     try:
         result = _original_planner_search(
             self,
             env=env,
-            scenario_id=int(scenario_id),
+            scenario_id=scenario_id,
+        )
+        _SELECTION_PROVENANCE_BY_SCENARIO[scenario_id] = _selection_provenance(
+            result
         )
         return result
     finally:
@@ -250,7 +313,7 @@ def _instrumented_planner_search(self, env, scenario_id: int):
             if result is not None
             else int(getattr(self, "evaluated_actions", 0))
         )
-        _SEARCH_WORKLOAD_BY_SCENARIO[int(scenario_id)] = _search_workload(
+        _SEARCH_WORKLOAD_BY_SCENARIO[scenario_id] = _search_workload(
             before=before,
             after=after,
             logical_evaluations=logical_evaluations,
@@ -553,6 +616,15 @@ def _finalize_success_result(result: dict[str, Any]) -> dict[str, Any]:
             f"Teacher result for scenario {scenario_id} contains mixed scenario IDs."
         )
 
+    selection_provenance = _SELECTION_PROVENANCE_BY_SCENARIO.pop(
+        scenario_id,
+        None,
+    )
+    if selection_provenance is None:
+        raise RuntimeError(
+            f"Teacher scenario {scenario_id} is missing trajectory selection provenance."
+        )
+
     evidence = _replay_terminal_evidence(scenario_id, rows)
     run_id = _worker_run_id()
     iteration = 1
@@ -588,6 +660,7 @@ def _finalize_success_result(result: dict[str, Any]) -> dict[str, Any]:
                 "outcome_value_target_contract_version": (
                     OUTCOME_VALUE_TARGET_CONTRACT_VERSION
                 ),
+                **selection_provenance,
                 **_csv_topology_provenance(action_provenance),
             }
         )
@@ -612,6 +685,7 @@ def _finalize_success_result(result: dict[str, Any]) -> dict[str, Any]:
                 "outcome_value_target_contract_version": (
                     OUTCOME_VALUE_TARGET_CONTRACT_VERSION
                 ),
+                **selection_provenance,
                 **{
                     field: row.get(field)
                     for field in _REDISPATCH_ROW_FIELDS
@@ -647,6 +721,8 @@ def process_scenario_batch(
 
         if bool(result.get("ok", False)):
             result = _finalize_success_result(result)
+        else:
+            _SELECTION_PROVENANCE_BY_SCENARIO.pop(scenario_id, None)
         finalized.append(result)
 
     return finalized
@@ -654,6 +730,7 @@ def process_scenario_batch(
 
 def main() -> None:
     _PARENT_WORKLOAD_BY_SCENARIO.clear()
+    _SELECTION_PROVENANCE_BY_SCENARIO.clear()
     _install_worker_instrumentation()
     _install_worker_replay_contract()
     teacher.make_task_config = make_task_config
