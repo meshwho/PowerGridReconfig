@@ -129,7 +129,7 @@ function Run-TeacherIfNeeded {
     Write-Host "Workers:     $NumWorkers"
     Write-Host "Batch size:  $BatchSize"
 
-    python -m scripts.self_play.generate_impact_teacher_parallel_fast `
+    python -m scripts.self_play.generate_impact_teacher_provenance `
       $RawDir `
       --transitions $Transitions `
       --output-dir $OutputDir `
