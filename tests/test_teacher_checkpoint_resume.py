@@ -34,6 +34,13 @@ def _current_row() -> dict[str, object]:
         "redispatch_attempted": False,
         "redispatch_opf_success": False,
         "redispatch_validated": False,
+        "teacher_selection_mode": "epsilon_optimal_minimum_switch",
+        "relative_physical_epsilon": 0.01,
+        "teacher_best_physical_safety": 35.5,
+        "teacher_selected_safety": 36.0,
+        "teacher_selected_switch_count": 3,
+        "teacher_retained_improvement_fraction": 0.995,
+        "teacher_pareto_front_size": 5,
     }
 
 
