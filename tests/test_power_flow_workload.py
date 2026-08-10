@@ -306,3 +306,4 @@ def test_parent_aggregation_sums_worker_scenario_results(capsys) -> None:
     assert "PF cache misses:           70" in output
     assert "Stock PYPOWER solves:      80" in output
     assert "Q-limit re-solves:         10" in output
+    assert "Solves / cache miss:       1.143" in output
