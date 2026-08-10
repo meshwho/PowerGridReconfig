@@ -39,6 +39,7 @@ _original_load_scenario_checkpoints = teacher.load_scenario_checkpoints
 _original_process_scenario_batch = teacher.process_scenario_batch
 _original_append_scenario_checkpoint = teacher.append_scenario_checkpoint
 _original_planner_search = teacher.ImpactBeamSearchPlanner.search
+_original_action_is_valid = teacher._action_is_valid
 
 _REDISPATCH_ROW_FIELDS = (
     "redispatch_attempted",
@@ -74,11 +75,61 @@ _PARENT_WORKLOAD_BY_SCENARIO: dict[int, dict[str, object]] = {}
 
 def make_task_config(args: argparse.Namespace) -> dict[str, Any]:
     task_config = _original_make_task_config(args)
+
+    depth = int(task_config["depth"])
+    max_teacher_steps = int(task_config["max_teacher_steps"])
+    if depth <= 0 or max_teacher_steps <= 0:
+        raise ValueError("Teacher depth and max_teacher_steps must be positive.")
+
+    # The selected beam trajectory must fit completely in replay.  Limiting
+    # the search itself avoids silently truncating the selected trajectory
+    # later when examples are written.
+    task_config["depth"] = min(depth, max_teacher_steps)
+
     physics_config = teacher.PhysicsConfig.from_mapping(
         task_config["physics_config"]
     )
     task_config.update(teacher.physics_provenance(physics_config))
     return task_config
+
+
+def _selected_teacher_action_is_valid(
+    action_mask: np.ndarray,
+    action_id: int,
+) -> bool:
+    if not _original_action_is_valid(action_mask, action_id):
+        raise RuntimeError(
+            "Beam-selected teacher action became invalid during replay: "
+            f"action_id={int(action_id)}."
+        )
+    return True
+
+
+def _selected_teacher_replay_decision(
+    safety_before: float,
+    safety_after: float,
+    state_before,
+    state_after,
+    task: dict[str, Any],
+) -> tuple[bool, str, float]:
+    del state_before, task
+
+    if state_after is None:
+        raise RuntimeError(
+            "Beam-selected teacher trajectory hit a power-flow failure during replay."
+        )
+
+    improvement = float(safety_before) - float(safety_after)
+
+    # Search has already selected the complete trajectory.  Replay records the
+    # local change as a diagnostic, but must not introduce a second greedy
+    # objective that rejects a temporarily worse intermediate state.
+    return True, "selected_by_beam_search", improvement
+
+
+def _install_worker_replay_contract() -> None:
+    teacher._action_is_valid = _selected_teacher_action_is_valid
+    teacher.should_continue_teacher_action = _selected_teacher_replay_decision
 
 
 def _checkpoint_result_is_current(result: dict[str, Any]) -> bool:
@@ -584,6 +635,7 @@ def process_scenario_batch(
     scenario_ids: list[int],
 ) -> list[dict[str, Any]]:
     _install_worker_instrumentation()
+    _install_worker_replay_contract()
     results = _original_process_scenario_batch(scenario_ids)
 
     finalized: list[dict[str, Any]] = []
@@ -603,6 +655,7 @@ def process_scenario_batch(
 def main() -> None:
     _PARENT_WORKLOAD_BY_SCENARIO.clear()
     _install_worker_instrumentation()
+    _install_worker_replay_contract()
     teacher.make_task_config = make_task_config
     teacher.load_scenario_checkpoints = load_scenario_checkpoints
     teacher.process_scenario_batch = process_scenario_batch
