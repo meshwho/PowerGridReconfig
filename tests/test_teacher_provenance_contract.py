@@ -23,6 +23,18 @@ from scripts.self_play import generate_impact_teacher_provenance as provenance
 from tests.outcome_evidence_helpers import terminal_evidence
 
 
+def _selection_fields() -> dict[str, object]:
+    return {
+        "teacher_selection_mode": "epsilon_optimal_minimum_switch",
+        "relative_physical_epsilon": 0.01,
+        "teacher_best_physical_safety": 35.563075,
+        "teacher_selected_safety": 36.510767,
+        "teacher_selected_switch_count": 3,
+        "teacher_retained_improvement_fraction": 0.993496,
+        "teacher_pareto_front_size": 6,
+    }
+
+
 def _current_checkpoint_row() -> dict[str, object]:
     evidence = terminal_evidence(
         TerminationReason.HANDOFF_TO_REDISPATCH_TEACHER
@@ -50,6 +62,7 @@ def _current_checkpoint_row() -> dict[str, object]:
         "redispatch_attempted": False,
         "redispatch_opf_success": False,
         "redispatch_validated": False,
+        **_selection_fields(),
     }
 
 
@@ -64,8 +77,16 @@ def test_stale_successful_checkpoint_is_retried() -> None:
         "reason": None,
         "rows": [_current_checkpoint_row()],
     }
+    legacy_row = _current_checkpoint_row()
+    legacy_row.pop("teacher_selection_mode")
+    legacy = {
+        "ok": True,
+        "reason": None,
+        "rows": [legacy_row],
+    }
 
     assert provenance._checkpoint_result_is_current(stale) is False
+    assert provenance._checkpoint_result_is_current(legacy) is False
     assert provenance._checkpoint_result_is_current(current) is True
     assert provenance._checkpoint_result_is_current(
         {"ok": False, "reason": "exception", "rows": []}
@@ -73,6 +94,49 @@ def test_stale_successful_checkpoint_is_retried() -> None:
     assert provenance._checkpoint_result_is_current(
         {"ok": False, "reason": "no_teacher_action_found", "rows": []}
     ) is True
+
+
+def test_invalid_selection_provenance_is_not_current() -> None:
+    row = _current_checkpoint_row()
+    row["relative_physical_epsilon"] = 1.0
+
+    assert provenance._checkpoint_result_is_current(
+        {"ok": True, "reason": None, "rows": [row]}
+    ) is False
+
+
+def test_instrumented_search_captures_selection_provenance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeBackend:
+        def performance_info(self) -> dict[str, object]:
+            return {}
+
+    search_result = SimpleNamespace(
+        evaluated_actions=17,
+        config=SimpleNamespace(relative_physical_epsilon=0.01),
+        best_physical_safety=35.563075,
+        selected_safety=36.510767,
+        selected_switch_count=3,
+        retained_improvement_fraction=0.993496,
+        pareto_front=[object()] * 6,
+    )
+    monkeypatch.setattr(
+        provenance,
+        "_original_planner_search",
+        lambda self, env, scenario_id: search_result,
+    )
+    provenance._SELECTION_PROVENANCE_BY_SCENARIO.clear()
+
+    returned = provenance._instrumented_planner_search(
+        object(),
+        SimpleNamespace(backend=FakeBackend()),
+        scenario_id=61,
+    )
+
+    assert returned is search_result
+    assert provenance._SELECTION_PROVENANCE_BY_SCENARIO[61] == _selection_fields()
+    provenance._SELECTION_PROVENANCE_BY_SCENARIO.clear()
 
 
 def test_success_result_gets_identity_evidence_and_state_provenance(
@@ -114,6 +178,7 @@ def test_success_result_gets_identity_evidence_and_state_provenance(
         "_require_worker_context",
         lambda: {"action_space": action_space},
     )
+    provenance._SELECTION_PROVENANCE_BY_SCENARIO[5] = _selection_fields()
 
     result = {
         "ok": True,
@@ -149,6 +214,9 @@ def test_success_result_gets_identity_evidence_and_state_provenance(
         "require_connected_after_switch"
     ] is True
     assert len(json.loads(row["action_layout"])) == 3
+    for field, value in _selection_fields().items():
+        assert row[field] == value
+    assert 5 not in provenance._SELECTION_PROVENANCE_BY_SCENARIO
 
     with np.load(state_path, allow_pickle=False) as data:
         metadata = json.loads(str(data["metadata_json"].item()))
@@ -162,6 +230,8 @@ def test_success_result_gets_identity_evidence_and_state_provenance(
     assert metadata["episode_termination_reason"] == (
         TerminationReason.HANDOFF_TO_REDISPATCH_TEACHER.value
     )
+    for field, value in _selection_fields().items():
+        assert metadata[field] == value
 
 
 def _patch_replay_context(
