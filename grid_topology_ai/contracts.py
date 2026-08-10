@@ -9,13 +9,13 @@ if TYPE_CHECKING:
     from grid_topology_ai.config.physics import PhysicsConfig
 
 
-# Version 5 uses undiscounted terminal utility in both MCTS backup and
-# value targets. Every state in one completed episode receives the same
-# terminal utility.
-OUTCOME_VALUE_TARGET_CONTRACT_VERSION = 5
-# Version 1 defines the terminal utility objective:
-# solved = +1, validated redispatch = 0, all other outcomes = -1.
-OUTCOME_OBJECTIVE_VERSION = 1
+# Version 6 trains the value head on continuous final pre-redispatch topology
+# quality. Every state in one completed episode receives the same final-state
+# utility.
+OUTCOME_VALUE_TARGET_CONTRACT_VERSION = 6
+# Version 2 makes final pre-redispatch physical-state quality the primary
+# topology objective. Redispatch remains separate terminal evidence/diagnostics.
+OUTCOME_OBJECTIVE_VERSION = 2
 # Version 6 adds MCTS legal-action coverage diagnostics to evaluation
 # rows and aggregated metrics.
 EVALUATION_METRICS_CONTRACT_VERSION = 6
@@ -57,6 +57,7 @@ def require_exact_contract_version(
             f"{regeneration_command}"
         )
 
+
 def require_outcome_objective_version(
     payload: Mapping[str, object],
     *,
@@ -71,6 +72,7 @@ def require_outcome_objective_version(
             "regenerate self-play examples and derived artifacts"
         ),
     )
+
 
 def _json_value(value: object, *, name: str, source: str) -> object:
     if not isinstance(value, str):

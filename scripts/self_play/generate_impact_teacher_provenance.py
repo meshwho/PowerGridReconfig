@@ -14,6 +14,7 @@ from grid_topology_ai.contracts import (
     topology_action_provenance,
 )
 from grid_topology_ai.environment import TopologySwitchingEnv
+from grid_topology_ai.grid_utility import state_utility
 from grid_topology_ai.outcome_contract import (
     TERMINAL_OUTCOME_EVIDENCE_SCHEMA_VERSION,
     TerminalOutcomeEvidence,
@@ -373,6 +374,10 @@ def _replay_terminal_evidence(
         )
 
     assessment = assess_physical_state(final_state.metrics)
+    topology_value = state_utility(
+        final_state,
+        physics_config=ctx["physics_config"],
+    )
     reason = recorded_reason
     if (
         reason is TerminationReason.HANDOFF_TO_REDISPATCH_TEACHER
@@ -398,6 +403,7 @@ def _replay_terminal_evidence(
                 termination_reason=validated_reason,
                 assessment=assessment,
                 redispatch_status=redispatch_status_for_reason(validated_reason),
+                topology_utility=topology_value,
                 redispatch_assessment=redispatch.assessment,
             )
 
@@ -406,6 +412,7 @@ def _replay_terminal_evidence(
         termination_reason=reason,
         assessment=assessment,
         redispatch_status=redispatch_status_for_reason(reason),
+        topology_utility=topology_value,
     )
 
 

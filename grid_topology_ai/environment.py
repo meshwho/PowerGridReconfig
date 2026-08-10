@@ -5,6 +5,7 @@ from typing import Any
 
 from grid_topology_ai.action_space import GridFMAction, GridFMActionSpace
 from grid_topology_ai.data_adapter import GridFMAdapter, GridFMState
+from grid_topology_ai.grid_utility import state_utility
 from grid_topology_ai.outcome_contract import (
     TERMINAL_OUTCOME_EVIDENCE_SCHEMA_VERSION,
     TerminalOutcomeEvidence,
@@ -338,6 +339,17 @@ class TopologySwitchingEnv:
         termination_reason: TerminationReason,
         assessment: PhysicalStateAssessment | None,
     ) -> TerminalOutcomeEvidence:
+        topology_value = -1.0
+        if assessment is not None:
+            if self.current_state is None:
+                raise RuntimeError(
+                    "Terminal physical assessment requires a current state."
+                )
+            topology_value = state_utility(
+                self.current_state,
+                physics_config=self.backend.physics_config,
+            )
+
         evidence = TerminalOutcomeEvidence(
             solved=bool(solved),
             termination_reason=termination_reason,
@@ -345,6 +357,7 @@ class TopologySwitchingEnv:
             redispatch_status=redispatch_status_for_reason(
                 termination_reason
             ),
+            topology_utility=topology_value,
         )
         self.done = True
         self.solved = evidence.solved

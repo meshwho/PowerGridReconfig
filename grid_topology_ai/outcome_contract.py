@@ -17,7 +17,7 @@ from grid_topology_ai.termination import (
 )
 
 
-TERMINAL_OUTCOME_EVIDENCE_SCHEMA_VERSION = 2
+TERMINAL_OUTCOME_EVIDENCE_SCHEMA_VERSION = 3
 
 
 class RedispatchStatus(StrEnum):
@@ -243,6 +243,15 @@ def _assessment_from_mapping(
     return assessment
 
 
+def _parse_topology_utility(value: object) -> float:
+    if isinstance(value, bool) or not isinstance(value, Real):
+        raise TypeError("topology_utility must be a finite number in [-1, 1].")
+    utility = float(value)
+    if not math.isfinite(utility) or not -1.0 <= utility <= 1.0:
+        raise ValueError("topology_utility must be a finite number in [-1, 1].")
+    return utility
+
+
 def _reject_json_constant(value: str) -> None:
     raise ValueError(
         f"Non-finite JSON constant {value!r} is not allowed."
@@ -257,6 +266,7 @@ class TerminalOutcomeEvidence:
     termination_reason: TerminationReason
     assessment: PhysicalStateAssessment | None
     redispatch_status: RedispatchStatus
+    topology_utility: float
     redispatch_assessment: PhysicalStateAssessment | None = None
 
     def __post_init__(self) -> None:
@@ -271,6 +281,7 @@ class TerminalOutcomeEvidence:
         status = _parse_redispatch_status(
             self.redispatch_status
         )
+        topology_utility = _parse_topology_utility(self.topology_utility)
         assessment = _assessment_from_mapping(
             self.assessment,
             field_name="assessment",
@@ -289,6 +300,11 @@ class TerminalOutcomeEvidence:
             self,
             "redispatch_status",
             status,
+        )
+        object.__setattr__(
+            self,
+            "topology_utility",
+            topology_utility,
         )
         object.__setattr__(
             self,
@@ -318,6 +334,11 @@ class TerminalOutcomeEvidence:
                 raise ValueError(
                     f"{reason.value} requires a terminal physical assessment."
                 )
+            if topology_utility != -1.0:
+                raise ValueError(
+                    "A terminal outcome without a physical assessment requires "
+                    "topology_utility=-1.0."
+                )
         else:
             _validate_assessment_values(
                 assessment,
@@ -328,6 +349,15 @@ class TerminalOutcomeEvidence:
                 termination_reason=reason,
                 physically_secure=assessment.physically_secure,
             )
+
+            if assessment.physically_secure and topology_utility != 1.0:
+                raise ValueError(
+                    "A physically secure topology requires topology_utility=1.0."
+                )
+            if not assessment.physically_secure and topology_utility >= 1.0:
+                raise ValueError(
+                    "An insecure topology must have topology_utility < 1.0."
+                )
 
             if (
                 reason is TerminationReason.POWER_FLOW_FAILED
@@ -380,6 +410,7 @@ class TerminalOutcomeEvidence:
             "solved": self.solved,
             "termination_reason": self.termination_reason.value,
             "redispatch_status": self.redispatch_status.value,
+            "topology_utility": self.topology_utility,
             "assessment": (
                 None
                 if self.assessment is None
@@ -437,6 +468,7 @@ class TerminalOutcomeEvidence:
             "solved",
             "termination_reason",
             "redispatch_status",
+            "topology_utility",
             "assessment",
             "redispatch_assessment",
         }
@@ -470,6 +502,7 @@ class TerminalOutcomeEvidence:
                 field_name="assessment",
             ),
             redispatch_status=value["redispatch_status"],
+            topology_utility=value["topology_utility"],
             redispatch_assessment=_assessment_from_mapping(
                 value["redispatch_assessment"],
                 field_name="redispatch_assessment",
