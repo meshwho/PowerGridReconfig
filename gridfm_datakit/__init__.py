@@ -28,12 +28,10 @@ from gridfm_datakit.generate import (
     generate_power_flow_data,
     generate_power_flow_data_distributed,
 )
-from gridfm_datakit import powsybl
 
 __version__ = version("gridfm-datakit")
 
 __all__ = [
     "generate_power_flow_data",
     "generate_power_flow_data_distributed",
-    "powsybl",
 ]
