@@ -93,6 +93,7 @@ class Paths:
     logs_dir: Path
     state_path: Path
 
+
 class PipelineError(RuntimeError):
     """Raised for an expected pipeline validation failure."""
 
@@ -126,6 +127,7 @@ def resolve_from_root(project_root: Path, value: str | Path) -> Path:
         path = project_root / path
     return path.resolve()
 
+
 def validate_path_component(
     value: str,
     option_name: str,
@@ -157,6 +159,7 @@ def validate_path_component(
         )
 
     return normalized
+
 
 def detect_difficulty_column(frame: pd.DataFrame) -> str:
     for column in DIFFICULTY_COLUMN_CANDIDATES:
@@ -324,6 +327,7 @@ def archive_incomplete_output(output_dir: Path) -> Path:
     output_dir.rename(archived)
     return archived
 
+
 def has_resumable_teacher_checkpoint(
     output_dir: Path,
 ) -> bool:
@@ -337,6 +341,7 @@ def has_resumable_teacher_checkpoint(
         and checkpoint_path.is_file()
         and checkpoint_path.stat().st_size > 0
     )
+
 
 def terminate_process_tree(process: subprocess.Popen[str]) -> None:
     try:
@@ -994,7 +999,7 @@ def parse_args() -> argparse.Namespace:
             "Explicit transitions directory. "
             "Default: data/gridfm_transitions/<dataset-name>."
         ),
-)
+    )
     parser.add_argument(
         "--train-file",
         default="transitions_train.csv",
@@ -1017,7 +1022,11 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument(
         "--teacher-module",
-        default="scripts.self_play.generate_impact_teacher_parallel_fast",
+        default="scripts.self_play.generate_impact_teacher_provenance",
+        help=(
+            "Teacher implementation to execute. The default includes terminal "
+            "provenance and the final-topology trajectory replay contract."
+        ),
     )
     parser.add_argument(
         "--python-executable",
