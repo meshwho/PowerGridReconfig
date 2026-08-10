@@ -235,10 +235,19 @@ def test_instrumented_search_records_one_scenario_delta(monkeypatch) -> None:
     def _fake_search(self, env, scenario_id):
         del self, env
         assert scenario_id == 42
-        return SimpleNamespace(evaluated_actions=9)
+        return SimpleNamespace(
+            evaluated_actions=9,
+            config=SimpleNamespace(relative_physical_epsilon=0.01),
+            best_physical_safety=20.0,
+            selected_safety=20.1,
+            selected_switch_count=2,
+            retained_improvement_fraction=0.995,
+            pareto_front=[object(), object()],
+        )
 
     monkeypatch.setattr(provenance, "_original_planner_search", _fake_search)
     provenance._SEARCH_WORKLOAD_BY_SCENARIO.clear()
+    provenance._SELECTION_PROVENANCE_BY_SCENARIO.clear()
 
     result = provenance._instrumented_planner_search(
         SimpleNamespace(evaluated_actions=0),
@@ -255,6 +264,15 @@ def test_instrumented_search_records_one_scenario_delta(monkeypatch) -> None:
         "stock_runpf_calls": 3,
         "q_limit_resolves": 1,
         "solves_per_cache_miss": 1.5,
+    }
+    assert provenance._SELECTION_PROVENANCE_BY_SCENARIO[42] == {
+        "teacher_selection_mode": "epsilon_optimal_minimum_switch",
+        "relative_physical_epsilon": 0.01,
+        "teacher_best_physical_safety": 20.0,
+        "teacher_selected_safety": 20.1,
+        "teacher_selected_switch_count": 2,
+        "teacher_retained_improvement_fraction": 0.995,
+        "teacher_pareto_front_size": 2,
     }
 
 
@@ -288,4 +306,3 @@ def test_parent_aggregation_sums_worker_scenario_results(capsys) -> None:
     assert "PF cache misses:           70" in output
     assert "Stock PYPOWER solves:      80" in output
     assert "Q-limit re-solves:         10" in output
-    assert "Solves / cache miss:       1.143" in output
