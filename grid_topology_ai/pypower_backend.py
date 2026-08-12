@@ -7,7 +7,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 from pypower.idx_brch import BR_STATUS, RATE_A
-from pypower.idx_bus import VM
+from pypower.idx_bus import BUS_I, VA, VM
 from pypower.idx_gen import GEN_STATUS, PG, QG
 
 from grid_topology_ai._pypower_backend_core import *  # noqa: F401,F403
@@ -50,6 +50,7 @@ _GENERATOR_COLUMNS = (
     "min_q_mvar",
     "max_q_mvar",
 )
+_TOPOLOGY_CACHE_MAX_ENTRIES = 8
 
 
 @dataclass(frozen=True)
@@ -60,6 +61,17 @@ class _GeneratorOperatingPointState(GridFMState):
     generator_p_mw: np.ndarray | None = None
     generator_q_mvar: np.ndarray | None = None
     generator_status: np.ndarray | None = None
+
+
+@dataclass(frozen=True)
+class _TopologyCacheEntry:
+    """One solved target topology together with its source generator state."""
+
+    generator_ids: np.ndarray
+    generator_p_mw: np.ndarray
+    generator_q_mvar: np.ndarray
+    generator_status: np.ndarray
+    next_state: GridFMState
 
 
 # Preserve the public module path used by pickled results and type displays.
@@ -86,6 +98,13 @@ class GridFMPowerFlowBackend(_CoreGridFMPowerFlowBackend):
         self._state_builder = PowerFlowStateBuilder(self.physics_config)
         self.stock_runpf_calls = 0
         self.q_limit_resolves = 0
+        self.exact_cache_hits = 0
+        self.tolerant_cache_hits = 0
+        self.warm_start_hits = 0
+        self.cold_start_misses = 0
+        self._topology_cache: dict[tuple, list[_TopologyCacheEntry]] = {}
+        self._pending_warm_start_state: GridFMState | None = None
+        self._pending_warm_start_applied = False
 
     def performance_info(self) -> dict[str, object]:
         """Return backend-local cache and PYPOWER workload counters."""
@@ -96,6 +115,14 @@ class GridFMPowerFlowBackend(_CoreGridFMPowerFlowBackend):
 
         info.update(
             {
+                "exact_cache_hits": int(self.exact_cache_hits),
+                "tolerant_cache_hits": int(self.tolerant_cache_hits),
+                "warm_start_hits": int(self.warm_start_hits),
+                "cold_start_misses": int(self.cold_start_misses),
+                "topology_cache_buckets": int(len(self._topology_cache)),
+                "topology_cache_entries": int(
+                    sum(len(entries) for entries in self._topology_cache.values())
+                ),
                 "stock_runpf_calls": stock_calls,
                 "q_limit_resolves": int(self.q_limit_resolves),
                 "solves_per_cache_miss": (
@@ -114,6 +141,22 @@ class GridFMPowerFlowBackend(_CoreGridFMPowerFlowBackend):
         self.cache_misses = 0
         self.stock_runpf_calls = 0
         self.q_limit_resolves = 0
+        self.exact_cache_hits = 0
+        self.tolerant_cache_hits = 0
+        self.warm_start_hits = 0
+        self.cold_start_misses = 0
+
+    def clear_cache(self) -> None:
+        """Clear exact and topology-equivalent transition caches."""
+
+        super().clear_cache()
+        self._topology_cache.clear()
+        self._pending_warm_start_state = None
+        self._pending_warm_start_applied = False
+        self.exact_cache_hits = 0
+        self.tolerant_cache_hits = 0
+        self.warm_start_hits = 0
+        self.cold_start_misses = 0
 
     @staticmethod
     def _require_matching_physics_contract(
@@ -233,6 +276,182 @@ class GridFMPowerFlowBackend(_CoreGridFMPowerFlowBackend):
             self._hash_array(digest, values)
         return digest.hexdigest()
 
+    def _topology_bucket_key(
+        self,
+        state: GridFMState,
+        *,
+        action: GridFMAction | None = None,
+        switched_off_branch_id: int | None = None,
+    ) -> tuple:
+        """Return a topology key that intentionally excludes generator P/Q."""
+
+        base_input_fingerprint = (
+            _CoreGridFMPowerFlowBackend._power_flow_input_fingerprint(self, state)
+        )
+        return (
+            self.physics_config.fingerprint(),
+            int(state.scenario_id),
+            base_input_fingerprint,
+            self._resulting_topology_signature(
+                state,
+                action=action,
+                switched_off_branch_id=switched_off_branch_id,
+            ),
+        )
+
+    def _select_topology_entry(
+        self,
+        bucket_key: tuple,
+        state: GridFMState,
+    ) -> tuple[_TopologyCacheEntry | None, _TopologyCacheEntry | None]:
+        """Find a tolerant reuse first, otherwise the nearest warm-start state."""
+
+        operating_point = self._generator_operating_point(state)
+        if operating_point is None:
+            return None, None
+
+        ids, pg, qg, status = operating_point
+        entries = list(self._topology_cache.get(bucket_key, ()))
+        if not entries:
+            return None, None
+
+        p_tolerance = float(self.physics_config.generator_p_tolerance_mw)
+        q_tolerance = float(self.physics_config.generator_q_tolerance_mvar)
+        p_scale = max(p_tolerance, 1e-12)
+        q_scale = max(q_tolerance, 1e-12)
+
+        valid_entries: list[_TopologyCacheEntry] = []
+        tolerant_entry: _TopologyCacheEntry | None = None
+        warm_entry: _TopologyCacheEntry | None = None
+        warm_distance = float("inf")
+
+        for entry in entries:
+            try:
+                self._require_usable_next_state(entry.next_state)
+            except InvalidPhysicalState:
+                continue
+
+            valid_entries.append(entry)
+            if not np.array_equal(ids, entry.generator_ids):
+                continue
+
+            max_delta_p = float(np.max(np.abs(pg - entry.generator_p_mw)))
+            max_delta_q = float(np.max(np.abs(qg - entry.generator_q_mvar)))
+            same_status = np.array_equal(status, entry.generator_status)
+
+            if (
+                same_status
+                and max_delta_p <= p_tolerance
+                and max_delta_q <= q_tolerance
+            ):
+                tolerant_entry = entry
+                break
+
+            distance = max(max_delta_p / p_scale, max_delta_q / q_scale)
+            if not same_status:
+                distance += 1e12
+
+            if distance < warm_distance:
+                warm_distance = distance
+                warm_entry = entry
+
+        if len(valid_entries) != len(entries):
+            if valid_entries:
+                self._topology_cache[bucket_key] = valid_entries
+            else:
+                self._topology_cache.pop(bucket_key, None)
+
+        if tolerant_entry is not None:
+            return tolerant_entry, tolerant_entry
+        return None, warm_entry
+
+    def _remember_topology_result(
+        self,
+        bucket_key: tuple,
+        source_state: GridFMState,
+        next_state: GridFMState,
+    ) -> None:
+        operating_point = self._generator_operating_point(source_state)
+        if operating_point is None:
+            return
+
+        ids, pg, qg, status = operating_point
+        entry = _TopologyCacheEntry(
+            generator_ids=ids.copy(),
+            generator_p_mw=pg.copy(),
+            generator_q_mvar=qg.copy(),
+            generator_status=status.copy(),
+            next_state=next_state,
+        )
+
+        entries = list(self._topology_cache.get(bucket_key, ()))
+        for index, existing in enumerate(entries):
+            if (
+                np.array_equal(existing.generator_ids, entry.generator_ids)
+                and np.array_equal(existing.generator_p_mw, entry.generator_p_mw)
+                and np.array_equal(existing.generator_q_mvar, entry.generator_q_mvar)
+                and np.array_equal(existing.generator_status, entry.generator_status)
+            ):
+                entries[index] = entry
+                self._topology_cache[bucket_key] = entries
+                return
+
+        entries.append(entry)
+        if len(entries) > _TOPOLOGY_CACHE_MAX_ENTRIES:
+            entries = entries[-_TOPOLOGY_CACHE_MAX_ENTRIES:]
+        self._topology_cache[bucket_key] = entries
+
+    def _apply_pending_warm_start(self, ppc: dict[str, Any]) -> None:
+        warm_state = self._pending_warm_start_state
+        if warm_state is None:
+            return
+
+        bus = np.asarray(ppc["bus"])
+        warm_features = np.asarray(warm_state.bus_features)
+        if warm_features.ndim != 2 or bus.ndim != 2:
+            return
+
+        vm = np.asarray(
+            warm_features[:, BUS_FEATURE_COLUMNS.index("Vm")],
+            dtype=np.float64,
+        )
+        va = np.asarray(
+            warm_features[:, BUS_FEATURE_COLUMNS.index("Va")],
+            dtype=np.float64,
+        )
+        if not np.isfinite(vm).all() or not np.isfinite(va).all():
+            return
+
+        warm_bus_ids = getattr(warm_state, "bus_ids", None)
+        if warm_bus_ids is None:
+            if len(vm) != len(bus):
+                return
+            bus[:, VM] = vm
+            bus[:, VA] = va
+            self._pending_warm_start_applied = True
+            return
+
+        warm_bus_ids = np.asarray(warm_bus_ids, dtype=np.int64)
+        if len(warm_bus_ids) != len(vm):
+            return
+
+        by_id = {
+            int(bus_id): position
+            for position, bus_id in enumerate(warm_bus_ids)
+        }
+        ppc_bus_ids = np.rint(bus[:, BUS_I]).astype(np.int64)
+        try:
+            positions = np.asarray(
+                [by_id[int(bus_id)] for bus_id in ppc_bus_ids],
+                dtype=np.int64,
+            )
+        except KeyError:
+            return
+
+        bus[:, VM] = vm[positions]
+        bus[:, VA] = va[positions]
+        self._pending_warm_start_applied = True
+
     def _make_cache_key_from_state(
         self,
         state: GridFMState,
@@ -268,6 +487,7 @@ class GridFMPowerFlowBackend(_CoreGridFMPowerFlowBackend):
 
         operating_point = self._generator_operating_point(state)
         if operating_point is None:
+            self._apply_pending_warm_start(ppc)
             return ppc, frames
 
         generator_ids, pg, qg, status = operating_point
@@ -296,6 +516,7 @@ class GridFMPowerFlowBackend(_CoreGridFMPowerFlowBackend):
         # solved generator P/Q/status from the parent topology state.
         ppc["gen"] = self._build_gen_matrix(gen_df, source_bus_df)
         frames["gen"] = gen_df
+        self._apply_pending_warm_start(ppc)
         return ppc, frames
 
     def run_power_flow_from_state(
@@ -305,24 +526,104 @@ class GridFMPowerFlowBackend(_CoreGridFMPowerFlowBackend):
         *,
         action: GridFMAction | None = None,
     ) -> GridFMPowerFlowResult:
-        """Run from a solved state while preserving both action APIs."""
+        """Run from a solved state using exact, tolerant, then warm cache reuse."""
 
         branch_id, target_status = self._resolve_branch_status_action(
             action=action,
             switched_off_branch_id=switched_off_branch_id,
         )
+        effective_switched_off = branch_id if target_status == 0 else None
 
-        result = super().run_power_flow_from_state(
-            state=state,
-            switched_off_branch_id=switched_off_branch_id,
-            action=action,
+        bucket_key: tuple | None = None
+        warm_entry: _TopologyCacheEntry | None = None
+
+        if self.enable_cache:
+            exact_key = self._make_topology_cache_key_from_state(
+                state=state,
+                action=action,
+                switched_off_branch_id=switched_off_branch_id,
+            )
+            cached_next_state = self._cache.get(exact_key)
+            if cached_next_state is not None:
+                try:
+                    self._require_usable_next_state(cached_next_state)
+                except InvalidPhysicalState:
+                    del self._cache[exact_key]
+                else:
+                    self.cache_hits += 1
+                    self.exact_cache_hits += 1
+                    return GridFMPowerFlowResult(
+                        success=True,
+                        scenario_id=int(state.scenario_id),
+                        switched_off_branch_id=effective_switched_off,
+                        next_state=cached_next_state,
+                        raw_result=None,
+                        message="Power flow converged. [cache hit]",
+                        switched_branch_id=branch_id,
+                        target_status=target_status,
+                    )
+
+            bucket_key = self._topology_bucket_key(
+                state,
+                action=action,
+                switched_off_branch_id=switched_off_branch_id,
+            )
+            tolerant_entry, warm_entry = self._select_topology_entry(
+                bucket_key,
+                state,
+            )
+            if tolerant_entry is not None:
+                self.cache_hits += 1
+                self.tolerant_cache_hits += 1
+                return GridFMPowerFlowResult(
+                    success=True,
+                    scenario_id=int(state.scenario_id),
+                    switched_off_branch_id=effective_switched_off,
+                    next_state=tolerant_entry.next_state,
+                    raw_result=None,
+                    message="Power flow converged. [tolerant cache hit]",
+                    switched_branch_id=branch_id,
+                    target_status=target_status,
+                )
+
+        self._pending_warm_start_state = (
+            None if warm_entry is None else warm_entry.next_state
         )
+        self._pending_warm_start_applied = False
+        misses_before = int(self.cache_misses)
+
+        try:
+            result = super().run_power_flow_from_state(
+                state=state,
+                switched_off_branch_id=switched_off_branch_id,
+                action=action,
+            )
+            warm_start_applied = bool(self._pending_warm_start_applied)
+        finally:
+            self._pending_warm_start_state = None
+            self._pending_warm_start_applied = False
+
+        if self.enable_cache and self.cache_misses > misses_before:
+            if warm_start_applied:
+                self.warm_start_hits += 1
+            else:
+                self.cold_start_misses += 1
+
+        if (
+            self.enable_cache
+            and bucket_key is not None
+            and result.success
+            and result.next_state is not None
+        ):
+            self._remember_topology_result(
+                bucket_key,
+                source_state=state,
+                next_state=result.next_state,
+            )
 
         return replace(
             result,
-            switched_off_branch_id=(
-                branch_id if target_status == 0 else None
-            ),
+            switched_off_branch_id=effective_switched_off,
             switched_branch_id=branch_id,
             target_status=target_status,
         )
