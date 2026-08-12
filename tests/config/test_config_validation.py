@@ -79,7 +79,7 @@ def test_self_play_requires_ungated_primary_mode() -> None:
         replace(config, evaluation=constrained)
 
 
-def test_acceptance_defaults_to_requested_physical_metric() -> None:
+def test_acceptance_defaults_to_topology_utility_metric() -> None:
     config = AcceptanceConfig()
     assert config.confidence_level == 0.95
     assert config.bootstrap_samples == 5000
@@ -94,11 +94,20 @@ def test_acceptance_rejects_non_primary_metric(metric: str) -> None:
         AcceptanceConfig(metric=metric)
 
 
+@pytest.mark.parametrize("valid_value", [0.0, 1.01, 2.0])
+def test_acceptance_accepts_topology_utility_improvement_threshold(
+    valid_value: float,
+) -> None:
+    assert AcceptanceConfig(
+        min_improvement=valid_value,
+    ).min_improvement == valid_value
+
+
 @pytest.mark.parametrize(
     "invalid_value",
     [
         -0.01,
-        1.01,
+        2.01,
         float("nan"),
         float("inf"),
         float("-inf"),
