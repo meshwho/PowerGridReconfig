@@ -26,6 +26,46 @@ def _args() -> Namespace:
     )
 
 
+def _contract_args(**overrides) -> Namespace:
+    values = {
+        "dataset_name": "case118_bootstrap_v1",
+        "network_name": "case118_ieee",
+        "network_source": "pglib",
+        "raw_network_dir_name": "case118_ieee",
+        "chunk_size": 1000,
+        "seed_start": 20000,
+        "num_processes": 4,
+        "sigma": 0.20,
+        "global_range": 0.50,
+        "max_scaling_factor": 2.0,
+        "step_size": 0.10,
+        "start_scaling_factor": 1.0,
+        "topology_variants": 10,
+        "topology_k": 1,
+        "generation_perturbation_type": "cost_perturbation",
+        "generation_perturbation_sigma": 0.15,
+        "admittance_perturbation_type": "random_perturbation",
+        "admittance_perturbation_sigma": 0.02,
+        "min_loading": 105.0,
+        "max_loading": 260.0,
+        "simple_min_loading": 105.0,
+        "simple_max_loading": 120.0,
+        "simple_max_hard": 0,
+        "simple_max_overloaded": 2,
+        "medium_min_loading": 120.0,
+        "medium_max_loading": 150.0,
+        "medium_max_hard": 1,
+        "medium_max_overloaded": 5,
+        "hard_min_loading": 150.0,
+        "hard_min_hard": 2,
+        "gridfm_command_template": (
+            'python -m gridfm_datakit.cli generate "{config}"'
+        ),
+    }
+    values.update(overrides)
+    return Namespace(**values)
+
+
 def _metrics(
     *,
     loading: float,
@@ -199,7 +239,7 @@ def test_final_targets_respect_requested_total_when_quotas_exist() -> None:
     assert final.total == 12
 
 
-def test_old_candidate_manifest_is_not_reused(tmp_path: Path) -> None:
+def test_candidate_manifest_requires_matching_completion_marker(tmp_path: Path) -> None:
     old_path = tmp_path / "chunk00_candidates.csv"
     pd.DataFrame(
         {
@@ -220,7 +260,112 @@ def test_old_candidate_manifest_is_not_reused(tmp_path: Path) -> None:
         }
     ).to_csv(current_path, index=False)
 
-    assert builder.candidate_manifest_is_current(current_path)
+    assert not builder.candidate_manifest_is_current(current_path)
+
+    marker_path = builder.candidate_completion_marker_path(current_path)
+    builder._write_completion_marker(
+        marker_path,
+        stage="canonical_candidates",
+        contract_fingerprint="contract-a",
+        chunk_index=1,
+    )
+
+    assert builder.candidate_manifest_is_current(
+        current_path,
+        expected_contract_fingerprint="contract-a",
+        chunk_index=1,
+    )
+    assert not builder.candidate_manifest_is_current(
+        current_path,
+        expected_contract_fingerprint="contract-b",
+        chunk_index=1,
+    )
+
+
+def test_partial_gridfm_raw_is_never_current_without_marker(tmp_path: Path) -> None:
+    raw_dir = tmp_path / "raw"
+    raw_dir.mkdir()
+
+    for name in builder._REQUIRED_GRIDFM_DATASETS:
+        dataset_dir = raw_dir / name
+        dataset_dir.mkdir()
+        (dataset_dir / "part-0.parquet").write_bytes(b"data")
+
+    (raw_dir / "n_scenarios.txt").write_text("1000", encoding="utf-8")
+
+    assert not builder.raw_completion_is_current(
+        raw_dir,
+        contract_fingerprint="contract-a",
+        chunk_index=0,
+    )
+
+    builder._write_completion_marker(
+        raw_dir / builder._RAW_COMPLETION_MARKER,
+        stage="gridfm_raw",
+        contract_fingerprint="contract-a",
+        chunk_index=0,
+        extra={
+            "requested_scenarios": 1000,
+            "generated_scenarios": 1000,
+        },
+    )
+
+    assert builder.raw_completion_is_current(
+        raw_dir,
+        contract_fingerprint="contract-a",
+        chunk_index=0,
+    )
+    assert not builder.raw_completion_is_current(
+        raw_dir,
+        contract_fingerprint="contract-b",
+        chunk_index=0,
+    )
+
+    (raw_dir / "gen_data.parquet" / "part-0.parquet").unlink()
+
+    assert not builder.raw_completion_is_current(
+        raw_dir,
+        contract_fingerprint="contract-a",
+        chunk_index=0,
+    )
+
+
+def test_generation_contract_changes_with_gridfm_semantics(monkeypatch) -> None:
+    monkeypatch.setattr(
+        builder,
+        "_package_version",
+        lambda name: "1.0.5",
+    )
+
+    baseline = builder.dataset_contract_fingerprint(_contract_args())
+
+    assert baseline != builder.dataset_contract_fingerprint(
+        _contract_args(seed_start=20001)
+    )
+    assert baseline != builder.dataset_contract_fingerprint(
+        _contract_args(num_processes=3)
+    )
+    assert baseline != builder.dataset_contract_fingerprint(
+        _contract_args(admittance_perturbation_sigma=0.03)
+    )
+
+
+def test_gridfm_wrapper_streams_output_and_uses_safe_bootstrap_chunks() -> None:
+    source = Path(
+        "scripts/pipelines/build_gridfm_dataset.ps1"
+    ).read_text(encoding="utf-8")
+
+    assert "Output is streamed live to this console." in source
+    assert 'PYTHONUNBUFFERED = "1"' in source
+    assert "$MaxSafeGridFMProcesses = 4" in source
+    assert '"--gridfm-retries", "$GridFMRetries"' in source
+    assert (
+        '"--gridfm-inactivity-timeout-sec", '
+        '"$GridFMInactivityTimeoutSec"'
+    ) in source
+    assert "$ChunkSize = 1000" in source
+    assert "$MaxChunks = 160" in source
+    assert "Output will be printed when the process finishes." not in source
 
 
 def test_default_hard_threshold_keeps_single_hard_overload_medium() -> None:
