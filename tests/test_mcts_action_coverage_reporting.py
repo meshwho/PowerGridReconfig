@@ -207,12 +207,14 @@ def test_evaluation_metrics_aggregate_action_coverage() -> None:
         task_config={},
     )
 
-    assert metrics["evaluation_metrics_contract_version"] == 6
+    assert metrics["evaluation_metrics_contract_version"] == (
+        EVALUATION_METRICS_CONTRACT_VERSION
+    )
     assert metrics["avg_mcts_action_coverage"] == pytest.approx(0.65)
     assert metrics["min_mcts_action_coverage"] == pytest.approx(0.4)
     assert metrics["avg_mcts_visited_action_coverage"] == pytest.approx(0.375)
     assert metrics["min_mcts_visited_action_coverage"] == pytest.approx(0.2)
 
 
-def test_evaluation_metrics_contract_version_is_six() -> None:
-    assert EVALUATION_METRICS_CONTRACT_VERSION == 6
+def test_evaluation_metrics_contract_version_is_seven() -> None:
+    assert EVALUATION_METRICS_CONTRACT_VERSION == 7

@@ -5,11 +5,13 @@ from functools import wraps
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pandas as pd
 import pytest
 
 from grid_topology_ai.config import AcceptanceConfig
 from grid_topology_ai.config.acceptance import PRIMARY_ACCEPTANCE_METRIC
+from grid_topology_ai.data_adapter import BRANCH_FEATURE_COLUMNS
 from grid_topology_ai.evaluation import checkpoint as evaluation
 from grid_topology_ai.self_play import iteration as iteration_module
 from grid_topology_ai.self_play import stages
@@ -55,6 +57,22 @@ _MOCKED_GENERATION_STAGE_TESTS = {
 
 def _rate(numerator: int, denominator: int) -> float:
     return 0.0 if denominator == 0 else numerator / denominator
+
+
+def _canonical_branch_features(loading_percent: float) -> np.ndarray:
+    features = np.zeros(
+        (1, len(BRANCH_FEATURE_COLUMNS)),
+        dtype=np.float32,
+    )
+    features[
+        0,
+        BRANCH_FEATURE_COLUMNS.index("br_status"),
+    ] = 1.0
+    features[
+        0,
+        BRANCH_FEATURE_COLUMNS.index("loading_percent"),
+    ] = float(loading_percent)
+    return features
 
 
 def _strictify_legacy_metrics(
@@ -189,6 +207,15 @@ def supply_terminal_episode_seed(
         request.node.path.name == "test_evaluation_api.py"
         and request.node.name in _TERMINAL_ONLY_EPISODE_TESTS
     ):
+        fake_state = getattr(request.module, "_FakeFinalState", None)
+        if fake_state is not None and not hasattr(
+            fake_state,
+            "branch_features",
+        ):
+            fake_state.branch_features = _canonical_branch_features(
+                float(fake_state.metrics["max_loading_percent"])
+            )
+
         original = evaluation.run_episode
 
         @wraps(original)

@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 
 from grid_topology_ai.action_space import GridFMAction
+from grid_topology_ai.data_adapter import BRANCH_FEATURE_COLUMNS
 from grid_topology_ai.evaluation import checkpoint
 from grid_topology_ai.evaluation.policy_comparison import PolicyMode
 from grid_topology_ai.search.mcts import MCTSConfig, MCTSNode, MCTSPlanner
@@ -37,6 +38,18 @@ def _metrics(*, secure: bool) -> dict[str, object]:
 class _State:
     def __init__(self, *, secure: bool) -> None:
         self.metrics = _metrics(secure=secure)
+        self.branch_features = np.zeros(
+            (1, len(BRANCH_FEATURE_COLUMNS)),
+            dtype=np.float32,
+        )
+        self.branch_features[
+            0,
+            BRANCH_FEATURE_COLUMNS.index("br_status"),
+        ] = 1.0
+        self.branch_features[
+            0,
+            BRANCH_FEATURE_COLUMNS.index("loading_percent"),
+        ] = float(self.metrics["max_loading_percent"])
 
 
 class _Action:
