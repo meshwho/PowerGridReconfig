@@ -978,8 +978,8 @@ class GridFMPowerFlowBackend:
         bus[:, BUS_TYPE] = self._infer_bus_types(bus_df)
         bus[:, PD] = bus_df["Pd"].to_numpy(dtype=float)
         bus[:, QD] = bus_df["Qd"].to_numpy(dtype=float)
-        bus[:, GS] = bus_df["GS"].to_numpy(dtype=float)
-        bus[:, BS] = bus_df["BS"].to_numpy(dtype=float)
+        bus[:, GS] = bus_df["GS"].to_numpy(dtype=float) * self.base_mva
+        bus[:, BS] = bus_df["BS"].to_numpy(dtype=float) * self.base_mva
         bus[:, BUS_AREA] = 1.0
         bus[:, VM] = bus_df["Vm"].to_numpy(dtype=float)
         bus[:, VA] = bus_df["Va"].to_numpy(dtype=float)
