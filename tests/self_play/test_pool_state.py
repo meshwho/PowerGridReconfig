@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
 from grid_topology_ai.self_play.pool_sampling import (
     compute_priority,
@@ -13,6 +14,8 @@ from grid_topology_ai.self_play.pool_state import (
     update_and_save_pool_metadata,
     update_pool_metadata,
 )
+from grid_topology_ai.termination import TerminationReason
+from tests.outcome_evidence_helpers import terminal_evidence
 
 
 def _transitions_csv(
@@ -45,6 +48,10 @@ def _scenario(
         "avg_steps_when_solved": None,
         "last_iteration_solve_rate": None,
         "solve_rate_delta": 0.0,
+        "topology_utility": None,
+        "last_iteration_topology_utility": None,
+        "topology_utility_delta": 0.0,
+        "topology_learning_progress": 0.0,
         "learning_progress": 0.0,
         "uncertainty": 1.0,
         "staleness": 1.0 if attempts == 0 else 0.0,
@@ -101,6 +108,10 @@ def test_initialize_pool_metadata_preserves_schema(
         "avg_steps_when_solved",
         "last_iteration_solve_rate",
         "solve_rate_delta",
+        "topology_utility",
+        "last_iteration_topology_utility",
+        "topology_utility_delta",
+        "topology_learning_progress",
         "learning_progress",
         "uncertainty",
         "staleness",
@@ -178,6 +189,7 @@ def test_update_pool_metadata_tracks_attempts_and_solves() -> None:
     assert scenario["last_iteration_solve_rate"] == 1.0
     assert scenario["solve_rate_delta"] == 1.0
     assert scenario["learning_progress"] == 1.0
+    assert scenario["topology_utility"] is None
     assert scenario["staleness"] == 0.0
     assert 0.0 < scenario["uncertainty"] < 1.0
 
@@ -196,6 +208,7 @@ def test_selected_scenario_without_examples_is_still_attempted() -> None:
     assert missing["times_attempted"] == 1
     assert missing["last_attempted_iter"] == 5
     assert missing["times_solved"] == 0
+    assert missing["topology_utility_delta"] == 0.0
     assert missing["staleness"] == 0.0
     assert missing["uncertainty"] < 1.0
 
@@ -213,6 +226,7 @@ def test_update_preserves_unselected_scenarios() -> None:
     untouched = metadata["scenarios"]["3"]
     assert untouched["times_attempted"] == 0
     assert untouched["last_attempted_iter"] == 0
+    assert untouched["topology_utility"] is None
     assert untouched["staleness"] == 1.0
 
 
@@ -250,6 +264,10 @@ def test_pool_state_migrates_existing_v2_metadata(
         for field in (
             "last_iteration_solve_rate",
             "solve_rate_delta",
+            "topology_utility",
+            "last_iteration_topology_utility",
+            "topology_utility_delta",
+            "topology_learning_progress",
             "learning_progress",
             "uncertainty",
             "staleness",
@@ -264,7 +282,235 @@ def test_pool_state_migrates_existing_v2_metadata(
     )
 
     assert migrated["schema_version"] == SCHEMA_VERSION
-    assert migrated["scenarios"]["1"]["times_attempted"] == 0
-    assert migrated["scenarios"]["1"]["uncertainty"] == 1.0
-    assert migrated["scenarios"]["1"]["staleness"] == 1.0
+    scenario = migrated["scenarios"]["1"]
+    assert scenario["times_attempted"] == 0
+    assert scenario["topology_utility"] is None
+    assert scenario["last_iteration_topology_utility"] is None
+    assert scenario["topology_utility_delta"] == 0.0
+    assert scenario["topology_learning_progress"] == 0.0
+    assert scenario["uncertainty"] == 1.0
+    assert scenario["staleness"] == 1.0
     assert load_json(path) == migrated
+
+
+def test_pool_state_migrates_v3_without_losing_solve_progress(
+    tmp_path: Path,
+) -> None:
+    transitions = _transitions_csv(
+        tmp_path,
+        [(1, "hard")],
+    )
+    path = tmp_path / "pool_metadata.json"
+    scenario = _scenario(
+        attempts=8,
+        solved=2,
+        solve_rate=0.25,
+        last_attempted=3,
+        difficulty="hard",
+    )
+    scenario["learning_progress"] = 0.35
+    for field in (
+        "topology_utility",
+        "last_iteration_topology_utility",
+        "topology_utility_delta",
+        "topology_learning_progress",
+    ):
+        scenario.pop(field)
+
+    previous = {
+        "schema_version": 3,
+        "transitions_csv": str(transitions),
+        "last_updated_iteration": 3,
+        "scenarios": {"1": scenario},
+    }
+    path.write_text(json.dumps(previous), encoding="utf-8")
+
+    migrated = initialize_pool_metadata(
+        transitions,
+        path,
+        current_iter=3,
+    )
+    result = migrated["scenarios"]["1"]
+
+    assert migrated["schema_version"] == SCHEMA_VERSION
+    assert result["times_attempted"] == 8
+    assert result["times_solved"] == 2
+    assert result["solve_rate"] == 0.25
+    assert result["learning_progress"] == pytest.approx(0.35)
+    assert result["topology_utility"] is None
+    assert result["last_iteration_topology_utility"] is None
+    assert result["topology_utility_delta"] == 0.0
+    assert result["topology_learning_progress"] == 0.0
+
+
+def test_unsolved_topology_utility_improvement_drives_learning_progress() -> None:
+    metadata = _metadata()
+
+    update_pool_metadata(
+        metadata,
+        [
+            {
+                "scenario_id": 1,
+                "solved": False,
+                "steps": 2,
+                "topology_utility": -0.4,
+            }
+        ],
+        current_iter=1,
+        selected_scenario_ids=[1],
+        ema_alpha=0.30,
+    )
+    scenario = metadata["scenarios"]["1"]
+
+    assert scenario["times_solved"] == 0
+    assert scenario["solve_rate"] == 0.0
+    assert scenario["topology_utility"] == pytest.approx(-0.4)
+    assert scenario["topology_utility_delta"] == 0.0
+    assert scenario["topology_learning_progress"] == 0.0
+    assert scenario["learning_progress"] == 0.0
+
+    update_pool_metadata(
+        metadata,
+        [
+            {
+                "scenario_id": 1,
+                "solved": False,
+                "steps": 2,
+                "topology_utility": 0.2,
+            }
+        ],
+        current_iter=2,
+        selected_scenario_ids=[1],
+        ema_alpha=0.30,
+    )
+    scenario = metadata["scenarios"]["1"]
+
+    assert scenario["times_solved"] == 0
+    assert scenario["solve_rate"] == 0.0
+    assert scenario["last_iteration_solve_rate"] == 0.0
+    assert scenario["topology_utility_delta"] == pytest.approx(0.6)
+    assert scenario["topology_utility"] == pytest.approx(-0.22)
+    assert scenario["topology_learning_progress"] == pytest.approx(0.09)
+    assert scenario["learning_progress"] == pytest.approx(0.09)
+
+
+def test_terminal_evidence_is_source_of_topology_utility() -> None:
+    metadata = _metadata()
+    evidence = terminal_evidence(
+        TerminationReason.MAX_STEPS_REACHED,
+        topology_utility=0.4,
+    ).to_json()
+
+    update_pool_metadata(
+        metadata,
+        pd.DataFrame(
+            [
+                {
+                    "scenario_id": 1,
+                    "step": 0,
+                    "solved": False,
+                    "terminal_outcome_evidence_json": evidence,
+                    "outcome_value_target": -0.9,
+                },
+                {
+                    "scenario_id": 1,
+                    "step": 1,
+                    "solved": False,
+                    "terminal_outcome_evidence_json": evidence,
+                    "outcome_value_target": -0.9,
+                },
+            ]
+        ),
+        current_iter=1,
+        selected_scenario_ids=[1],
+    )
+
+    scenario = metadata["scenarios"]["1"]
+    assert scenario["times_attempted"] == 1
+    assert scenario["times_solved"] == 0
+    assert scenario["topology_utility"] == pytest.approx(0.4)
+    assert scenario["last_iteration_topology_utility"] == pytest.approx(0.4)
+
+
+def test_malformed_terminal_evidence_fails_closed() -> None:
+    metadata = _metadata()
+
+    with pytest.raises(
+        ValueError,
+        match="terminal outcome evidence",
+    ):
+        update_pool_metadata(
+            metadata,
+            [
+                {
+                    "scenario_id": 1,
+                    "step": 0,
+                    "solved": False,
+                    "terminal_outcome_evidence_json": "{}",
+                    "outcome_value_target": 0.5,
+                }
+            ],
+            current_iter=1,
+        )
+
+
+def test_topology_progress_increases_sampling_priority() -> None:
+    metadata = {
+        "schema_version": SCHEMA_VERSION,
+        "transitions_csv": "transitions.csv",
+        "last_updated_iteration": 0,
+        "scenarios": {
+            "1": _scenario(),
+            "2": _scenario(),
+        },
+    }
+
+    update_pool_metadata(
+        metadata,
+        [
+            {
+                "scenario_id": 1,
+                "solved": False,
+                "steps": 2,
+                "topology_utility": -0.4,
+            },
+            {
+                "scenario_id": 2,
+                "solved": False,
+                "steps": 2,
+                "topology_utility": -0.4,
+            },
+        ],
+        current_iter=1,
+        selected_scenario_ids=[1, 2],
+    )
+    update_pool_metadata(
+        metadata,
+        [
+            {
+                "scenario_id": 1,
+                "solved": False,
+                "steps": 2,
+                "topology_utility": -0.4,
+            },
+            {
+                "scenario_id": 2,
+                "solved": False,
+                "steps": 2,
+                "topology_utility": 0.2,
+            },
+        ],
+        current_iter=2,
+        selected_scenario_ids=[1, 2],
+        ema_alpha=0.30,
+    )
+
+    flat = metadata["scenarios"]["1"]
+    improving = metadata["scenarios"]["2"]
+
+    assert flat["times_solved"] == 0
+    assert improving["times_solved"] == 0
+    assert flat["solve_rate"] == improving["solve_rate"] == 0.0
+    assert flat["learning_progress"] == 0.0
+    assert improving["learning_progress"] == pytest.approx(0.09)
+    assert improving["priority"] > flat["priority"]
