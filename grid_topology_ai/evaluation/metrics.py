@@ -96,6 +96,10 @@ def print_row(row: dict[str, Any]) -> None:
         f"final_loading={float(row['final_max_loading_percent']):.2f}% | "
         f"overloaded={row['final_num_overloaded_branches']} | "
         f"hard={row['final_num_hard_overloaded_branches']} | "
+        f"J0={float(row.get('J0', float('nan'))):.2f} | "
+        f"Jfinal={float(row.get('Jfinal', float('nan'))):.2f} | "
+        f"dJ={float(row.get('delta_J', float('nan'))):+.2f} | "
+        f"U={float(row.get('final_topology_utility', float('nan'))):+.3f} | "
         f"R={float(row['discounted_return']):.2f} | "
         f"score={float(row['safety_score']):.2f}"
     )
@@ -112,6 +116,7 @@ def _safe_mean(series: pd.Series) -> float | None:
 
     return float(value)
 
+
 def _safe_min(
     series: pd.Series,
 ) -> float | None:
@@ -124,6 +129,13 @@ def _safe_min(
         return None
 
     return float(value)
+
+
+def _numeric_column(df: pd.DataFrame, name: str) -> pd.Series:
+    if name not in df.columns:
+        return pd.Series(dtype=float)
+    return pd.to_numeric(df[name], errors="coerce")
+
 
 def build_evaluation_metrics(
     df: pd.DataFrame,
@@ -206,6 +218,20 @@ def build_evaluation_metrics(
         in df.columns
         else pd.Series(dtype=float)
     )
+
+    J0 = _numeric_column(df, "J0")
+    Jfinal = _numeric_column(df, "Jfinal")
+    delta_J = _numeric_column(df, "delta_J")
+    relative_J_improvement = _numeric_column(
+        df,
+        "relative_J_improvement",
+    )
+    final_topology_utility = _numeric_column(
+        df,
+        "final_topology_utility",
+    )
+    topology_quality_count = int(delta_J.notna().sum())
+    topology_improved_count = int((delta_J > 0.0).sum())
 
     def rate(numerator: int, denominator: int) -> float:
         if denominator == 0:
@@ -297,6 +323,21 @@ def build_evaluation_metrics(
             power_flow_failure_count,
             requested_count,
         ),
+        "topology_quality_count": topology_quality_count,
+        "topology_improved_count": topology_improved_count,
+        "topology_improved_rate": rate(
+            topology_improved_count,
+            topology_quality_count,
+        ),
+        "avg_J0": _safe_mean(J0),
+        "avg_Jfinal": _safe_mean(Jfinal),
+        "avg_delta_J": _safe_mean(delta_J),
+        "avg_relative_J_improvement": _safe_mean(
+            relative_J_improvement
+        ),
+        "avg_final_topology_utility": _safe_mean(
+            final_topology_utility
+        ),
         "avg_steps": _safe_mean(df["steps"]),
         "avg_mcts_action_coverage": (
             _safe_mean(action_coverage)
@@ -370,6 +411,7 @@ def build_evaluation_metrics(
         for difficulty in ["simple", "medium", "hard"]:
             subset = df[df["difficulty_class"] == difficulty]
             subset_solved = subset["solved"].astype(bool)
+            subset_delta_J = _numeric_column(subset, "delta_J")
 
             if len(subset) == 0:
                 solve_rate = None
@@ -391,6 +433,19 @@ def build_evaluation_metrics(
                 "avg_steps_to_solve": avg_steps_to_solve,
                 "avg_safety_score": (
                     _safe_mean(subset["safety_score"]) if len(subset) else None
+                ),
+                "avg_J0": _safe_mean(_numeric_column(subset, "J0")),
+                "avg_Jfinal": _safe_mean(_numeric_column(subset, "Jfinal")),
+                "avg_delta_J": _safe_mean(subset_delta_J),
+                "avg_relative_J_improvement": _safe_mean(
+                    _numeric_column(subset, "relative_J_improvement")
+                ),
+                "avg_final_topology_utility": _safe_mean(
+                    _numeric_column(subset, "final_topology_utility")
+                ),
+                "topology_improved_rate": rate(
+                    int((subset_delta_J > 0.0).sum()),
+                    int(subset_delta_J.notna().sum()),
                 ),
             }
 
@@ -425,5 +480,17 @@ def print_summary(
     print(f"  Avg final loading:     {df['final_max_loading_percent'].mean():.4f}%")
     print(f"  Avg overloaded:        {df['final_num_overloaded_branches'].mean():.4f}")
     print(f"  Avg hard overloaded:   {df['final_num_hard_overloaded_branches'].mean():.4f}")
+    if "J0" in df.columns:
+        print(f"  Avg J0:                {pd.to_numeric(df['J0'], errors='coerce').mean():.4f}")
+        print(f"  Avg Jfinal:            {pd.to_numeric(df['Jfinal'], errors='coerce').mean():.4f}")
+        print(f"  Avg delta J:           {pd.to_numeric(df['delta_J'], errors='coerce').mean():+.4f}")
+        print(
+            "  Avg relative J gain:   "
+            f"{100.0 * pd.to_numeric(df['relative_J_improvement'], errors='coerce').mean():+.2f}%"
+        )
+        print(
+            "  Avg topology utility:  "
+            f"{pd.to_numeric(df['final_topology_utility'], errors='coerce').mean():+.4f}"
+        )
     print(f"  Avg safety score:     {df['safety_score'].mean():.4f}")
     print(f"  Total safety score:   {df['safety_score'].sum():.4f}")

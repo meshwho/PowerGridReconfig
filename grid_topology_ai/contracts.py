@@ -16,9 +16,10 @@ OUTCOME_VALUE_TARGET_CONTRACT_VERSION = 6
 # Version 2 makes final pre-redispatch physical-state quality the primary
 # topology objective. Redispatch remains separate terminal evidence/diagnostics.
 OUTCOME_OBJECTIVE_VERSION = 2
-# Version 6 adds MCTS legal-action coverage diagnostics to evaluation
+# Version 7 adds canonical pre-redispatch topology quality (J0, Jfinal,
+# delta_J, relative improvement, and final topology utility) to evaluation
 # rows and aggregated metrics.
-EVALUATION_METRICS_CONTRACT_VERSION = 6
+EVALUATION_METRICS_CONTRACT_VERSION = 7
 # Version 7 requires exact state-feature schema provenance.
 CHECKPOINT_CONTRACT_VERSION = 7
 # Version 6 requires exact state-feature schema provenance in every row and

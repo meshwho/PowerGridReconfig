@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass, field
 from typing import Any
 
 from grid_topology_ai.config.physics import PhysicsConfig
 from grid_topology_ai.evaluation.metrics import compute_safety_score
+from grid_topology_ai.grid_utility import state_security_penalty, state_utility
 from grid_topology_ai.physical_objective import assess_physical_state
 from grid_topology_ai.termination import (
     TerminationReason,
@@ -46,6 +48,7 @@ class EvaluationEpisodeTrace:
     def constraint_exhausted(self) -> bool:
         return self.empty_constrained_support_count > 0
 
+
 def _mean_or_none(
     values: list[float],
 ) -> float | None:
@@ -62,6 +65,98 @@ def _min_or_none(
         return None
 
     return float(min(values))
+
+
+def _canonical_topology_quality_fields(
+    *,
+    env: Any,
+    effective_reason: TerminationReason | None,
+    physics_config: PhysicsConfig | None,
+) -> dict[str, float]:
+    initial_state = getattr(env, "initial_state", None)
+    final_state = getattr(env, "current_state", None)
+
+    J0 = (
+        float("nan")
+        if initial_state is None
+        else float(
+            state_security_penalty(
+                initial_state,
+                physics_config=physics_config,
+            )
+        )
+    )
+
+    if effective_reason is TerminationReason.POWER_FLOW_FAILED:
+        evidence = getattr(env, "terminal_outcome_evidence", None)
+        final_utility = (
+            -1.0
+            if evidence is None
+            else float(evidence.topology_utility)
+        )
+        return {
+            "J0": J0,
+            "Jfinal": float("nan"),
+            "delta_J": float("nan"),
+            "relative_J_improvement": float("nan"),
+            "final_topology_utility": final_utility,
+        }
+
+    if final_state is None:
+        return {
+            "J0": J0,
+            "Jfinal": float("nan"),
+            "delta_J": float("nan"),
+            "relative_J_improvement": float("nan"),
+            "final_topology_utility": float("nan"),
+        }
+
+    Jfinal = float(
+        state_security_penalty(
+            final_state,
+            physics_config=physics_config,
+        )
+    )
+    delta_J = (
+        J0 - Jfinal
+        if math.isfinite(J0)
+        else float("nan")
+    )
+    if math.isfinite(J0) and J0 > 0.0:
+        relative_improvement = delta_J / J0
+    elif J0 == 0.0 and Jfinal == 0.0:
+        relative_improvement = 0.0
+    else:
+        relative_improvement = float("nan")
+
+    final_utility = float(
+        state_utility(
+            final_state,
+            physics_config=physics_config,
+        )
+    )
+    evidence = getattr(env, "terminal_outcome_evidence", None)
+    if evidence is not None:
+        evidence_utility = float(evidence.topology_utility)
+        if not math.isclose(
+            final_utility,
+            evidence_utility,
+            rel_tol=0.0,
+            abs_tol=1e-12,
+        ):
+            raise ValueError(
+                "Evaluation final topology utility does not match terminal "
+                "outcome evidence."
+            )
+
+    return {
+        "J0": J0,
+        "Jfinal": Jfinal,
+        "delta_J": delta_J,
+        "relative_J_improvement": float(relative_improvement),
+        "final_topology_utility": final_utility,
+    }
+
 
 def build_evaluation_episode_row(
     *,
@@ -83,6 +178,11 @@ def build_evaluation_episode_row(
         effective_done=effective_done,
         effective_solved=effective_solved,
         effective_reason=effective_reason,
+    )
+    topology_quality = _canonical_topology_quality_fields(
+        env=env,
+        effective_reason=effective_reason,
+        physics_config=physics_config,
     )
 
     row = {
@@ -157,6 +257,7 @@ def build_evaluation_episode_row(
         "solved": effective_solved,
         "termination_reason": termination_reason_value(effective_reason),
         **physical,
+        **topology_quality,
     }
     row["safety_score"] = compute_safety_score(
         row,

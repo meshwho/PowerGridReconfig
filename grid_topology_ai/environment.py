@@ -64,6 +64,7 @@ class TopologySwitchingEnv:
             allow_handoff_with_hard_overloads
         )
         self.current_state: GridFMState | None = None
+        self.initial_state: GridFMState | None = None
         self.initial_scenario_id: int | None = None
         self.step_count: int = 0
         self.done: bool = False
@@ -78,6 +79,7 @@ class TopologySwitchingEnv:
 
         scenario_id = int(scenario_id)
         self.current_state = None
+        self.initial_state = None
         self.initial_scenario_id = scenario_id
         self.step_count = 0
         self.done = False
@@ -109,6 +111,7 @@ class TopologySwitchingEnv:
             )
 
         self.current_state = initial_result.next_state
+        self.initial_state = self.current_state
         assessment = assess_physical_state(self.current_state.metrics)
         if assessment.physically_secure:
             self._finish_episode(
@@ -198,6 +201,7 @@ class TopologySwitchingEnv:
             ),
         )
         cloned.current_state = self.current_state
+        cloned.initial_state = self.initial_state
         cloned.initial_scenario_id = self.initial_scenario_id
         cloned.step_count = self.step_count
         cloned.done = self.done
