@@ -46,6 +46,7 @@ class GenerationConfig:
 
     use_root_noise: bool = True
     use_continuation_gate: bool = True
+    device: str = "cpu"
 
     pf_alg: int = 3
     stop_policy: str = "no_hard_overloads"
@@ -139,6 +140,15 @@ class GenerationConfig:
             "temperature_iterations",
             temperature_iterations,
         )
+
+        device = str(self.device).strip().lower()
+        require_choice(
+            "generation.device",
+            device,
+            {"auto", "cpu", "cuda"},
+        )
+        object.__setattr__(self, "device", device)
+
         pf_alg = coerce_exact_int("generation.pf_alg", self.pf_alg)
         object.__setattr__(self, "pf_alg", pf_alg)
         require_choice("generation.pf_alg", pf_alg, {1, 2, 3, 4})
@@ -279,6 +289,7 @@ class GenerationConfig:
             ),
             use_root_noise=bool(data.get("use_root_noise", True)),
             use_continuation_gate=bool(data.get("use_continuation_gate", True)),
+            device=str(data.get("device", "cpu")),
             pf_alg=coerce_exact_int("generation.pf_alg", data.get("pf_alg", 3)),
             stop_policy=str(data.get("stop_policy", "no_hard_overloads")),
             require_connected_after_switch=data.get(

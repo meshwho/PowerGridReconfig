@@ -340,6 +340,7 @@ def run_generate(
         action_seed=int(action_seed),
         clear_cache_between_scenarios=True,
         iteration=int(iteration),
+        device=config.device,
     )
 
     with _working_directory(project_root):
