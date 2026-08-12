@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+import torch
 
 from grid_topology_ai.config import GenerationConfig
 from grid_topology_ai.config.physics import DEFAULT_PHYSICS_CONFIG
@@ -12,7 +13,24 @@ from grid_topology_ai.self_play import stages
 def test_generation_device_config_accepts_supported_values() -> None:
     assert GenerationConfig.from_mapping({"device": "cpu"}).device == "cpu"
     assert GenerationConfig.from_mapping({"device": "CUDA"}).device == "cuda"
-    assert GenerationConfig.from_mapping({"device": " auto "}).device == "auto"
+
+
+@pytest.mark.parametrize(
+    ("cuda_available", "expected"),
+    [(False, "cpu"), (True, "cuda")],
+)
+def test_generation_device_auto_resolves_available_backend(
+    monkeypatch: pytest.MonkeyPatch,
+    cuda_available: bool,
+    expected: str,
+) -> None:
+    monkeypatch.setattr(
+        torch.cuda,
+        "is_available",
+        lambda: cuda_available,
+    )
+
+    assert GenerationConfig.from_mapping({"device": " auto "}).device == expected
 
 
 @pytest.mark.parametrize("device", ["mps", "gpu", "", "cuda:0"])
