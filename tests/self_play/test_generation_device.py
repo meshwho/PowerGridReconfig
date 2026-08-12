@@ -65,6 +65,16 @@ def test_run_generate_passes_configured_device(
         "generate_self_play_examples",
         fake_generate,
     )
+    monkeypatch.setattr(
+        stages,
+        "annotate_transitions_csv",
+        lambda **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        stages,
+        "annotate_examples_csv",
+        lambda **_kwargs: None,
+    )
 
     result = stages.run_generate(
         project_root=tmp_path,
