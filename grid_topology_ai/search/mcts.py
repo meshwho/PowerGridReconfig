@@ -1327,6 +1327,8 @@ class MCTSPlanner:
             step_result = child_env.step(action)
         except Exception:
             return None
+        if not step_result.power_flow_success:
+            return None
         return MCTSNode(
             env=child_env,
             depth=parent.depth + 1,
