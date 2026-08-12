@@ -84,8 +84,8 @@ class _RollingReplayBuffer:
 def _metrics(solve_rate: float) -> dict[str, object]:
     return {
         "solve_rate": solve_rate,
-        "pf_alg": 3,
-        "task_config": {"pf_alg": 3},
+        "pf_alg": 1,
+        "task_config": {"pf_alg": 1},
         "evaluation_metrics_contract_version": EVALUATION_METRICS_CONTRACT_VERSION,
         **physics_provenance(DEFAULT_PHYSICS_CONFIG),
         "physical_objective_contract": physical_objective_contract(),
@@ -181,7 +181,7 @@ def test_pipeline_returns_final_state(tmp_path: Path, monkeypatch) -> None:
     result = run_self_play_pipeline(_request(tmp_path, n_iterations=2))
     assert result.best_checkpoint == tmp_path / "best-2.pt"
     assert result.best_metrics["solve_rate"] == 0.4
-    assert result.best_metrics["pf_alg"] == 3
+    assert result.best_metrics["pf_alg"] == 1
     assert result.start_iteration == 2
     assert result.completed_iterations_before_run == (1,)
     assert result.executed_iterations == (2,)
@@ -352,7 +352,7 @@ def test_pipeline_rejects_bootstrap_metrics_pf_alg_before_iteration(tmp_path: Pa
         "initialize_best_state",
         lambda **kwargs: _BestState(
             tmp_path / "best.pt",
-            {**_metrics(0.25), "pf_alg": 1, "task_config": {"pf_alg": 1}},
+            {**_metrics(0.25), "pf_alg": 3, "task_config": {"pf_alg": 3}},
         ),
     )
     called = False

@@ -103,7 +103,7 @@ class _FakeReplayBuffer:
 def _metrics(
     solve_rate: float,
     *,
-    pf_alg: int = 3,
+    pf_alg: int = 1,
     failed_scenarios: int = 0,
     constrained_solve_rate: float | None = None,
     primary_policy_mode: str = "ungated",
@@ -968,7 +968,7 @@ def test_iteration_rejects_candidate_metrics_pf_alg_before_acceptance(
         lambda **kwargs: (
             _metrics(0.5)
             if Path(kwargs["checkpoint"]).name == "parent.pt"
-            else _metrics(0.9, pf_alg=1)
+            else _metrics(0.9, pf_alg=3)
         ),
     )
     monkeypatch.setattr(

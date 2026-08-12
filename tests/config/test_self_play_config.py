@@ -76,7 +76,7 @@ def test_pilot_config_preserves_current_values() -> None:
     assert config.training.examples_per_iteration == 128
     assert config.training.save_multiple_best is True
     assert config.generation.simulations == 25
-    assert config.generation.pf_alg == 3
+    assert config.generation.pf_alg == 1
     assert config.evaluation.simulations == 50
     assert config.replay_buffer.fresh_fraction == 0.70
 
@@ -229,10 +229,10 @@ def test_final_test_raw_dir_must_differ_from_eval_raw_dir() -> None:
         SelfPlayConfig.from_mapping(raw)
 
 
-def test_evaluation_config_defaults_to_pf_alg_3() -> None:
+def test_evaluation_config_defaults_to_pf_alg_1() -> None:
     from grid_topology_ai.config import EvaluationConfig
 
-    assert EvaluationConfig().pf_alg == 3
+    assert EvaluationConfig().pf_alg == 1
 
 
 def test_evaluation_config_reads_pf_alg() -> None:

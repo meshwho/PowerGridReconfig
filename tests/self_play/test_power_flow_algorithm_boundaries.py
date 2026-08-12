@@ -10,8 +10,8 @@ from tests.topology_contract_helpers import topology_metadata
 
 
 def test_power_flow_algorithm_static_boundaries(tmp_path: Path, monkeypatch) -> None:
-    assert GenerationConfig().pf_alg == 3
-    assert EvaluationConfig().pf_alg == 3
+    assert GenerationConfig().pf_alg == 1
+    assert EvaluationConfig().pf_alg == 1
 
     raw = {
         "run_name": "pf_boundary",

@@ -127,13 +127,13 @@ def test_expected_physics_config_mismatch_is_rejected() -> None:
 
 def test_conflicting_legacy_pf_alg_is_rejected() -> None:
     payload = _checkpoint()
-    payload["pf_alg"] = 1
+    payload["pf_alg"] = 3
 
     with pytest.raises(ValueError, match="conflicts with PhysicsConfig"):
         require_checkpoint_contracts(payload, source="damaged checkpoint")
 
 
-@pytest.mark.parametrize("legacy", [3, np.int64(3), 3.0, "3", " 3 "])
+@pytest.mark.parametrize("legacy", [1, np.int64(1), 1.0, "1", " 1 "])
 def test_equivalent_legacy_pf_alg_is_accepted(legacy: object) -> None:
     payload = _checkpoint()
     payload["pf_alg"] = legacy

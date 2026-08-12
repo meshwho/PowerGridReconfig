@@ -209,7 +209,7 @@ def test_run_evaluate_uses_evaluation_request(
     assert request.quiet is True
     assert request.limit is None
     assert request.pf_alg is None
-    assert request.resolved_pf_alg == 3
+    assert request.resolved_pf_alg == 1
     assert request.disable_cache is False
     assert request.stop_policy == "no_hard_overloads"
     assert request.use_dc_screening is False

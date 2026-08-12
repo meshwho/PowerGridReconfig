@@ -54,7 +54,7 @@ def _evaluation_metrics(
             requested_scenarios=100,
             physically_secure_count=int(round(rate * 100)),
             task_config={
-                "pf_alg": 3,
+                "pf_alg": 1,
                 "primary_policy_mode": "ungated",
             },
         )

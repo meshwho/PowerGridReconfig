@@ -175,7 +175,7 @@ def test_initial_path_uses_canonical_state_builder() -> None:
 
 def test_backend_rejects_mismatched_physics_fingerprints() -> None:
     adapter = SimpleNamespace(physics_config=DEFAULT_PHYSICS_CONFIG)
-    incompatible_config = replace(DEFAULT_PHYSICS_CONFIG, pf_alg=1)
+    incompatible_config = replace(DEFAULT_PHYSICS_CONFIG, pf_alg=3)
 
     with pytest.raises(ValueError, match="same PhysicsConfig fingerprint"):
         GridFMPowerFlowBackend(
