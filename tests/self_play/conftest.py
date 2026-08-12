@@ -75,10 +75,22 @@ def _canonical_branch_features(loading_percent: float) -> np.ndarray:
     return features
 
 
+def _legacy_topology_utility(metrics: Mapping[str, object]) -> float:
+    if PRIMARY_ACCEPTANCE_METRIC in metrics:
+        return float(metrics[PRIMARY_ACCEPTANCE_METRIC])
+    if "physically_secure_rate_requested" in metrics:
+        return float(metrics["physically_secure_rate_requested"])
+    return float(metrics.get("solve_rate", 0.0))
+
+
 def _strictify_legacy_metrics(
     metrics: Mapping[str, object],
 ) -> dict[str, object]:
     result = dict(metrics)
+    result.setdefault(
+        PRIMARY_ACCEPTANCE_METRIC,
+        _legacy_topology_utility(result),
+    )
 
     if "requested_scenarios" in result:
         return result
@@ -136,17 +148,22 @@ def _strictify_legacy_metrics(
     return result
 
 
+def _add_topology_columns(path: Path) -> None:
+    frame = pd.read_csv(path)
+    if "final_topology_utility" not in frame.columns:
+        secure = frame["physically_secure"].astype(bool)
+        frame["final_topology_utility"] = secure.astype(float)
+    if "Jfinal" not in frame.columns:
+        secure = frame["physically_secure"].astype(bool)
+        frame["Jfinal"] = np.where(secure, 0.0, 500.0)
+    frame.to_csv(path, index=False)
+
+
 @pytest.fixture(autouse=True)
 def migrate_pre_v5_self_play_test_fixtures(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """
-    Keep orchestration tests focused on orchestration while their compact
-    pre-v5 fixture dictionaries are migrated to the strict production schema.
-
-    Dedicated acceptance/config tests call the production APIs directly and
-    therefore exercise fail-closed behavior without this adapter.
-    """
+    """Keep compact legacy orchestration fixtures on the current contracts."""
 
     original_from_mapping = AcceptanceConfig.from_mapping
 
@@ -156,7 +173,10 @@ def migrate_pre_v5_self_play_test_fixtures(
     ) -> AcceptanceConfig:
         migrated = dict(data)
 
-        if migrated.get("metric") == "solve_rate":
+        if migrated.get("metric") in {
+            "solve_rate",
+            "physically_secure_rate_requested",
+        }:
             migrated["metric"] = PRIMARY_ACCEPTANCE_METRIC
 
         migrated.pop(
@@ -195,6 +215,73 @@ def migrate_pre_v5_self_play_test_fixtures(
         "accept_candidate",
         migrated_accept_candidate,
     )
+
+
+@pytest.fixture(autouse=True)
+def adapt_topology_utility_self_play_helpers(
+    request: pytest.FixtureRequest,
+    monkeypatch: pytest.MonkeyPatch,
+) -> Iterator[None]:
+    """Migrate old self-play test helpers without weakening production checks."""
+
+    module = request.module
+    name = request.node.path.name
+
+    if name == "test_iteration.py":
+        original_metrics = getattr(module, "_metrics", None)
+        if original_metrics is not None:
+            def metrics_with_utility(*args: object, **kwargs: object):
+                result = original_metrics(*args, **kwargs)
+                result[PRIMARY_ACCEPTANCE_METRIC] = _legacy_topology_utility(result)
+                for mode in result.get("mode_metrics", {}).values():
+                    mode[PRIMARY_ACCEPTANCE_METRIC] = _legacy_topology_utility(mode)
+                return result
+
+            monkeypatch.setattr(module, "_metrics", metrics_with_utility)
+
+        original_write = getattr(module, "_write_evaluation_results", None)
+        if original_write is not None:
+            def write_results(*args: object, **kwargs: object):
+                path = original_write(*args, **kwargs)
+                _add_topology_columns(Path(path))
+                return path
+
+            monkeypatch.setattr(module, "_write_evaluation_results", write_results)
+
+    if name in {
+        "test_checkpoint_arena.py",
+        "test_ungated_contract_completion.py",
+    }:
+        original_arena_metrics = getattr(module, "_arena_metrics", None)
+        if original_arena_metrics is not None:
+            def arena_metrics(*args: object, **kwargs: object):
+                result = original_arena_metrics(*args, **kwargs)
+                mode_metrics = result.get("mode_metrics", {})
+                for mode in mode_metrics.values():
+                    mode[PRIMARY_ACCEPTANCE_METRIC] = float(
+                        mode.get("physically_secure_rate_requested", 0.0)
+                    )
+                primary_mode = str(result.get("primary_policy_mode", "ungated"))
+                primary = mode_metrics.get(primary_mode, {})
+                result[PRIMARY_ACCEPTANCE_METRIC] = float(
+                    primary.get(PRIMARY_ACCEPTANCE_METRIC, 0.0)
+                )
+                return result
+
+            monkeypatch.setattr(module, "_arena_metrics", arena_metrics)
+
+    if name == "test_ungated_contract_completion.py":
+        original_write = getattr(module, "_write_paired_rows", None)
+        if original_write is not None:
+            def write_paired_rows(*args: object, **kwargs: object):
+                result = original_write(*args, **kwargs)
+                path = Path(kwargs["output_dir"]) / kwargs["output_csv_name"]
+                _add_topology_columns(path)
+                return result
+
+            monkeypatch.setattr(module, "_write_paired_rows", write_paired_rows)
+
+    yield
 
 
 @pytest.fixture(autouse=True)
