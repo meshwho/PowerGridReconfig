@@ -48,7 +48,7 @@ class GenerationConfig:
     use_continuation_gate: bool = True
     device: str = "cpu"
 
-    pf_alg: int = 3
+    pf_alg: int = 1
     stop_policy: str = "no_hard_overloads"
 
     require_connected_after_switch: bool = True
@@ -294,7 +294,7 @@ class GenerationConfig:
             use_root_noise=bool(data.get("use_root_noise", True)),
             use_continuation_gate=bool(data.get("use_continuation_gate", True)),
             device=str(data.get("device", "cpu")),
-            pf_alg=coerce_exact_int("generation.pf_alg", data.get("pf_alg", 3)),
+            pf_alg=coerce_exact_int("generation.pf_alg", data.get("pf_alg", 1)),
             stop_policy=str(data.get("stop_policy", "no_hard_overloads")),
             require_connected_after_switch=data.get(
                 "require_connected_after_switch",

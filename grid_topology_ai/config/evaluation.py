@@ -22,7 +22,7 @@ class EvaluationConfig:
     max_steps: int = 5
     top_k: int = 30
     exploration_quota: int = 2
-    pf_alg: int = 3
+    pf_alg: int = 1
     widening_coefficient: float = 2.0
     widening_exponent: float = 0.5
     random_seed: int = 42
@@ -204,7 +204,7 @@ class EvaluationConfig:
             top_k=int(data.get("top_k", 30)),
             pf_alg=coerce_exact_int(
                 "evaluation.pf_alg",
-                data.get("pf_alg", 3),
+                data.get("pf_alg", 1),
             ),
             widening_coefficient=float(
                 data.get("widening_coefficient", 2.0)

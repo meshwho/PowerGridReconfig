@@ -37,7 +37,7 @@ def _finite(name: str, value: object, *, positive: bool = False) -> float:
 @dataclass(frozen=True, slots=True)
 class PhysicsConfig:
     base_mva: float = 100.0
-    pf_alg: int = 3
+    pf_alg: int = 1
     pf_tolerance: float = 1e-8
     max_iterations: int = 30
     q_limit_policy: QLimitPolicy = QLimitPolicy.ENFORCE

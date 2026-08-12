@@ -20,7 +20,7 @@ _ARENA_DEFAULTS = {
     "max_steps": 5,
     "top_k": 20,
     "exploration_quota": 2,
-    "pf_alg": 3,
+    "pf_alg": 1,
     "widening_coefficient": 2.0,
     "widening_exponent": 0.5,
     "random_seed": 42,
