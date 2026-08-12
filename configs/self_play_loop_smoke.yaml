@@ -44,7 +44,7 @@ checkpoint_selection:
   metric_direction: maximize
   arena:
     simulations: 2
-    pf_alg: 3
+    pf_alg: 1
     depth: 1
     max_steps: 2
     top_k: 3
@@ -72,7 +72,7 @@ best_metrics_path: runs/self_play_smoke/checkpoints/best_metrics.json
 
 physics:
   base_mva: 100.0
-  pf_alg: 3
+  pf_alg: 1
   pf_tolerance: 1.0e-8
   max_iterations: 30
   q_limit_policy: enforce
@@ -110,7 +110,7 @@ generation:
   temperature_steps: 1
   temperature_iterations: 1
   use_continuation_gate: true
-  pf_alg: 3
+  pf_alg: 1
   stop_policy: no_hard_overloads
 
   # Stable branch slots execute open/close according to current branch_status.
@@ -139,7 +139,7 @@ training:
 
 evaluation:
   simulations: 5
-  pf_alg: 3
+  pf_alg: 1
   depth: 1
   max_steps: 2
   top_k: 5
