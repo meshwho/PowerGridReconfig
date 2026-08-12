@@ -147,6 +147,10 @@ class GenerationConfig:
             device,
             {"auto", "cpu", "cuda"},
         )
+        if device == "auto":
+            import torch
+
+            device = "cuda" if torch.cuda.is_available() else "cpu"
         object.__setattr__(self, "device", device)
 
         pf_alg = coerce_exact_int("generation.pf_alg", self.pf_alg)
