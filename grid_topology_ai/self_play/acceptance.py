@@ -40,11 +40,8 @@ _COMPONENT_FIELDS = (
     "physically_secure",
 )
 
-_CONFIDENCE_SAFETY_FIELDS = tuple(
-    field
-    for field in PAIRED_OUTCOME_FIELDS
-    if field != "physically_secure"
-)
+_CONFIDENCE_SAFETY_FIELDS = tuple(PAIRED_OUTCOME_FIELDS)
+
 
 @dataclass(frozen=True, slots=True)
 class _ValidatedAcceptanceMetrics:
@@ -52,6 +49,7 @@ class _ValidatedAcceptanceMetrics:
     evaluated_scenarios: int
     failed_scenarios: int
 
+    avg_final_topology_utility: float
     physically_secure_rate_requested: float
 
     evaluation_coverage_rate: float
@@ -64,11 +62,21 @@ class _ValidatedAcceptanceMetrics:
     generator_p_feasible_rate_requested: float
     generator_q_feasible_rate_requested: float
 
+
 @dataclass(frozen=True, slots=True)
 class _ValidatedPairedMetric:
     rate_difference: float
     ci_lower: float
     ci_upper: float
+
+
+@dataclass(frozen=True, slots=True)
+class _ValidatedPairedContinuousMetric:
+    valid_pairs: int
+    mean_improvement: float
+    ci_lower: float
+    ci_upper: float
+
 
 def _require_count(
     metrics: Mapping[str, object],
@@ -105,6 +113,7 @@ def _require_count(
         )
 
     return value
+
 
 def _require_rate(
     metrics: Mapping[str, object],
@@ -146,6 +155,37 @@ def _require_rate(
         )
 
     return value
+
+
+def _require_bounded_number(
+    values: Mapping[str, object],
+    *,
+    name: str,
+    source: str,
+    lower: float,
+    upper: float,
+) -> float:
+    if name not in values:
+        raise ValueError(
+            f"Invalid {source}: required field {name!r} is missing."
+        )
+
+    raw_value = values[name]
+    if isinstance(raw_value, bool) or not isinstance(raw_value, Real):
+        raise ValueError(
+            f"Invalid {source}: {name!r} must be a finite number "
+            f"in [{lower}, {upper}], got {raw_value!r}."
+        )
+
+    value = float(raw_value)
+    if not math.isfinite(value) or value < lower or value > upper:
+        raise ValueError(
+            f"Invalid {source}: {name!r} must be a finite number "
+            f"in [{lower}, {upper}], got {raw_value!r}."
+        )
+
+    return value
+
 
 def _require_consistent_rate(
     *,
@@ -208,6 +248,14 @@ def _validate_acceptance_metrics(
             f"Observed {evaluated_scenarios} + {failed_scenarios} "
             f"!= {requested_scenarios}."
         )
+
+    avg_final_topology_utility = _require_bounded_number(
+        metrics,
+        name="avg_final_topology_utility",
+        source=f"acceptance metrics for {source}",
+        lower=-1.0,
+        upper=1.0,
+    )
 
     solve_count = _require_count(
         metrics,
@@ -404,6 +452,7 @@ def _validate_acceptance_metrics(
         requested_scenarios=requested_scenarios,
         evaluated_scenarios=evaluated_scenarios,
         failed_scenarios=failed_scenarios,
+        avg_final_topology_utility=avg_final_topology_utility,
         physically_secure_rate_requested=(
             physically_secure_rate_requested
         ),
@@ -431,44 +480,21 @@ def _validate_acceptance_metrics(
         ),
     )
 
+
 def _require_difference(
     values: Mapping[str, object],
     *,
     name: str,
     source: str,
 ) -> float:
-    if name not in values:
-        raise ValueError(
-            f"Invalid {source}: required field "
-            f"{name!r} is missing."
-        )
+    return _require_bounded_number(
+        values,
+        name=name,
+        source=source,
+        lower=-1.0,
+        upper=1.0,
+    )
 
-    raw_value = values[name]
-
-    if isinstance(raw_value, bool) or not isinstance(
-        raw_value,
-        Real,
-    ):
-        raise ValueError(
-            f"Invalid {source}: {name!r} must be "
-            "a finite number in [-1, 1], "
-            f"got {raw_value!r}."
-        )
-
-    value = float(raw_value)
-
-    if (
-        not math.isfinite(value)
-        or value < -1.0
-        or value > 1.0
-    ):
-        raise ValueError(
-            f"Invalid {source}: {name!r} must be "
-            "a finite number in [-1, 1], "
-            f"got {raw_value!r}."
-        )
-
-    return value
 
 def _validate_paired_metric(
     metrics: Mapping[str, object],
@@ -628,6 +654,75 @@ def _validate_paired_metric(
         ci_upper=ci_upper,
     )
 
+
+def _validate_paired_continuous_metric(
+    metrics: Mapping[str, object],
+    *,
+    name: str,
+    scenario_count: int,
+) -> _ValidatedPairedContinuousMetric:
+    raw_metric = metrics.get(name)
+    if not isinstance(raw_metric, Mapping):
+        raise ValueError(
+            "Invalid paired comparison: continuous metric "
+            f"{name!r} is missing or is not a mapping."
+        )
+
+    source = f"paired continuous metric {name!r}"
+    valid_pairs = _require_count(
+        raw_metric,
+        name="valid_pairs",
+        source=source,
+    )
+    if valid_pairs != scenario_count:
+        raise ValueError(
+            f"Invalid {source}: valid_pairs must equal scenario_count "
+            f"for acceptance, observed {valid_pairs} != {scenario_count}."
+        )
+
+    mean_improvement = _require_bounded_number(
+        raw_metric,
+        name="mean_improvement",
+        source=source,
+        lower=-2.0,
+        upper=2.0,
+    )
+    ci_lower = _require_bounded_number(
+        raw_metric,
+        name="ci_lower",
+        source=source,
+        lower=-2.0,
+        upper=2.0,
+    )
+    ci_upper = _require_bounded_number(
+        raw_metric,
+        name="ci_upper",
+        source=source,
+        lower=-2.0,
+        upper=2.0,
+    )
+
+    if ci_lower > ci_upper:
+        raise ValueError(
+            f"Invalid {source}: ci_lower cannot exceed ci_upper."
+        )
+    if (
+        mean_improvement < ci_lower - _COMPARISON_EPSILON
+        or mean_improvement > ci_upper + _COMPARISON_EPSILON
+    ):
+        raise ValueError(
+            f"Invalid {source}: confidence interval must contain "
+            "mean_improvement."
+        )
+
+    return _ValidatedPairedContinuousMetric(
+        valid_pairs=valid_pairs,
+        mean_improvement=mean_improvement,
+        ci_lower=ci_lower,
+        ci_upper=ci_upper,
+    )
+
+
 def passes_confidence_gates(
     *,
     comparison: Mapping[str, object],
@@ -720,7 +815,6 @@ def passes_confidence_gates(
         )
 
     raw_metrics = comparison.get("metrics")
-
     if not isinstance(raw_metrics, Mapping):
         raise ValueError(
             "Paired comparison is missing metrics."
@@ -735,10 +829,18 @@ def passes_confidence_gates(
         for field in PAIRED_OUTCOME_FIELDS
     }
 
-    primary = validated["physically_secure"]
+    raw_continuous = comparison.get("continuous_metrics")
+    if not isinstance(raw_continuous, Mapping):
+        raise ValueError(
+            "Paired comparison is missing continuous_metrics."
+        )
 
-    # The lower confidence bound must strictly
-    # exceed the configured improvement threshold.
+    primary = _validate_paired_continuous_metric(
+        raw_continuous,
+        name="final_topology_utility",
+        scenario_count=scenario_count,
+    )
+
     if (
         primary.ci_lower
         <= config.min_improvement
@@ -746,17 +848,12 @@ def passes_confidence_gates(
     ):
         return False
 
-    # Other physical outcomes are non-inferiority
-    # gates. Their lower confidence bound may be
-    # zero, but it must not be negative.
     for field in _CONFIDENCE_SAFETY_FIELDS:
-        if (
-            validated[field].ci_lower
-            < -_COMPARISON_EPSILON
-        ):
+        if validated[field].ci_lower < -_COMPARISON_EPSILON:
             return False
 
     return True
+
 
 def _coerce_pf_alg(value: object, *, source: str) -> int:
     try:
@@ -978,18 +1075,20 @@ def accept_candidate(
             candidate.generator_q_feasible_rate_requested,
             best.generator_q_feasible_rate_requested,
         ),
+        (
+            "physically_secure_rate_requested",
+            candidate.physically_secure_rate_requested,
+            best.physically_secure_rate_requested,
+        ),
     )
 
     for _, candidate_value, best_value in higher_is_better_gates:
-        if (
-            candidate_value + _COMPARISON_EPSILON
-            < best_value
-        ):
+        if candidate_value + _COMPARISON_EPSILON < best_value:
             return False
 
     improvement = (
-        candidate.physically_secure_rate_requested
-        - best.physically_secure_rate_requested
+        candidate.avg_final_topology_utility
+        - best.avg_final_topology_utility
     )
 
     if improvement <= _COMPARISON_EPSILON:

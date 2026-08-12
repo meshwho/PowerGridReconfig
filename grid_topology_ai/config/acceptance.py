@@ -11,7 +11,7 @@ from grid_topology_ai.config._validation import (
 )
 
 
-PRIMARY_ACCEPTANCE_METRIC = "physically_secure_rate_requested"
+PRIMARY_ACCEPTANCE_METRIC = "avg_final_topology_utility"
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,7 +87,7 @@ class AcceptanceConfig:
         if isinstance(self.min_improvement, bool):
             raise ValueError(
                 "acceptance.min_improvement must be a finite number "
-                "in [0, 1], not a boolean."
+                "in [0, 2], not a boolean."
             )
 
         try:
@@ -95,17 +95,17 @@ class AcceptanceConfig:
         except (TypeError, ValueError):
             raise ValueError(
                 "acceptance.min_improvement must be a finite number "
-                "in [0, 1]."
+                "in [0, 2]."
             ) from None
 
         if (
             not math.isfinite(min_improvement)
             or min_improvement < 0.0
-            or min_improvement > 1.0
+            or min_improvement > 2.0
         ):
             raise ValueError(
                 "acceptance.min_improvement must be a finite number "
-                f"in [0, 1], got {self.min_improvement!r}."
+                f"in [0, 2], got {self.min_improvement!r}."
             )
 
         object.__setattr__(

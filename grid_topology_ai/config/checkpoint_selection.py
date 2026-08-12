@@ -38,6 +38,7 @@ _ARENA_DEFAULTS = {
 }
 _SUPPORTED_OBJECTIVE_COUNT = 4
 _METRIC_DIRECTIONS = {"maximize", "minimize"}
+_DEFAULT_ARENA_METRIC = "avg_final_topology_utility"
 
 
 def _default_arena_config() -> EvaluationConfig:
@@ -59,7 +60,7 @@ class CheckpointSelectionConfig:
     candidates_per_metric: int = 1
     max_candidates: int = 4
     calibration_bins: int = 10
-    metric: str = "physically_secure_rate_requested"
+    metric: str = _DEFAULT_ARENA_METRIC
     metric_direction: str = "maximize"
 
     arena: EvaluationConfig = field(
@@ -195,7 +196,7 @@ class CheckpointSelectionConfig:
             metric=str(
                 data.get(
                     "metric",
-                    "physically_secure_rate_requested",
+                    _DEFAULT_ARENA_METRIC,
                 )
             ),
             metric_direction=str(

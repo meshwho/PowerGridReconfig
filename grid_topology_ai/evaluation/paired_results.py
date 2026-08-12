@@ -8,7 +8,7 @@ import pandas as pd
 from pandas.api.types import is_bool_dtype
 
 
-PAIRED_COMPARISON_VERSION = 1
+PAIRED_COMPARISON_VERSION = 2
 DEFAULT_CONFIDENCE_LEVEL = 0.95
 DEFAULT_BOOTSTRAP_SAMPLES = 5000
 
@@ -151,6 +151,60 @@ def compare_evaluation_results(
             ),
         }
 
+    utility_differences = (
+        candidate["final_topology_utility"].to_numpy(dtype=float)
+        - parent["final_topology_utility"].to_numpy(dtype=float)
+    )
+    utility_lower, utility_upper = _bootstrap_interval(
+        utility_differences,
+        confidence_level=confidence_level,
+        bootstrap_samples=parsed_bootstrap_samples,
+        rng=rng,
+    )
+
+    continuous_metrics: dict[str, dict[str, object]] = {
+        "final_topology_utility": _continuous_metric_summary(
+            parent_values=parent["final_topology_utility"].to_numpy(dtype=float),
+            candidate_values=(
+                candidate["final_topology_utility"].to_numpy(dtype=float)
+            ),
+            improvements=utility_differences,
+            ci_lower=utility_lower,
+            ci_upper=utility_upper,
+        )
+    }
+
+    parent_J = parent["Jfinal"].to_numpy(dtype=float)
+    candidate_J = candidate["Jfinal"].to_numpy(dtype=float)
+    valid_J = np.isfinite(parent_J) & np.isfinite(candidate_J)
+    if bool(valid_J.any()):
+        J_improvements = parent_J[valid_J] - candidate_J[valid_J]
+        J_lower, J_upper = _bootstrap_interval(
+            J_improvements,
+            confidence_level=confidence_level,
+            bootstrap_samples=parsed_bootstrap_samples,
+            rng=rng,
+        )
+        continuous_metrics["Jfinal"] = _continuous_metric_summary(
+            parent_values=parent_J[valid_J],
+            candidate_values=candidate_J[valid_J],
+            improvements=J_improvements,
+            ci_lower=J_lower,
+            ci_upper=J_upper,
+        )
+    else:
+        continuous_metrics["Jfinal"] = {
+            "valid_pairs": 0,
+            "parent_mean": None,
+            "candidate_mean": None,
+            "mean_improvement": None,
+            "ci_lower": None,
+            "ci_upper": None,
+            "improved_scenarios": 0,
+            "regressed_scenarios": 0,
+            "unchanged_scenarios": 0,
+        }
+
     return {
         "paired_comparison_version": (
             PAIRED_COMPARISON_VERSION
@@ -161,6 +215,7 @@ def compare_evaluation_results(
         "bootstrap_samples": parsed_bootstrap_samples,
         "seed": int(seed),
         "metrics": metric_results,
+        "continuous_metrics": continuous_metrics,
     }
 
 
@@ -180,6 +235,8 @@ def _load_policy_results(
         "scenario_id",
         "policy_mode",
         "evaluation_failed",
+        "final_topology_utility",
+        "Jfinal",
         *PAIRED_OUTCOME_FIELDS[1:],
     }
     missing_columns = sorted(
@@ -282,7 +339,63 @@ def _load_policy_results(
 
         result[field] = values
 
+    utility = pd.to_numeric(
+        frame["final_topology_utility"],
+        errors="coerce",
+    ).astype(float)
+    utility.loc[evaluation_failed] = -1.0
+    valid_utility = utility.loc[~evaluation_failed]
+    if (
+        valid_utility.isna().any()
+        or not np.isfinite(valid_utility.to_numpy(dtype=float)).all()
+        or bool(((valid_utility < -1.0) | (valid_utility > 1.0)).any())
+    ):
+        raise ValueError(
+            "final_topology_utility must be finite and in [-1, 1] "
+            f"for successful evaluation rows: {path}"
+        )
+    result["final_topology_utility"] = utility
+
+    Jfinal = pd.to_numeric(
+        frame["Jfinal"],
+        errors="coerce",
+    ).astype(float)
+    finite_J = Jfinal[np.isfinite(Jfinal.to_numpy(dtype=float))]
+    if bool((finite_J < 0.0).any()):
+        raise ValueError(
+            f"Jfinal must be non-negative when finite: {path}"
+        )
+    result["Jfinal"] = Jfinal
+
     return result
+
+
+def _continuous_metric_summary(
+    *,
+    parent_values: np.ndarray,
+    candidate_values: np.ndarray,
+    improvements: np.ndarray,
+    ci_lower: float,
+    ci_upper: float,
+) -> dict[str, object]:
+    tolerance = 1e-12
+    return {
+        "valid_pairs": int(improvements.size),
+        "parent_mean": float(parent_values.mean()),
+        "candidate_mean": float(candidate_values.mean()),
+        "mean_improvement": float(improvements.mean()),
+        "ci_lower": float(ci_lower),
+        "ci_upper": float(ci_upper),
+        "improved_scenarios": int(
+            np.count_nonzero(improvements > tolerance)
+        ),
+        "regressed_scenarios": int(
+            np.count_nonzero(improvements < -tolerance)
+        ),
+        "unchanged_scenarios": int(
+            np.count_nonzero(np.abs(improvements) <= tolerance)
+        ),
+    }
 
 
 def _coerce_bool_series(

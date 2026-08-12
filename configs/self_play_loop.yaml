@@ -50,7 +50,8 @@ checkpoint_selection:
   candidates_per_metric: 1
   max_candidates: 4
   calibration_bins: 10
-  metric: physically_secure_rate_requested
+  metric: avg_final_topology_utility
+  metric_direction: maximize
   arena:
     simulations: 40
     pf_alg: 3
@@ -181,7 +182,7 @@ evaluation:
   output_json_name: eval_metrics.json
 
 acceptance:
-  metric: physically_secure_rate_requested
+  metric: avg_final_topology_utility
   min_improvement: 0.0
   reject_if_failed_scenarios_above: 0
   confidence_level: 0.95
