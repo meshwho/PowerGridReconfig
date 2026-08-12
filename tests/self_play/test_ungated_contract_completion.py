@@ -53,6 +53,7 @@ def _evaluation_metrics(
         return _acceptance_helpers._metrics(
             requested_scenarios=100,
             physically_secure_count=int(round(rate * 100)),
+            pf_alg=1,
             task_config={
                 "pf_alg": 1,
                 "primary_policy_mode": "ungated",
