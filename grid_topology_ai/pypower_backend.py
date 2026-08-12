@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import replace
+import hashlib
+from dataclasses import dataclass, replace
 from typing import Any
 
 import numpy as np
@@ -49,6 +50,16 @@ _GENERATOR_COLUMNS = (
     "min_q_mvar",
     "max_q_mvar",
 )
+
+
+@dataclass(frozen=True)
+class _GeneratorOperatingPointState(GridFMState):
+    """Solved state carrying the exact per-generator operating point."""
+
+    generator_ids: np.ndarray | None = None
+    generator_p_mw: np.ndarray | None = None
+    generator_q_mvar: np.ndarray | None = None
+    generator_status: np.ndarray | None = None
 
 
 # Preserve the public module path used by pickled results and type displays.
@@ -128,6 +139,100 @@ class GridFMPowerFlowBackend(_CoreGridFMPowerFlowBackend):
         options["OPF_VIOLATION"] = self.physics_config.generator_q_tolerance_mvar
         return options
 
+    @staticmethod
+    def _generator_operating_point(
+        state: GridFMState,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray] | None:
+        values = (
+            getattr(state, "generator_ids", None),
+            getattr(state, "generator_p_mw", None),
+            getattr(state, "generator_q_mvar", None),
+            getattr(state, "generator_status", None),
+        )
+
+        if all(value is None for value in values):
+            return None
+        if any(value is None for value in values):
+            raise InvalidPhysicalState(
+                "Generator operating point is incomplete in GridFMState."
+            )
+
+        ids = np.asarray(values[0], dtype=np.int64)
+        pg = np.asarray(values[1], dtype=np.float64)
+        qg = np.asarray(values[2], dtype=np.float64)
+        status = np.asarray(values[3], dtype=np.float64)
+
+        if ids.ndim != 1:
+            raise InvalidPhysicalState("Generator IDs must be one-dimensional.")
+        if any(array.shape != ids.shape for array in (pg, qg, status)):
+            raise InvalidPhysicalState(
+                "Generator operating-point arrays must have matching shapes."
+            )
+        if np.unique(ids).size != ids.size:
+            raise InvalidPhysicalState("Generator IDs must be unique.")
+        if not np.isfinite(pg).all() or not np.isfinite(qg).all():
+            raise InvalidPhysicalState(
+                "Generator operating point contains NaN or infinity."
+            )
+        if not np.isfinite(status).all() or np.any(
+            (status != 0.0) & (status != 1.0)
+        ):
+            raise InvalidPhysicalState(
+                "Generator status must contain only 0 or 1."
+            )
+
+        return ids, pg, qg, status
+
+    @staticmethod
+    def _with_generator_operating_point(
+        state: GridFMState,
+        *,
+        result_ppc: dict[str, Any],
+        original_frames: dict[str, pd.DataFrame],
+    ) -> GridFMState:
+        gen_df = original_frames["gen"].sort_values("idx").reset_index(drop=True)
+        gen_result = np.asarray(result_ppc["gen"])
+
+        if gen_result.ndim != 2 or gen_result.shape[0] != len(gen_df):
+            raise InvalidPhysicalState(
+                "PYPOWER gen result does not match the source frame."
+            )
+
+        return _GeneratorOperatingPointState(
+            scenario_id=state.scenario_id,
+            load_scenario_idx=state.load_scenario_idx,
+            bus_features=state.bus_features,
+            branch_features=state.branch_features,
+            edge_index=state.edge_index,
+            branch_ids=state.branch_ids,
+            branch_status=state.branch_status,
+            metrics=state.metrics,
+            outaged_branch_ids=state.outaged_branch_ids,
+            bus_ids=state.bus_ids,
+            generator_ids=gen_df["idx"].to_numpy(dtype=np.int64, copy=True),
+            generator_p_mw=np.asarray(
+                gen_result[:, PG], dtype=np.float64
+            ).copy(),
+            generator_q_mvar=np.asarray(
+                gen_result[:, QG], dtype=np.float64
+            ).copy(),
+            generator_status=np.asarray(
+                gen_result[:, GEN_STATUS], dtype=np.float64
+            ).copy(),
+        )
+
+    def _power_flow_input_fingerprint(self, state: GridFMState) -> str:
+        fingerprint = super()._power_flow_input_fingerprint(state)
+        operating_point = self._generator_operating_point(state)
+
+        if operating_point is None:
+            return fingerprint
+
+        digest = hashlib.sha256(fingerprint.encode("ascii"))
+        for values in operating_point:
+            self._hash_array(digest, values)
+        return digest.hexdigest()
+
     def _make_cache_key_from_state(
         self,
         state: GridFMState,
@@ -150,16 +255,48 @@ class GridFMPowerFlowBackend(_CoreGridFMPowerFlowBackend):
         *,
         action: GridFMAction | None = None,
     ) -> tuple[dict[str, Any], dict[str, pd.DataFrame]]:
-        """Build a case from either the legacy ID or a topology action."""
+        """Build a case from the current topology and generator operating point."""
 
         if action is not None:
             switched_off_branch_id = None
 
-        return super()._build_ppc_from_state(
+        ppc, frames = super()._build_ppc_from_state(
             state=state,
             switched_off_branch_id=switched_off_branch_id,
             action=action,
         )
+
+        operating_point = self._generator_operating_point(state)
+        if operating_point is None:
+            return ppc, frames
+
+        generator_ids, pg, qg, status = operating_point
+        gen_df = frames["gen"].sort_values("idx").reset_index(drop=True).copy()
+        frame_ids = gen_df["idx"].to_numpy(dtype=np.int64)
+
+        if not np.array_equal(frame_ids, generator_ids):
+            raise InvalidPhysicalState(
+                "Generator operating point does not match scenario generator IDs."
+            )
+
+        gen_df["p_mw"] = pg
+        gen_df["q_mvar"] = qg
+        gen_df["in_service"] = status
+
+        source_bus_df = self.adapter.bus_df[
+            self.adapter.bus_df["scenario"] == int(state.scenario_id)
+        ].copy()
+        if source_bus_df.empty:
+            raise InvalidPhysicalState(
+                f"Scenario {state.scenario_id} not found in bus_data."
+            )
+        source_bus_df = source_bus_df.sort_values("bus").reset_index(drop=True)
+
+        # Keep the original voltage-control setpoint while carrying forward the
+        # solved generator P/Q/status from the parent topology state.
+        ppc["gen"] = self._build_gen_matrix(gen_df, source_bus_df)
+        frames["gen"] = gen_df
+        return ppc, frames
 
     def run_power_flow_from_state(
         self,
@@ -244,11 +381,16 @@ class GridFMPowerFlowBackend(_CoreGridFMPowerFlowBackend):
         original_frames: dict[str, pd.DataFrame],
         physical_metrics: dict[str, object] | None = None,
     ) -> GridFMState:
-        return self._build_canonical_state(
+        state = self._build_canonical_state(
             scenario_id=scenario_id,
             result_ppc=result_ppc,
             original_frames=original_frames,
             physical_metrics=physical_metrics,
+        )
+        return self._with_generator_operating_point(
+            state,
+            result_ppc=result_ppc,
+            original_frames=original_frames,
         )
 
     def _build_state_from_pypower_result_fast(
@@ -312,12 +454,17 @@ class GridFMPowerFlowBackend(_CoreGridFMPowerFlowBackend):
         metrics["min_vm_pu"] = float(np.min(vm))
         metrics["max_vm_pu"] = float(np.max(vm))
 
-        return replace(
+        state = replace(
             state,
             bus_features=bus_features,
             branch_features=branch_features,
             metrics=metrics,
             bus_ids=previous_state.bus_ids,
+        )
+        return self._with_generator_operating_point(
+            state,
+            result_ppc=result_ppc,
+            original_frames=original_frames,
         )
 
     @staticmethod
