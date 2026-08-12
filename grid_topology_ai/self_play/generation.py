@@ -438,6 +438,102 @@ def _step_metadata(
     }
 
 
+_PF_PERFORMANCE_COUNTERS = (
+    "hits",
+    "misses",
+    "exact_cache_hits",
+    "tolerant_cache_hits",
+    "warm_start_hits",
+    "cold_start_misses",
+    "stock_runpf_calls",
+    "q_limit_resolves",
+)
+
+
+def _power_flow_performance_snapshot(backend: Any) -> dict[str, object]:
+    performance_info = getattr(backend, "performance_info", None)
+    if callable(performance_info):
+        return dict(performance_info())
+    cache_info = getattr(backend, "cache_info", None)
+    if callable(cache_info):
+        return dict(cache_info())
+    return {}
+
+
+def _new_power_flow_performance_summary(enabled: bool) -> dict[str, object]:
+    summary: dict[str, object] = {
+        "enabled": bool(enabled),
+        "scenarios": 0,
+        "peak_cache_size": 0,
+        "peak_topology_cache_buckets": 0,
+        "peak_topology_cache_entries": 0,
+    }
+    for key in _PF_PERFORMANCE_COUNTERS:
+        summary[key] = 0
+    return summary
+
+
+def _record_power_flow_scenario(
+    summary: dict[str, object],
+    before: dict[str, object],
+    after: dict[str, object],
+) -> None:
+    summary["scenarios"] = int(summary["scenarios"]) + 1
+    for key in _PF_PERFORMANCE_COUNTERS:
+        delta = max(
+            int(after.get(key, 0)) - int(before.get(key, 0)),
+            0,
+        )
+        summary[key] = int(summary[key]) + delta
+
+    summary["peak_cache_size"] = max(
+        int(summary["peak_cache_size"]),
+        int(after.get("size", 0)),
+    )
+    summary["peak_topology_cache_buckets"] = max(
+        int(summary["peak_topology_cache_buckets"]),
+        int(after.get("topology_cache_buckets", 0)),
+    )
+    summary["peak_topology_cache_entries"] = max(
+        int(summary["peak_topology_cache_entries"]),
+        int(after.get("topology_cache_entries", 0)),
+    )
+
+
+def _finalize_power_flow_performance_summary(
+    summary: dict[str, object],
+) -> dict[str, object]:
+    result = dict(summary)
+    hits = int(result["hits"])
+    misses = int(result["misses"])
+    lookups = hits + misses
+    warm_starts = int(result["warm_start_hits"])
+    cold_starts = int(result["cold_start_misses"])
+    stock_calls = int(result["stock_runpf_calls"])
+
+    result["hit_rate"] = (
+        float(hits) / float(lookups)
+        if lookups > 0
+        else 0.0
+    )
+    result["warm_start_rate"] = (
+        float(warm_starts) / float(misses)
+        if misses > 0
+        else 0.0
+    )
+    result["cold_start_rate"] = (
+        float(cold_starts) / float(misses)
+        if misses > 0
+        else 0.0
+    )
+    result["solves_per_cache_miss"] = (
+        float(stock_calls) / float(misses)
+        if misses > 0
+        else 0.0
+    )
+    return result
+
+
 def _print_generation_settings(
     request: GenerationRequest,
     scenario_ids: list[int],
@@ -589,6 +685,9 @@ def generate_self_play_examples(request: GenerationRequest) -> Path:
     )
 
     total_examples = 0
+    power_flow_summary = _new_power_flow_performance_summary(
+        request.enable_cache
+    )
     start_time = time.perf_counter()
 
     for scenario_id in scenario_ids:
@@ -601,6 +700,8 @@ def generate_self_play_examples(request: GenerationRequest) -> Path:
             action_space.clear_cache()
             if evaluator is not None:
                 evaluator.clear_cache()
+
+        power_flow_before = _power_flow_performance_snapshot(backend)
 
         scenario_mcts_seed = _scenario_seed(
             request.mcts_seed,
@@ -796,10 +897,16 @@ def generate_self_play_examples(request: GenerationRequest) -> Path:
             f"reason={final_reason}"
         )
 
+        _record_power_flow_scenario(
+            power_flow_summary,
+            power_flow_before,
+            _power_flow_performance_snapshot(backend),
+        )
+
     examples_path = example_writer.save()
 
     print("\nPower flow cache:")
-    print(backend.cache_info())
+    print(_finalize_power_flow_performance_summary(power_flow_summary))
     print("\nAction space cache:")
     print(action_space.cache_info())
     if evaluator is not None:
