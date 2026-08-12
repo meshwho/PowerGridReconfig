@@ -14,6 +14,7 @@ from typing import Iterable, Sequence
 import numpy as np
 import pandas as pd
 
+from grid_topology_ai.config.physics import DEFAULT_PHYSICS_CONFIG
 from grid_topology_ai.self_play.example_validation import (
     load_and_validate_examples_csv,
 )
@@ -431,6 +432,7 @@ def build_teacher_command(
     output_dir: Path,
     profile: TeacherProfile,
     num_workers: str,
+    pf_alg: int,
     use_lodf: bool,
     lodf_min_candidate_count: int,
     max_worker_memory_mb: float,
@@ -463,7 +465,7 @@ def build_teacher_command(
         "--max-teacher-steps",
         str(profile.max_teacher_steps),
         "--pf-alg",
-        "3",
+        str(pf_alg),
         "--pf-max-iter",
         "30",
         "--num-workers",
@@ -581,6 +583,7 @@ def run_teacher(
     print(f"Beam width:           {profile.beam_width}")
     print(f"Candidate pool:       {profile.candidate_pool}")
     print(f"Top-K:                {profile.top_k}")
+    print(f"PF algorithm:         {args.pf_alg}")
     print(f"LODF enabled:         {not args.disable_lodf}")
     print(f"LODF top-K:           {profile.lodf_top_k}")
     print(f"Batch size:           {profile.batch_size}")
@@ -595,6 +598,7 @@ def run_teacher(
         output_dir=output_dir,
         profile=profile,
         num_workers=args.num_workers,
+        pf_alg=args.pf_alg,
         use_lodf=not args.disable_lodf,
         lodf_min_candidate_count=args.lodf_min_candidate_count,
         max_worker_memory_mb=args.max_worker_memory_mb,
@@ -1038,6 +1042,16 @@ def parse_args() -> argparse.Namespace:
         default="auto",
         help="Teacher --num-workers value. Default: auto.",
     )
+    parser.add_argument(
+        "--pf-alg",
+        type=int,
+        choices=[1, 2, 3, 4],
+        default=DEFAULT_PHYSICS_CONFIG.pf_alg,
+        help=(
+            "Teacher AC power-flow algorithm. Defaults to the canonical "
+            f"PhysicsConfig value ({DEFAULT_PHYSICS_CONFIG.pf_alg})."
+        ),
+    )
     parser.add_argument("--lodf-min-candidate-count", type=int, default=8)
     parser.add_argument("--disable-lodf", action="store_true")
     parser.add_argument("--max-worker-memory-mb", type=float, default=1000.0)
@@ -1218,6 +1232,7 @@ def main() -> None:
             "seed": int(args.seed),
             "python_executable": str(args.python_executable),
             "teacher_module": str(args.teacher_module),
+            "pf_alg": int(args.pf_alg),
             "lodf_enabled": not bool(args.disable_lodf),
             "teacher_profiles": {
                 name: asdict(profile)
@@ -1241,6 +1256,7 @@ def main() -> None:
     print(f"Splits:            {args.splits}")
     print(f"Classes:           {args.classes}")
     print(f"Limit per class:   {args.limit_per_class or 'all'}")
+    print(f"PF algorithm:      {args.pf_alg}")
     print(f"LODF enabled:      {not args.disable_lodf}")
     print(f"Dry run:           {args.dry_run}")
 
