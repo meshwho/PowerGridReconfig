@@ -153,6 +153,9 @@ def test_initial_path_uses_canonical_state_builder() -> None:
     expected_state = _state()
     recorder = _RecordingStateBuilder(expected_state)
     backend._state_builder = recorder
+    backend._with_generator_operating_point = (
+        lambda state, **_kwargs: state
+    )
 
     result_ppc = {"path": "initial"}
     frames = {"source": "same"}
