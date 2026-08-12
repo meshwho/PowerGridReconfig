@@ -7,6 +7,7 @@ from typing import Any
 import pandas as pd
 import pytest
 
+from grid_topology_ai.config import GenerationConfig
 from grid_topology_ai.self_play import lineage_artifacts
 from grid_topology_ai.self_play import replay as replay_module
 from grid_topology_ai.self_play.lineage_artifacts import (
@@ -258,7 +259,7 @@ def test_run_generate_propagates_lineage_before_replay(
         scenario_ids=[1, 2],
         checkpoint=checkpoint,
         output_dir=tmp_path / "output",
-        config=object(),
+        config=GenerationConfig(device="cpu"),
         mcts_seed=1,
         action_seed=2,
         iteration=3,
