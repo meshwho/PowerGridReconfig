@@ -1,17 +1,24 @@
 from __future__ import annotations
-import sys
+
 import argparse
+import hashlib
 import json
+import os
 import shutil
+import signal
 import subprocess
+import sys
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any
-from collections.abc import Sequence
+
 import numpy as np
 import pandas as pd
 
+from grid_topology_ai.config.physics import DEFAULT_PHYSICS_CONFIG
 from grid_topology_ai.data_adapter import GridFMAdapter
 from grid_topology_ai.pypower_backend import GridFMPowerFlowBackend
 from scripts.data.build_serious_transitions import (
@@ -21,18 +28,23 @@ from scripts.data.build_serious_transitions import (
 )
 
 
+_GRIDFM_CHUNK_CONTRACT_VERSION = 1
+_RAW_COMPLETION_MARKER = ".gridfm_complete.json"
+_REQUIRED_GRIDFM_DATASETS = (
+    "bus_data.parquet",
+    "branch_data.parquet",
+    "gen_data.parquet",
+    "y_bus_data.parquet",
+)
+
+
 # ======================================================================================
 # Helpers
 # ======================================================================================
 
 
 def configure_utf8_stdio() -> None:
-    """
-    Force UTF-8 for redirected stdout/stderr on Windows.
-
-    GridFM, Julia and IPOPT may print characters that cannot be encoded
-    with the default Windows cp1251 console encoding.
-    """
+    """Force UTF-8 for redirected stdout/stderr on Windows."""
 
     for stream in (sys.stdout, sys.stderr):
         reconfigure = getattr(stream, "reconfigure", None)
@@ -65,6 +77,28 @@ def save_json(path: Path, payload: dict[str, Any]) -> None:
     )
 
 
+def save_json_atomic(path: Path, payload: dict[str, Any]) -> None:
+    ensure_dir(path.parent)
+    temp_path = path.with_name(path.name + ".tmp")
+    temp_path.write_text(
+        json.dumps(payload, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    temp_path.replace(path)
+
+
+def load_json(path: Path) -> dict[str, Any] | None:
+    if not path.exists():
+        return None
+
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+    return value if isinstance(value, dict) else None
+
+
 def read_text(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
@@ -74,69 +108,332 @@ def write_text(path: Path, text: str) -> None:
     path.write_text(text, encoding="utf-8")
 
 
+def _package_version(name: str) -> str:
+    try:
+        return version(name)
+    except PackageNotFoundError:
+        return "unknown"
+
+
+def _fingerprint_mapping(payload: dict[str, Any]) -> str:
+    encoded = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def dataset_contract_payload(args: argparse.Namespace) -> dict[str, Any]:
+    """Inputs that determine the semantics of every generated chunk."""
+
+    return {
+        "contract_version": _GRIDFM_CHUNK_CONTRACT_VERSION,
+        "gridfm_datakit_version": _package_version("gridfm-datakit"),
+        "dataset_name": str(args.dataset_name),
+        "network_name": str(args.network_name),
+        "network_source": str(args.network_source),
+        "raw_network_dir_name": (
+            None
+            if args.raw_network_dir_name is None
+            else str(args.raw_network_dir_name)
+        ),
+        "chunk_size": int(args.chunk_size),
+        "seed_start": int(args.seed_start),
+        "num_processes": int(args.num_processes),
+        "sigma": float(args.sigma),
+        "global_range": float(args.global_range),
+        "max_scaling_factor": float(args.max_scaling_factor),
+        "step_size": float(args.step_size),
+        "start_scaling_factor": float(args.start_scaling_factor),
+        "topology_variants": int(args.topology_variants),
+        "topology_k": int(args.topology_k),
+        "generation_perturbation_type": str(args.generation_perturbation_type),
+        "generation_perturbation_sigma": float(
+            args.generation_perturbation_sigma
+        ),
+        "admittance_perturbation_type": str(args.admittance_perturbation_type),
+        "admittance_perturbation_sigma": float(
+            args.admittance_perturbation_sigma
+        ),
+        "min_loading": float(args.min_loading),
+        "max_loading": float(args.max_loading),
+        "simple_min_loading": float(args.simple_min_loading),
+        "simple_max_loading": float(args.simple_max_loading),
+        "simple_max_hard": int(args.simple_max_hard),
+        "simple_max_overloaded": int(args.simple_max_overloaded),
+        "medium_min_loading": float(args.medium_min_loading),
+        "medium_max_loading": float(args.medium_max_loading),
+        "medium_max_hard": int(args.medium_max_hard),
+        "medium_max_overloaded": int(args.medium_max_overloaded),
+        "hard_min_loading": float(args.hard_min_loading),
+        "hard_min_hard": int(args.hard_min_hard),
+        "canonical_physics_fingerprint": DEFAULT_PHYSICS_CONFIG.fingerprint(),
+        "gridfm_command_template": str(args.gridfm_command_template),
+    }
+
+
+def dataset_contract_fingerprint(args: argparse.Namespace) -> str:
+    return _fingerprint_mapping(dataset_contract_payload(args))
+
+
+def _completion_marker_matches(
+    path: Path,
+    *,
+    stage: str,
+    contract_fingerprint: str,
+    chunk_index: int,
+) -> bool:
+    marker = load_json(path)
+    if marker is None:
+        return False
+
+    return (
+        marker.get("stage") == stage
+        and marker.get("contract_fingerprint") == contract_fingerprint
+        and marker.get("chunk_index") == int(chunk_index)
+    )
+
+
+def _write_completion_marker(
+    path: Path,
+    *,
+    stage: str,
+    contract_fingerprint: str,
+    chunk_index: int,
+    extra: dict[str, Any] | None = None,
+) -> None:
+    payload: dict[str, Any] = {
+        "stage": stage,
+        "contract_version": _GRIDFM_CHUNK_CONTRACT_VERSION,
+        "contract_fingerprint": contract_fingerprint,
+        "chunk_index": int(chunk_index),
+    }
+    if extra:
+        payload.update(extra)
+    save_json_atomic(path, payload)
+
+
+def _dataset_path_has_data(path: Path) -> bool:
+    if not path.exists():
+        return False
+    if path.is_file():
+        return path.stat().st_size > 0
+    try:
+        return any(
+            child.is_file() and child.stat().st_size > 0
+            for child in path.rglob("*.parquet")
+        )
+    except OSError:
+        return False
+
+
+def gridfm_raw_artifacts_are_usable(raw_dir: Path) -> bool:
+    if not raw_dir.exists():
+        return False
+
+    if not all(
+        _dataset_path_has_data(raw_dir / name)
+        for name in _REQUIRED_GRIDFM_DATASETS
+    ):
+        return False
+
+    n_scenarios_path = raw_dir / "n_scenarios.txt"
+    try:
+        return int(n_scenarios_path.read_text(encoding="utf-8").strip()) > 0
+    except Exception:
+        return False
+
+
+def raw_completion_is_current(
+    raw_dir: Path,
+    *,
+    contract_fingerprint: str,
+    chunk_index: int,
+) -> bool:
+    return (
+        gridfm_raw_artifacts_are_usable(raw_dir)
+        and _completion_marker_matches(
+            raw_dir / _RAW_COMPLETION_MARKER,
+            stage="gridfm_raw",
+            contract_fingerprint=contract_fingerprint,
+            chunk_index=chunk_index,
+        )
+    )
+
+
+def candidate_completion_marker_path(path: Path) -> Path:
+    return path.with_suffix(".complete.json")
+
+
+def candidate_manifest_is_current(
+    path: Path,
+    expected_contract_fingerprint: str | None = None,
+    chunk_index: int | None = None,
+) -> bool:
+    if not path.exists():
+        return False
+
+    try:
+        columns = set(pd.read_csv(path, nrows=0).columns)
+    except Exception:
+        return False
+
+    required_columns = {
+        "canonical_pf_ok",
+        "gridfm_difficulty_class",
+    }
+    if not required_columns.issubset(columns):
+        return False
+
+    marker = load_json(candidate_completion_marker_path(path))
+    if marker is None or marker.get("stage") != "canonical_candidates":
+        return False
+
+    if expected_contract_fingerprint is not None:
+        if marker.get("contract_fingerprint") != expected_contract_fingerprint:
+            return False
+
+    if chunk_index is not None:
+        if marker.get("chunk_index") != int(chunk_index):
+            return False
+
+    return True
+
+
+def _latest_activity_timestamp(paths: Sequence[Path]) -> float | None:
+    latest: float | None = None
+    for path in paths:
+        try:
+            if not path.exists():
+                continue
+            timestamp = float(path.stat().st_mtime)
+        except OSError:
+            continue
+        if latest is None or timestamp > latest:
+            latest = timestamp
+    return latest
+
+
+def _terminate_process_tree(process: subprocess.Popen[Any]) -> None:
+    if process.poll() is not None:
+        return
+
+    if os.name == "nt":
+        subprocess.run(
+            [
+                "taskkill",
+                "/PID",
+                str(process.pid),
+                "/T",
+                "/F",
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+    else:
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+            process.wait(timeout=5)
+        except Exception:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except Exception:
+                process.kill()
+
+    try:
+        process.wait(timeout=10)
+    except Exception:
+        pass
+
+
 def run_command(
     command: Sequence[str],
     log_path: Path,
+    *,
+    activity_paths: Sequence[Path] = (),
+    inactivity_timeout_sec: float = 0.0,
 ) -> None:
-    """
-    Run a native command without shell=True.
-
-    Using sys.executable guarantees that GridFM is launched with the same
-    Python environment as this dataset builder.
-    """
+    """Run GridFM with inherited output and a filesystem-activity watchdog."""
 
     ensure_dir(log_path.parent)
-
     command_list = [str(argument) for argument in command]
-
     printable_command = subprocess.list2cmdline(command_list)
 
-    print("Running command:")
-    print(printable_command)
-    print(f"Log: {log_path}")
+    print("Running command:", flush=True)
+    print(printable_command, flush=True)
+    print("GridFM output is streamed live below.", flush=True)
+    print(f"Runner log: {log_path}", flush=True)
 
-    with log_path.open(
-        "w",
+    log_path.write_text(
+        f"command: {printable_command}\n",
         encoding="utf-8",
-        errors="replace",
-    ) as log_file:
-        process = subprocess.Popen(
-            command_list,
-            shell=False,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            bufsize=1,
+    )
+
+    popen_kwargs: dict[str, Any] = {
+        "shell": False,
+    }
+    if os.name == "nt":
+        popen_kwargs["creationflags"] = getattr(
+            subprocess,
+            "CREATE_NEW_PROCESS_GROUP",
+            0,
         )
+    else:
+        popen_kwargs["start_new_session"] = True
 
-        if process.stdout is None:
-            raise RuntimeError(
-                "Could not capture GridFM process output."
+    process = subprocess.Popen(command_list, **popen_kwargs)
+    started = time.monotonic()
+    last_activity = started
+    last_timestamp = _latest_activity_timestamp(activity_paths)
+
+    while True:
+        return_code = process.poll()
+        if return_code is not None:
+            break
+
+        current_timestamp = _latest_activity_timestamp(activity_paths)
+        if (
+            current_timestamp is not None
+            and (
+                last_timestamp is None
+                or current_timestamp > last_timestamp
             )
+        ):
+            last_timestamp = current_timestamp
+            last_activity = time.monotonic()
 
-        for line in process.stdout:
-            print(line, end="", flush=True)
-            log_file.write(line)
-            log_file.flush()
+        if (
+            inactivity_timeout_sec > 0.0
+            and time.monotonic() - last_activity
+            >= float(inactivity_timeout_sec)
+        ):
+            message = (
+                "GridFM produced no progress-file activity for "
+                f"{float(inactivity_timeout_sec):.0f} seconds. "
+                "Terminating the full process tree so the chunk can be retried."
+            )
+            print(f"\n{message}", flush=True)
+            with log_path.open("a", encoding="utf-8") as log_file:
+                log_file.write(f"watchdog: {message}\n")
+            _terminate_process_tree(process)
+            raise RuntimeError(message)
 
-        return_code = process.wait()
+        time.sleep(1.0)
+
+    elapsed = time.monotonic() - started
+    with log_path.open("a", encoding="utf-8") as log_file:
+        log_file.write(f"exit_code: {return_code}\n")
+        log_file.write(f"elapsed_seconds: {elapsed:.3f}\n")
 
     if return_code != 0:
-        print("\nGridFM command failed. Last log lines:")
-
-        try:
-            lines = read_text(log_path).splitlines()
-
-            for line in lines[-80:]:
-                print(line)
-        except Exception:
-            pass
-
         raise RuntimeError(
             f"Command failed with exit code {return_code}: "
-            f"{printable_command}"
+            f"{printable_command}. "
+            "See the live console output and GridFM raw/error logs."
         )
 
 
@@ -182,15 +479,6 @@ def make_generation_perturbation_text(
     perturbation_type: str,
     sigma: float,
 ) -> str:
-    """
-    Build GridFM generation_perturbation YAML block.
-
-    Supported by GridFM:
-    - none
-    - cost_permutation
-    - cost_perturbation
-    """
-
     perturbation_type = str(perturbation_type).strip().lower()
 
     if perturbation_type == "none":
@@ -226,14 +514,6 @@ def make_admittance_perturbation_text(
     perturbation_type: str,
     sigma: float,
 ) -> str:
-    """
-    Build GridFM admittance_perturbation YAML block.
-
-    Supported by GridFM:
-    - none
-    - random_perturbation
-    """
-
     perturbation_type = str(perturbation_type).strip().lower()
 
     if perturbation_type == "none":
@@ -280,13 +560,6 @@ def make_gridfm_config_text(
     admittance_perturbation_type: str,
     admittance_perturbation_sigma: float,
 ) -> str:
-    """
-    Generate GridFM YAML text.
-
-    This is intentionally kept inside this pipeline to avoid creating another
-    config-template file. Change settings in the PowerShell wrapper.
-    """
-
     data_dir_str = str(data_dir).replace("\\", "/")
 
     generation_perturbation_text = make_generation_perturbation_text(
@@ -528,7 +801,6 @@ def select_balanced_manifest(
     if df.empty:
         return df
 
-    # Avoid duplicates from resume/repeated chunk processing.
     df = df.drop_duplicates(
         subset=["source_chunk", "source_scenario_id"],
         keep="first",
@@ -551,8 +823,6 @@ def select_balanced_manifest(
         if part.empty or target_count <= 0:
             continue
 
-        # For every class we still prefer operationally relevant scenarios,
-        # but random tie-break prevents deterministic duplicates.
         if class_name == "simple":
             sort_cols = [
                 "max_loading_percent",
@@ -629,11 +899,6 @@ def compute_max_balanced_targets(
     medium_fraction: float,
     hard_fraction: float,
 ) -> ClassTargets:
-    """
-    Compute the largest possible class counts that preserve the requested
-    proportions and do not exceed the available candidates.
-    """
-
     fractions = {
         "simple": float(simple_fraction),
         "medium": float(medium_fraction),
@@ -693,8 +958,6 @@ def compute_final_targets(
     medium_fraction: float,
     hard_fraction: float,
 ) -> ClassTargets:
-    """Respect target-total when quotas exist, otherwise choose a partial set."""
-
     if quotas_met(candidates, requested):
         return requested
 
@@ -741,12 +1004,6 @@ def merge_raw_parquet_files(
     selected: pd.DataFrame,
     output_raw_dir: Path,
 ) -> None:
-    """
-    Merge selected scenarios from several chunk raw dirs into one balanced raw dir.
-
-    All scenario ids are remapped to global_scenario_id.
-    """
-
     ensure_dir(output_raw_dir)
 
     if selected.empty:
@@ -779,7 +1036,6 @@ def merge_raw_parquet_files(
             df = pd.read_parquet(src_path)
 
             if "scenario" not in df.columns:
-                # Static parquet without scenario column. Copy only once.
                 if not copied_static_file:
                     dst_path = output_raw_dir / parquet_name
                     df.to_parquet(dst_path, index=False)
@@ -806,7 +1062,6 @@ def merge_raw_parquet_files(
             merged = merged.sort_values("scenario").reset_index(drop=True)
             merged.to_parquet(output_raw_dir / parquet_name, index=False)
 
-    # Copy non-parquet files from the first raw dir, except n_scenarios.txt.
     for src in first_raw_dir.iterdir():
         if not src.is_file():
             continue
@@ -830,8 +1085,6 @@ def merge_raw_parquet_files(
 
 def build_transitions_from_manifest(selected: pd.DataFrame) -> pd.DataFrame:
     df = selected.copy()
-
-    # make_output expects scenario column.
     df["scenario"] = df["global_scenario_id"].astype(int)
 
     transitions = make_output(df)
@@ -839,7 +1092,6 @@ def build_transitions_from_manifest(selected: pd.DataFrame) -> pd.DataFrame:
     transitions["source_chunk"] = df["source_chunk"].values
     transitions["source_scenario_id"] = df["source_scenario_id"].astype(int).values
 
-    # Keep class near the front.
     columns = list(transitions.columns)
     front = [
         "scenario_id",
@@ -863,7 +1115,7 @@ def stratified_split(
     train_parts: list[pd.DataFrame] = []
     val_parts: list[pd.DataFrame] = []
 
-    for class_name, group in transitions.groupby("difficulty_class", sort=False):
+    for _, group in transitions.groupby("difficulty_class", sort=False):
         group = group.copy()
 
         order = rng.permutation(len(group))
@@ -899,19 +1151,25 @@ def expected_raw_dir(
     return chunk_dir / str(raw_network_dir_name) / "raw"
 
 
-def candidate_manifest_is_current(path: Path) -> bool:
-    if not path.exists():
-        return False
+def _gridfm_activity_paths(raw_dir: Path) -> tuple[Path, ...]:
+    return (
+        raw_dir / "tqdm.log",
+        raw_dir / "error.log",
+        raw_dir / "args.log",
+        raw_dir / "scenarios_agg_load_profile.parquet",
+        raw_dir / "n_scenarios.txt",
+    )
 
+
+def _read_generated_scenario_count(raw_dir: Path) -> int:
     try:
-        columns = set(pd.read_csv(path, nrows=0).columns)
+        return int(
+            (raw_dir / "n_scenarios.txt")
+            .read_text(encoding="utf-8")
+            .strip()
+        )
     except Exception:
-        return False
-
-    return {
-        "canonical_pf_ok",
-        "gridfm_difficulty_class",
-    }.issubset(columns)
+        return 0
 
 
 def process_chunk(
@@ -919,6 +1177,7 @@ def process_chunk(
     chunk_index: int,
     args: argparse.Namespace,
     paths: dict[str, Path],
+    contract_fingerprint: str,
 ) -> pd.DataFrame:
     name = chunk_name(chunk_index)
     chunk_dir = paths["chunks_dir"] / name
@@ -934,7 +1193,7 @@ def process_chunk(
     )
 
     config_path = paths["configs_dir"] / f"{name}.yaml"
-    log_path = paths["logs_dir"] / f"{name}.log"
+    log_path = paths["logs_dir"] / f"{name}.runner.log"
 
     config_text = make_gridfm_config_text(
         network_name=str(args.network_name),
@@ -966,14 +1225,28 @@ def process_chunk(
 
     write_text(config_path, config_text)
 
-    if raw_dir.exists() and args.resume:
-        print(f"\n{name}: raw exists, resume mode - skipping GridFM generation")
+    raw_current = (
+        bool(args.resume)
+        and raw_completion_is_current(
+            raw_dir,
+            contract_fingerprint=contract_fingerprint,
+            chunk_index=chunk_index,
+        )
+    )
+
+    if raw_current:
+        print(
+            f"\n{name}: verified completed GridFM raw chunk - reusing it"
+        )
     else:
         if chunk_dir.exists():
+            reason = (
+                "stale or incomplete resume chunk"
+                if args.resume
+                else "fresh generation requested"
+            )
+            print(f"\n{name}: removing {reason}: {chunk_dir}")
             shutil.rmtree(chunk_dir)
-
-        ensure_dir(chunk_dir)
-        write_text(config_path, config_text)
 
         command = [
             sys.executable,
@@ -983,19 +1256,74 @@ def process_chunk(
             str(config_path),
         ]
 
-        print("\n" + "=" * 100)
-        print(f"Generating {name}")
-        print("=" * 100)
-        print(f"Chunk dir: {chunk_dir}")
-        print(f"Raw dir:   {raw_dir}")
-        print(f"Config:    {config_path}")
+        attempts = 1 + max(int(args.gridfm_retries), 0)
+        for attempt in range(1, attempts + 1):
+            ensure_dir(chunk_dir)
+            write_text(config_path, config_text)
 
-        run_command(command, log_path=log_path)
+            print("\n" + "=" * 100)
+            print(
+                f"Generating {name} | attempt {attempt}/{attempts}"
+            )
+            print("=" * 100)
+            print(f"Chunk dir: {chunk_dir}")
+            print(f"Raw dir:   {raw_dir}")
+            print(f"Config:    {config_path}")
+            print(
+                "Watchdog inactivity timeout: "
+                f"{float(args.gridfm_inactivity_timeout_sec):.0f} s"
+            )
 
-    if not raw_dir.exists():
-        raise FileNotFoundError(
-            f"Expected GridFM raw dir was not created: {raw_dir}\n"
-            f"Check GridFM command and log: {log_path}"
+            try:
+                run_command(
+                    command,
+                    log_path=log_path,
+                    activity_paths=_gridfm_activity_paths(raw_dir),
+                    inactivity_timeout_sec=float(
+                        args.gridfm_inactivity_timeout_sec
+                    ),
+                )
+
+                if not gridfm_raw_artifacts_are_usable(raw_dir):
+                    raise RuntimeError(
+                        "GridFM exited successfully but required raw artifacts "
+                        f"are incomplete: {raw_dir}"
+                    )
+
+                _write_completion_marker(
+                    raw_dir / _RAW_COMPLETION_MARKER,
+                    stage="gridfm_raw",
+                    contract_fingerprint=contract_fingerprint,
+                    chunk_index=chunk_index,
+                    extra={
+                        "requested_scenarios": int(args.chunk_size),
+                        "generated_scenarios": _read_generated_scenario_count(
+                            raw_dir
+                        ),
+                    },
+                )
+                break
+            except Exception as exc:
+                if attempt >= attempts:
+                    raise
+
+                print(
+                    f"\n{name}: GridFM attempt {attempt} failed: {exc}"
+                )
+                print(
+                    f"{name}: deleting partial output and retrying cleanly."
+                )
+                if chunk_dir.exists():
+                    shutil.rmtree(chunk_dir)
+                time.sleep(min(2.0 * attempt, 5.0))
+
+    if not raw_completion_is_current(
+        raw_dir,
+        contract_fingerprint=contract_fingerprint,
+        chunk_index=chunk_index,
+    ):
+        raise RuntimeError(
+            f"GridFM raw chunk has no valid completion marker: {raw_dir}"
         )
 
     print("\n" + "=" * 100)
@@ -1034,6 +1362,17 @@ def process_chunk(
     evaluated.to_csv(canonical_path, index=False)
     candidates.to_csv(candidates_path, index=False)
 
+    _write_completion_marker(
+        candidate_completion_marker_path(candidates_path),
+        stage="canonical_candidates",
+        contract_fingerprint=contract_fingerprint,
+        chunk_index=chunk_index,
+        extra={
+            "gridfm_candidates": int(len(gridfm_candidates)),
+            "canonical_candidates": int(len(candidates)),
+        },
+    )
+
     gridfm_counts = class_counts(gridfm_candidates)
     counts = class_counts(candidates)
 
@@ -1055,12 +1394,26 @@ def process_chunk(
     return candidates
 
 
-def load_existing_candidates(manifest_dir: Path) -> pd.DataFrame:
-    files = [
-        path
-        for path in sorted(manifest_dir.glob("chunk*_candidates.csv"))
-        if candidate_manifest_is_current(path)
-    ]
+def load_existing_candidates(
+    manifest_dir: Path,
+    *,
+    contract_fingerprint: str,
+) -> pd.DataFrame:
+    files: list[Path] = []
+
+    for path in sorted(manifest_dir.glob("chunk*_candidates.csv")):
+        stem = path.stem
+        try:
+            chunk_index = int(stem.split("_", 1)[0].replace("chunk", ""))
+        except (TypeError, ValueError):
+            continue
+
+        if candidate_manifest_is_current(
+            path,
+            expected_contract_fingerprint=contract_fingerprint,
+            chunk_index=chunk_index,
+        ):
+            files.append(path)
 
     if not files:
         return pd.DataFrame()
@@ -1178,7 +1531,6 @@ def write_outputs(
 
 
 def main() -> None:
-
     configure_utf8_stdio()
 
     parser = argparse.ArgumentParser(
@@ -1217,11 +1569,26 @@ def main() -> None:
     parser.add_argument("--medium-fraction", type=float, default=0.50)
     parser.add_argument("--hard-fraction", type=float, default=0.25)
 
-    parser.add_argument("--chunk-size", type=int, default=5000)
+    parser.add_argument("--chunk-size", type=int, default=1000)
     parser.add_argument("--max-chunks", type=int, default=30)
     parser.add_argument("--seed-start", type=int, default=1000)
-    parser.add_argument("--num-processes", type=int, default=8)
+    parser.add_argument("--num-processes", type=int, default=4)
     parser.add_argument("--gridfm-command-template", type=str, required=True)
+    parser.add_argument(
+        "--gridfm-retries",
+        type=int,
+        default=2,
+        help="Clean retries for a failed or watchdog-terminated GridFM chunk.",
+    )
+    parser.add_argument(
+        "--gridfm-inactivity-timeout-sec",
+        type=float,
+        default=900.0,
+        help=(
+            "Kill the GridFM process tree when its progress/error/raw files "
+            "show no activity for this many seconds. Use 0 to disable."
+        ),
+    )
 
     parser.add_argument("--sigma", type=float, default=0.2)
     parser.add_argument("--global-range", type=float, default=0.5)
@@ -1239,20 +1606,12 @@ def main() -> None:
             "cost_permutation",
             "cost_perturbation",
         ],
-        help=(
-            "GridFM generation perturbation type. "
-            "Supported values: none, cost_permutation, cost_perturbation."
-        ),
     )
 
     parser.add_argument(
         "--generation-perturbation-sigma",
         type=float,
         default=0.0,
-        help=(
-            "Sigma used when generation perturbation type "
-            "is cost_perturbation."
-        ),
     )
 
     parser.add_argument(
@@ -1263,20 +1622,12 @@ def main() -> None:
             "none",
             "random_perturbation",
         ],
-        help=(
-            "GridFM admittance perturbation type. "
-            "Supported values: none, random_perturbation."
-        ),
     )
 
     parser.add_argument(
         "--admittance-perturbation-sigma",
         type=float,
         default=0.0,
-        help=(
-            "Sigma used when admittance perturbation type "
-            "is random_perturbation."
-        ),
     )
     parser.add_argument("--min-loading", type=float, default=105.0)
     parser.add_argument("--max-loading", type=float, default=260.0)
@@ -1300,7 +1651,10 @@ def main() -> None:
     parser.add_argument(
         "--resume",
         action="store_true",
-        help="Reuse already generated chunks and current candidate CSVs.",
+        help=(
+            "Reuse only chunks carrying a matching completion marker and "
+            "dataset-generation contract fingerprint."
+        ),
     )
 
     parser.add_argument(
@@ -1310,6 +1664,11 @@ def main() -> None:
     )
 
     args = parser.parse_args()
+
+    if args.gridfm_retries < 0:
+        parser.error("--gridfm-retries must be >= 0")
+    if args.gridfm_inactivity_timeout_sec < 0.0:
+        parser.error("--gridfm-inactivity-timeout-sec must be >= 0")
 
     total_start = now()
 
@@ -1325,6 +1684,7 @@ def main() -> None:
         medium_fraction=float(args.medium_fraction),
         hard_fraction=float(args.hard_fraction),
     )
+    contract_fingerprint = dataset_contract_fingerprint(args)
 
     print("=" * 100)
     print("Balanced GridFM dataset builder")
@@ -1341,15 +1701,24 @@ def main() -> None:
     print(f"Targets:      simple={targets.simple}, medium={targets.medium}, hard={targets.hard}")
     print(f"Chunk size:   {args.chunk_size}")
     print(f"Max chunks:   {args.max_chunks}")
+    print(f"GridFM procs: {args.num_processes}")
+    print(f"GridFM retry: {args.gridfm_retries}")
+    print(
+        "GridFM stall: "
+        f"{float(args.gridfm_inactivity_timeout_sec):.0f} s"
+    )
     print(f"Resume:       {args.resume}")
+    print(f"Contract:     {contract_fingerprint}")
 
     all_candidates = (
-        load_existing_candidates(paths["manifest_dir"])
+        load_existing_candidates(
+            paths["manifest_dir"],
+            contract_fingerprint=contract_fingerprint,
+        )
         if args.resume
         else pd.DataFrame()
     )
 
-    # At this stage targets are minimum quotas required to stop generation.
     selected = select_balanced_manifest(
         candidates=all_candidates,
         targets=targets,
@@ -1368,10 +1737,14 @@ def main() -> None:
 
             if (
                 args.resume
-                and candidate_manifest_is_current(candidate_path)
+                and candidate_manifest_is_current(
+                    candidate_path,
+                    expected_contract_fingerprint=contract_fingerprint,
+                    chunk_index=chunk_index,
+                )
             ):
                 print(
-                    f"\n{name}: canonical candidates already exist, "
+                    f"\n{name}: verified canonical candidates already exist, "
                     "skipping chunk processing"
                 )
             else:
@@ -1379,6 +1752,7 @@ def main() -> None:
                     chunk_index=chunk_index,
                     args=args,
                     paths=paths,
+                    contract_fingerprint=contract_fingerprint,
                 )
 
                 if all_candidates.empty:
@@ -1392,11 +1766,10 @@ def main() -> None:
                         ignore_index=True,
                     )
 
-            # In resume mode reload all current manifests, including chunks
-            # that existed before this launch and were just refreshed.
             if args.resume:
                 all_candidates = load_existing_candidates(
-                    paths["manifest_dir"]
+                    paths["manifest_dir"],
+                    contract_fingerprint=contract_fingerprint,
                 )
 
             selected = select_balanced_manifest(
@@ -1427,7 +1800,6 @@ def main() -> None:
                 print("\nCanonical class quotas are satisfied.")
                 break
 
-    # This check belongs after the generation loop, not before it.
     if all_candidates.empty:
         raise RuntimeError(
             "GridFM generation produced no canonical classified candidates. "

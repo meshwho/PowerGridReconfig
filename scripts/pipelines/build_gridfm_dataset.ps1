@@ -13,7 +13,14 @@ param(
 
     [string]$JuliaDepot = "D:\julia_depot",
 
-    [int]$NumProcesses = 4
+    [ValidateRange(1, 64)]
+    [int]$NumProcesses = 4,
+
+    [ValidateRange(0, 10)]
+    [int]$GridFMRetries = 2,
+
+    [ValidateRange(0, 86400)]
+    [int]$GridFMInactivityTimeoutSec = 900
 )
 
 Set-StrictMode -Version 3.0
@@ -23,41 +30,6 @@ $ErrorActionPreference = "Stop"
 # ======================================================================================
 # Native process helper
 # ======================================================================================
-
-function ConvertTo-WindowsCommandLineArgument {
-    param(
-        [AllowNull()]
-        [AllowEmptyString()]
-        [string]$Argument
-    )
-
-    if ($null -eq $Argument -or $Argument.Length -eq 0) {
-        return '""'
-    }
-
-    if ($Argument -notmatch '[\s"]') {
-        return $Argument
-    }
-
-    # Windows CreateProcess quoting rules:
-    # - quote arguments containing spaces or quotes;
-    # - double backslashes before embedded quotes;
-    # - double trailing backslashes before the closing quote.
-    $Escaped = [regex]::Replace(
-        $Argument,
-        '(\\*)"',
-        '$1$1\"'
-    )
-
-    $Escaped = [regex]::Replace(
-        $Escaped,
-        '(\\+)$',
-        '$1$1'
-    )
-
-    return '"' + $Escaped + '"'
-}
-
 
 function Invoke-NativeProcess {
     param(
@@ -86,47 +58,7 @@ function Invoke-NativeProcess {
     Remove-Item -Force -ErrorAction SilentlyContinue $StdoutLogPath
     Remove-Item -Force -ErrorAction SilentlyContinue $StderrLogPath
 
-    $StartInfo = New-Object System.Diagnostics.ProcessStartInfo
-    $StartInfo.FileName = $FilePath
-    $StartInfo.WorkingDirectory = $WorkingDirectory
-    $StartInfo.UseShellExecute = $false
-    $StartInfo.CreateNoWindow = $true
-    $StartInfo.RedirectStandardOutput = $true
-    $StartInfo.RedirectStandardError = $true
-
     $Utf8Encoding = New-Object System.Text.UTF8Encoding($false)
-
-    if (
-        $StartInfo.PSObject.Properties.Name -contains
-        "StandardOutputEncoding"
-    ) {
-        $StartInfo.StandardOutputEncoding = $Utf8Encoding
-    }
-
-    if (
-        $StartInfo.PSObject.Properties.Name -contains
-        "StandardErrorEncoding"
-    ) {
-        $StartInfo.StandardErrorEncoding = $Utf8Encoding
-    }
-
-    # PowerShell 7 / modern .NET exposes ArgumentList.
-    # Windows PowerShell 5.1 needs one correctly quoted argument string.
-    if ($StartInfo.PSObject.Properties.Name -contains "ArgumentList") {
-        foreach ($Argument in $Arguments) {
-            [void]$StartInfo.ArgumentList.Add([string]$Argument)
-        }
-    }
-    else {
-        $QuotedArguments = foreach ($Argument in $Arguments) {
-            ConvertTo-WindowsCommandLineArgument -Argument ([string]$Argument)
-        }
-
-        $StartInfo.Arguments = $QuotedArguments -join " "
-    }
-
-    $Process = New-Object System.Diagnostics.Process
-    $Process.StartInfo = $StartInfo
 
     Write-Host "Executable:"
     Write-Host "  $FilePath"
@@ -134,54 +66,49 @@ function Invoke-NativeProcess {
     Write-Host "Working directory:"
     Write-Host "  $WorkingDirectory"
     Write-Host ""
-    Write-Host "Starting process. Output will be printed when the process finishes."
-    Write-Host "GridFM chunk logs are also written inside the dataset logs directory."
+    Write-Host "Starting process. Output is streamed live to this console."
+    Write-Host "The same combined stdout/stderr stream is saved to:"
+    Write-Host "  $StdoutLogPath"
     Write-Host ""
 
-    [void]$Process.Start()
+    Push-Location $WorkingDirectory
+    try {
+        # Keep native stdout/stderr visible while also appending it to the log.
+        # PYTHONUNBUFFERED below ensures that Python/GridFM do not hide output
+        # behind their own stdio buffering.
+        & $FilePath @Arguments 2>&1 |
+            ForEach-Object {
+                $Line = [string]$_
+                Write-Host $Line
+                [System.IO.File]::AppendAllText(
+                    $StdoutLogPath,
+                    $Line + [Environment]::NewLine,
+                    $Utf8Encoding
+                )
+            }
 
-    # Start both asynchronous reads before waiting. This prevents a deadlock
-    # when either stdout or stderr fills its operating-system buffer.
-    $StdoutTask = $Process.StandardOutput.ReadToEndAsync()
-    $StderrTask = $Process.StandardError.ReadToEndAsync()
-
-    $Process.WaitForExit()
-
-    $StdoutText = $StdoutTask.GetAwaiter().GetResult()
-    $StderrText = $StderrTask.GetAwaiter().GetResult()
-    $ExitCode = $Process.ExitCode
-
-    [System.IO.File]::WriteAllText(
-        $StdoutLogPath,
-        [string]$StdoutText,
-        [System.Text.UTF8Encoding]::new($false)
-    )
+        $ExitCode = $LASTEXITCODE
+    }
+    finally {
+        Pop-Location
+    }
 
     [System.IO.File]::WriteAllText(
         $StderrLogPath,
-        [string]$StderrText,
-        [System.Text.UTF8Encoding]::new($false)
+        "stderr is merged into python_stdout.log so it can be streamed live." +
+        [Environment]::NewLine,
+        $Utf8Encoding
     )
-
-    if (-not [string]::IsNullOrWhiteSpace($StdoutText)) {
-        Write-Host $StdoutText
-    }
-
-    if (-not [string]::IsNullOrWhiteSpace($StderrText)) {
-        # Print stderr as ordinary text, not as a PowerShell error record.
-        Write-Host $StderrText
-    }
 
     Write-Host ""
     Write-Host "Process exit code: $ExitCode"
-    Write-Host "stdout log: $StdoutLogPath"
-    Write-Host "stderr log: $StderrLogPath"
+    Write-Host "combined log: $StdoutLogPath"
     Write-Host ""
 
     if ($ExitCode -ne 0) {
         throw (
             "Dataset builder failed with exit code $ExitCode. " +
-            "See logs: $StdoutLogPath and $StderrLogPath"
+            "See the live console output and log: $StdoutLogPath"
         )
     }
 }
@@ -225,9 +152,10 @@ try {
     $env:TMP = $TempGridFM
     $env:JULIA_DEPOT_PATH = $JuliaDepot
 
-    # Force UTF-8 for Python stdout/stderr.
+    # Force immediate UTF-8 output all the way through PowerShell -> builder -> GridFM.
     $env:PYTHONUTF8 = "1"
     $env:PYTHONIOENCODING = "utf-8"
+    $env:PYTHONUNBUFFERED = "1"
 
     if (-not [string]::IsNullOrWhiteSpace($JuliaBin)) {
         if (Test-Path $JuliaBin) {
@@ -236,6 +164,19 @@ try {
         else {
             Write-Warning "Julia bin directory not found: $JuliaBin"
         }
+    }
+
+    # GridFM 1.0.5 starts one Julia runtime per spawned worker. Higher process
+    # counts have repeatedly proved unstable on Windows for long case118 runs.
+    $RequestedNumProcesses = $NumProcesses
+    $MaxSafeGridFMProcesses = 4
+
+    if ($NumProcesses -gt $MaxSafeGridFMProcesses) {
+        Write-Warning (
+            "Requested NumProcesses=$NumProcesses. " +
+            "Capping GridFM at $MaxSafeGridFMProcesses processes for reliability."
+        )
+        $NumProcesses = $MaxSafeGridFMProcesses
     }
 
     # ==================================================================================
@@ -315,8 +256,6 @@ try {
     $AllowPartial = $false
 
     if ($Profile -eq "smoke") {
-        # Smoke checks the entire generation path with the same perturbation
-        # mechanisms that will be used in the larger runs.
         $DatasetName = "case118_smoke_v1"
 
         $OutputRoot = Join-Path $ScratchRoot $DatasetName
@@ -340,7 +279,6 @@ try {
         $AllowPartial = $true
     }
     elseif ($Profile -eq "eval") {
-        # Fixed evaluation set. Do not use it for training.
         $DatasetName = "case118_eval_v1"
 
         $OutputRoot = Join-Path $GeneratedRoot $DatasetName
@@ -362,15 +300,16 @@ try {
         $AdmittancePerturbationSigma = 0.02
     }
     elseif ($Profile -eq "bootstrap") {
-        # Main supervised bootstrap dataset.
+        # Keep the same maximum source-scenario budget as the old 2000 x 80
+        # profile, but use one GridFM internal large chunk per outer chunk.
         $DatasetName = "case118_bootstrap_v1"
 
         $OutputRoot = Join-Path $GeneratedRoot $DatasetName
         $TransitionExportRoot = Join-Path $TransitionsRoot $DatasetName
 
         $TargetTotal = 12000
-        $ChunkSize = 2000
-        $MaxChunks = 80
+        $ChunkSize = 1000
+        $MaxChunks = 160
         $SeedStart = 20000
 
         $SimpleFraction = 0.20
@@ -407,6 +346,8 @@ try {
         "--seed-start", "$SeedStart",
         "--num-processes", "$NumProcesses",
         "--gridfm-command-template", $GridFMCommandTemplate,
+        "--gridfm-retries", "$GridFMRetries",
+        "--gridfm-inactivity-timeout-sec", "$GridFMInactivityTimeoutSec",
         "--sigma", "$Sigma",
         "--global-range", "$GlobalRange",
         "--max-scaling-factor", "$MaxScalingFactor",
@@ -471,6 +412,10 @@ try {
     Write-Host "  JULIA_DEPOT_PATH:        $env:JULIA_DEPOT_PATH"
     Write-Host "  Julia bin:               $JuliaBin"
     Write-Host "  Python:                  $PythonExecutable"
+    Write-Host "  Requested GridFM procs:  $RequestedNumProcesses"
+    Write-Host "  Effective GridFM procs:  $NumProcesses"
+    Write-Host "  GridFM retries:          $GridFMRetries"
+    Write-Host "  GridFM stall timeout:    $GridFMInactivityTimeoutSec s"
     Write-Host ""
     Write-Host "GridFM command template:"
     Write-Host "  $GridFMCommandTemplate"
@@ -580,6 +525,10 @@ try {
         network_source = $NetworkSource
         topology_variants = $TopologyVariants
         topology_k = $TopologyK
+        requested_num_processes = $RequestedNumProcesses
+        effective_num_processes = $NumProcesses
+        gridfm_retries = $GridFMRetries
+        gridfm_inactivity_timeout_sec = $GridFMInactivityTimeoutSec
         generation_perturbation = [ordered]@{
             type = $GenerationPerturbationType
             sigma = $GenerationPerturbationSigma
