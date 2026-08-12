@@ -12,7 +12,13 @@ from collections.abc import Sequence
 import numpy as np
 import pandas as pd
 
-from scripts.data.build_serious_transitions import build_fast_summary, make_output
+from grid_topology_ai.data_adapter import GridFMAdapter
+from grid_topology_ai.pypower_backend import GridFMPowerFlowBackend
+from scripts.data.build_serious_transitions import (
+    add_seriousness_score,
+    build_fast_summary,
+    make_output,
+)
 
 
 # ======================================================================================
@@ -36,6 +42,7 @@ def configure_utf8_stdio() -> None:
                 encoding="utf-8",
                 errors="replace",
             )
+
 
 def now() -> float:
     return time.perf_counter()
@@ -169,6 +176,7 @@ def compute_class_targets(
         medium=int(medium),
         hard=int(hard),
     )
+
 
 def make_generation_perturbation_text(
     perturbation_type: str,
@@ -408,6 +416,104 @@ def add_source_columns(
     return df
 
 
+_CANONICAL_SUMMARY_COLUMNS = (
+    "max_loading_percent",
+    "mean_loading_percent",
+    "num_overloaded_branches",
+    "num_hard_overloaded_branches",
+    "num_outaged_branches",
+    "min_vm_pu",
+    "max_vm_pu",
+    "total_low_voltage_violation",
+    "total_high_voltage_violation",
+    "total_voltage_violation",
+    "num_low_voltage_buses",
+    "num_high_voltage_buses",
+)
+
+
+def evaluate_canonical_candidates(
+    candidates: pd.DataFrame,
+    args: argparse.Namespace,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Validate and reclassify GridFM candidates through canonical physics."""
+
+    if candidates.empty:
+        evaluated = candidates.copy()
+        evaluated["gridfm_difficulty_class"] = pd.Series(dtype=str)
+        evaluated["canonical_pf_ok"] = pd.Series(dtype=bool)
+        evaluated["canonical_failure_kind"] = pd.Series(dtype=str)
+        return evaluated, evaluated.copy()
+
+    evaluated_rows: list[dict[str, Any]] = []
+
+    print(f"\nCanonical PF validation: {len(candidates)} candidates")
+
+    for raw_dir_str, group in candidates.groupby("source_raw_dir", sort=False):
+        raw_dir = Path(str(raw_dir_str))
+        scenario_ids = sorted(
+            group["source_scenario_id"].astype(int).unique()
+        )
+
+        adapter = GridFMAdapter(
+            raw_dir,
+            scenario_ids=scenario_ids,
+        )
+        backend = GridFMPowerFlowBackend(
+            adapter,
+            enable_cache=False,
+        )
+
+        for row in group.itertuples(index=False):
+            record = row._asdict()
+            record["gridfm_difficulty_class"] = str(
+                record["difficulty_class"]
+            )
+
+            scenario_id = int(record["source_scenario_id"])
+            result = backend.run_power_flow(scenario_id, None)
+
+            record["canonical_pf_ok"] = bool(result.success)
+            record["canonical_failure_kind"] = (
+                str(result.failure_kind.value)
+                if result.failure_kind is not None
+                else ""
+            )
+
+            if result.success and result.next_state is not None:
+                state = result.next_state
+
+                for column in _CANONICAL_SUMMARY_COLUMNS:
+                    if column in state.metrics:
+                        record[column] = state.metrics[column]
+
+                record["outaged_branch_ids"] = list(
+                    state.outaged_branch_ids
+                )
+
+            evaluated_rows.append(record)
+
+    evaluated = pd.DataFrame(evaluated_rows)
+    valid = evaluated[evaluated["canonical_pf_ok"]].copy()
+
+    if not valid.empty:
+        valid = classify_summary(valid, args)
+        valid = add_seriousness_score(valid)
+        valid = valid[
+            valid["difficulty_class"].isin(
+                ["simple", "medium", "hard"]
+            )
+        ].copy()
+
+    print(
+        "Canonical PF accepted "
+        f"{int(evaluated['canonical_pf_ok'].sum())}/{len(evaluated)} "
+        "preclassified candidates."
+    )
+
+    return evaluated, valid
+
+
 def select_balanced_manifest(
     candidates: pd.DataFrame,
     targets: ClassTargets,
@@ -516,6 +622,7 @@ def class_counts(df: pd.DataFrame) -> dict[str, int]:
         "hard": int(counts.get("hard", 0)),
     }
 
+
 def compute_max_balanced_targets(
     candidates: pd.DataFrame,
     simple_fraction: float,
@@ -577,6 +684,27 @@ def compute_max_balanced_targets(
         maximum_total -= 1
 
     return ClassTargets(simple=0, medium=0, hard=0)
+
+
+def compute_final_targets(
+    candidates: pd.DataFrame,
+    requested: ClassTargets,
+    simple_fraction: float,
+    medium_fraction: float,
+    hard_fraction: float,
+) -> ClassTargets:
+    """Respect target-total when quotas exist, otherwise choose a partial set."""
+
+    if quotas_met(candidates, requested):
+        return requested
+
+    return compute_max_balanced_targets(
+        candidates=candidates,
+        simple_fraction=simple_fraction,
+        medium_fraction=medium_fraction,
+        hard_fraction=hard_fraction,
+    )
+
 
 def quotas_met(selected: pd.DataFrame, targets: ClassTargets) -> bool:
     counts = class_counts(selected)
@@ -771,6 +899,21 @@ def expected_raw_dir(
     return chunk_dir / str(raw_network_dir_name) / "raw"
 
 
+def candidate_manifest_is_current(path: Path) -> bool:
+    if not path.exists():
+        return False
+
+    try:
+        columns = set(pd.read_csv(path, nrows=0).columns)
+    except Exception:
+        return False
+
+    return {
+        "canonical_pf_ok",
+        "gridfm_difficulty_class",
+    }.issubset(columns)
+
+
 def process_chunk(
     *,
     chunk_index: int,
@@ -870,29 +1013,54 @@ def process_chunk(
         raw_dir=raw_dir,
     )
 
-    candidates = summary[summary["difficulty_class"].isin(["simple", "medium", "hard"])].copy()
+    gridfm_candidates = summary[
+        summary["difficulty_class"].isin(
+            ["simple", "medium", "hard"]
+        )
+    ].copy()
+
+    evaluated, candidates = evaluate_canonical_candidates(
+        gridfm_candidates,
+        args,
+    )
 
     ensure_dir(paths["manifest_dir"])
 
     summary_path = paths["manifest_dir"] / f"{name}_summary.csv"
+    canonical_path = paths["manifest_dir"] / f"{name}_canonical.csv"
     candidates_path = paths["manifest_dir"] / f"{name}_candidates.csv"
 
     summary.to_csv(summary_path, index=False)
+    evaluated.to_csv(canonical_path, index=False)
     candidates.to_csv(candidates_path, index=False)
 
+    gridfm_counts = class_counts(gridfm_candidates)
     counts = class_counts(candidates)
 
     print("\nChunk candidates:")
-    print(f"  simple: {counts['simple']}")
-    print(f"  medium: {counts['medium']}")
-    print(f"  hard:   {counts['hard']}")
-    print(f"  total:  {len(candidates)}")
+    print(
+        "  GridFM:    "
+        f"simple={gridfm_counts['simple']}, "
+        f"medium={gridfm_counts['medium']}, "
+        f"hard={gridfm_counts['hard']}"
+    )
+    print(
+        "  canonical: "
+        f"simple={counts['simple']}, "
+        f"medium={counts['medium']}, "
+        f"hard={counts['hard']}"
+    )
+    print(f"  total canonical: {len(candidates)}")
 
     return candidates
 
 
 def load_existing_candidates(manifest_dir: Path) -> pd.DataFrame:
-    files = sorted(manifest_dir.glob("chunk*_candidates.csv"))
+    files = [
+        path
+        for path in sorted(manifest_dir.glob("chunk*_candidates.csv"))
+        if candidate_manifest_is_current(path)
+    ]
 
     if not files:
         return pd.DataFrame()
@@ -1012,7 +1180,7 @@ def write_outputs(
 def main() -> None:
 
     configure_utf8_stdio()
-    
+
     parser = argparse.ArgumentParser(
         description="Generate and build a balanced GridFM dataset."
     )
@@ -1124,7 +1292,7 @@ def main() -> None:
     parser.add_argument("--medium-max-overloaded", type=int, default=5)
 
     parser.add_argument("--hard-min-loading", type=float, default=150.0)
-    parser.add_argument("--hard-min-hard", type=int, default=1)
+    parser.add_argument("--hard-min-hard", type=int, default=2)
 
     parser.add_argument("--train-fraction", type=float, default=0.8)
     parser.add_argument("--split-seed", type=int, default=42)
@@ -1132,7 +1300,7 @@ def main() -> None:
     parser.add_argument(
         "--resume",
         action="store_true",
-        help="Reuse already generated chunks and existing candidate CSVs.",
+        help="Reuse already generated chunks and current candidate CSVs.",
     )
 
     parser.add_argument(
@@ -1189,7 +1357,7 @@ def main() -> None:
     )
 
     if quotas_met(selected, targets):
-        print("\nExisting candidates already satisfy minimum quotas.")
+        print("\nExisting canonical candidates already satisfy quotas.")
     else:
         for chunk_index in range(int(args.max_chunks)):
             name = chunk_name(chunk_index)
@@ -1198,9 +1366,12 @@ def main() -> None:
                 paths["manifest_dir"] / f"{name}_candidates.csv"
             )
 
-            if args.resume and candidate_path.exists():
+            if (
+                args.resume
+                and candidate_manifest_is_current(candidate_path)
+            ):
                 print(
-                    f"\n{name}: candidates already exist, "
+                    f"\n{name}: canonical candidates already exist, "
                     "skipping chunk processing"
                 )
             else:
@@ -1221,8 +1392,8 @@ def main() -> None:
                         ignore_index=True,
                     )
 
-            # In resume mode reload all manifests, including chunks that
-            # existed before this launch.
+            # In resume mode reload all current manifests, including chunks
+            # that existed before this launch and were just refreshed.
             if args.resume:
                 all_candidates = load_existing_candidates(
                     paths["manifest_dir"]
@@ -1237,14 +1408,14 @@ def main() -> None:
             counts_available = class_counts(all_candidates)
             counts_selected = class_counts(selected)
 
-            print("\nCurrent accumulated candidates:")
+            print("\nCurrent accumulated canonical candidates:")
             print(
                 f"  available simple={counts_available['simple']}, "
                 f"medium={counts_available['medium']}, "
                 f"hard={counts_available['hard']}"
             )
             print(
-                f"  minimum   simple={counts_selected['simple']}/"
+                f"  target    simple={counts_selected['simple']}/"
                 f"{targets.simple}, "
                 f"medium={counts_selected['medium']}/"
                 f"{targets.medium}, "
@@ -1253,15 +1424,15 @@ def main() -> None:
             )
 
             if quotas_met(selected, targets):
-                print("\nMinimum class quotas are satisfied.")
+                print("\nCanonical class quotas are satisfied.")
                 break
 
     # This check belongs after the generation loop, not before it.
     if all_candidates.empty:
         raise RuntimeError(
-            "GridFM generation produced no classified candidates. "
+            "GridFM generation produced no canonical classified candidates. "
             "Check generated raw data, classification thresholds, "
-            "and chunk logs."
+            "canonical power-flow failures, and chunk logs."
         )
 
     if not quotas_met(selected, targets) and not args.allow_partial:
@@ -1269,22 +1440,21 @@ def main() -> None:
         counts_available = class_counts(all_candidates)
 
         raise RuntimeError(
-            "Could not satisfy minimum balanced dataset quotas.\n"
+            "Could not satisfy canonical balanced dataset quotas.\n"
             f"Selected simple={counts_selected['simple']}/"
             f"{targets.simple}, "
             f"medium={counts_selected['medium']}/"
             f"{targets.medium}, "
             f"hard={counts_selected['hard']}/"
             f"{targets.hard}.\n"
-            f"Available candidates: {counts_available}.\n"
+            f"Available canonical candidates: {counts_available}.\n"
             "Increase --max-chunks, increase --chunk-size, "
-            "or relax class thresholds."
+            "or relax generation/class thresholds."
         )
 
-    # After generation, use the largest possible proportional subset
-    # of all available candidates.
-    final_targets = compute_max_balanced_targets(
+    final_targets = compute_final_targets(
         candidates=all_candidates,
+        requested=targets,
         simple_fraction=float(args.simple_fraction),
         medium_fraction=float(args.medium_fraction),
         hard_fraction=float(args.hard_fraction),
@@ -1292,11 +1462,11 @@ def main() -> None:
 
     if final_targets.total <= 0:
         raise RuntimeError(
-            "Could not build a proportional balanced dataset from "
+            "Could not build a proportional canonical dataset from "
             f"available candidates: {class_counts(all_candidates)}"
         )
 
-    print("\nMaximum proportional selection:")
+    print("\nFinal proportional selection:")
     print(
         f"  simple={final_targets.simple}, "
         f"medium={final_targets.medium}, "
