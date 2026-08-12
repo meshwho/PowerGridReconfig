@@ -17,7 +17,10 @@ from grid_topology_ai.self_play.pool_sampling import (
     sample_curriculum_from_pool,
     sample_from_pool,
 )
-from grid_topology_ai.self_play.pool_state import update_pool_metadata
+from grid_topology_ai.self_play.pool_state import (
+    SCHEMA_VERSION,
+    update_pool_metadata,
+)
 
 
 def _scenario(
@@ -176,7 +179,7 @@ class _ReplayBuffer:
         return 0
 
 
-def test_schema_v3_curriculum_runs_through_pipeline(
+def test_current_curriculum_schema_runs_through_pipeline(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -373,7 +376,7 @@ def test_schema_v3_curriculum_runs_through_pipeline(
         report_path
     )
 
-    assert pool_metadata["schema_version"] == 3
+    assert pool_metadata["schema_version"] == SCHEMA_VERSION
     assert pool_metadata["last_updated_iteration"] == 1
     assert pool_metadata["curriculum_sampling"][
         "stale_after_iterations"
