@@ -3,6 +3,11 @@ from dataclasses import FrozenInstanceError, replace
 import numpy as np
 import pytest
 
+from grid_topology_ai.config.checkpoint_selection import (
+    CheckpointSelectionConfig,
+)
+from grid_topology_ai.config.evaluation import EvaluationConfig
+from grid_topology_ai.config.generation import GenerationConfig
 from grid_topology_ai.config.physics import (
     DEFAULT_PHYSICS_CONFIG,
     PhysicsConfig,
@@ -12,8 +17,18 @@ from grid_topology_ai.config.physics import (
 )
 
 
+def test_canonical_defaults_use_newton_raphson() -> None:
+    assert DEFAULT_PHYSICS_CONFIG.pf_alg == 1
+    assert PhysicsConfig().pf_alg == 1
+    assert GenerationConfig().pf_alg == 1
+    assert GenerationConfig.from_mapping({}).pf_alg == 1
+    assert EvaluationConfig().pf_alg == 1
+    assert EvaluationConfig.from_mapping({}).pf_alg == 1
+    assert CheckpointSelectionConfig().arena.pf_alg == 1
+
+
 def test_numpy_integral_settings_have_canonical_fingerprint() -> None:
-    first = PhysicsConfig(pf_alg=np.int64(3), max_iterations=np.int32(30))
+    first = PhysicsConfig(pf_alg=np.int64(1), max_iterations=np.int32(30))
     second = PhysicsConfig()
     assert type(first.pf_alg) is int
     assert type(first.max_iterations) is int
@@ -54,7 +69,7 @@ def test_mapping_round_trip_preserves_canonical_config_and_fingerprint() -> None
     ("field", "value"),
     [
         ("base_mva", 110.0),
-        ("pf_alg", 1),
+        ("pf_alg", 3),
         ("pf_tolerance", 1e-9),
         ("max_iterations", 31),
         ("q_limit_policy", QLimitPolicy.VALIDATE_ONLY),
@@ -160,7 +175,7 @@ def test_from_mapping_rejects_non_mapping_and_unknown_settings() -> None:
         PhysicsConfig.from_mapping({"pf_alg": 3, "hidden_threshold": 1})
 
 
-@pytest.mark.parametrize("legacy", [3, np.int64(3), 3.0, "3", " 3 "])
+@pytest.mark.parametrize("legacy", [1, np.int64(1), 1.0, "1", " 1 "])
 def test_legacy_algorithm_resolves_to_the_same_canonical_config(
     legacy: object,
 ) -> None:
@@ -187,7 +202,6 @@ def test_explicit_matching_config_is_preserved() -> None:
 
 
 def test_explicit_default_config_conflicts_with_legacy_algorithm(tmp_path) -> None:
-    from grid_topology_ai.config.evaluation import EvaluationConfig
     from grid_topology_ai.evaluation.checkpoint import EvaluationRequest
 
     with pytest.raises(ValueError, match="conflicts"):
@@ -195,6 +209,6 @@ def test_explicit_default_config_conflicts_with_legacy_algorithm(tmp_path) -> No
             raw_dir=tmp_path / "raw",
             transitions_csv=tmp_path / "transitions.csv",
             checkpoint=tmp_path / "checkpoint.pt",
-            config=EvaluationConfig(pf_alg=1),
+            config=EvaluationConfig(pf_alg=3),
             physics_config=DEFAULT_PHYSICS_CONFIG,
         )
