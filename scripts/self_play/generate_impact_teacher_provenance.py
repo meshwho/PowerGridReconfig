@@ -12,6 +12,10 @@ import numpy as np
 from grid_topology_ai.contracts import (
     OUTCOME_OBJECTIVE_VERSION,
     OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
+    require_exact_contract_version,
+    require_outcome_objective_version,
+    require_physics_provenance,
+    require_topology_action_provenance,
     topology_action_provenance,
 )
 from grid_topology_ai.environment import TopologySwitchingEnv
@@ -172,6 +176,46 @@ def _selection_provenance_is_valid(row: dict[str, Any]) -> bool:
     return True
 
 
+def _checkpoint_row_contracts_are_current(row: dict[str, Any]) -> bool:
+    source = "teacher checkpoint row"
+
+    try:
+        require_physics_provenance(
+            row,
+            source=source,
+        )
+        require_outcome_objective_version(
+            row,
+            source=source,
+        )
+        require_exact_contract_version(
+            row.get("outcome_value_target_contract_version"),
+            expected=OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
+            name="outcome-value-target contract",
+            source=source,
+            regeneration_command=(
+                "rerun the teacher scenario with the current code"
+            ),
+        )
+        require_exact_contract_version(
+            row.get("terminal_outcome_evidence_schema_version"),
+            expected=TERMINAL_OUTCOME_EVIDENCE_SCHEMA_VERSION,
+            name="terminal-outcome-evidence schema",
+            source=source,
+            regeneration_command=(
+                "rerun the teacher scenario with the current code"
+            ),
+        )
+        require_topology_action_provenance(
+            row,
+            source=source,
+        )
+    except (TypeError, ValueError):
+        return False
+
+    return True
+
+
 def _checkpoint_result_is_current(result: dict[str, Any]) -> bool:
     if not bool(result.get("ok", False)):
         return result.get("reason") != "exception"
@@ -186,6 +230,8 @@ def _checkpoint_result_is_current(result: dict[str, Any]) -> bool:
         if any(row.get(field) is None for field in _REQUIRED_CHECKPOINT_ROW_FIELDS):
             return False
         if not _selection_provenance_is_valid(row):
+            return False
+        if not _checkpoint_row_contracts_are_current(row):
             return False
 
         run_id = row.get("run_id")
@@ -250,6 +296,10 @@ def _search_workload(
 ) -> dict[str, object]:
     cache_hits = _counter_delta(before, after, "hits")
     cache_misses = _counter_delta(before, after, "misses")
+    exact_cache_hits = _counter_delta(before, after, "exact_cache_hits")
+    tolerant_cache_hits = _counter_delta(before, after, "tolerant_cache_hits")
+    warm_start_hits = _counter_delta(before, after, "warm_start_hits")
+    cold_start_misses = _counter_delta(before, after, "cold_start_misses")
     stock_runpf_calls = _counter_delta(before, after, "stock_runpf_calls")
     q_limit_resolves = _counter_delta(before, after, "q_limit_resolves")
     cache_lookups = cache_hits + cache_misses
@@ -261,6 +311,15 @@ def _search_workload(
         "cache_hit_rate": (
             float(cache_hits) / float(cache_lookups)
             if cache_lookups > 0
+            else 0.0
+        ),
+        "exact_cache_hits": int(exact_cache_hits),
+        "tolerant_cache_hits": int(tolerant_cache_hits),
+        "warm_start_hits": int(warm_start_hits),
+        "cold_start_misses": int(cold_start_misses),
+        "warm_start_rate": (
+            float(warm_start_hits) / float(cache_misses)
+            if cache_misses > 0
             else 0.0
         ),
         "stock_runpf_calls": int(stock_runpf_calls),
@@ -358,6 +417,22 @@ def _print_power_flow_workload_summary() -> None:
     )
     cache_hits = sum(int(item.get("cache_hits", 0)) for item in items)
     cache_misses = sum(int(item.get("cache_misses", 0)) for item in items)
+    exact_cache_hits = sum(
+        int(item.get("exact_cache_hits", 0))
+        for item in items
+    )
+    tolerant_cache_hits = sum(
+        int(item.get("tolerant_cache_hits", 0))
+        for item in items
+    )
+    warm_start_hits = sum(
+        int(item.get("warm_start_hits", 0))
+        for item in items
+    )
+    cold_start_misses = sum(
+        int(item.get("cold_start_misses", 0))
+        for item in items
+    )
     stock_runpf_calls = sum(
         int(item.get("stock_runpf_calls", 0))
         for item in items
@@ -372,6 +447,11 @@ def _print_power_flow_workload_summary() -> None:
         if cache_lookups > 0
         else 0.0
     )
+    warm_start_rate = (
+        float(warm_start_hits) / float(cache_misses)
+        if cache_misses > 0
+        else 0.0
+    )
     solves_per_cache_miss = (
         float(stock_runpf_calls) / float(cache_misses)
         if cache_misses > 0
@@ -381,8 +461,13 @@ def _print_power_flow_workload_summary() -> None:
     print(f"Instrumented scenarios:    {len(items)}")
     print(f"Logical evaluations:       {logical_evaluations}")
     print(f"PF cache hits:             {cache_hits}")
+    print(f"  exact hits:              {exact_cache_hits}")
+    print(f"  tolerant hits:           {tolerant_cache_hits}")
     print(f"PF cache misses:           {cache_misses}")
+    print(f"  warm starts:             {warm_start_hits}")
+    print(f"  cold starts:             {cold_start_misses}")
     print(f"Cache hit rate:            {cache_hit_rate:.1%}")
+    print(f"Warm-start / miss:         {warm_start_rate:.1%}")
     print(f"Stock PYPOWER solves:      {stock_runpf_calls}")
     print(f"Q-limit re-solves:         {q_limit_resolves}")
     print(f"Solves / cache miss:       {solves_per_cache_miss:.3f}")
