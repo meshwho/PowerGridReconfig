@@ -73,21 +73,31 @@ function Invoke-NativeProcess {
 
     Push-Location $WorkingDirectory
     try {
-        # Keep native stdout/stderr visible while also appending it to the log.
-        # PYTHONUNBUFFERED below ensures that Python/GridFM do not hide output
-        # behind their own stdio buffering.
-        & $FilePath @Arguments 2>&1 |
-            ForEach-Object {
-                $Line = [string]$_
-                Write-Host $Line
-                [System.IO.File]::AppendAllText(
-                    $StdoutLogPath,
-                    $Line + [Environment]::NewLine,
-                    $Utf8Encoding
-                )
-            }
+        # Windows PowerShell 5.1 wraps redirected native stderr as ErrorRecord.
+        # With the script-wide ErrorActionPreference=Stop, an ordinary tqdm
+        # progress line can therefore abort the wrapper even when the native
+        # process itself is healthy. Temporarily allow those records through
+        # the pipeline, then decide success strictly from the native exit code.
+        $PreviousErrorActionPreference = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
 
-        $ExitCode = $LASTEXITCODE
+        try {
+            & $FilePath @Arguments 2>&1 |
+                ForEach-Object {
+                    $Line = [string]$_
+                    Write-Host $Line
+                    [System.IO.File]::AppendAllText(
+                        $StdoutLogPath,
+                        $Line + [Environment]::NewLine,
+                        $Utf8Encoding
+                    )
+                }
+
+            $ExitCode = $LASTEXITCODE
+        }
+        finally {
+            $ErrorActionPreference = $PreviousErrorActionPreference
+        }
     }
     finally {
         Pop-Location
