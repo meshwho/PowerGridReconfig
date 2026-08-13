@@ -357,6 +357,11 @@ def test_gridfm_wrapper_streams_output_and_uses_safe_bootstrap_chunks() -> None:
 
     assert "Output is streamed live to this console." in source
     assert 'PYTHONUNBUFFERED = "1"' in source
+    assert '$ErrorActionPreference = "Stop"' in source
+    assert "$PreviousErrorActionPreference = $ErrorActionPreference" in source
+    assert '$ErrorActionPreference = "Continue"' in source
+    assert "$ErrorActionPreference = $PreviousErrorActionPreference" in source
+    assert "$ExitCode = $LASTEXITCODE" in source
     assert "$MaxSafeGridFMProcesses = 4" in source
     assert '"--gridfm-retries", "$GridFMRetries"' in source
     assert (
