@@ -3,6 +3,8 @@ from __future__ import annotations
 import inspect
 from typing import Any
 
+import torch
+
 from grid_topology_ai.training import _graph_policy_value_base as _base
 from grid_topology_ai.training.checkpoint_candidates import (
     checkpoint_candidate_tracking,
@@ -21,6 +23,73 @@ _BASE_EXPORTS = tuple(
 )
 for _name in _BASE_EXPORTS:
     globals()[_name] = getattr(_base, _name)
+
+
+class _AmpSafeGraphPolicyValueNetV2(_base.GraphPolicyValueNetV2):
+    @staticmethod
+    def _segment_softmax(
+        scores: torch.Tensor,
+        batch_index: torch.Tensor,
+        batch_size: int,
+    ) -> torch.Tensor:
+        if scores.ndim != 1:
+            raise ValueError(
+                "Segmented softmax expects a 1D score tensor."
+            )
+
+        if batch_index.shape != scores.shape:
+            raise ValueError(
+                "batch_index must match scores."
+            )
+
+        if batch_size <= 0:
+            raise ValueError(
+                "batch_size must be positive."
+            )
+
+        work_dtype = (
+            torch.float32
+            if scores.dtype in (torch.float16, torch.bfloat16)
+            else scores.dtype
+        )
+        work_scores = scores.to(dtype=work_dtype)
+        index = batch_index.long()
+
+        maxima = work_scores.new_full(
+            (batch_size,),
+            torch.finfo(work_scores.dtype).min,
+        )
+        maxima.scatter_reduce_(
+            dim=0,
+            index=index,
+            src=work_scores,
+            reduce="amax",
+            include_self=True,
+        )
+
+        exponentials = torch.exp(
+            work_scores - maxima[index]
+        )
+        denominators = exponentials.new_zeros(
+            batch_size
+        )
+        denominators.index_add_(
+            0,
+            index,
+            exponentials,
+        )
+
+        weights = (
+            exponentials
+            / denominators[index].clamp_min(1e-12)
+        )
+        return weights.to(dtype=scores.dtype)
+
+
+# The training loop is where CUDA autocast is enabled. Keep the model contract
+# unchanged while using float32 for the softmax reductions that autocast may
+# promote independently from the surrounding half-precision tensors.
+globals()["GraphPolicyValueNetV2"] = _AmpSafeGraphPolicyValueNetV2
 
 _legacy_make_checkpoint = _base.make_checkpoint
 _legacy_log_epoch_metrics = _base.log_epoch_metrics
