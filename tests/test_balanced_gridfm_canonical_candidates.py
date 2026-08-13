@@ -215,6 +215,133 @@ def test_canonical_candidates_are_filtered_and_reclassified(monkeypatch) -> None
     assert by_scenario.loc[3, "max_loading_percent"] == 160.0
 
 
+def test_gridfm_topology_variants_are_deduplicated_before_selection() -> None:
+    def candidate(
+        scenario_id: int,
+        *,
+        chunk: str,
+        load_scenario_idx: float,
+        outage,
+    ) -> dict:
+        return {
+            "difficulty_class": "simple",
+            "source_chunk": chunk,
+            "source_scenario_id": scenario_id,
+            "load_scenario_idx": load_scenario_idx,
+            "outaged_branch_ids": outage,
+            "max_loading_percent": 110.0,
+            "num_overloaded_branches": 1,
+        }
+
+    candidates = pd.DataFrame(
+        [
+            candidate(
+                1,
+                chunk="chunk00",
+                load_scenario_idx=7.0,
+                outage=[12],
+            ),
+            candidate(
+                2,
+                chunk="chunk00",
+                load_scenario_idx=7.0,
+                outage="[12]",
+            ),
+            candidate(
+                3,
+                chunk="chunk00",
+                load_scenario_idx=7.0,
+                outage=[13],
+            ),
+            candidate(
+                4,
+                chunk="chunk01",
+                load_scenario_idx=7.0,
+                outage=[12],
+            ),
+            candidate(
+                5,
+                chunk="chunk00",
+                load_scenario_idx=8.0,
+                outage=[12],
+            ),
+        ]
+    )
+
+    deduplicated = builder.deduplicate_gridfm_variants(
+        candidates
+    )
+
+    assert deduplicated["source_scenario_id"].tolist() == [
+        1,
+        3,
+        4,
+        5,
+    ]
+
+    selected = builder.select_balanced_manifest(
+        candidates=candidates,
+        targets=builder.ClassTargets(
+            simple=4,
+            medium=0,
+            hard=0,
+        ),
+        seed=42,
+    )
+
+    assert len(selected) == 4
+    assert set(selected["source_scenario_id"]) == {
+        1,
+        3,
+        4,
+        5,
+    }
+
+
+def test_resume_candidate_pool_deduplicates_old_gridfm_variants(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "chunk00_candidates.csv"
+
+    pd.DataFrame(
+        [
+            {
+                "difficulty_class": "hard",
+                "gridfm_difficulty_class": "hard",
+                "canonical_pf_ok": True,
+                "source_chunk": "chunk00",
+                "source_scenario_id": 100,
+                "load_scenario_idx": 25.0,
+                "outaged_branch_ids": [166],
+            },
+            {
+                "difficulty_class": "hard",
+                "gridfm_difficulty_class": "hard",
+                "canonical_pf_ok": True,
+                "source_chunk": "chunk00",
+                "source_scenario_id": 101,
+                "load_scenario_idx": 25.0,
+                "outaged_branch_ids": [166],
+            },
+        ]
+    ).to_csv(path, index=False)
+
+    builder._write_completion_marker(
+        builder.candidate_completion_marker_path(path),
+        stage="canonical_candidates",
+        contract_fingerprint="contract-a",
+        chunk_index=0,
+    )
+
+    candidates = builder.load_existing_candidates(
+        tmp_path,
+        contract_fingerprint="contract-a",
+    )
+
+    assert len(candidates) == 1
+    assert candidates["source_scenario_id"].tolist() == [100]
+
+
 def test_final_targets_respect_requested_total_when_quotas_exist() -> None:
     candidates = pd.DataFrame(
         {
