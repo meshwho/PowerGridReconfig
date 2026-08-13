@@ -1062,8 +1062,8 @@ def process_one_scenario_fast(scenario_id: int) -> dict[str, Any]:
             gamma=float(task["gamma"]),
             include_stop_action=True,
             allow_hard_count_increase=bool(task["allow_hard_count_increase"]),
-            show_progress=False,
-            progress_update_every=1,
+            show_progress=True,
+            progress_update_every=10,
         )
 
         if bool(task.get("use_lodf_screening", False)):
@@ -1079,11 +1079,25 @@ def process_one_scenario_fast(scenario_id: int) -> dict[str, Any]:
                 physics_config=physics_config,
             )
 
+        print(
+            f"[worker {os.getpid()}] scenario {scenario_id}: beam search start",
+            flush=True,
+        )
+
+        search_started = time.perf_counter()
+
         result = planner.search(
             env=search_env,
             scenario_id=scenario_id,
         )
 
+        print(
+            f"[worker {os.getpid()}] scenario {scenario_id}: "
+            f"beam search done in "
+            f"{time.perf_counter() - search_started:.1f}s | "
+            f"evaluated={result.evaluated_actions}",
+            flush=True,
+        )
         best = result.best_node
 
         if not best.action_ids:
@@ -1533,7 +1547,26 @@ def process_scenario_batch(scenario_ids: list[int]) -> list[dict[str, Any]]:
     results: list[dict[str, Any]] = []
 
     for scenario_id in scenario_ids:
-        results.append(process_one_scenario_fast(int(scenario_id)))
+        print(
+            f"[worker {os.getpid()}] scenario {scenario_id}: start",
+            flush=True,
+        )
+
+        started = time.perf_counter()
+
+        result = process_one_scenario_fast(int(scenario_id))
+
+        elapsed = time.perf_counter() - started
+
+        print(
+            f"[worker {os.getpid()}] scenario {scenario_id}: "
+            f"done in {elapsed:.1f}s | "
+            f"ok={result.get('ok')} | "
+            f"reason={result.get('reason')}",
+            flush=True,
+        )
+
+        results.append(result)
 
     return results
 

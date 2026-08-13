@@ -787,6 +787,109 @@ def evaluate_canonical_candidates(
     return evaluated, valid
 
 
+def _normalize_outage_identity(value: Any) -> tuple[int, ...]:
+    if isinstance(value, str):
+        text = value.strip()
+
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            parsed = [
+                part.strip()
+                for part in text.strip("[]").split(",")
+                if part.strip()
+            ]
+
+        if not isinstance(parsed, (list, tuple)):
+            parsed = [parsed]
+
+    elif isinstance(value, (list, tuple, np.ndarray, pd.Series)):
+        parsed = list(value)
+
+    elif pd.isna(value):
+        parsed = []
+
+    else:
+        parsed = [value]
+
+    return tuple(
+        sorted(int(branch_id) for branch_id in parsed)
+    )
+
+
+def deduplicate_gridfm_variants(
+    candidates: pd.DataFrame,
+) -> pd.DataFrame:
+    """
+    Drop repeated topology variants for the same GridFM load scenario.
+
+    GridFM applies load, generation and admittance perturbations once for a
+    load scenario and then samples topology variants. If the random topology
+    generator selects the same outage more than once, those variants describe
+    the same physical state.
+    """
+
+    if candidates.empty:
+        return candidates.copy()
+
+    required = {
+        "source_chunk",
+        "load_scenario_idx",
+        "outaged_branch_ids",
+    }
+
+    missing = required - set(candidates.columns)
+
+    if missing:
+        raise ValueError(
+            "Cannot deduplicate GridFM candidates; missing columns: "
+            f"{sorted(missing)}"
+        )
+
+    df = candidates.copy()
+
+    load_scenario_idx = pd.to_numeric(
+        df["load_scenario_idx"],
+        errors="raise",
+    ).to_numpy(dtype=np.float64)
+
+    if not np.isfinite(load_scenario_idx).all():
+        raise ValueError(
+            "load_scenario_idx must contain only finite values."
+        )
+
+    df["_dedup_load_scenario_idx"] = load_scenario_idx
+    df["_dedup_outage_ids"] = df[
+        "outaged_branch_ids"
+    ].map(_normalize_outage_identity)
+
+    before = len(df)
+
+    df = df.drop_duplicates(
+        subset=[
+            "source_chunk",
+            "_dedup_load_scenario_idx",
+            "_dedup_outage_ids",
+        ],
+        keep="first",
+    ).copy()
+
+    removed = before - len(df)
+
+    if removed:
+        print(
+            f"Removed {removed} duplicate GridFM topology variants."
+        )
+
+    return df.drop(
+        columns=[
+            "_dedup_load_scenario_idx",
+            "_dedup_outage_ids",
+        ],
+        errors="ignore",
+    ).reset_index(drop=True)
+
+
 def select_balanced_manifest(
     candidates: pd.DataFrame,
     targets: ClassTargets,
@@ -795,7 +898,7 @@ def select_balanced_manifest(
     if candidates.empty:
         return candidates.copy()
 
-    df = candidates.copy()
+    df = deduplicate_gridfm_variants(candidates)
     df = df[df["difficulty_class"].isin(["simple", "medium", "hard"])].copy()
 
     if df.empty:
@@ -1352,6 +1455,8 @@ def process_chunk(
         args,
     )
 
+    candidates = deduplicate_gridfm_variants(candidates)
+
     ensure_dir(paths["manifest_dir"])
 
     summary_path = paths["manifest_dir"] / f"{name}_summary.csv"
@@ -1420,7 +1525,9 @@ def load_existing_candidates(
 
     parts = [pd.read_csv(path) for path in files]
 
-    return pd.concat(parts, ignore_index=True)
+    return deduplicate_gridfm_variants(
+        pd.concat(parts, ignore_index=True)
+    )
 
 
 def make_paths(output_root: Path) -> dict[str, Path]:
