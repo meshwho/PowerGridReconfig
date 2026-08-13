@@ -11,6 +11,8 @@ from grid_topology_ai.config.physics import DEFAULT_PHYSICS_CONFIG
 from grid_topology_ai.contracts import (
     OUTCOME_OBJECTIVE_VERSION,
     OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
+    physics_provenance,
+    topology_action_provenance,
 )
 from grid_topology_ai.outcome_contract import (
     TERMINAL_OUTCOME_EVIDENCE_SCHEMA_VERSION,
@@ -19,6 +21,10 @@ from grid_topology_ai.outcome_contract import (
 from grid_topology_ai.redispatch import MinimalRedispatchResult
 from grid_topology_ai.return_contract import terminal_utility_from_outcome
 from grid_topology_ai.termination import TerminationReason
+from grid_topology_ai.topology_actions import (
+    ActionSpaceConfig,
+    build_branch_action_slots,
+)
 from scripts.self_play import generate_impact_teacher_provenance as provenance
 from tests.outcome_evidence_helpers import terminal_evidence
 
@@ -39,7 +45,15 @@ def _current_checkpoint_row() -> dict[str, object]:
     evidence = terminal_evidence(
         TerminationReason.HANDOFF_TO_REDISPATCH_TEACHER
     )
+    action_provenance = topology_action_provenance(
+        ActionSpaceConfig(),
+        build_branch_action_slots(
+            np.asarray([10, 20], dtype=np.int64)
+        ),
+    )
     return {
+        **physics_provenance(DEFAULT_PHYSICS_CONFIG),
+        **action_provenance,
         "run_id": "teacher-run",
         "iteration": 1,
         "episode_id": "teacher-episode",
@@ -54,11 +68,6 @@ def _current_checkpoint_row() -> dict[str, object]:
         "outcome_value_target_contract_version": (
             OUTCOME_VALUE_TARGET_CONTRACT_VERSION
         ),
-        "topology_action_contract_version": 1,
-        "topology_action_config": "{}",
-        "topology_action_config_fingerprint": "config-fingerprint",
-        "action_layout": "[]",
-        "action_layout_fingerprint": "layout-fingerprint",
         "redispatch_attempted": False,
         "redispatch_opf_success": False,
         "redispatch_validated": False,
