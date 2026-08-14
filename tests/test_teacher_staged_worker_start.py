@@ -91,23 +91,38 @@ def test_parallel_start_barrier_is_runtime_only(monkeypatch, tmp_path: Path) -> 
     event = object()
     count = object()
     lock = object()
-    captured: dict[str, object] = {}
+    semaphore = object()
+    executors = []
+
+    class FakeFuture:
+        def result(self):
+            return []
+
+    class FakeExecutor:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+            executors.append(self)
+
+        def submit(self, fn, batch):
+            return FakeFuture()
+
+        def shutdown(self, *, wait, cancel_futures):
+            return None
 
     monkeypatch.setattr(staged.mp, "Event", lambda: event)
     monkeypatch.setattr(staged.mp, "Value", lambda kind, value: count)
     monkeypatch.setattr(staged.mp, "Lock", lambda: lock)
+    monkeypatch.setattr(staged.mp, "BoundedSemaphore", lambda value: semaphore)
+    monkeypatch.setattr(staged, "ProcessPoolExecutor", FakeExecutor)
+    monkeypatch.setattr(staged, "as_completed", lambda futures: list(futures))
+    monkeypatch.setattr(staged.redispatch, "_worker_init_concurrency", lambda: 1)
+    monkeypatch.setattr(staged.redispatch.base.teacher, "tqdm", None)
 
-    def fake_run_parallel(**kwargs):
-        captured.update(kwargs)
-        return [], 0, 0
-
-    monkeypatch.setattr(
-        staged,
-        "_ORIGINAL_RUN_PARALLEL",
-        fake_run_parallel,
-    )
-
-    task_config = {"physics_config_fingerprint": "stable"}
+    task_config = {
+        "physics_config_fingerprint": "stable",
+        "min_free_system_memory_mb": 0.0,
+        "max_tasks_per_child": 0,
+    }
 
     result = staged.run_parallel(
         scenario_batches=[[1], [2]],
@@ -121,11 +136,20 @@ def test_parallel_start_barrier_is_runtime_only(monkeypatch, tmp_path: Path) -> 
     )
 
     assert result == ([], 0, 0)
-    assert task_config == {"physics_config_fingerprint": "stable"}
+    assert task_config == {
+        "physics_config_fingerprint": "stable",
+        "min_free_system_memory_mb": 0.0,
+        "max_tasks_per_child": 0,
+    }
+    assert len(executors) == 2
 
-    runtime_config = captured["task_config"]
-    assert isinstance(runtime_config, dict)
-    assert runtime_config[staged._RUNTIME_READY_EVENT] is event
-    assert runtime_config[staged._RUNTIME_READY_COUNT] is count
-    assert runtime_config[staged._RUNTIME_READY_LOCK] is lock
-    assert runtime_config[staged._RUNTIME_EXPECTED_WORKERS] == 10
+    for executor in executors:
+        runtime_config = executor.kwargs["initargs"][2]
+        assert runtime_config[staged._RUNTIME_READY_EVENT] is event
+        assert runtime_config[staged._RUNTIME_READY_COUNT] is count
+        assert runtime_config[staged._RUNTIME_READY_LOCK] is lock
+        assert runtime_config[staged._RUNTIME_EXPECTED_WORKERS] == 2
+        assert (
+            runtime_config[staged.redispatch._RUNTIME_WORKER_INIT_SEMAPHORE]
+            is semaphore
+        )
