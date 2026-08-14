@@ -34,3 +34,35 @@ def test_entrypoint_uses_separate_smoke_run_name() -> None:
     assert argv[argv.index("--run-name") + 1] == (
         "case118_bootstrap_v1_teacher_redispatch_smoke_v1"
     )
+
+
+def test_entrypoint_replaces_auto_workers_with_safe_count(monkeypatch) -> None:
+    monkeypatch.setattr(entrypoint, "_safe_auto_workers", lambda: 3)
+
+    argv = entrypoint.canonical_argv(
+        [
+            "run_teacher_redispatch.py",
+            "--dataset-name",
+            "case118_bootstrap_v1",
+            "--num-workers",
+            "auto",
+        ]
+    )
+
+    assert argv[argv.index("--num-workers") + 1] == "3"
+
+
+def test_entrypoint_preserves_explicit_worker_count(monkeypatch) -> None:
+    monkeypatch.setattr(entrypoint, "_safe_auto_workers", lambda: 1)
+
+    argv = entrypoint.canonical_argv(
+        [
+            "run_teacher_redispatch.py",
+            "--dataset-name",
+            "case118_bootstrap_v1",
+            "--num-workers",
+            "2",
+        ]
+    )
+
+    assert argv[argv.index("--num-workers") + 1] == "2"
