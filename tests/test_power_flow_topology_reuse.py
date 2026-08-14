@@ -126,6 +126,17 @@ def test_generator_differences_within_tolerance_reuse_cached_result() -> None:
         next_state=cached_next,
     )
 
+    # This test exercises the legacy tolerant topology cache in isolation. The
+    # new global exact layer intentionally runs first in production and needs a
+    # real adapter to build the physical PF problem. Keep that unrelated setup
+    # out of this focused unit test while still exercising the lookup order.
+    backend._build_ppc_from_state = (  # type: ignore[method-assign]
+        lambda **kwargs: ({}, {})
+    )
+    backend._exact_problem_fingerprint = (  # type: ignore[method-assign]
+        lambda ppc, frames: "0" * 64
+    )
+
     current = _state(
         pg=(70.0 + 0.5e-6, 20.0 - 0.5e-6),
         qg=(8.0 - 0.5e-6, 3.0 + 0.5e-6),
