@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import io
+import zlib
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -12,10 +14,13 @@ from grid_topology_ai.pf_warm_shadow import (
     WarmCandidate,
     WarmStartDescriptor,
     WarmStartShadow,
+    _pack_descriptor,
 )
 from grid_topology_ai.pf_warm_shadow_runtime import (
     BoundedWarmStartShadow,
     BoundedWarmStartStore,
+    _compact_warm_state_payload,
+    _decode_warm_seed,
     install_runtime_warm_shadow,
 )
 from scripts.pipelines import run_teacher_redispatch as entrypoint
@@ -30,6 +35,35 @@ def _descriptor(value: float) -> WarmStartDescriptor:
         qg=np.array([0.1 * value], dtype=np.float64),
         gen_status=np.array([1.0], dtype=np.float64),
     )
+
+
+def _exact_payload(
+    vm=(1.04, 0.98),
+    va=(3.0, -6.0),
+    bus_ids=None,
+) -> bytes:
+    vm = np.asarray(vm, dtype=np.float64)
+    va = np.asarray(va, dtype=np.float64)
+    if bus_ids is None:
+        bus_ids = np.arange(1, len(vm) + 1, dtype=np.int64)
+    else:
+        bus_ids = np.asarray(bus_ids, dtype=np.int64)
+
+    features = np.zeros(
+        (len(vm), len(BUS_FEATURE_COLUMNS)),
+        dtype=np.float64,
+    )
+    features[:, BUS_FEATURE_COLUMNS.index("Vm")] = vm
+    features[:, BUS_FEATURE_COLUMNS.index("Va")] = va
+
+    buffer = io.BytesIO()
+    np.savez(
+        buffer,
+        bus_features=features,
+        has_bus_ids=np.asarray([1], dtype=np.uint8),
+        bus_ids=bus_ids,
+    )
+    return buffer.getvalue()
 
 
 def test_entrypoint_extracts_warm_shadow_runtime_settings() -> None:
@@ -229,6 +263,82 @@ def test_shadow_record_limit_is_global_across_connections(tmp_path: Path) -> Non
     assert records == 2
 
 
+def test_runtime_warm_store_keeps_only_vm_va_seed(tmp_path: Path) -> None:
+    vm = np.linspace(0.92, 1.08, 118)
+    va = np.linspace(-15.0, 12.0, 118)
+    full_payload = _exact_payload(vm=vm, va=va)
+    compact_payload = _compact_warm_state_payload(full_payload)
+
+    assert len(compact_payload) < len(full_payload) // 4
+
+    store = BoundedWarmStartStore(tmp_path)
+    try:
+        assert store.put(
+            exact_key="1" * 64,
+            topology_key="a" * 64,
+            descriptor=_descriptor(10.0),
+            state_payload=full_payload,
+        ) is True
+        candidate = store.nearest(
+            topology_key="a" * 64,
+            descriptor=_descriptor(10.0),
+        )
+    finally:
+        store.close()
+
+    assert candidate is not None
+    seed = _decode_warm_seed(candidate.state_payload)
+    np.testing.assert_allclose(seed.vm, vm)
+    np.testing.assert_allclose(seed.va, va)
+    np.testing.assert_array_equal(seed.bus_ids, np.arange(1, 119))
+
+
+def test_runtime_warm_store_evicts_to_global_payload_budget(tmp_path: Path) -> None:
+    payload = _exact_payload(
+        vm=np.linspace(0.95, 1.05, 32),
+        va=np.linspace(-5.0, 5.0, 32),
+    )
+    compact = _compact_warm_state_payload(payload)
+    descriptor = _descriptor(10.0)
+    one_entry_bytes = len(compact) + len(
+        zlib.compress(_pack_descriptor(descriptor), level=1)
+    )
+
+    store = BoundedWarmStartStore(
+        tmp_path,
+        max_payload_bytes=one_entry_bytes + 32,
+    )
+    try:
+        assert store.put(
+            exact_key="1" * 64,
+            topology_key="a" * 64,
+            descriptor=descriptor,
+            state_payload=payload,
+        ) is True
+        assert store.put(
+            exact_key="2" * 64,
+            topology_key="b" * 64,
+            descriptor=descriptor,
+            state_payload=payload,
+        ) is True
+        info = store.storage_info()
+        first = store.nearest(
+            topology_key="a" * 64,
+            descriptor=descriptor,
+        )
+        second = store.nearest(
+            topology_key="b" * 64,
+            descriptor=descriptor,
+        )
+    finally:
+        store.close()
+
+    assert info["payload_bytes"] <= info["max_payload_bytes"]
+    assert info["candidates"] == 1
+    assert first is None
+    assert second is not None
+
+
 def test_runtime_shadow_never_replaces_authoritative_result(
     monkeypatch,
     tmp_path: Path,
@@ -239,6 +349,7 @@ def test_runtime_shadow_never_replaces_authoritative_result(
         next_state=authoritative_state,
         message="Power flow converged.",
     )
+    valid_payload = _exact_payload()
 
     class FakeBackend:
         def run_power_flow_from_state(
@@ -252,7 +363,7 @@ def test_runtime_shadow_never_replaces_authoritative_result(
 
         @staticmethod
         def _serialize_exact_state(state):
-            return b"authoritative"
+            return valid_payload
 
     backend = FakeBackend()
     shadow = install_runtime_warm_shadow(
@@ -266,7 +377,7 @@ def test_runtime_shadow_never_replaces_authoritative_result(
         exact_key="1" * 64,
         topology_key="a" * 64,
         descriptor=_descriptor(10.0),
-        state_payload=b"candidate",
+        state_payload=valid_payload,
     )
     prepared = (
         {"bus": np.zeros((0, 0))},
@@ -296,57 +407,25 @@ def test_runtime_shadow_never_replaces_authoritative_result(
     assert records == 1
 
 
-def test_runtime_shadow_measures_distinct_initial_voltage_seed(monkeypatch) -> None:
-    vm_col = BUS_FEATURE_COLUMNS.index("Vm")
-    va_col = BUS_FEATURE_COLUMNS.index("Va")
-    features = np.zeros((2, len(BUS_FEATURE_COLUMNS)), dtype=np.float64)
-    features[:, vm_col] = [1.04, 0.98]
-    features[:, va_col] = [3.0, -6.0]
-    warm_state = SimpleNamespace(
-        bus_features=features,
-        bus_ids=np.array([1, 2], dtype=np.int64),
+def test_runtime_shadow_measures_distinct_initial_voltage_seed() -> None:
+    seed = _decode_warm_seed(
+        _compact_warm_state_payload(
+            _exact_payload(vm=(1.04, 0.98), va=(3.0, -6.0))
+        )
     )
-
-    class FakeBackend:
-        @staticmethod
-        def _deserialize_exact_state(payload, request_state):
-            return warm_state
-
     store = SimpleNamespace(close=lambda: None)
-    shadow = BoundedWarmStartShadow(FakeBackend(), store, sample_rate=1.0)
-    candidate = WarmCandidate(
-        exact_key="1" * 64,
-        topology_key="a" * 64,
-        distance=0.1,
-        state_payload=b"candidate",
-    )
+    shadow = BoundedWarmStartShadow(SimpleNamespace(), store, sample_rate=1.0)
 
     bus = np.zeros((2, 13), dtype=np.float64)
     bus[:, BUS_I] = [1, 2]
     bus[:, VM] = [1.0, 1.0]
     bus[:, VA] = [0.0, 0.0]
-    ppc = {"bus": bus}
-    sentinel = object()
 
-    monkeypatch.setattr(
-        WarmStartShadow,
-        "_shadow_state",
-        lambda self, state, ppc, frames, candidate: sentinel,
-    )
+    diagnostics = shadow._seed_diagnostics({"bus": bus}, seed)
 
-    result = shadow._shadow_state(
-        SimpleNamespace(),
-        ppc,
-        {},
-        candidate,
-    )
-
-    assert result is sentinel
-    assert shadow._shadow_diagnostics["initial_seed_distinct"] is True
-    assert shadow._shadow_diagnostics["max_initial_vm_delta_pu"] == pytest.approx(0.04)
-    assert shadow._shadow_diagnostics["max_initial_va_delta_deg"] == pytest.approx(6.0)
-    assert shadow._shadow_diagnostics["shadow_stock_runpf_calls"] == 0
-    assert shadow._shadow_diagnostics["shadow_q_limit_resolves"] == 0
+    assert diagnostics["initial_seed_distinct"] is True
+    assert diagnostics["max_initial_vm_delta_pu"] == pytest.approx(0.04)
+    assert diagnostics["max_initial_va_delta_deg"] == pytest.approx(6.0)
 
 
 def test_runtime_shadow_measures_authoritative_path_and_legacy_warm_usage() -> None:

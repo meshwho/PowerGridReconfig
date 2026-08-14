@@ -169,7 +169,7 @@ def test_staged_worker_attaches_persistent_cache_from_runtime_env(
     assert store is not None
     assert store.root == cache_root
     assert store.namespace == "exact"
-    assert store.database_path == cache_root / "exact" / "cache.sqlite3"
+    assert store.database_path == cache_root / "exact" / "cache_v2.sqlite3"
     store.close()
 
 

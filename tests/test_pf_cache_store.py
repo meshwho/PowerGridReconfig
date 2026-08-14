@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import sqlite3
+import zlib
 from pathlib import Path
 
 import pytest
@@ -31,6 +32,8 @@ def test_store_round_trip_survives_reopen(tmp_path: Path) -> None:
         assert info.entries == 1
         assert info.index_entries == 1
         assert info.database_bytes > 0
+        assert info.payload_bytes > 0
+        assert info.max_payload_bytes is not None
 
 
 def test_store_refreshes_one_key_written_by_another_connection(tmp_path: Path) -> None:
@@ -41,9 +44,8 @@ def test_store_refreshes_one_key_written_by_another_connection(tmp_path: Path) -
             assert not second.contains(cache_key)
             assert first.put(cache_key, b"shared payload") is True
 
-            assert not second.contains(cache_key)
-            assert second.get(cache_key) == b"shared payload"
             assert second.contains(cache_key)
+            assert second.get(cache_key) == b"shared payload"
 
 
 def test_read_only_store_can_read_but_not_write(tmp_path: Path) -> None:
@@ -86,7 +88,48 @@ def test_corrupted_payload_is_not_returned(tmp_path: Path) -> None:
 def test_store_does_not_assume_a_machine_specific_cache_path(tmp_path: Path) -> None:
     root = tmp_path / "arbitrary" / "cache-root"
     with PersistentPFCacheStore(root, namespace="warm") as store:
-        assert store.database_path == root / "warm" / "cache.sqlite3"
+        assert store.database_path == root / "warm" / "cache_v2.sqlite3"
         store.put(_key("portable"), b"payload")
 
-    assert (root / "warm" / "cache.sqlite3").is_file()
+    assert (root / "warm" / "cache_v2.sqlite3").is_file()
+
+
+def test_store_compresses_payload_before_persisting(tmp_path: Path) -> None:
+    payload = b"same-state-data" * 4096
+
+    with PersistentPFCacheStore(tmp_path) as store:
+        store.put(_key("compressed"), payload)
+        info = store.info()
+
+    assert info.payload_bytes < len(payload) // 4
+
+
+def test_store_evicts_old_entries_to_hard_payload_budget(tmp_path: Path) -> None:
+    payload = bytes(range(256)) * 8
+    packed_bytes = len(zlib.compress(payload, level=1))
+    budget = packed_bytes + 16
+
+    with PersistentPFCacheStore(
+        tmp_path,
+        max_payload_bytes=budget,
+    ) as store:
+        assert store.put(_key("old"), payload) is True
+        assert store.put(_key("new"), payload) is True
+
+        info = store.info()
+        assert info.payload_bytes <= budget
+        assert store.get(_key("old")) is None
+        assert store.get(_key("new")) == payload
+
+
+def test_v2_store_does_not_reopen_legacy_blob_database(tmp_path: Path) -> None:
+    legacy = tmp_path / "exact" / "cache.sqlite3"
+    legacy.parent.mkdir(parents=True)
+    legacy.write_bytes(b"legacy-cache")
+
+    with PersistentPFCacheStore(tmp_path) as store:
+        assert store.database_path.name == "cache_v2.sqlite3"
+        store.put(_key("new"), b"new payload")
+
+    assert legacy.read_bytes() == b"legacy-cache"
+    assert (tmp_path / "exact" / "cache_v2.sqlite3").is_file()
