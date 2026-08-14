@@ -25,7 +25,10 @@ def _attach_persistent_pf_cache() -> None:
     if not cache_dir:
         return
 
-    worker_context = redispatch.base.teacher._require_worker_context()
+    worker_context = getattr(redispatch.base.teacher, "_WORKER_CONTEXT", None)
+    if worker_context is None:
+        return
+
     backend = worker_context.get("backend")
     if backend is None or not bool(getattr(backend, "enable_cache", False)):
         return
