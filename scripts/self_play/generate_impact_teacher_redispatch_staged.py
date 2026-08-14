@@ -20,6 +20,7 @@ _PF_WARM_SHADOW_ENV = "POWERGRID_PF_WARM_SHADOW"
 _PF_WARM_SHADOW_RATE_ENV = "POWERGRID_PF_WARM_SHADOW_RATE"
 _PF_WARM_SHADOW_MAX_PAIRS_ENV = "POWERGRID_PF_WARM_SHADOW_MAX_PAIRS"
 _PF_WARM_MAX_CANDIDATES_ENV = "POWERGRID_PF_WARM_MAX_CANDIDATES"
+_PF_WARM_SHADOW_COLD_CONTROL_ENV = "POWERGRID_PF_WARM_SHADOW_COLD_CONTROL"
 _WORKER_START_BARRIER_TIMEOUT_SEC = 900.0
 
 _ORIGINAL_INIT_WORKER_CONTEXT = redispatch.init_worker_context
@@ -91,7 +92,15 @@ def _attach_persistent_pf_cache() -> None:
             f"{_PF_WARM_MAX_CANDIDATES_ENV} must be >= 1."
         )
 
-    shadow = install_runtime_warm_shadow(
+    installer = install_runtime_warm_shadow
+    if os.environ.get(_PF_WARM_SHADOW_COLD_CONTROL_ENV, "").strip() == "1":
+        from grid_topology_ai.pf_warm_shadow_cold_control import (
+            install_cold_control_warm_shadow,
+        )
+
+        installer = install_cold_control_warm_shadow
+
+    shadow = installer(
         backend,
         cache_dir,
         sample_rate=sample_rate,
