@@ -251,7 +251,7 @@ class PersistentPFCacheStore:
                 """
                 SELECT cache_key, payload_bytes
                 FROM entries
-                ORDER BY created_at ASC, cache_key ASC
+                ORDER BY rowid ASC
                 LIMIT 1
                 """
             ).fetchone()

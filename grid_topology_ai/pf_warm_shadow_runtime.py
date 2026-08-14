@@ -254,7 +254,7 @@ class BoundedWarmStartStore:
             SELECT exact_key, payload_bytes
             FROM candidates
             WHERE topology_key = ?
-            ORDER BY created_at DESC, exact_key DESC
+            ORDER BY rowid DESC
             """,
             (topology_key,),
         ).fetchall()
@@ -270,7 +270,7 @@ class BoundedWarmStartStore:
                 """
                 SELECT exact_key, payload_bytes
                 FROM candidates
-                ORDER BY created_at ASC, exact_key ASC
+                ORDER BY rowid ASC
                 LIMIT 1
                 """
             ).fetchone()
@@ -365,7 +365,7 @@ class BoundedWarmStartStore:
                    payload_version
             FROM candidates
             WHERE topology_key = ?
-            ORDER BY created_at DESC, exact_key
+            ORDER BY rowid DESC
             LIMIT ?
             """,
             (topology_key, self.max_candidates_per_topology),
