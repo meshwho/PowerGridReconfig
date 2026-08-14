@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import hashlib
+import io
+import json
+import sqlite3
 from dataclasses import dataclass, replace
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -24,6 +28,8 @@ from grid_topology_ai.data_adapter import (
     GridFMAdapter,
     GridFMState,
 )
+from grid_topology_ai.pf_cache_identity import exact_pf_problem_fingerprint
+from grid_topology_ai.pf_cache_store import PersistentPFCacheStore
 from grid_topology_ai.physical_constraints import (
     calculate_physical_metrics_from_result,
     validate_ppc_input,
@@ -51,6 +57,7 @@ _GENERATOR_COLUMNS = (
     "max_q_mvar",
 )
 _TOPOLOGY_CACHE_MAX_ENTRIES = 8
+_EXACT_CACHE_PAYLOAD_VERSION = 1
 
 
 @dataclass(frozen=True)
@@ -87,6 +94,8 @@ class GridFMPowerFlowBackend(_CoreGridFMPowerFlowBackend):
         physics_config: PhysicsConfig = DEFAULT_PHYSICS_CONFIG,
         enable_cache: bool = True,
         store_raw_result: bool = False,
+        persistent_cache_root: str | Path | None = None,
+        persistent_cache_read_only: bool = False,
     ) -> None:
         self._require_matching_physics_contract(adapter, physics_config)
         super().__init__(
@@ -102,9 +111,23 @@ class GridFMPowerFlowBackend(_CoreGridFMPowerFlowBackend):
         self.tolerant_cache_hits = 0
         self.warm_start_hits = 0
         self.cold_start_misses = 0
+        self.global_exact_cache_hits = 0
+        self.persistent_exact_cache_hits = 0
+        self.persistent_exact_cache_misses = 0
+        self.persistent_exact_cache_writes = 0
+        self.persistent_exact_cache_errors = 0
+        self._global_exact_cache: dict[str, GridFMState] = {}
+        self._persistent_exact_cache: PersistentPFCacheStore | None = None
         self._topology_cache: dict[tuple, list[_TopologyCacheEntry]] = {}
         self._pending_warm_start_state: GridFMState | None = None
         self._pending_warm_start_applied = False
+
+        if self.enable_cache and persistent_cache_root is not None:
+            self._persistent_exact_cache = PersistentPFCacheStore(
+                persistent_cache_root,
+                namespace="exact",
+                read_only=bool(persistent_cache_read_only),
+            )
 
     def performance_info(self) -> dict[str, object]:
         """Return backend-local cache and PYPOWER workload counters."""
@@ -112,6 +135,17 @@ class GridFMPowerFlowBackend(_CoreGridFMPowerFlowBackend):
         info = dict(self.cache_info())
         misses = int(info["misses"])
         stock_calls = int(self.stock_runpf_calls)
+        persistent_entries = 0
+        persistent_bytes = 0
+
+        if self._persistent_exact_cache is not None:
+            try:
+                store_info = self._persistent_exact_cache.info()
+            except (OSError, sqlite3.Error, ValueError):
+                self.persistent_exact_cache_errors += 1
+            else:
+                persistent_entries = int(store_info.entries)
+                persistent_bytes = int(store_info.database_bytes)
 
         info.update(
             {
@@ -119,6 +153,25 @@ class GridFMPowerFlowBackend(_CoreGridFMPowerFlowBackend):
                 "tolerant_cache_hits": int(self.tolerant_cache_hits),
                 "warm_start_hits": int(self.warm_start_hits),
                 "cold_start_misses": int(self.cold_start_misses),
+                "global_exact_cache_hits": int(self.global_exact_cache_hits),
+                "global_exact_cache_size": int(len(self._global_exact_cache)),
+                "persistent_exact_cache_enabled": (
+                    self._persistent_exact_cache is not None
+                ),
+                "persistent_exact_cache_hits": int(
+                    self.persistent_exact_cache_hits
+                ),
+                "persistent_exact_cache_misses": int(
+                    self.persistent_exact_cache_misses
+                ),
+                "persistent_exact_cache_writes": int(
+                    self.persistent_exact_cache_writes
+                ),
+                "persistent_exact_cache_errors": int(
+                    self.persistent_exact_cache_errors
+                ),
+                "persistent_exact_cache_entries": persistent_entries,
+                "persistent_exact_cache_bytes": persistent_bytes,
                 "topology_cache_buckets": int(len(self._topology_cache)),
                 "topology_cache_entries": int(
                     sum(len(entries) for entries in self._topology_cache.values())
@@ -145,11 +198,17 @@ class GridFMPowerFlowBackend(_CoreGridFMPowerFlowBackend):
         self.tolerant_cache_hits = 0
         self.warm_start_hits = 0
         self.cold_start_misses = 0
+        self.global_exact_cache_hits = 0
+        self.persistent_exact_cache_hits = 0
+        self.persistent_exact_cache_misses = 0
+        self.persistent_exact_cache_writes = 0
+        self.persistent_exact_cache_errors = 0
 
     def clear_cache(self) -> None:
-        """Clear exact and topology-equivalent transition caches."""
+        """Clear volatile caches without deleting persistent PF results."""
 
         super().clear_cache()
+        self._global_exact_cache.clear()
         self._topology_cache.clear()
         self._pending_warm_start_state = None
         self._pending_warm_start_applied = False
@@ -157,6 +216,17 @@ class GridFMPowerFlowBackend(_CoreGridFMPowerFlowBackend):
         self.tolerant_cache_hits = 0
         self.warm_start_hits = 0
         self.cold_start_misses = 0
+        self.global_exact_cache_hits = 0
+        self.persistent_exact_cache_hits = 0
+        self.persistent_exact_cache_misses = 0
+        self.persistent_exact_cache_writes = 0
+        self.persistent_exact_cache_errors = 0
+
+    def close(self) -> None:
+        store = self._persistent_exact_cache
+        self._persistent_exact_cache = None
+        if store is not None:
+            store.close()
 
     @staticmethod
     def _require_matching_physics_contract(
@@ -452,6 +522,329 @@ class GridFMPowerFlowBackend(_CoreGridFMPowerFlowBackend):
         bus[:, VA] = va[positions]
         self._pending_warm_start_applied = True
 
+    @staticmethod
+    def _json_cache_value(value: object) -> object:
+        if isinstance(value, np.generic):
+            return value.item()
+        if isinstance(value, np.ndarray):
+            return value.tolist()
+        raise TypeError(f"Unsupported cache metadata value: {type(value).__name__}")
+
+    @classmethod
+    def _serialize_exact_state(cls, state: GridFMState) -> bytes:
+        metrics = json.dumps(
+            state.metrics,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+            default=cls._json_cache_value,
+        ).encode("utf-8")
+        bus_ids = getattr(state, "bus_ids", None)
+        operating_point = cls._generator_operating_point(state)
+
+        values: dict[str, np.ndarray] = {
+            "payload_version": np.asarray(
+                [_EXACT_CACHE_PAYLOAD_VERSION], dtype=np.int16
+            ),
+            "bus_features": np.asarray(state.bus_features),
+            "branch_features": np.asarray(state.branch_features),
+            "edge_index": np.asarray(state.edge_index, dtype=np.int64),
+            "branch_ids": np.asarray(state.branch_ids, dtype=np.int64),
+            "branch_status": np.asarray(state.branch_status),
+            "outaged_branch_ids": np.asarray(
+                state.outaged_branch_ids, dtype=np.int64
+            ),
+            "metrics_json": np.frombuffer(metrics, dtype=np.uint8),
+            "has_bus_ids": np.asarray([bus_ids is not None], dtype=np.uint8),
+            "bus_ids": (
+                np.asarray(bus_ids, dtype=np.int64)
+                if bus_ids is not None
+                else np.empty(0, dtype=np.int64)
+            ),
+            "has_generator_state": np.asarray(
+                [operating_point is not None], dtype=np.uint8
+            ),
+        }
+
+        if operating_point is None:
+            values.update(
+                {
+                    "generator_ids": np.empty(0, dtype=np.int64),
+                    "generator_p_mw": np.empty(0, dtype=np.float64),
+                    "generator_q_mvar": np.empty(0, dtype=np.float64),
+                    "generator_status": np.empty(0, dtype=np.float64),
+                }
+            )
+        else:
+            generator_ids, pg, qg, status = operating_point
+            values.update(
+                {
+                    "generator_ids": generator_ids,
+                    "generator_p_mw": pg,
+                    "generator_q_mvar": qg,
+                    "generator_status": status,
+                }
+            )
+
+        buffer = io.BytesIO()
+        np.savez(buffer, **values)
+        return buffer.getvalue()
+
+    @staticmethod
+    def _id_positions(
+        cached_ids: np.ndarray,
+        requested_ids: np.ndarray,
+        *,
+        name: str,
+    ) -> np.ndarray:
+        cached = np.asarray(cached_ids, dtype=np.int64)
+        requested = np.asarray(requested_ids, dtype=np.int64)
+        if cached.ndim != 1 or requested.ndim != 1:
+            raise InvalidPhysicalState(f"Cached {name} must be one-dimensional.")
+        if len(cached) != len(requested):
+            raise InvalidPhysicalState(f"Cached {name} length mismatch.")
+        if np.unique(cached).size != cached.size:
+            raise InvalidPhysicalState(f"Cached {name} contains duplicate IDs.")
+
+        by_id = {int(value): index for index, value in enumerate(cached)}
+        try:
+            return np.asarray(
+                [by_id[int(value)] for value in requested], dtype=np.int64
+            )
+        except KeyError as exc:
+            raise InvalidPhysicalState(
+                f"Cached {name} does not match the requested physical state."
+            ) from exc
+
+    @classmethod
+    def _rebind_exact_state(
+        cls,
+        cached_state: GridFMState,
+        request_state: GridFMState,
+    ) -> GridFMState:
+        cached_bus_ids = getattr(cached_state, "bus_ids", None)
+        request_bus_ids = getattr(request_state, "bus_ids", None)
+
+        if cached_bus_ids is None and request_bus_ids is None:
+            if cached_state.bus_features.shape[0] != request_state.bus_features.shape[0]:
+                raise InvalidPhysicalState("Cached bus count mismatch.")
+            bus_features = np.asarray(cached_state.bus_features).copy()
+            bus_ids = None
+        elif cached_bus_ids is None or request_bus_ids is None:
+            raise InvalidPhysicalState(
+                "Cached and requested states disagree on bus ID metadata."
+            )
+        else:
+            bus_positions = cls._id_positions(
+                np.asarray(cached_bus_ids, dtype=np.int64),
+                np.asarray(request_bus_ids, dtype=np.int64),
+                name="bus IDs",
+            )
+            bus_features = np.asarray(cached_state.bus_features)[
+                bus_positions
+            ].copy()
+            bus_ids = np.asarray(request_bus_ids, dtype=np.int64).copy()
+
+        request_branch_ids = np.asarray(request_state.branch_ids, dtype=np.int64)
+        branch_positions = cls._id_positions(
+            np.asarray(cached_state.branch_ids, dtype=np.int64),
+            request_branch_ids,
+            name="branch IDs",
+        )
+        branch_features = np.asarray(cached_state.branch_features)[
+            branch_positions
+        ].copy()
+        branch_status = np.asarray(cached_state.branch_status)[
+            branch_positions
+        ].copy()
+        outaged_branch_ids = [
+            int(branch_id)
+            for branch_id, status in zip(request_branch_ids, branch_status)
+            if float(status) <= 0.5
+        ]
+
+        operating_point = cls._generator_operating_point(cached_state)
+        common = {
+            "scenario_id": int(request_state.scenario_id),
+            "load_scenario_idx": float(request_state.load_scenario_idx),
+            "bus_features": bus_features,
+            "branch_features": branch_features,
+            "edge_index": np.asarray(request_state.edge_index, dtype=np.int64).copy(),
+            "branch_ids": request_branch_ids.copy(),
+            "branch_status": branch_status,
+            "metrics": dict(cached_state.metrics),
+            "outaged_branch_ids": outaged_branch_ids,
+            "bus_ids": bus_ids,
+        }
+
+        if operating_point is None:
+            return GridFMState(**common)
+
+        generator_ids, pg, qg, status = operating_point
+        order = np.argsort(generator_ids, kind="stable")
+        return _GeneratorOperatingPointState(
+            **common,
+            generator_ids=generator_ids[order].copy(),
+            generator_p_mw=pg[order].copy(),
+            generator_q_mvar=qg[order].copy(),
+            generator_status=status[order].copy(),
+        )
+
+    @classmethod
+    def _deserialize_exact_state(
+        cls,
+        payload: bytes,
+        request_state: GridFMState,
+    ) -> GridFMState:
+        try:
+            with np.load(io.BytesIO(payload), allow_pickle=False) as data:
+                version = int(np.asarray(data["payload_version"]).reshape(-1)[0])
+                if version != _EXACT_CACHE_PAYLOAD_VERSION:
+                    raise ValueError("Unsupported exact PF cache payload version.")
+
+                metrics_bytes = np.asarray(data["metrics_json"], dtype=np.uint8)
+                metrics = json.loads(metrics_bytes.tobytes().decode("utf-8"))
+                has_bus_ids = bool(
+                    int(np.asarray(data["has_bus_ids"]).reshape(-1)[0])
+                )
+                has_generator_state = bool(
+                    int(np.asarray(data["has_generator_state"]).reshape(-1)[0])
+                )
+
+                common = {
+                    "scenario_id": int(request_state.scenario_id),
+                    "load_scenario_idx": float(request_state.load_scenario_idx),
+                    "bus_features": np.asarray(data["bus_features"]).copy(),
+                    "branch_features": np.asarray(data["branch_features"]).copy(),
+                    "edge_index": np.asarray(
+                        data["edge_index"], dtype=np.int64
+                    ).copy(),
+                    "branch_ids": np.asarray(
+                        data["branch_ids"], dtype=np.int64
+                    ).copy(),
+                    "branch_status": np.asarray(data["branch_status"]).copy(),
+                    "metrics": dict(metrics),
+                    "outaged_branch_ids": [
+                        int(value)
+                        for value in np.asarray(
+                            data["outaged_branch_ids"], dtype=np.int64
+                        ).tolist()
+                    ],
+                    "bus_ids": (
+                        np.asarray(data["bus_ids"], dtype=np.int64).copy()
+                        if has_bus_ids
+                        else None
+                    ),
+                }
+
+                if has_generator_state:
+                    cached_state: GridFMState = _GeneratorOperatingPointState(
+                        **common,
+                        generator_ids=np.asarray(
+                            data["generator_ids"], dtype=np.int64
+                        ).copy(),
+                        generator_p_mw=np.asarray(
+                            data["generator_p_mw"], dtype=np.float64
+                        ).copy(),
+                        generator_q_mvar=np.asarray(
+                            data["generator_q_mvar"], dtype=np.float64
+                        ).copy(),
+                        generator_status=np.asarray(
+                            data["generator_status"], dtype=np.float64
+                        ).copy(),
+                    )
+                else:
+                    cached_state = GridFMState(**common)
+        except (KeyError, TypeError, ValueError, OSError, json.JSONDecodeError) as exc:
+            raise ValueError("Invalid exact PF cache payload.") from exc
+
+        return cls._rebind_exact_state(cached_state, request_state)
+
+    def _exact_problem_fingerprint(
+        self,
+        ppc: dict[str, Any],
+        frames: dict[str, pd.DataFrame],
+    ) -> str:
+        branch_ids = frames["branch"].sort_values("idx")["idx"].to_numpy(
+            dtype=np.int64
+        )
+        generator_ids = frames["gen"].sort_values("idx")["idx"].to_numpy(
+            dtype=np.int64
+        )
+        return exact_pf_problem_fingerprint(
+            ppc,
+            physics_fingerprint=self.physics_config.fingerprint(),
+            branch_ids=branch_ids,
+            generator_ids=generator_ids,
+        )
+
+    def _lookup_global_exact(
+        self,
+        cache_key: str,
+        request_state: GridFMState,
+    ) -> tuple[GridFMState | None, str | None]:
+        cached = self._global_exact_cache.get(cache_key)
+        if cached is not None:
+            try:
+                rebound = self._rebind_exact_state(cached, request_state)
+                self._require_usable_next_state(rebound)
+            except InvalidPhysicalState:
+                self._global_exact_cache.pop(cache_key, None)
+            else:
+                return rebound, "memory"
+
+        store = self._persistent_exact_cache
+        if store is None:
+            return None, None
+
+        try:
+            payload = store.get(
+                cache_key,
+                payload_version=_EXACT_CACHE_PAYLOAD_VERSION,
+            )
+        except (OSError, sqlite3.Error, ValueError):
+            self.persistent_exact_cache_errors += 1
+            return None, None
+
+        if payload is None:
+            self.persistent_exact_cache_misses += 1
+            return None, None
+
+        try:
+            rebound = self._deserialize_exact_state(payload, request_state)
+            self._require_usable_next_state(rebound)
+        except (InvalidPhysicalState, ValueError):
+            self.persistent_exact_cache_errors += 1
+            return None, None
+
+        self.persistent_exact_cache_hits += 1
+        self._global_exact_cache[cache_key] = rebound
+        return rebound, "persistent"
+
+    def _remember_global_exact(
+        self,
+        cache_key: str,
+        next_state: GridFMState,
+    ) -> None:
+        self._global_exact_cache[cache_key] = next_state
+        store = self._persistent_exact_cache
+        if store is None or store.read_only:
+            return
+
+        try:
+            payload = self._serialize_exact_state(next_state)
+            inserted = store.put(
+                cache_key,
+                payload,
+                payload_version=_EXACT_CACHE_PAYLOAD_VERSION,
+            )
+        except (OSError, sqlite3.Error, TypeError, ValueError):
+            self.persistent_exact_cache_errors += 1
+            return
+
+        if inserted:
+            self.persistent_exact_cache_writes += 1
+
     def _make_cache_key_from_state(
         self,
         state: GridFMState,
@@ -536,6 +929,8 @@ class GridFMPowerFlowBackend(_CoreGridFMPowerFlowBackend):
 
         bucket_key: tuple | None = None
         warm_entry: _TopologyCacheEntry | None = None
+        tolerant_entry: _TopologyCacheEntry | None = None
+        global_exact_key: str | None = None
 
         if self.enable_cache:
             exact_key = self._make_topology_cache_key_from_state(
@@ -572,6 +967,44 @@ class GridFMPowerFlowBackend(_CoreGridFMPowerFlowBackend):
                 bucket_key,
                 state,
             )
+
+            try:
+                key_ppc, key_frames = self._build_ppc_from_state(
+                    state=state,
+                    switched_off_branch_id=switched_off_branch_id,
+                    action=action,
+                )
+                global_exact_key = self._exact_problem_fingerprint(
+                    key_ppc,
+                    key_frames,
+                )
+            except (InvalidPhysicalState, ValueError):
+                global_exact_key = None
+            else:
+                global_cached, cache_level = self._lookup_global_exact(
+                    global_exact_key,
+                    state,
+                )
+                if global_cached is not None:
+                    self.cache_hits += 1
+                    self.exact_cache_hits += 1
+                    self.global_exact_cache_hits += 1
+                    message = (
+                        "Power flow converged. [persistent exact cache hit]"
+                        if cache_level == "persistent"
+                        else "Power flow converged. [global exact cache hit]"
+                    )
+                    return GridFMPowerFlowResult(
+                        success=True,
+                        scenario_id=int(state.scenario_id),
+                        switched_off_branch_id=effective_switched_off,
+                        next_state=global_cached,
+                        raw_result=None,
+                        message=message,
+                        switched_branch_id=branch_id,
+                        target_status=target_status,
+                    )
+
             if tolerant_entry is not None:
                 self.cache_hits += 1
                 self.tolerant_cache_hits += 1
@@ -611,15 +1044,21 @@ class GridFMPowerFlowBackend(_CoreGridFMPowerFlowBackend):
 
         if (
             self.enable_cache
-            and bucket_key is not None
             and result.success
             and result.next_state is not None
         ):
-            self._remember_topology_result(
-                bucket_key,
-                source_state=state,
-                next_state=result.next_state,
-            )
+            if global_exact_key is not None:
+                self._remember_global_exact(
+                    global_exact_key,
+                    result.next_state,
+                )
+
+            if bucket_key is not None:
+                self._remember_topology_result(
+                    bucket_key,
+                    source_state=state,
+                    next_state=result.next_state,
+                )
 
         return replace(
             result,
