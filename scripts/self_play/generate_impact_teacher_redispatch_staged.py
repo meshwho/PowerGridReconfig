@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import atexit
 import multiprocessing as mp
 import os
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from typing import Any, Sequence
 
 from grid_topology_ai.pf_cache_store import PersistentPFCacheStore
+from grid_topology_ai.pf_warm_shadow_runtime import install_runtime_warm_shadow
 from scripts.self_play import generate_impact_teacher_redispatch as redispatch
 
 
@@ -14,10 +16,28 @@ _RUNTIME_READY_COUNT = "_redispatch_worker_ready_count"
 _RUNTIME_READY_LOCK = "_redispatch_worker_ready_lock"
 _RUNTIME_EXPECTED_WORKERS = "_redispatch_expected_workers"
 _PF_CACHE_DIR_ENV = "POWERGRID_PF_CACHE_DIR"
+_PF_WARM_SHADOW_ENV = "POWERGRID_PF_WARM_SHADOW"
+_PF_WARM_SHADOW_RATE_ENV = "POWERGRID_PF_WARM_SHADOW_RATE"
+_PF_WARM_SHADOW_MAX_PAIRS_ENV = "POWERGRID_PF_WARM_SHADOW_MAX_PAIRS"
+_PF_WARM_MAX_CANDIDATES_ENV = "POWERGRID_PF_WARM_MAX_CANDIDATES"
 _WORKER_START_BARRIER_TIMEOUT_SEC = 900.0
 
 _ORIGINAL_INIT_WORKER_CONTEXT = redispatch.init_worker_context
 _ORIGINAL_RUN_PARALLEL = redispatch.run_parallel
+
+
+def _warm_shadow_enabled() -> bool:
+    return os.environ.get(_PF_WARM_SHADOW_ENV, "").strip() == "1"
+
+
+def _warm_shadow_float(name: str, default: float) -> float:
+    raw = os.environ.get(name, "").strip()
+    return float(default) if not raw else float(raw)
+
+
+def _warm_shadow_int(name: str, default: int) -> int:
+    raw = os.environ.get(name, "").strip()
+    return int(default) if not raw else int(raw)
 
 
 def _attach_persistent_pf_cache() -> None:
@@ -33,13 +53,52 @@ def _attach_persistent_pf_cache() -> None:
     backend = worker_context.get("backend")
     if backend is None or not bool(getattr(backend, "enable_cache", False)):
         return
-    if getattr(backend, "_persistent_exact_cache", None) is not None:
+
+    if getattr(backend, "_persistent_exact_cache", None) is None:
+        backend._persistent_exact_cache = PersistentPFCacheStore(
+            cache_dir,
+            namespace="exact",
+        )
+
+    if not _warm_shadow_enabled():
+        return
+    if getattr(backend, "_warm_start_shadow", None) is not None:
         return
 
-    backend._persistent_exact_cache = PersistentPFCacheStore(
-        cache_dir,
-        namespace="exact",
+    sample_rate = _warm_shadow_float(
+        _PF_WARM_SHADOW_RATE_ENV,
+        0.05,
     )
+    max_pairs = _warm_shadow_int(
+        _PF_WARM_SHADOW_MAX_PAIRS_ENV,
+        50_000,
+    )
+    max_candidates = _warm_shadow_int(
+        _PF_WARM_MAX_CANDIDATES_ENV,
+        16,
+    )
+
+    if not 0.0 <= sample_rate <= 1.0:
+        raise ValueError(
+            f"{_PF_WARM_SHADOW_RATE_ENV} must be between 0 and 1."
+        )
+    if max_pairs <= 0:
+        raise ValueError(
+            f"{_PF_WARM_SHADOW_MAX_PAIRS_ENV} must be >= 1."
+        )
+    if max_candidates <= 0:
+        raise ValueError(
+            f"{_PF_WARM_MAX_CANDIDATES_ENV} must be >= 1."
+        )
+
+    shadow = install_runtime_warm_shadow(
+        backend,
+        cache_dir,
+        sample_rate=sample_rate,
+        max_pairs=max_pairs,
+        max_candidates_per_topology=max_candidates,
+    )
+    atexit.register(shadow.close)
 
 
 def init_worker_context(
