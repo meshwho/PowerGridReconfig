@@ -16,6 +16,8 @@ _SAFE_MEMORY_RESERVE_MB = 3072.0
 _WORKER_INIT_CONCURRENCY_OPTION = "--worker-init-concurrency"
 _WORKER_INIT_CONCURRENCY_ENV = "POWERGRID_TEACHER_INIT_CONCURRENCY"
 _DEFAULT_WORKER_INIT_CONCURRENCY = 1
+_PF_CACHE_DIR_OPTION = "--pf-cache-dir"
+_PF_CACHE_DIR_ENV = "POWERGRID_PF_CACHE_DIR"
 
 
 def _option_value(argv: Sequence[str], name: str) -> str | None:
@@ -96,6 +98,26 @@ def _pop_worker_init_concurrency(argv: list[str]) -> int:
     return concurrency
 
 
+def _pop_pf_cache_dir(argv: list[str]) -> str | None:
+    option_count = argv.count(_PF_CACHE_DIR_OPTION)
+    if option_count == 0:
+        return None
+    if option_count > 1:
+        raise ValueError(f"{_PF_CACHE_DIR_OPTION} may be passed only once.")
+
+    option_index = argv.index(_PF_CACHE_DIR_OPTION)
+    value_index = option_index + 1
+    if value_index >= len(argv):
+        raise ValueError(f"{_PF_CACHE_DIR_OPTION} requires a directory path.")
+
+    cache_dir = str(argv[value_index]).strip()
+    if not cache_dir:
+        raise ValueError(f"{_PF_CACHE_DIR_OPTION} requires a non-empty directory path.")
+
+    del argv[option_index : value_index + 1]
+    return cache_dir
+
+
 def canonical_argv(argv: Sequence[str]) -> list[str]:
     result = [str(value) for value in argv]
 
@@ -131,10 +153,14 @@ def main() -> None:
     argv = canonical_argv(sys.argv)
     try:
         init_concurrency = _pop_worker_init_concurrency(argv)
+        pf_cache_dir = _pop_pf_cache_dir(argv)
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
 
     os.environ[_WORKER_INIT_CONCURRENCY_ENV] = str(init_concurrency)
+    if pf_cache_dir is not None:
+        os.environ[_PF_CACHE_DIR_ENV] = pf_cache_dir
+
     sys.argv[:] = argv
     pipeline.main()
 

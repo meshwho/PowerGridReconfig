@@ -5,6 +5,7 @@ import os
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from typing import Any, Sequence
 
+from grid_topology_ai.pf_cache_store import PersistentPFCacheStore
 from scripts.self_play import generate_impact_teacher_redispatch as redispatch
 
 
@@ -12,10 +13,29 @@ _RUNTIME_READY_EVENT = "_redispatch_worker_ready_event"
 _RUNTIME_READY_COUNT = "_redispatch_worker_ready_count"
 _RUNTIME_READY_LOCK = "_redispatch_worker_ready_lock"
 _RUNTIME_EXPECTED_WORKERS = "_redispatch_expected_workers"
+_PF_CACHE_DIR_ENV = "POWERGRID_PF_CACHE_DIR"
 _WORKER_START_BARRIER_TIMEOUT_SEC = 900.0
 
 _ORIGINAL_INIT_WORKER_CONTEXT = redispatch.init_worker_context
 _ORIGINAL_RUN_PARALLEL = redispatch.run_parallel
+
+
+def _attach_persistent_pf_cache() -> None:
+    cache_dir = os.environ.get(_PF_CACHE_DIR_ENV, "").strip()
+    if not cache_dir:
+        return
+
+    worker_context = redispatch.base.teacher._require_worker_context()
+    backend = worker_context.get("backend")
+    if backend is None or not bool(getattr(backend, "enable_cache", False)):
+        return
+    if getattr(backend, "_persistent_exact_cache", None) is not None:
+        return
+
+    backend._persistent_exact_cache = PersistentPFCacheStore(
+        cache_dir,
+        namespace="exact",
+    )
 
 
 def init_worker_context(
@@ -38,6 +58,7 @@ def init_worker_context(
         scenario_ids,
         memory_registry,
     )
+    _attach_persistent_pf_cache()
 
     if ready_event is None:
         return
