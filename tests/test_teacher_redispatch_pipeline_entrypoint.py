@@ -66,3 +66,29 @@ def test_entrypoint_preserves_explicit_worker_count(monkeypatch) -> None:
     )
 
     assert argv[argv.index("--num-workers") + 1] == "2"
+
+
+def test_entrypoint_extracts_worker_init_concurrency() -> None:
+    argv = [
+        "run_teacher_redispatch.py",
+        "--dataset-name",
+        "case118_bootstrap_v1",
+        "--worker-init-concurrency",
+        "2",
+    ]
+
+    concurrency = entrypoint._pop_worker_init_concurrency(argv)
+
+    assert concurrency == 2
+    assert "--worker-init-concurrency" not in argv
+    assert "2" not in argv
+
+
+def test_entrypoint_defaults_to_serial_worker_initialization() -> None:
+    argv = [
+        "run_teacher_redispatch.py",
+        "--dataset-name",
+        "case118_bootstrap_v1",
+    ]
+
+    assert entrypoint._pop_worker_init_concurrency(argv) == 1
