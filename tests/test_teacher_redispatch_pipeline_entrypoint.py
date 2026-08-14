@@ -173,6 +173,24 @@ def test_staged_worker_attaches_persistent_cache_from_runtime_env(
     store.close()
 
 
+def test_staged_worker_skips_pf_cache_until_worker_context_exists(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv(staged._PF_CACHE_DIR_ENV, str(tmp_path / "pf-cache"))
+
+    def missing_context():
+        raise RuntimeError("worker context is not initialized")
+
+    monkeypatch.setattr(
+        staged.redispatch.base.teacher,
+        "_require_worker_context",
+        missing_context,
+    )
+
+    staged._attach_persistent_pf_cache()
+
+
 def test_staged_worker_does_not_attach_disk_cache_when_cache_is_disabled(
     monkeypatch,
     tmp_path: Path,
