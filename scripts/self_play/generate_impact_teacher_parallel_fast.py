@@ -1062,7 +1062,7 @@ def process_one_scenario_fast(scenario_id: int) -> dict[str, Any]:
             gamma=float(task["gamma"]),
             include_stop_action=True,
             allow_hard_count_increase=bool(task["allow_hard_count_increase"]),
-            show_progress=True,
+            show_progress=False,
             progress_update_every=10,
         )
 
