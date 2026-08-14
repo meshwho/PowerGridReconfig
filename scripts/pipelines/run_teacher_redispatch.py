@@ -18,6 +18,17 @@ _WORKER_INIT_CONCURRENCY_ENV = "POWERGRID_TEACHER_INIT_CONCURRENCY"
 _DEFAULT_WORKER_INIT_CONCURRENCY = 1
 _PF_CACHE_DIR_OPTION = "--pf-cache-dir"
 _PF_CACHE_DIR_ENV = "POWERGRID_PF_CACHE_DIR"
+_PF_WARM_SHADOW_OPTION = "--pf-warm-shadow"
+_PF_WARM_SHADOW_ENV = "POWERGRID_PF_WARM_SHADOW"
+_PF_WARM_SHADOW_RATE_OPTION = "--pf-warm-shadow-rate"
+_PF_WARM_SHADOW_RATE_ENV = "POWERGRID_PF_WARM_SHADOW_RATE"
+_PF_WARM_SHADOW_MAX_PAIRS_OPTION = "--pf-warm-shadow-max-pairs"
+_PF_WARM_SHADOW_MAX_PAIRS_ENV = "POWERGRID_PF_WARM_SHADOW_MAX_PAIRS"
+_PF_WARM_MAX_CANDIDATES_OPTION = "--pf-warm-max-candidates"
+_PF_WARM_MAX_CANDIDATES_ENV = "POWERGRID_PF_WARM_MAX_CANDIDATES"
+_DEFAULT_PF_WARM_SHADOW_RATE = 0.05
+_DEFAULT_PF_WARM_SHADOW_MAX_PAIRS = 50_000
+_DEFAULT_PF_WARM_MAX_CANDIDATES = 16
 
 
 def _option_value(argv: Sequence[str], name: str) -> str | None:
@@ -98,24 +109,110 @@ def _pop_worker_init_concurrency(argv: list[str]) -> int:
     return concurrency
 
 
-def _pop_pf_cache_dir(argv: list[str]) -> str | None:
-    option_count = argv.count(_PF_CACHE_DIR_OPTION)
-    if option_count == 0:
+def _pop_runtime_value(argv: list[str], option: str) -> str | None:
+    count = argv.count(option)
+    if count == 0:
         return None
-    if option_count > 1:
-        raise ValueError(f"{_PF_CACHE_DIR_OPTION} may be passed only once.")
+    if count > 1:
+        raise ValueError(f"{option} may be passed only once.")
 
-    option_index = argv.index(_PF_CACHE_DIR_OPTION)
+    option_index = argv.index(option)
     value_index = option_index + 1
     if value_index >= len(argv):
-        raise ValueError(f"{_PF_CACHE_DIR_OPTION} requires a directory path.")
+        raise ValueError(f"{option} requires a value.")
 
-    cache_dir = str(argv[value_index]).strip()
-    if not cache_dir:
-        raise ValueError(f"{_PF_CACHE_DIR_OPTION} requires a non-empty directory path.")
+    value = str(argv[value_index]).strip()
+    if not value:
+        raise ValueError(f"{option} requires a non-empty value.")
 
     del argv[option_index : value_index + 1]
-    return cache_dir
+    return value
+
+
+def _pop_runtime_flag(argv: list[str], option: str) -> bool:
+    count = argv.count(option)
+    if count > 1:
+        raise ValueError(f"{option} may be passed only once.")
+    if count == 0:
+        return False
+    argv.remove(option)
+    return True
+
+
+def _pop_pf_cache_dir(argv: list[str]) -> str | None:
+    return _pop_runtime_value(argv, _PF_CACHE_DIR_OPTION)
+
+
+def _pop_warm_shadow_settings(
+    argv: list[str],
+) -> tuple[bool, float, int, int]:
+    enabled = _pop_runtime_flag(argv, _PF_WARM_SHADOW_OPTION)
+    rate_raw = _pop_runtime_value(argv, _PF_WARM_SHADOW_RATE_OPTION)
+    max_pairs_raw = _pop_runtime_value(argv, _PF_WARM_SHADOW_MAX_PAIRS_OPTION)
+    max_candidates_raw = _pop_runtime_value(argv, _PF_WARM_MAX_CANDIDATES_OPTION)
+
+    if not enabled and any(
+        value is not None
+        for value in (rate_raw, max_pairs_raw, max_candidates_raw)
+    ):
+        raise ValueError(
+            "Warm-shadow tuning options require --pf-warm-shadow."
+        )
+
+    if not enabled:
+        return (
+            False,
+            _DEFAULT_PF_WARM_SHADOW_RATE,
+            _DEFAULT_PF_WARM_SHADOW_MAX_PAIRS,
+            _DEFAULT_PF_WARM_MAX_CANDIDATES,
+        )
+
+    try:
+        rate = (
+            _DEFAULT_PF_WARM_SHADOW_RATE
+            if rate_raw is None
+            else float(rate_raw)
+        )
+    except ValueError as exc:
+        raise ValueError(
+            f"{_PF_WARM_SHADOW_RATE_OPTION} must be a number between 0 and 1."
+        ) from exc
+    if not 0.0 <= rate <= 1.0:
+        raise ValueError(
+            f"{_PF_WARM_SHADOW_RATE_OPTION} must be between 0 and 1."
+        )
+
+    try:
+        max_pairs = (
+            _DEFAULT_PF_WARM_SHADOW_MAX_PAIRS
+            if max_pairs_raw is None
+            else int(max_pairs_raw)
+        )
+    except ValueError as exc:
+        raise ValueError(
+            f"{_PF_WARM_SHADOW_MAX_PAIRS_OPTION} must be a positive integer."
+        ) from exc
+    if max_pairs <= 0:
+        raise ValueError(
+            f"{_PF_WARM_SHADOW_MAX_PAIRS_OPTION} must be >= 1."
+        )
+
+    try:
+        max_candidates = (
+            _DEFAULT_PF_WARM_MAX_CANDIDATES
+            if max_candidates_raw is None
+            else int(max_candidates_raw)
+        )
+    except ValueError as exc:
+        raise ValueError(
+            f"{_PF_WARM_MAX_CANDIDATES_OPTION} must be a positive integer."
+        ) from exc
+    if max_candidates <= 0:
+        raise ValueError(
+            f"{_PF_WARM_MAX_CANDIDATES_OPTION} must be >= 1."
+        )
+
+    return True, rate, max_pairs, max_candidates
 
 
 def canonical_argv(argv: Sequence[str]) -> list[str]:
@@ -154,12 +251,39 @@ def main() -> None:
     try:
         init_concurrency = _pop_worker_init_concurrency(argv)
         pf_cache_dir = _pop_pf_cache_dir(argv)
+        (
+            warm_shadow,
+            warm_shadow_rate,
+            warm_shadow_max_pairs,
+            warm_max_candidates,
+        ) = _pop_warm_shadow_settings(argv)
+
+        effective_cache_dir = (
+            pf_cache_dir
+            if pf_cache_dir is not None
+            else os.environ.get(_PF_CACHE_DIR_ENV, "").strip() or None
+        )
+        if warm_shadow and effective_cache_dir is None:
+            raise ValueError(
+                f"{_PF_WARM_SHADOW_OPTION} requires {_PF_CACHE_DIR_OPTION}."
+            )
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
 
     os.environ[_WORKER_INIT_CONCURRENCY_ENV] = str(init_concurrency)
     if pf_cache_dir is not None:
         os.environ[_PF_CACHE_DIR_ENV] = pf_cache_dir
+
+    if warm_shadow:
+        os.environ[_PF_WARM_SHADOW_ENV] = "1"
+        os.environ[_PF_WARM_SHADOW_RATE_ENV] = str(warm_shadow_rate)
+        os.environ[_PF_WARM_SHADOW_MAX_PAIRS_ENV] = str(warm_shadow_max_pairs)
+        os.environ[_PF_WARM_MAX_CANDIDATES_ENV] = str(warm_max_candidates)
+    else:
+        os.environ.pop(_PF_WARM_SHADOW_ENV, None)
+        os.environ.pop(_PF_WARM_SHADOW_RATE_ENV, None)
+        os.environ.pop(_PF_WARM_SHADOW_MAX_PAIRS_ENV, None)
+        os.environ.pop(_PF_WARM_MAX_CANDIDATES_ENV, None)
 
     sys.argv[:] = argv
     pipeline.main()
