@@ -87,6 +87,32 @@ def test_worker_waits_for_pool_after_initialization(monkeypatch) -> None:
     assert ready_count.value == 1
 
 
+def test_persistent_cache_attach_skips_missing_worker_context(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    created: list[object] = []
+
+    monkeypatch.setenv(
+        staged._PF_CACHE_DIR_ENV,
+        str(tmp_path / "pf-cache"),
+    )
+    monkeypatch.setattr(
+        staged.redispatch.base.teacher,
+        "_WORKER_CONTEXT",
+        None,
+    )
+    monkeypatch.setattr(
+        staged,
+        "PersistentPFCacheStore",
+        lambda *args, **kwargs: created.append((args, kwargs)),
+    )
+
+    staged._attach_persistent_pf_cache()
+
+    assert created == []
+
+
 def test_parallel_start_barrier_is_runtime_only(monkeypatch, tmp_path: Path) -> None:
     event = object()
     count = object()
