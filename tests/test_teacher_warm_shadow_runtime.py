@@ -5,12 +5,16 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
+from pypower.idx_bus import BUS_I, VA, VM
 
+from grid_topology_ai.data_adapter import BUS_FEATURE_COLUMNS
 from grid_topology_ai.pf_warm_shadow import (
     WarmCandidate,
     WarmStartDescriptor,
+    WarmStartShadow,
 )
 from grid_topology_ai.pf_warm_shadow_runtime import (
+    BoundedWarmStartShadow,
     BoundedWarmStartStore,
     install_runtime_warm_shadow,
 )
@@ -290,3 +294,116 @@ def test_runtime_shadow_never_replaces_authoritative_result(
 
     assert result is authoritative_result
     assert records == 1
+
+
+def test_runtime_shadow_measures_distinct_initial_voltage_seed(monkeypatch) -> None:
+    vm_col = BUS_FEATURE_COLUMNS.index("Vm")
+    va_col = BUS_FEATURE_COLUMNS.index("Va")
+    features = np.zeros((2, len(BUS_FEATURE_COLUMNS)), dtype=np.float64)
+    features[:, vm_col] = [1.04, 0.98]
+    features[:, va_col] = [3.0, -6.0]
+    warm_state = SimpleNamespace(
+        bus_features=features,
+        bus_ids=np.array([1, 2], dtype=np.int64),
+    )
+
+    class FakeBackend:
+        @staticmethod
+        def _deserialize_exact_state(payload, request_state):
+            return warm_state
+
+    store = SimpleNamespace(close=lambda: None)
+    shadow = BoundedWarmStartShadow(FakeBackend(), store, sample_rate=1.0)
+    candidate = WarmCandidate(
+        exact_key="1" * 64,
+        topology_key="a" * 64,
+        distance=0.1,
+        state_payload=b"candidate",
+    )
+
+    bus = np.zeros((2, 13), dtype=np.float64)
+    bus[:, BUS_I] = [1, 2]
+    bus[:, VM] = [1.0, 1.0]
+    bus[:, VA] = [0.0, 0.0]
+    ppc = {"bus": bus}
+    sentinel = object()
+
+    monkeypatch.setattr(
+        WarmStartShadow,
+        "_shadow_state",
+        lambda self, state, ppc, frames, candidate: sentinel,
+    )
+
+    result = shadow._shadow_state(
+        SimpleNamespace(),
+        ppc,
+        {},
+        candidate,
+    )
+
+    assert result is sentinel
+    assert shadow._shadow_diagnostics["initial_seed_distinct"] is True
+    assert shadow._shadow_diagnostics["max_initial_vm_delta_pu"] == pytest.approx(0.04)
+    assert shadow._shadow_diagnostics["max_initial_va_delta_deg"] == pytest.approx(6.0)
+    assert shadow._shadow_diagnostics["shadow_stock_runpf_calls"] == 0
+    assert shadow._shadow_diagnostics["shadow_q_limit_resolves"] == 0
+
+
+def test_runtime_shadow_measures_authoritative_path_and_legacy_warm_usage() -> None:
+    authoritative_result = object()
+
+    class FakeBackend:
+        warm_start_hits = 0
+        cold_start_misses = 0
+
+        def run_power_flow_from_state(self, *args, **kwargs):
+            self.warm_start_hits += 1
+            return authoritative_result
+
+    backend = FakeBackend()
+    store = SimpleNamespace(close=lambda: None)
+    shadow = BoundedWarmStartShadow(backend, store, sample_rate=0.0)
+    shadow.install()
+
+    result = shadow._run(SimpleNamespace())
+
+    assert result is authoritative_result
+    assert shadow._authoritative_diagnostics[
+        "authoritative_used_legacy_warm_start"
+    ] is True
+    assert shadow._authoritative_diagnostics[
+        "authoritative_used_cold_start"
+    ] is False
+    assert shadow._authoritative_diagnostics["authoritative_path_seconds"] >= 0.0
+    assert shadow._authoritative_diagnostics["authoritative_stock_runpf_calls"] == 0
+    assert shadow._authoritative_diagnostics["authoritative_q_limit_resolves"] == 0
+
+
+def test_runtime_shadow_comparison_includes_path_diagnostics(monkeypatch) -> None:
+    store = SimpleNamespace(close=lambda: None)
+    shadow = BoundedWarmStartShadow(SimpleNamespace(), store, sample_rate=0.0)
+    shadow._authoritative_diagnostics = {
+        "authoritative_path_seconds": 0.2,
+        "authoritative_used_legacy_warm_start": False,
+    }
+    shadow._shadow_diagnostics = {
+        "max_initial_vm_delta_pu": 0.03,
+        "max_initial_va_delta_deg": 4.0,
+        "initial_seed_distinct": True,
+        "shadow_path_seconds": 0.1,
+    }
+
+    monkeypatch.setattr(
+        WarmStartShadow,
+        "_compare",
+        lambda self, authoritative, candidate: {"shadow_success": True},
+    )
+
+    record = shadow._compare(object(), object())
+
+    assert record["shadow_success"] is True
+    assert record["max_initial_vm_delta_pu"] == 0.03
+    assert record["max_initial_va_delta_deg"] == 4.0
+    assert record["initial_seed_distinct"] is True
+    assert record["authoritative_path_seconds"] == 0.2
+    assert record["shadow_path_seconds"] == 0.1
