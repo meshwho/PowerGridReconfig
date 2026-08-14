@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import gc
 import math
+import multiprocessing as mp
+import os
 from dataclasses import dataclass, replace
 from typing import Any, Sequence
 
@@ -16,6 +19,8 @@ _TERMINAL_REDISPATCH_RELATIVE_EPSILON = 0.01
 _TERMINAL_REDISPATCH_ABSOLUTE_EPSILON_MW = 1.0
 _MIN_MEANINGFUL_SAFETY_IMPROVEMENT = 1.0
 _TOLERANCE = 1e-9
+_WORKER_INIT_CONCURRENCY_ENV = "POWERGRID_TEACHER_INIT_CONCURRENCY"
+_RUNTIME_WORKER_INIT_SEMAPHORE = "_redispatch_worker_init_semaphore"
 
 _EXTRA_SELECTION_ROW_FIELDS = (
     "terminal_redispatch_relative_epsilon",
@@ -32,6 +37,8 @@ _ORIGINAL_REPLAY_TERMINAL_EVIDENCE = base._replay_terminal_evidence
 _ORIGINAL_SELECTION_PROVENANCE_IS_VALID = base._selection_provenance_is_valid
 _ORIGINAL_REQUIRED_CHECKPOINT_ROW_FIELDS = base._REQUIRED_CHECKPOINT_ROW_FIELDS
 _ORIGINAL_SELECTION_ROW_FIELDS = base._SELECTION_ROW_FIELDS
+_ORIGINAL_INIT_WORKER_CONTEXT = base.teacher.init_worker_context
+_ORIGINAL_RUN_PARALLEL = base.teacher.run_parallel
 
 
 @dataclass(frozen=True)
@@ -57,6 +64,109 @@ def make_task_config(args) -> dict[str, Any]:
         _TERMINAL_REDISPATCH_ABSOLUTE_EPSILON_MW
     )
     return task_config
+
+
+def _worker_init_concurrency() -> int:
+    raw_value = os.environ.get(
+        _WORKER_INIT_CONCURRENCY_ENV,
+        "1",
+    ).strip()
+    try:
+        concurrency = int(raw_value)
+    except ValueError as exc:
+        raise ValueError(
+            f"{_WORKER_INIT_CONCURRENCY_ENV} must be a positive integer, "
+            f"got {raw_value!r}."
+        ) from exc
+
+    if concurrency <= 0:
+        raise ValueError(
+            f"{_WORKER_INIT_CONCURRENCY_ENV} must be >= 1, got {concurrency}."
+        )
+    return concurrency
+
+
+def init_worker_context(
+    raw_dir_str: str,
+    states_dir_str: str,
+    task_config: dict[str, Any],
+    scenario_ids: Sequence[int],
+    memory_registry=None,
+) -> None:
+    runtime_task_config = dict(task_config)
+    init_semaphore = runtime_task_config.pop(
+        _RUNTIME_WORKER_INIT_SEMAPHORE,
+        None,
+    )
+
+    if init_semaphore is None:
+        _ORIGINAL_INIT_WORKER_CONTEXT(
+            raw_dir_str,
+            states_dir_str,
+            runtime_task_config,
+            scenario_ids,
+            memory_registry,
+        )
+        return
+
+    init_semaphore.acquire()
+    try:
+        _ORIGINAL_INIT_WORKER_CONTEXT(
+            raw_dir_str,
+            states_dir_str,
+            runtime_task_config,
+            scenario_ids,
+            memory_registry,
+        )
+        gc.collect()
+    finally:
+        init_semaphore.release()
+
+
+def run_parallel(
+    scenario_batches: list[list[int]],
+    scenario_ids: Sequence[int],
+    raw_dir,
+    states_dir,
+    task_config: dict[str, Any],
+    checkpoint_path,
+    num_workers: int,
+    verbose_success: bool,
+):
+    init_concurrency = min(
+        _worker_init_concurrency(),
+        max(int(num_workers), 1),
+    )
+
+    print(f"Worker init concurrency: {init_concurrency}")
+
+    if init_concurrency >= int(num_workers):
+        return _ORIGINAL_RUN_PARALLEL(
+            scenario_batches=scenario_batches,
+            scenario_ids=scenario_ids,
+            raw_dir=raw_dir,
+            states_dir=states_dir,
+            task_config=task_config,
+            checkpoint_path=checkpoint_path,
+            num_workers=num_workers,
+            verbose_success=verbose_success,
+        )
+
+    runtime_task_config = dict(task_config)
+    runtime_task_config[_RUNTIME_WORKER_INIT_SEMAPHORE] = (
+        mp.BoundedSemaphore(init_concurrency)
+    )
+
+    return _ORIGINAL_RUN_PARALLEL(
+        scenario_batches=scenario_batches,
+        scenario_ids=scenario_ids,
+        raw_dir=raw_dir,
+        states_dir=states_dir,
+        task_config=runtime_task_config,
+        checkpoint_path=checkpoint_path,
+        num_workers=num_workers,
+        verbose_success=verbose_success,
+    )
 
 
 def _action_key(node: Any) -> tuple[int, ...]:
@@ -460,6 +570,8 @@ def _install_overrides() -> None:
     base._selection_provenance_is_valid = _selection_provenance_is_valid
     base._replay_terminal_evidence = _replay_terminal_evidence
     base.process_scenario_batch = process_scenario_batch
+    base.teacher.init_worker_context = init_worker_context
+    base.teacher.run_parallel = run_parallel
 
 
 def main() -> None:

@@ -13,6 +13,9 @@ REDISPATCH_TEACHER_MODULE = (
 _SAFE_AUTO_WORKER_MAX = 4
 _SAFE_WORKER_MEMORY_MB = 2400.0
 _SAFE_MEMORY_RESERVE_MB = 3072.0
+_WORKER_INIT_CONCURRENCY_OPTION = "--worker-init-concurrency"
+_WORKER_INIT_CONCURRENCY_ENV = "POWERGRID_TEACHER_INIT_CONCURRENCY"
+_DEFAULT_WORKER_INIT_CONCURRENCY = 1
 
 
 def _option_value(argv: Sequence[str], name: str) -> str | None:
@@ -63,6 +66,36 @@ def _replace_auto_workers(argv: list[str]) -> None:
     argv[value_index] = safe_workers
 
 
+def _pop_worker_init_concurrency(argv: list[str]) -> int:
+    try:
+        option_index = argv.index(_WORKER_INIT_CONCURRENCY_OPTION)
+    except ValueError:
+        return _DEFAULT_WORKER_INIT_CONCURRENCY
+
+    value_index = option_index + 1
+    if value_index >= len(argv):
+        raise ValueError(
+            f"{_WORKER_INIT_CONCURRENCY_OPTION} requires a positive integer."
+        )
+
+    raw_value = str(argv[value_index]).strip()
+    try:
+        concurrency = int(raw_value)
+    except ValueError as exc:
+        raise ValueError(
+            f"{_WORKER_INIT_CONCURRENCY_OPTION} requires a positive integer, "
+            f"got {raw_value!r}."
+        ) from exc
+
+    if concurrency <= 0:
+        raise ValueError(
+            f"{_WORKER_INIT_CONCURRENCY_OPTION} must be >= 1, got {concurrency}."
+        )
+
+    del argv[option_index : value_index + 1]
+    return concurrency
+
+
 def canonical_argv(argv: Sequence[str]) -> list[str]:
     result = [str(value) for value in argv]
 
@@ -95,7 +128,14 @@ def canonical_argv(argv: Sequence[str]) -> list[str]:
 
 
 def main() -> None:
-    sys.argv[:] = canonical_argv(sys.argv)
+    argv = canonical_argv(sys.argv)
+    try:
+        init_concurrency = _pop_worker_init_concurrency(argv)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+
+    os.environ[_WORKER_INIT_CONCURRENCY_ENV] = str(init_concurrency)
+    sys.argv[:] = argv
     pipeline.main()
 
 

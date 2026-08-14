@@ -243,7 +243,7 @@ class GridFMAdapter:
                 f"Scenario filter: {self._scenario_filter}"
             )
 
-        return frame.reset_index(drop=True)
+        return frame
 
     def _validate_required_columns(self) -> None:
         required_bus = {"scenario", "load_scenario_idx", "bus", *BUS_FEATURE_COLUMNS}
