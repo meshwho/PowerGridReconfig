@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sys
 from collections.abc import Sequence
 
@@ -9,6 +10,9 @@ from scripts.pipelines import run_teacher_by_difficulty as pipeline
 REDISPATCH_TEACHER_MODULE = (
     "scripts.self_play.generate_impact_teacher_redispatch"
 )
+_SAFE_AUTO_WORKER_MAX = 4
+_SAFE_WORKER_MEMORY_MB = 2400.0
+_SAFE_MEMORY_RESERVE_MB = 3072.0
 
 
 def _option_value(argv: Sequence[str], name: str) -> str | None:
@@ -21,6 +25,42 @@ def _option_value(argv: Sequence[str], name: str) -> str | None:
     if value_index >= len(argv):
         return None
     return str(argv[value_index])
+
+
+def _safe_auto_workers() -> int:
+    cpu_cap = max(
+        min((os.cpu_count() or 2) - 1, _SAFE_AUTO_WORKER_MAX),
+        1,
+    )
+
+    try:
+        import psutil
+    except Exception:
+        return cpu_cap
+
+    try:
+        available_mb = float(psutil.virtual_memory().available) / (1024.0 * 1024.0)
+    except Exception:
+        return cpu_cap
+
+    usable_mb = max(available_mb - _SAFE_MEMORY_RESERVE_MB, 0.0)
+    memory_cap = max(int(usable_mb // _SAFE_WORKER_MEMORY_MB), 1)
+    return max(min(cpu_cap, memory_cap), 1)
+
+
+def _replace_auto_workers(argv: list[str]) -> None:
+    workers = _option_value(argv, "--num-workers")
+    safe_workers = str(_safe_auto_workers())
+
+    if workers is None:
+        argv.extend(["--num-workers", safe_workers])
+        return
+
+    if workers.strip().lower() != "auto":
+        return
+
+    value_index = argv.index("--num-workers") + 1
+    argv[value_index] = safe_workers
 
 
 def canonical_argv(argv: Sequence[str]) -> list[str]:
@@ -50,6 +90,7 @@ def canonical_argv(argv: Sequence[str]) -> list[str]:
                 ]
             )
 
+    _replace_auto_workers(result)
     return result
 
 
