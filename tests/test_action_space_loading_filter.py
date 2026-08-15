@@ -10,6 +10,7 @@ from grid_topology_ai.action_space import (
     ActionSpaceConfig,
     GridFMActionSpace,
 )
+from grid_topology_ai.cache import structural_topology_fingerprint
 from grid_topology_ai.data_adapter import (
     BRANCH_FEATURE_COLUMNS,
 )
@@ -26,7 +27,7 @@ def _state(
     Build the minimal state required by the loading filter.
 
     Connectivity checks are disabled in these tests, so bus_features
-    and edge_index are intentionally not needed.
+    and edge_index are intentionally not needed by the action logic.
     """
     branch_count = len(loadings)
 
@@ -229,12 +230,14 @@ def test_boolean_config_fields_reject_integer_values(
         )
 
 
-def test_cache_key_contains_action_space_config() -> None:
+def test_structural_cache_key_excludes_operational_loading_filter() -> None:
     state = _state(
-        loadings=[80.0],
+        loadings=[60.0],
         scenario_id=5,
         outaged_branch_ids=(7, 2),
     )
+    state.bus_features = np.zeros((2, 1), dtype=np.float32)
+    state.edge_index = np.asarray([[0], [1]], dtype=np.int64)
 
     unfiltered = GridFMActionSpace(
         require_connected_after_switch=False,
@@ -247,13 +250,17 @@ def test_cache_key_contains_action_space_config() -> None:
         enable_cache=True,
     )
 
-    unfiltered_key = unfiltered._make_cache_key(
-        state
+    unfiltered_key = structural_topology_fingerprint(
+        state,
+        require_connected_after_switch=unfiltered.require_connected_after_switch,
+        closeable_branch_ids=unfiltered.closeable_branch_ids,
     )
-    filtered_key = filtered._make_cache_key(
-        state
+    filtered_key = structural_topology_fingerprint(
+        state,
+        require_connected_after_switch=filtered.require_connected_after_switch,
+        closeable_branch_ids=filtered.closeable_branch_ids,
     )
 
-    assert unfiltered_key != filtered_key
-    assert unfiltered.config in unfiltered_key
-    assert filtered.config in filtered_key
+    assert unfiltered_key == filtered_key
+    assert unfiltered.valid_action_mask(state).tolist() == [True, True]
+    assert filtered.valid_action_mask(state).tolist() == [True, False]

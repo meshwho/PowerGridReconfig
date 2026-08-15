@@ -147,12 +147,11 @@ def test_backend_applies_both_branch_status_directions():
         )
 
 
-def test_backend_cache_key_uses_topology_after_the_action():
+def test_backend_resolves_bidirectional_branch_status_actions():
     backend = GridFMPowerFlowBackend(
         adapter=object(),  # type: ignore[arg-type]
         enable_cache=False,
     )
-
 
     close_action = GridFMAction(
         action_id=2,
@@ -160,17 +159,6 @@ def test_backend_cache_key_uses_topology_after_the_action():
         branch_id=20,
         branch_pos=1,
     )
-
-    close_state = _state(
-        scenario_id=7,
-        branch_status=(1, 0),
-    )
-
-    open_state = _state(
-        scenario_id=7,
-        branch_status=(1, 1),
-    )
-
     open_action = GridFMAction(
         action_id=1,
         action_type="switch_off_branch",
@@ -178,58 +166,41 @@ def test_backend_cache_key_uses_topology_after_the_action():
         branch_pos=0,
     )
 
-    close_key = backend._make_cache_key_from_state(
-        close_state,
+    assert backend._resolve_branch_status_action(
         action=close_action,
-    )
-    open_key = backend._make_cache_key_from_state(
-        open_state,
+        switched_off_branch_id=None,
+    ) == (20, 1)
+    assert backend._resolve_branch_status_action(
         action=open_action,
-    )
-
-    assert close_key[-1] == ()
-    assert open_key[-1] == (10,)
-    assert close_key != open_key
+        switched_off_branch_id=None,
+    ) == (10, 0)
 
 
-def test_core_backend_cache_key_supports_actions_and_legacy_ids():
+def test_core_backend_resolves_actions_and_legacy_switched_off_ids():
     backend = CoreGridFMPowerFlowBackend(
         adapter=object(),  # type: ignore[arg-type]
         enable_cache=False,
     )
-    close_state = _state(
-        scenario_id=7,
-        branch_status=(1, 0),
-    )
 
-    open_state = _state(
-        scenario_id=7,
-        branch_status=(1, 1),
-    )
-
-    close_key = backend._make_cache_key_from_state(
-        close_state,
+    assert backend._resolve_branch_status_action(
         action=GridFMAction(
             action_id=2,
             action_type="switch_on_branch",
             branch_id=20,
             branch_pos=1,
         ),
-    )
-    open_key = backend._make_cache_key_from_state(
-        open_state,
+        switched_off_branch_id=None,
+    ) == (20, 1)
+    assert backend._resolve_branch_status_action(
         action=GridFMAction(
             action_id=1,
             action_type="switch_off_branch",
             branch_id=10,
             branch_pos=0,
         ),
-    )
-    legacy_key = backend._make_cache_key_from_state(
-        open_state,
+        switched_off_branch_id=None,
+    ) == (10, 0)
+    assert backend._resolve_branch_status_action(
+        action=None,
         switched_off_branch_id=20,
-    )
-
-    assert close_key[-1] == ()
-    assert open_key[-1] == (10,)
-    assert legacy_key[-1] == (20,)
+    ) == (20, 0)
