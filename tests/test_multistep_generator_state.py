@@ -8,6 +8,7 @@ import pandas as pd
 from pypower.idx_brch import PF, PT, QF, QT
 from pypower.idx_gen import GEN_STATUS, PG, QG
 
+from grid_topology_ai.cache import exact_power_flow_fingerprint
 from grid_topology_ai.data_adapter import (
     BRANCH_FEATURE_COLUMNS,
     BUS_FEATURE_COLUMNS,
@@ -206,6 +207,16 @@ def test_power_flow_cache_distinguishes_generator_allocations() -> None:
         second.bus_features[:, qg_col],
     )
 
-    assert backend._power_flow_input_fingerprint(first) != (
-        backend._power_flow_input_fingerprint(second)
+    first_ppc, _ = backend._build_ppc_from_state(first)
+    second_ppc, _ = backend._build_ppc_from_state(second)
+    first_problem = backend._problem_from_ppc(first_ppc)
+    second_problem = backend._problem_from_ppc(second_ppc)
+    physics_fingerprint = backend.physics_config.fingerprint()
+
+    assert exact_power_flow_fingerprint(
+        first_problem,
+        physics_fingerprint=physics_fingerprint,
+    ) != exact_power_flow_fingerprint(
+        second_problem,
+        physics_fingerprint=physics_fingerprint,
     )

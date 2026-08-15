@@ -134,12 +134,21 @@ def test_slow_fast_and_cache_paths_preserve_identical_assessment() -> None:
         original_frames=frames,
     )
 
-    cache_key = backend._make_topology_cache_key_from_state(slow)
-    backend._cache[cache_key] = fast
+    cache_ppc, _cache_frames = backend._build_ppc_from_state(slow)
+    problem = backend._problem_from_ppc(cache_ppc)
+    cache_key, cached_before = backend._exact_power_flow_cache.lookup(
+        problem,
+        physics_fingerprint=backend.physics_config.fingerprint(),
+    )
+    assert cached_before is None
+    assert backend._exact_power_flow_cache.store_success(cache_key, result)
+
     cached = backend.run_power_flow_from_state(slow, None)
 
     assert cached.success is True
-    assert cached.next_state is fast
+    assert cached.next_state is not None
+    np.testing.assert_array_equal(cached.next_state.bus_features, fast.bus_features)
+    np.testing.assert_array_equal(cached.next_state.branch_features, fast.branch_features)
     assert assess_physical_state(slow.metrics) == assess_physical_state(fast.metrics)
     assert assess_physical_state(cached.next_state.metrics) == assess_physical_state(
         fast.metrics

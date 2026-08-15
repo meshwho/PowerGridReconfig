@@ -126,16 +126,17 @@ def test_custom_runtime_thresholds_are_used_consistently():
     dc_branch[:, RATE_A] = 100.0
     dc_branch[:, PF] = [130.0, 105.0]
     dc_branch[:, PT] = [-130.0, -105.0]
-    dc_score = DCActionScreener(
-        physics_config=physics_config,
-    )._score_dc_result(
-        action=GridFMAction(
-            action_id=1,
-            action_type="switch_off_branch",
-            branch_id=1,
-            branch_pos=0,
-        ),
-        result_ppc={"branch": dc_branch},
+    action = GridFMAction(
+        action_id=1,
+        action_type="switch_off_branch",
+        branch_id=1,
+        branch_pos=0,
+    )
+    screener = DCActionScreener(physics_config=physics_config)
+    physical = screener._physical_dc_result({"branch": dc_branch})
+    dc_score = screener._score_from_physical_result(
+        action=action,
+        physical=physical,
         policy_prior=0.0,
     )
     assert dc_score.penalty == 41.5

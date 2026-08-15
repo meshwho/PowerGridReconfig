@@ -23,6 +23,7 @@ from pypower.idx_gen import (
     QMIN,
 )
 
+from grid_topology_ai.cache import exact_power_flow_fingerprint
 from grid_topology_ai.config.physics import (
     PhysicsConfig,
     QLimitPolicy,
@@ -38,6 +39,7 @@ from grid_topology_ai.physical_constraints import (
     validate_pypower_result,
 )
 from grid_topology_ai.power_flow_errors import InvalidPhysicalState
+from grid_topology_ai.power_flow_problem import CanonicalPowerFlowProblem
 from grid_topology_ai.pypower_backend import GridFMPowerFlowBackend
 
 
@@ -366,22 +368,25 @@ def test_backend_rejects_non_physics_config() -> None:
         )
 
 
-def test_backend_cache_key_includes_physics_fingerprint() -> None:
-    state = _cache_state()
-    default_backend = GridFMPowerFlowBackend(
-        adapter=object(),  # type: ignore[arg-type]
-        physics_config=PhysicsConfig(),
+def test_exact_cache_key_includes_physics_fingerprint() -> None:
+    ppc = _valid_ppc()
+    problem = CanonicalPowerFlowProblem(
+        base_mva=float(ppc["baseMVA"]),
+        bus=np.asarray(ppc["bus"], dtype=np.float64),
+        branch=np.asarray(ppc["branch"], dtype=np.float64),
+        gen=np.asarray(ppc["gen"], dtype=np.float64),
     )
-    custom_backend = GridFMPowerFlowBackend(
-        adapter=object(),  # type: ignore[arg-type]
-        physics_config=PhysicsConfig(overload_limit_percent=115.0),
+    default_physics = PhysicsConfig()
+    custom_physics = PhysicsConfig(overload_limit_percent=115.0)
+
+    default_key = exact_power_flow_fingerprint(
+        problem,
+        physics_fingerprint=default_physics.fingerprint(),
+    )
+    custom_key = exact_power_flow_fingerprint(
+        problem,
+        physics_fingerprint=custom_physics.fingerprint(),
     )
 
-    default_key = default_backend._make_cache_key_from_state(state, 3)
-    custom_key = custom_backend._make_cache_key_from_state(state, 3)
-
-    assert default_key[0] == default_backend.physics_config.fingerprint()
-    assert custom_key[0] == custom_backend.physics_config.fingerprint()
-    assert default_key[1:] == custom_key[1:]
-    assert default_key[2:] == (3, 0, (2, 3, 5))
-    assert custom_key != default_key
+    assert default_physics.fingerprint() != custom_physics.fingerprint()
+    assert default_key != custom_key
