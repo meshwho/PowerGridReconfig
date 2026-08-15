@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import os
+import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Callable, Sequence
 
 from grid_topology_ai.cache import LODFStructureCache
 from grid_topology_ai.lodf import (
@@ -20,6 +23,7 @@ _RUNTIME_LODF_STRUCTURE_CACHE = "_redispatch_lodf_structure_cache"
 _DEFAULT_MAX_TASKS_PER_CHILD = 32
 
 _ORIGINAL_INIT_WORKER_CONTEXT = redispatch.init_worker_context
+_ORIGINAL_IMPACT_BEAM_SEARCH_CONFIG = redispatch.base.teacher.ImpactBeamSearchConfig
 
 
 def _worker_run_id() -> str:
@@ -68,6 +72,11 @@ def _bounded_worker_housekeeping() -> None:
     return None
 
 
+def _quiet_impact_beam_search_config(*args, **kwargs):
+    kwargs["show_progress"] = False
+    return _ORIGINAL_IMPACT_BEAM_SEARCH_CONFIG(*args, **kwargs)
+
+
 def init_worker_context(
     raw_dir_str: str,
     states_dir_str: str,
@@ -97,6 +106,7 @@ def init_worker_context(
     # Spawned workers import this module without running main(), so install the
     # runtime overrides explicitly in the initializer as well as in the parent.
     redispatch.base._worker_run_id = _worker_run_id
+    teacher.ImpactBeamSearchConfig = _quiet_impact_beam_search_config
     teacher.rank_actions_by_lodf_screening = rank_actions_by_lodf_screening
     teacher.clear_worker_caches_if_needed = _bounded_worker_housekeeping
 
@@ -133,6 +143,8 @@ def _handle_batch_results(
     checkpoint_path,
     verbose_success: bool,
 ) -> tuple[int, int]:
+    del verbose_success
+
     teacher = redispatch.base.teacher
     saved = 0
     skipped = 0
@@ -146,13 +158,23 @@ def _handle_batch_results(
         if result["ok"]:
             rows.extend(result["rows"])
             saved += 1
-            if verbose_success:
-                teacher.print_success(result)
         else:
             skipped += 1
-            teacher.print_failure(result)
 
     return saved, skipped
+
+
+def _run_timed_batch(
+    process_batch: Callable[[list[int]], list[dict[str, Any]]],
+    batch: list[int],
+) -> tuple[list[dict[str, Any]], float]:
+    """Run one worker batch quietly and return its actual worker wall time."""
+
+    started = time.perf_counter()
+    with open(os.devnull, "w", encoding="utf-8") as sink:
+        with redirect_stdout(sink), redirect_stderr(sink):
+            results = process_batch(batch)
+    return results, time.perf_counter() - started
 
 
 def _effective_max_tasks_per_child(task_config: dict[str, Any]) -> int:
@@ -196,6 +218,7 @@ def run_parallel(
     rows: list[dict[str, Any]] = []
     total_saved = 0
     total_skipped = 0
+    completed_batches = 0
 
     try:
         for shard_batches, shard_scenarios in zip(shards, shard_sizes):
@@ -215,28 +238,53 @@ def run_parallel(
 
             for batch in shard_batches:
                 futures.append(
-                    executor.submit(teacher.process_scenario_batch, batch)
+                    executor.submit(
+                        _run_timed_batch,
+                        teacher.process_scenario_batch,
+                        batch,
+                    )
                 )
 
+        progress_bar = None
         iterator = as_completed(futures)
         if teacher.tqdm is not None:
-            iterator = teacher.tqdm(
+            progress_bar = teacher.tqdm(
                 iterator,
                 total=len(futures),
                 desc="Teacher batches",
                 unit="batch",
                 dynamic_ncols=True,
             )
+            iterator = progress_bar
 
         for future in iterator:
+            batch_results, batch_seconds = future.result()
             saved, skipped = _handle_batch_results(
-                future.result(),
+                batch_results,
                 rows=rows,
                 checkpoint_path=checkpoint_path,
                 verbose_success=verbose_success,
             )
             total_saved += saved
             total_skipped += skipped
+            completed_batches += 1
+
+            if progress_bar is not None:
+                progress_bar.set_postfix(
+                    {
+                        "worker": f"{batch_seconds:.1f}s",
+                        "saved": saved,
+                        "skipped": skipped,
+                    },
+                    refresh=True,
+                )
+            else:
+                print(
+                    f"Teacher batch {completed_batches}/{len(futures)} | "
+                    f"worker={batch_seconds:.1f}s | "
+                    f"saved={saved} | skipped={skipped}",
+                    flush=True,
+                )
     finally:
         for executor in executors:
             try:
