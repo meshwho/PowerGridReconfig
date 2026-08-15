@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 
 import numpy as np
 import pytest
@@ -12,6 +14,24 @@ from grid_topology_ai.teacher_runtime_profile import (
     estimate_object_bytes,
 )
 from scripts.diagnostics.profile_teacher_runtime import load_task_config
+
+
+def test_importing_profile_cli_does_not_import_teacher_stack():
+    code = "\n".join(
+        [
+            "import sys",
+            "import scripts.diagnostics.profile_teacher_runtime",
+            (
+                "assert 'scripts.self_play.generate_impact_teacher_redispatch' "
+                "not in sys.modules"
+            ),
+            (
+                "assert 'scripts.self_play.generate_impact_teacher_parallel_fast' "
+                "not in sys.modules"
+            ),
+        ]
+    )
+    subprocess.run([sys.executable, "-c", code], check=True)
 
 
 def test_runtime_profiler_preserves_call_result_and_restores_method():
