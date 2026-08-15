@@ -82,23 +82,23 @@ def test_estimate_object_bytes_does_not_double_count_shared_arrays():
     assert independent > shared
 
 
-def test_cache_snapshot_reports_counters_containers_and_estimated_bytes():
+def test_cache_snapshot_uses_exact_cache_owned_byte_counter():
     class Backend:
-        def __init__(self) -> None:
-            self._cache = {"one": np.ones(64, dtype=np.float64)}
-            self._topology_cache = {"topology": [1, 2, 3]}
-
         def performance_info(self):
             return {
                 "hits": 4,
                 "misses": 6,
-                "exact_cache_hits": 3,
+                "negative_hits": 1,
+                "evictions": 2,
+                "bytes": 4096,
                 "ignored_object": object(),
             }
 
     class ActionSpace:
         def __init__(self) -> None:
-            self._structural_action_mask_cache = {"one": np.ones(4, dtype=bool)}
+            self._structural_action_mask_cache = {
+                "one": np.ones(4, dtype=bool)
+            }
 
         def cache_info(self):
             return {"hits": 8, "misses": 2}
@@ -107,21 +107,22 @@ def test_cache_snapshot_reports_counters_containers_and_estimated_bytes():
 
     assert snapshot["backend"]["hits"] == 4
     assert snapshot["backend"]["misses"] == 6
+    assert snapshot["backend"]["negative_hits"] == 1
+    assert snapshot["backend"]["evictions"] == 2
     assert "ignored_object" not in snapshot["backend"]
     assert snapshot["action_space"]["hits"] == 8
-    assert snapshot["containers"]["backend"]["_cache"] == 1
-    assert snapshot["containers"]["backend"]["_topology_cache"] == 1
-    assert snapshot["estimated_bytes"]["backend"] > 0
+    assert snapshot["containers"]["backend"] == {}
+    assert snapshot["estimated_bytes"]["backend"] == 4096
     assert snapshot["estimated_bytes"]["action_space"] > 0
 
 
-def test_cache_counter_delta_uses_only_monotonic_work_counters():
+def test_cache_counter_delta_reports_current_exact_cache_counters():
     before = {
         "backend": {
             "hits": 10,
             "misses": 20,
-            "exact_cache_hits": 7,
-            "tolerant_cache_hits": 2,
+            "negative_hits": 2,
+            "evictions": 3,
         },
         "action_space": {"hits": 30, "misses": 12},
     }
@@ -129,8 +130,8 @@ def test_cache_counter_delta_uses_only_monotonic_work_counters():
         "backend": {
             "hits": 14,
             "misses": 25,
-            "exact_cache_hits": 9,
-            "tolerant_cache_hits": 3,
+            "negative_hits": 3,
+            "evictions": 5,
         },
         "action_space": {"hits": 38, "misses": 15},
     }
@@ -140,8 +141,8 @@ def test_cache_counter_delta_uses_only_monotonic_work_counters():
     assert delta["backend"] == {
         "hits": 4,
         "misses": 5,
-        "exact_cache_hits": 2,
-        "tolerant_cache_hits": 1,
+        "negative_hits": 1,
+        "evictions": 2,
     }
     assert delta["action_space"] == {"hits": 8, "misses": 3}
 
