@@ -28,8 +28,13 @@ from grid_topology_ai.contracts import (
     physics_provenance,
     require_physics_provenance,
 )
-from grid_topology_ai.data_adapter import BRANCH_FEATURE_COLUMNS, GridFMAdapter
+from grid_topology_ai.data_adapter import GridFMAdapter
 from grid_topology_ai.environment import TopologySwitchingEnv
+from grid_topology_ai.lodf import (
+    build_lodf_structure,
+    lodf_loading_safety_score,
+    rank_actions_with_lodf_structure,
+)
 from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
 from grid_topology_ai.pypower_backend import GridFMPowerFlowBackend
 from grid_topology_ai.reward import GridFMReward
@@ -817,200 +822,20 @@ def rank_actions_by_lodf_screening(
     actions: list[GridFMAction],
     physics_config: PhysicsConfig | None = None,
 ) -> list[GridFMAction]:
-    """
-    Rank switch-off actions by approximate post-contingency DC/LODF safety.
-
-    Lower score is better.
-
-    This is only a screening heuristic. The selected actions are still checked
-    later by full AC PF through env.step().
-    """
+    """Rank switch-off actions through the shared LODF implementation."""
 
     if not actions:
         return actions
 
-    status_idx = BRANCH_FEATURE_COLUMNS.index("br_status")
-    x_idx = BRANCH_FEATURE_COLUMNS.index("x")
-    pf_idx = BRANCH_FEATURE_COLUMNS.index("pf")
-    rate_idx = BRANCH_FEATURE_COLUMNS.index("rate_a")
-    loading_idx = BRANCH_FEATURE_COLUMNS.index("loading_percent")
-
-    branch_features = state.branch_features
-    edge_index = state.edge_index.astype(int)
-
-    num_branches = int(branch_features.shape[0])
-    num_buses = int(state.bus_features.shape[0])
-
-    if num_branches <= 1 or num_buses <= 1:
+    structure = build_lodf_structure(state)
+    if structure is None:
         return actions
 
-    status = branch_features[:, status_idx].astype(float)
-    x = branch_features[:, x_idx].astype(float)
-    pf = branch_features[:, pf_idx].astype(float)
-    rate = branch_features[:, rate_idx].astype(float)
-
-    active_mask = (
-        (status > 0.0)
-        & np.isfinite(x)
-        & (np.abs(x) > 1e-9)
-        & np.isfinite(rate)
-        & (rate > 1e-9)
-    )
-
-    active_positions = np.where(active_mask)[0]
-
-    if len(active_positions) <= 1:
-        return actions
-
-    active_pos_to_row = {
-        int(branch_pos): int(row)
-        for row, branch_pos in enumerate(active_positions.tolist())
-    }
-
-    active_from = edge_index[0, active_positions].astype(int)
-    active_to = edge_index[1, active_positions].astype(int)
-
-    if np.any(active_from < 0) or np.any(active_to < 0):
-        return actions
-
-    if np.any(active_from >= num_buses) or np.any(active_to >= num_buses):
-        return actions
-
-    active_x = x[active_positions]
-    active_b = 1.0 / active_x
-
-    m = len(active_positions)
-    n = num_buses
-
-    incidence = np.zeros((m, n), dtype=np.float64)
-    incidence[np.arange(m), active_from] = 1.0
-    incidence[np.arange(m), active_to] = -1.0
-
-    if n <= 1:
-        return actions
-
-    # Remove slack bus 0. This is enough for screening; final validation is AC PF.
-    incidence_red = incidence[:, 1:]
-
-    # Bbus = A^T diag(b) A.
-    bbus = incidence_red.T @ (active_b[:, None] * incidence_red)
-
-    try:
-        bbus_inv = np.linalg.pinv(bbus, rcond=1e-10)
-    except Exception:
-        return actions
-
-    # PTDF for branch-to-branch transactions.
-    # H[l, k] = flow on line l caused by a transaction from from_bus(k) to to_bus(k).
-    h = (active_b[:, None] * incidence_red) @ bbus_inv @ incidence_red.T
-
-    diag_h = np.diag(h)
-    denom = 1.0 - diag_h
-
-    active_pf = pf[active_positions]
-    active_rate = rate[active_positions]
-
-    scored: list[tuple[float, GridFMAction]] = []
-
-    for action in actions:
-        branch_pos = int(getattr(action, "branch_pos", -1))
-
-        k = active_pos_to_row.get(branch_pos)
-
-        if k is None:
-            # Inactive or invalid branch - make it unattractive.
-            scored.append((float("inf"), action))
-            continue
-
-        if not np.isfinite(denom[k]) or abs(float(denom[k])) < 1e-9:
-            scored.append((float("inf"), action))
-            continue
-
-        lodf_col = h[:, k] / denom[k]
-
-        flow_after = active_pf + lodf_col * active_pf[k]
-        flow_after[k] = 0.0
-
-        loading_after = np.divide(
-            np.abs(flow_after),
-            active_rate,
-            out=np.zeros_like(flow_after, dtype=np.float64),
-            where=active_rate > 1e-9,
-        ) * 100.0
-
-        loading_after = np.nan_to_num(
-            loading_after,
-            nan=0.0,
-            posinf=1e9,
-            neginf=1e9,
-        )
-
-        score = lodf_loading_safety_score(
-            loading_after,
-            physics_config=physics_config,
-        )
-
-        # Small tie-breaker: prefer currently loaded lines if LODF score is equal.
-        current_loading = float(branch_features[branch_pos, loading_idx])
-        score -= 1e-4 * current_loading
-
-        scored.append((float(score), action))
-
-    scored.sort(key=lambda x: x[0])
-
-    return [action for _, action in scored]
-
-
-def lodf_loading_safety_score(
-    loading_percent: np.ndarray,
-    physics_config: PhysicsConfig | None = None,
-) -> float:
-    """
-    Approximate safety score based only on predicted DC loading.
-
-    This mirrors the overload philosophy of safety_score(), but without voltage
-    and reactive power terms. It is intentionally conservative.
-    """
-
-    config = physics_config or DEFAULT_PHYSICS_CONFIG
-    loading = np.asarray(loading_percent, dtype=np.float64)
-
-    overload_threshold = (
-        config.overload_limit_percent
-        + config.thermal_tolerance_percent
-    )
-    hard_overload_threshold = (
-        config.hard_overload_limit_percent
-        + config.thermal_tolerance_percent
-    )
-    overload = np.where(
-        loading > overload_threshold,
-        loading - config.overload_limit_percent,
-        0.0,
-    )
-    hard = np.where(
-        loading > hard_overload_threshold,
-        loading - config.hard_overload_limit_percent,
-        0.0,
-    )
-
-    num_overloaded = float(np.sum(loading > overload_threshold))
-    num_hard = float(np.sum(loading > hard_overload_threshold))
-
-    hard_sq = float(np.sum(hard * hard))
-    hard_sum = float(np.sum(hard))
-    over_sum = float(np.sum(overload))
-    max_hard = float(np.max(hard)) if hard.size else 0.0
-    max_over = float(np.max(overload)) if overload.size else 0.0
-
-    return float(
-        3.0 * hard_sq
-        + 1500.0 * num_hard
-        + 50.0 * hard_sum
-        + 30.0 * max_hard
-        + 5.0 * over_sum
-        + 100.0 * num_overloaded
-        + 2.0 * max_over
+    return rank_actions_with_lodf_structure(
+        state=state,
+        actions=actions,
+        structure=structure,
+        physics_config=physics_config,
     )
 
 
