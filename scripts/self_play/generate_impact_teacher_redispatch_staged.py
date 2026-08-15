@@ -13,7 +13,6 @@ _RUNTIME_READY_EVENT = "_redispatch_worker_ready_event"
 _RUNTIME_READY_COUNT = "_redispatch_worker_ready_count"
 _RUNTIME_READY_LOCK = "_redispatch_worker_ready_lock"
 _RUNTIME_EXPECTED_WORKERS = "_redispatch_expected_workers"
-_RUNTIME_CLEAR_CACHES_EVERY = 0
 _RUNTIME_GLOBAL_MEMORY_CLEAR_LOCK = "_redispatch_global_memory_clear_lock"
 _RUNTIME_GLOBAL_MEMORY_LAST_CLEAR = "_redispatch_global_memory_last_clear"
 _GLOBAL_MEMORY_CLEAR_COOLDOWN_SEC = 5.0
@@ -38,6 +37,14 @@ def init_worker_context(
     ready_count = runtime_task_config.pop(_RUNTIME_READY_COUNT, None)
     ready_lock = runtime_task_config.pop(_RUNTIME_READY_LOCK, None)
     expected_workers = runtime_task_config.pop(_RUNTIME_EXPECTED_WORKERS, None)
+    global_clear_lock = runtime_task_config.pop(
+        _RUNTIME_GLOBAL_MEMORY_CLEAR_LOCK,
+        None,
+    )
+    global_last_clear = runtime_task_config.pop(
+        _RUNTIME_GLOBAL_MEMORY_LAST_CLEAR,
+        None,
+    )
 
     _ORIGINAL_INIT_WORKER_CONTEXT(
         raw_dir_str,
@@ -46,6 +53,18 @@ def init_worker_context(
         scenario_ids,
         memory_registry,
     )
+
+    teacher = redispatch.base.teacher
+    ctx = teacher._require_worker_context()
+    ctx[_RUNTIME_GLOBAL_MEMORY_CLEAR_LOCK] = global_clear_lock
+    ctx[_RUNTIME_GLOBAL_MEMORY_LAST_CLEAR] = global_last_clear
+
+    # These controls are runtime-only. Keeping them outside task_config is
+    # important because provenance hashes task_config to build the teacher run id.
+    teacher.maybe_clear_heaviest_worker_for_global_memory = (
+        maybe_clear_heaviest_worker_for_global_memory
+    )
+    teacher.clear_worker_caches_if_needed = clear_worker_caches_if_needed
 
     if ready_event is None:
         return
@@ -133,8 +152,8 @@ def maybe_clear_heaviest_worker_for_global_memory() -> None:
     ctx = teacher._require_worker_context()
     cfg = ctx["task_config"]
 
-    clear_lock = cfg.get(_RUNTIME_GLOBAL_MEMORY_CLEAR_LOCK)
-    last_clear = cfg.get(_RUNTIME_GLOBAL_MEMORY_LAST_CLEAR)
+    clear_lock = ctx.get(_RUNTIME_GLOBAL_MEMORY_CLEAR_LOCK)
+    last_clear = ctx.get(_RUNTIME_GLOBAL_MEMORY_LAST_CLEAR)
 
     if clear_lock is None or last_clear is None:
         _ORIGINAL_GLOBAL_MEMORY_GUARD()
@@ -198,6 +217,37 @@ def maybe_clear_heaviest_worker_for_global_memory() -> None:
     teacher.update_worker_memory_registry()
 
 
+def clear_worker_caches_if_needed() -> None:
+    """Keep only memory-pressure cache clearing in the staged teacher."""
+
+    teacher = redispatch.base.teacher
+    ctx = teacher._require_worker_context()
+    cfg = ctx["task_config"]
+
+    ctx["processed_in_worker"] = int(ctx.get("processed_in_worker", 0)) + 1
+
+    teacher.update_worker_memory_registry()
+    maybe_clear_heaviest_worker_for_global_memory()
+
+    memory_mb = teacher.get_process_memory_mb()
+    max_memory_mb = float(cfg.get("max_worker_memory_mb", 0.0))
+
+    should_clear_by_memory = (
+        memory_mb is not None
+        and max_memory_mb > 0.0
+        and memory_mb >= max_memory_mb
+    )
+
+    if should_clear_by_memory:
+        teacher.clear_worker_caches(
+            reason=(
+                f"worker_memory_guard_{memory_mb:.1f}_mb_ge_"
+                f"{max_memory_mb:.1f}_mb"
+            )
+        )
+        teacher.update_worker_memory_registry()
+
+
 def run_parallel(
     scenario_batches: list[list[int]],
     scenario_ids: Sequence[int],
@@ -213,7 +263,6 @@ def run_parallel(
 
     workers = min(max(int(num_workers), 1), len(scenario_batches))
     runtime_task_config = dict(task_config)
-    runtime_task_config["clear_caches_every"] = _RUNTIME_CLEAR_CACHES_EVERY
 
     if workers == 1:
         return _ORIGINAL_RUN_PARALLEL(
@@ -343,6 +392,9 @@ def _install_staged_start() -> None:
     redispatch.run_parallel = run_parallel
     redispatch.base.teacher.maybe_clear_heaviest_worker_for_global_memory = (
         maybe_clear_heaviest_worker_for_global_memory
+    )
+    redispatch.base.teacher.clear_worker_caches_if_needed = (
+        clear_worker_caches_if_needed
     )
 
 
