@@ -7,6 +7,11 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Sequence
 
+from grid_topology_ai.cache import LODFStructureCache
+from grid_topology_ai.lodf import (
+    build_lodf_structure,
+    rank_actions_with_lodf_structure,
+)
 from grid_topology_ai.teacher_config import (
     ensure_teacher_checkpoint_config,
     teacher_run_id,
@@ -20,11 +25,13 @@ _RUNTIME_READY_LOCK = "_redispatch_worker_ready_lock"
 _RUNTIME_EXPECTED_WORKERS = "_redispatch_expected_workers"
 _RUNTIME_GLOBAL_MEMORY_CLEAR_LOCK = "_redispatch_global_memory_clear_lock"
 _RUNTIME_GLOBAL_MEMORY_LAST_CLEAR = "_redispatch_global_memory_last_clear"
+_RUNTIME_LODF_STRUCTURE_CACHE = "_redispatch_lodf_structure_cache"
 _GLOBAL_MEMORY_CLEAR_COOLDOWN_SEC = 5.0
 _WORKER_START_BARRIER_TIMEOUT_SEC = 900.0
 
 _ORIGINAL_INIT_WORKER_CONTEXT = redispatch.init_worker_context
 _ORIGINAL_RUN_PARALLEL = redispatch.run_parallel
+_ORIGINAL_CLEAR_WORKER_CACHES = redispatch.base.teacher.clear_worker_caches
 _ORIGINAL_GLOBAL_MEMORY_GUARD = (
     redispatch.base.teacher.maybe_clear_heaviest_worker_for_global_memory
 )
@@ -35,6 +42,53 @@ def _worker_run_id() -> str:
     ctx = teacher._require_worker_context()
     states_dir = Path(ctx["state_store"].output_dir)
     return teacher_run_id(states_dir, ctx["task_config"])
+
+
+def rank_actions_by_lodf_screening(
+    state,
+    actions,
+    physics_config=None,
+):
+    """Rank with topology-only LODF reuse and current dynamic branch values."""
+
+    if not actions:
+        return actions
+
+    teacher = redispatch.base.teacher
+    ctx = getattr(teacher, "_WORKER_CONTEXT", None)
+    cache = (
+        ctx.get(_RUNTIME_LODF_STRUCTURE_CACHE)
+        if isinstance(ctx, dict)
+        else None
+    )
+    structure = (
+        cache.get_or_build(state)
+        if isinstance(cache, LODFStructureCache)
+        else build_lodf_structure(state)
+    )
+    if structure is None:
+        return actions
+
+    return rank_actions_with_lodf_structure(
+        state=state,
+        actions=actions,
+        structure=structure,
+        physics_config=physics_config,
+    )
+
+
+def clear_worker_caches(reason: str = "manual") -> None:
+    """Clear bounded worker caches through their owning components."""
+
+    _ORIGINAL_CLEAR_WORKER_CACHES(reason=reason)
+    teacher = redispatch.base.teacher
+    ctx = getattr(teacher, "_WORKER_CONTEXT", None)
+    if not isinstance(ctx, dict):
+        return
+
+    cache = ctx.get(_RUNTIME_LODF_STRUCTURE_CACHE)
+    if isinstance(cache, LODFStructureCache):
+        cache.clear(reset_counters=True)
 
 
 def init_worker_context(
@@ -70,10 +124,17 @@ def init_worker_context(
     ctx = teacher._require_worker_context()
     ctx[_RUNTIME_GLOBAL_MEMORY_CLEAR_LOCK] = global_clear_lock
     ctx[_RUNTIME_GLOBAL_MEMORY_LAST_CLEAR] = global_last_clear
+    ctx[_RUNTIME_LODF_STRUCTURE_CACHE] = (
+        None
+        if bool(runtime_task_config.get("disable_cache", False))
+        else LODFStructureCache()
+    )
 
     # Spawned workers import this module without running main(), so install the
-    # provenance override explicitly in the initializer as well as in the parent.
+    # runtime overrides explicitly in the initializer as well as in the parent.
     redispatch.base._worker_run_id = _worker_run_id
+    teacher.rank_actions_by_lodf_screening = rank_actions_by_lodf_screening
+    teacher.clear_worker_caches = clear_worker_caches
 
     # These controls are runtime-only. Keeping them outside task_config is
     # important because provenance hashes task_config to build the teacher run id.
@@ -410,6 +471,10 @@ def _install_staged_start() -> None:
         ensure_teacher_checkpoint_config
     )
     redispatch.base._worker_run_id = _worker_run_id
+    redispatch.base.teacher.rank_actions_by_lodf_screening = (
+        rank_actions_by_lodf_screening
+    )
+    redispatch.base.teacher.clear_worker_caches = clear_worker_caches
     redispatch.base.teacher.maybe_clear_heaviest_worker_for_global_memory = (
         maybe_clear_heaviest_worker_for_global_memory
     )

@@ -12,6 +12,11 @@ from grid_topology_ai.cache.exact_power_flow import (
     ExactPowerFlowCache,
     exact_power_flow_fingerprint,
 )
+from grid_topology_ai.cache.lodf_structure import (
+    DEFAULT_LODF_STRUCTURE_CACHE_BYTES,
+    LODFStructureCache,
+    lodf_structure_fingerprint,
+)
 from grid_topology_ai.cache.structural_topology import (
     DEFAULT_STRUCTURAL_TOPOLOGY_CACHE_BYTES,
     StructuralTopologyCache,
@@ -25,11 +30,14 @@ __all__ = [
     "CachedPowerFlowSuccess",
     "DEFAULT_DC_SCREENING_CACHE_BYTES",
     "DEFAULT_EXACT_POWER_FLOW_CACHE_BYTES",
+    "DEFAULT_LODF_STRUCTURE_CACHE_BYTES",
     "DEFAULT_STRUCTURAL_TOPOLOGY_CACHE_BYTES",
     "DCScreeningCache",
     "ExactPowerFlowCache",
+    "LODFStructureCache",
     "StructuralTopologyCache",
     "dc_screening_fingerprint",
     "exact_power_flow_fingerprint",
+    "lodf_structure_fingerprint",
     "structural_topology_fingerprint",
 ]
