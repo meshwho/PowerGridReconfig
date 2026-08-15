@@ -8,7 +8,7 @@ from scripts.pipelines import run_teacher_by_difficulty as pipeline
 
 
 REDISPATCH_TEACHER_MODULE = (
-    "scripts.self_play.generate_impact_teacher_redispatch_staged"
+    "scripts.self_play.generate_impact_teacher_redispatch_runtime"
 )
 _SAFE_AUTO_WORKER_MAX = 4
 _SAFE_WORKER_MEMORY_MB = 2400.0
