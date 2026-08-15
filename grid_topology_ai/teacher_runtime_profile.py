@@ -41,7 +41,6 @@ def process_memory_snapshot() -> dict[str, float | None]:
 
     private_bytes = getattr(info, "private", None)
     uss_bytes = None
-
     try:
         full_info = process.memory_full_info()
     except Exception:
@@ -80,22 +79,18 @@ def estimate_object_bytes(value: Any, seen: set[int] | None = None) -> int:
         return int(sys.getsizeof(value))
 
     size = int(sys.getsizeof(value))
-
     if isinstance(value, dict):
         for key, item in value.items():
             size += estimate_object_bytes(key, seen)
             size += estimate_object_bytes(item, seen)
         return size
-
     if isinstance(value, (list, tuple, set, frozenset)):
         for item in value:
             size += estimate_object_bytes(item, seen)
         return size
-
     if dataclasses.is_dataclass(value) and not isinstance(value, type):
         for field in dataclasses.fields(value):
             size += estimate_object_bytes(getattr(value, field.name), seen)
-
     return size
 
 
@@ -124,7 +119,7 @@ def _cache_containers(component: Any) -> dict[str, Any]:
 
 
 def cache_snapshot(backend: Any, action_space: Any) -> dict[str, Any]:
-    """Capture cache counters and an approximate owned-byte baseline."""
+    """Capture cache counters and owned-byte diagnostics."""
 
     backend_info: dict[str, Any] = {}
     if backend is not None:
@@ -147,12 +142,15 @@ def cache_snapshot(backend: Any, action_space: Any) -> dict[str, Any]:
 
     backend_caches = _cache_containers(backend)
     action_caches = _cache_containers(action_space)
+    backend_owned = backend_info.get("bytes")
+    if not isinstance(backend_owned, (int, float)):
+        backend_owned = estimate_object_bytes(tuple(backend_caches.values()))
 
     return {
         "backend": backend_info,
         "action_space": action_info,
         "estimated_bytes": {
-            "backend": estimate_object_bytes(tuple(backend_caches.values())),
+            "backend": int(backend_owned),
             "action_space": estimate_object_bytes(tuple(action_caches.values())),
         },
         "containers": {
@@ -168,24 +166,26 @@ def cache_snapshot(backend: Any, action_space: Any) -> dict[str, Any]:
     }
 
 
-def cache_counter_delta(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:
-    """Return useful per-scenario cache counter deltas."""
+def cache_counter_delta(
+    before: dict[str, Any],
+    after: dict[str, Any],
+) -> dict[str, Any]:
+    """Return per-scenario counters for the active cache implementations."""
 
     result: dict[str, Any] = {}
-
     for component in ("backend", "action_space"):
         start = before.get(component, {})
         end = after.get(component, {})
         delta: dict[str, int | float] = {}
-
-        for name in ("hits", "misses", "exact_cache_hits", "tolerant_cache_hits"):
+        for name in ("hits", "misses", "negative_hits", "evictions"):
             old_value = start.get(name)
             new_value = end.get(name)
-            if isinstance(old_value, (int, float)) and isinstance(new_value, (int, float)):
+            if isinstance(old_value, (int, float)) and isinstance(
+                new_value,
+                (int, float),
+            ):
                 delta[name] = new_value - old_value
-
         result[component] = delta
-
     return result
 
 
@@ -288,17 +288,15 @@ class TeacherRuntimeProfiler:
             self.restore()
 
     def snapshot(self) -> dict[str, Any]:
-        timers = {
-            name: float(self._elapsed[name])
-            for name in sorted(self._elapsed)
-        }
-        calls = {
-            name: int(self._calls[name])
-            for name in sorted(self._calls)
-        }
         return {
-            "timers_sec": timers,
-            "calls": calls,
+            "timers_sec": {
+                name: float(self._elapsed[name])
+                for name in sorted(self._elapsed)
+            },
+            "calls": {
+                name: int(self._calls[name])
+                for name in sorted(self._calls)
+            },
         }
 
     def to_json(self) -> str:
