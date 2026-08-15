@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import multiprocessing as mp
 import os
+import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from typing import Any, Sequence
 
@@ -13,10 +14,16 @@ _RUNTIME_READY_COUNT = "_redispatch_worker_ready_count"
 _RUNTIME_READY_LOCK = "_redispatch_worker_ready_lock"
 _RUNTIME_EXPECTED_WORKERS = "_redispatch_expected_workers"
 _RUNTIME_CLEAR_CACHES_EVERY = 0
+_RUNTIME_GLOBAL_MEMORY_CLEAR_LOCK = "_redispatch_global_memory_clear_lock"
+_RUNTIME_GLOBAL_MEMORY_LAST_CLEAR = "_redispatch_global_memory_last_clear"
+_GLOBAL_MEMORY_CLEAR_COOLDOWN_SEC = 5.0
 _WORKER_START_BARRIER_TIMEOUT_SEC = 900.0
 
 _ORIGINAL_INIT_WORKER_CONTEXT = redispatch.init_worker_context
 _ORIGINAL_RUN_PARALLEL = redispatch.run_parallel
+_ORIGINAL_GLOBAL_MEMORY_GUARD = (
+    redispatch.base.teacher.maybe_clear_heaviest_worker_for_global_memory
+)
 
 
 def init_worker_context(
@@ -121,6 +128,76 @@ def _handle_batch_results(
     return saved, skipped
 
 
+def maybe_clear_heaviest_worker_for_global_memory() -> None:
+    teacher = redispatch.base.teacher
+    ctx = teacher._require_worker_context()
+    cfg = ctx["task_config"]
+
+    clear_lock = cfg.get(_RUNTIME_GLOBAL_MEMORY_CLEAR_LOCK)
+    last_clear = cfg.get(_RUNTIME_GLOBAL_MEMORY_LAST_CLEAR)
+
+    if clear_lock is None or last_clear is None:
+        _ORIGINAL_GLOBAL_MEMORY_GUARD()
+        return
+
+    min_free_mb = float(cfg.get("min_free_system_memory_mb", 0.0))
+    if min_free_mb <= 0.0:
+        return
+
+    available_mb = teacher.get_system_available_memory_mb()
+    if available_mb is None or available_mb >= min_free_mb:
+        return
+
+    registry = ctx.get("memory_registry")
+    if registry is None:
+        return
+
+    current_pid = int(os.getpid())
+    max_age_sec = float(cfg.get("memory_registry_max_age_sec", 120.0))
+
+    with clear_lock:
+        now = time.time()
+        if now - float(last_clear.value) < _GLOBAL_MEMORY_CLEAR_COOLDOWN_SEC:
+            return
+
+        available_mb = teacher.get_system_available_memory_mb()
+        if available_mb is None or available_mb >= min_free_mb:
+            return
+
+        teacher.update_worker_memory_registry()
+
+        heaviest_pid: int | None = None
+        heaviest_mb = -1.0
+
+        try:
+            for pid_raw, info in list(registry.items()):
+                pid = int(pid_raw)
+                rss_mb = float(info.get("rss_mb", 0.0))
+                timestamp = float(info.get("timestamp", 0.0))
+
+                if now - timestamp > max_age_sec:
+                    continue
+
+                if rss_mb > heaviest_mb:
+                    heaviest_mb = rss_mb
+                    heaviest_pid = pid
+        except Exception:
+            return
+
+        if heaviest_pid != current_pid:
+            return
+
+        last_clear.value = now
+
+    teacher.clear_worker_caches(
+        reason=(
+            f"global_memory_low_available_{available_mb:.1f}_mb_"
+            f"lt_{min_free_mb:.1f}_mb_heaviest_{heaviest_mb:.1f}_mb"
+        )
+    )
+    teacher.update_worker_memory_registry()
+
+
 def run_parallel(
     scenario_batches: list[list[int]],
     scenario_ids: Sequence[int],
@@ -167,6 +244,8 @@ def run_parallel(
     runtime_task_config[_RUNTIME_READY_COUNT] = mp.Value("i", 0)
     runtime_task_config[_RUNTIME_READY_LOCK] = mp.Lock()
     runtime_task_config[_RUNTIME_EXPECTED_WORKERS] = workers
+    runtime_task_config[_RUNTIME_GLOBAL_MEMORY_CLEAR_LOCK] = mp.Lock()
+    runtime_task_config[_RUNTIME_GLOBAL_MEMORY_LAST_CLEAR] = mp.Value("d", 0.0)
 
     counts = [len(values) for values in shard_sizes]
     print(
@@ -179,6 +258,10 @@ def run_parallel(
     )
     print(f"Worker init concurrency: {init_concurrency}")
     print("Periodic worker cache clearing: disabled; memory guards remain active")
+    print(
+        "Global memory cache clearing: one worker at a time with "
+        f"{_GLOBAL_MEMORY_CLEAR_COOLDOWN_SEC:.0f}s cooldown"
+    )
     print(f"\nParallel sharded mode: {workers} workers")
     print(f"Batches:                {len(scenario_batches)}")
 
@@ -258,6 +341,9 @@ def run_parallel(
 def _install_staged_start() -> None:
     redispatch.init_worker_context = init_worker_context
     redispatch.run_parallel = run_parallel
+    redispatch.base.teacher.maybe_clear_heaviest_worker_for_global_memory = (
+        maybe_clear_heaviest_worker_for_global_memory
+    )
 
 
 def main() -> None:
