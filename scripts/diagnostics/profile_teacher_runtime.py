@@ -7,6 +7,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from grid_topology_ai.teacher_config import load_teacher_task_config
 from grid_topology_ai.teacher_runtime_profile import (
     TeacherRuntimeProfiler,
     cache_counter_delta,
@@ -17,14 +18,7 @@ from scripts.self_play import generate_impact_teacher_redispatch as redispatch
 
 
 def load_task_config(path: Path) -> dict[str, Any]:
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(payload, dict):
-        raise ValueError(f"Teacher task config must contain a JSON object: {path}")
-
-    nested = payload.get("task_config")
-    if isinstance(nested, dict):
-        return dict(nested)
-    return dict(payload)
+    return load_teacher_task_config(path)
 
 
 def _worker_components() -> tuple[Any, Any]:

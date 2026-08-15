@@ -4,8 +4,13 @@ import multiprocessing as mp
 import os
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from pathlib import Path
 from typing import Any, Sequence
 
+from grid_topology_ai.teacher_config import (
+    ensure_teacher_checkpoint_config,
+    teacher_run_id,
+)
 from scripts.self_play import generate_impact_teacher_redispatch as redispatch
 
 
@@ -23,6 +28,13 @@ _ORIGINAL_RUN_PARALLEL = redispatch.run_parallel
 _ORIGINAL_GLOBAL_MEMORY_GUARD = (
     redispatch.base.teacher.maybe_clear_heaviest_worker_for_global_memory
 )
+
+
+def _worker_run_id() -> str:
+    teacher = redispatch.base.teacher
+    ctx = teacher._require_worker_context()
+    states_dir = Path(ctx["state_store"].output_dir)
+    return teacher_run_id(states_dir, ctx["task_config"])
 
 
 def init_worker_context(
@@ -58,6 +70,10 @@ def init_worker_context(
     ctx = teacher._require_worker_context()
     ctx[_RUNTIME_GLOBAL_MEMORY_CLEAR_LOCK] = global_clear_lock
     ctx[_RUNTIME_GLOBAL_MEMORY_LAST_CLEAR] = global_last_clear
+
+    # Spawned workers import this module without running main(), so install the
+    # provenance override explicitly in the initializer as well as in the parent.
+    redispatch.base._worker_run_id = _worker_run_id
 
     # These controls are runtime-only. Keeping them outside task_config is
     # important because provenance hashes task_config to build the teacher run id.
@@ -390,6 +406,10 @@ def run_parallel(
 def _install_staged_start() -> None:
     redispatch.init_worker_context = init_worker_context
     redispatch.run_parallel = run_parallel
+    redispatch.base.teacher.ensure_checkpoint_config = (
+        ensure_teacher_checkpoint_config
+    )
+    redispatch.base._worker_run_id = _worker_run_id
     redispatch.base.teacher.maybe_clear_heaviest_worker_for_global_memory = (
         maybe_clear_heaviest_worker_for_global_memory
     )
