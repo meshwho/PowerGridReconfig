@@ -6,9 +6,9 @@ from scripts.pipelines import run_teacher_redispatch as entrypoint
 from scripts.self_play import generate_impact_teacher_redispatch_staged as staged
 
 
-def test_production_entrypoint_uses_staged_teacher_module() -> None:
+def test_production_entrypoint_uses_runtime_teacher_module() -> None:
     assert entrypoint.REDISPATCH_TEACHER_MODULE == (
-        "scripts.self_play.generate_impact_teacher_redispatch_staged"
+        "scripts.self_play.generate_impact_teacher_redispatch_runtime"
     )
 
 
