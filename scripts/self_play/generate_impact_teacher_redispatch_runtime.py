@@ -1,9 +1,14 @@
 from __future__ import annotations
 
-import gc
+import os
 from pathlib import Path
 from typing import Any, Sequence
 
+from grid_topology_ai.cache.persistent_exact import (
+    DEFAULT_PERSISTENT_EXACT_CACHE_BYTES,
+    PERSISTENT_EXACT_CACHE_DIR_ENV,
+    PERSISTENT_EXACT_CACHE_MAX_BYTES_ENV,
+)
 from grid_topology_ai.runtime import (
     build_memory_mapped_teacher_context,
     ensure_runtime_scenario_store,
@@ -12,8 +17,23 @@ from scripts.self_play import generate_impact_teacher_redispatch_staged as stage
 
 
 _RUNTIME_SCENARIO_STORE_DIR = "_redispatch_runtime_scenario_store_dir"
+_PERSISTENT_CACHE_DIRECTORY_NAME = "exact_pf_cache_v1"
 _ORIGINAL_STAGED_INIT = staged.init_worker_context
 _ORIGINAL_STAGED_RUN_PARALLEL = staged.run_parallel
+
+
+def _configure_persistent_exact_cache(store_dir: str | Path) -> Path:
+    default_root = (
+        Path(store_dir).resolve().parent / _PERSISTENT_CACHE_DIRECTORY_NAME
+    )
+    configured = os.environ.get(PERSISTENT_EXACT_CACHE_DIR_ENV)
+    cache_root = Path(configured).resolve() if configured else default_root
+    os.environ[PERSISTENT_EXACT_CACHE_DIR_ENV] = str(cache_root)
+    os.environ.setdefault(
+        PERSISTENT_EXACT_CACHE_MAX_BYTES_ENV,
+        str(DEFAULT_PERSISTENT_EXACT_CACHE_BYTES),
+    )
+    return cache_root
 
 
 def _memory_mapped_base_init(
@@ -26,34 +46,18 @@ def _memory_mapped_base_init(
     teacher = staged.redispatch.base.teacher
     runtime_task_config = dict(task_config)
     store_dir = runtime_task_config.pop(_RUNTIME_SCENARIO_STORE_DIR, None)
-    init_semaphore = runtime_task_config.pop(
-        staged.redispatch._RUNTIME_WORKER_INIT_SEMAPHORE,
-        None,
-    )
 
     if store_dir is None:
         store_dir = ensure_runtime_scenario_store(raw_dir_str)
+    _configure_persistent_exact_cache(store_dir)
 
-    def initialize() -> None:
-        teacher._WORKER_CONTEXT = build_memory_mapped_teacher_context(
-            runtime_store_dir=store_dir,
-            states_dir=states_dir_str,
-            task_config=runtime_task_config,
-            scenario_ids=scenario_ids,
-            memory_registry=memory_registry,
-        )
-        teacher.update_worker_memory_registry()
-
-    if init_semaphore is None:
-        initialize()
-        return
-
-    init_semaphore.acquire()
-    try:
-        initialize()
-        gc.collect()
-    finally:
-        init_semaphore.release()
+    teacher._WORKER_CONTEXT = build_memory_mapped_teacher_context(
+        runtime_store_dir=store_dir,
+        states_dir=states_dir_str,
+        task_config=runtime_task_config,
+        scenario_ids=scenario_ids,
+        memory_registry=None,
+    )
 
 
 def init_worker_context(
@@ -71,7 +75,7 @@ def init_worker_context(
             states_dir_str,
             task_config,
             scenario_ids,
-            memory_registry,
+            None,
         )
     finally:
         staged._ORIGINAL_INIT_WORKER_CONTEXT = previous
@@ -88,9 +92,11 @@ def run_parallel(
     verbose_success: bool,
 ):
     store_dir = ensure_runtime_scenario_store(Path(raw_dir))
+    persistent_root = _configure_persistent_exact_cache(store_dir)
     runtime_task_config = dict(task_config)
     runtime_task_config[_RUNTIME_SCENARIO_STORE_DIR] = str(store_dir)
     print(f"Memory-mapped runtime store: {store_dir}")
+    print(f"Persistent exact PF cache:  {persistent_root}")
 
     return _ORIGINAL_STAGED_RUN_PARALLEL(
         scenario_batches=scenario_batches,

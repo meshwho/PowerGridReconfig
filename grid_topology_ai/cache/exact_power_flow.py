@@ -7,6 +7,11 @@ from typing import Mapping
 import numpy as np
 
 from grid_topology_ai.cache.byte_lru import ByteLRUCache
+from grid_topology_ai.cache.persistent_exact import (
+    PersistentExactPowerFlowCache,
+    PersistentPowerFlowFailure,
+    PersistentPowerFlowSuccess,
+)
 from grid_topology_ai.power_flow_errors import PowerFlowFailureKind
 from grid_topology_ai.power_flow_problem import CanonicalPowerFlowProblem
 
@@ -68,6 +73,13 @@ class CachedPowerFlowSuccess:
             gen=_readonly_float64_copy(np.asarray(result_ppc["gen"])),
         )
 
+    @classmethod
+    def from_persistent(
+        cls,
+        record: PersistentPowerFlowSuccess,
+    ) -> "CachedPowerFlowSuccess":
+        return cls(bus=record.bus, branch=record.branch, gen=record.gen)
+
     @property
     def owned_bytes(self) -> int:
         return int(self.bus.nbytes + self.branch.nbytes + self.gen.nbytes)
@@ -110,19 +122,40 @@ ExactPowerFlowOutcome = CachedPowerFlowSuccess | CachedPowerFlowFailure
 
 
 class ExactPowerFlowCache:
-    """Byte-bounded cache for physically identical AC power-flow problems only."""
+    """Exact two-level cache: bounded RAM first, optional bounded persistent L2."""
 
-    def __init__(self, max_bytes: int = DEFAULT_EXACT_POWER_FLOW_CACHE_BYTES) -> None:
+    def __init__(
+        self,
+        max_bytes: int = DEFAULT_EXACT_POWER_FLOW_CACHE_BYTES,
+        *,
+        persistent_cache: PersistentExactPowerFlowCache | None = None,
+    ) -> None:
         self._cache: ByteLRUCache[bytes, ExactPowerFlowOutcome] = ByteLRUCache(
             max_bytes=max_bytes
+        )
+        self._persistent = (
+            persistent_cache
+            if persistent_cache is not None
+            else PersistentExactPowerFlowCache.from_environment()
         )
         self.hits = 0
         self.misses = 0
         self.negative_hits = 0
+        self.l1_hits = 0
+        self.l1_misses = 0
+        self.l2_hits = 0
+        self.l2_misses = 0
 
     @property
     def max_bytes(self) -> int:
         return int(self._cache.max_bytes)
+
+    def _put_l1(self, key: bytes, outcome: ExactPowerFlowOutcome) -> bool:
+        return self._cache.put(
+            key,
+            outcome,
+            size_bytes=outcome.owned_bytes + len(key) + _ENTRY_OVERHEAD_BYTES,
+        )
 
     def lookup(
         self,
@@ -135,14 +168,37 @@ class ExactPowerFlowCache:
             physics_fingerprint=physics_fingerprint,
         )
         outcome = self._cache.get(key)
-        if outcome is None:
-            self.misses += 1
-            return key, None
+        if outcome is not None:
+            self.hits += 1
+            self.l1_hits += 1
+            if isinstance(outcome, CachedPowerFlowFailure):
+                self.negative_hits += 1
+            return key, outcome
 
-        self.hits += 1
-        if isinstance(outcome, CachedPowerFlowFailure):
-            self.negative_hits += 1
-        return key, outcome
+        self.l1_misses += 1
+        if self._persistent is not None:
+            persistent = self._persistent.lookup(key)
+            if isinstance(persistent, PersistentPowerFlowSuccess):
+                outcome = CachedPowerFlowSuccess.from_persistent(persistent)
+            elif isinstance(persistent, PersistentPowerFlowFailure):
+                outcome = CachedPowerFlowFailure(
+                    failure_kind=PowerFlowFailureKind.NOT_CONVERGED,
+                    message=persistent.message,
+                )
+            else:
+                outcome = None
+
+            if outcome is not None:
+                self._put_l1(key, outcome)
+                self.hits += 1
+                self.l2_hits += 1
+                if isinstance(outcome, CachedPowerFlowFailure):
+                    self.negative_hits += 1
+                return key, outcome
+            self.l2_misses += 1
+
+        self.misses += 1
+        return key, None
 
     def store_success(
         self,
@@ -150,43 +206,53 @@ class ExactPowerFlowCache:
         result_ppc: Mapping[str, object],
     ) -> bool:
         outcome = CachedPowerFlowSuccess.from_result_ppc(result_ppc)
-        return self._cache.put(
-            key,
-            outcome,
-            size_bytes=(
-                outcome.owned_bytes + len(key) + _ENTRY_OVERHEAD_BYTES
-            ),
-        )
+        stored = self._put_l1(key, outcome)
+        if self._persistent is not None:
+            self._persistent.store_success(
+                key,
+                bus=outcome.bus,
+                branch=outcome.branch,
+                gen=outcome.gen,
+            )
+        return stored
 
     def store_not_converged(self, key: bytes, message: str) -> bool:
         outcome = CachedPowerFlowFailure(
             failure_kind=PowerFlowFailureKind.NOT_CONVERGED,
             message=str(message),
         )
-        return self._cache.put(
-            key,
-            outcome,
-            size_bytes=(
-                outcome.owned_bytes + len(key) + _ENTRY_OVERHEAD_BYTES
-            ),
-        )
+        stored = self._put_l1(key, outcome)
+        if self._persistent is not None:
+            self._persistent.store_not_converged(key, outcome.message)
+        return stored
 
     def discard(self, key: bytes) -> None:
         self._cache.discard(key)
+        if self._persistent is not None:
+            self._persistent.discard(key)
 
     def clear(self, *, reset_counters: bool = True) -> None:
+        """Clear only L1; persistent exact results survive worker recycling."""
+
         self._cache.clear(reset_evictions=reset_counters)
         if reset_counters:
             self.reset_counters()
+
+    def reset_performance_counters(self) -> None:
+        self.reset_counters()
 
     def reset_counters(self) -> None:
         self.hits = 0
         self.misses = 0
         self.negative_hits = 0
+        self.l1_hits = 0
+        self.l1_misses = 0
+        self.l2_hits = 0
+        self.l2_misses = 0
 
-    def info(self) -> dict[str, int]:
+    def info(self) -> dict[str, object]:
         info = self._cache.info()
-        return {
+        result: dict[str, object] = {
             "size": int(info.entries),
             "bytes": int(info.bytes),
             "max_bytes": int(info.max_bytes),
@@ -194,4 +260,12 @@ class ExactPowerFlowCache:
             "misses": int(self.misses),
             "negative_hits": int(self.negative_hits),
             "evictions": int(info.evictions),
+            "l1_hits": int(self.l1_hits),
+            "l1_misses": int(self.l1_misses),
+            "l2_hits": int(self.l2_hits),
+            "l2_misses": int(self.l2_misses),
+            "l2_enabled": self._persistent is not None,
         }
+        if self._persistent is not None:
+            result["persistent"] = self._persistent.info()
+        return result
