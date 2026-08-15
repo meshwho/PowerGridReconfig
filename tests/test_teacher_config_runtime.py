@@ -50,25 +50,26 @@ def _checkpoint_config(task_config):
     }
 
 
-def test_task_config_split_keeps_only_execution_controls_out_of_semantics():
+def test_task_config_split_keeps_cache_and_memory_controls_runtime_only():
     semantic, runtime = split_teacher_task_config(_task_config())
 
     assert semantic["depth"] == 5
     assert semantic["physics_config_fingerprint"] == "physics-v1"
-    assert semantic["disable_cache"] is False
+    assert "disable_cache" not in semantic
 
+    assert runtime["disable_cache"] is False
     assert runtime["clear_caches_every"] == 2
     assert runtime["max_worker_memory_mb"] == 1000.0
     assert runtime["min_free_system_memory_mb"] == 512.0
     assert runtime["max_tasks_per_child"] == 0
     assert runtime["auto_worker_cpu_mode"] == "logical"
-
     assert not (set(semantic) & set(runtime))
 
 
-def test_runtime_only_changes_do_not_change_semantic_task_config():
+def test_cache_toggle_and_memory_changes_do_not_change_semantic_identity():
     left = _task_config()
     right = _task_config(
+        disable_cache=True,
         clear_caches_every=0,
         max_worker_memory_mb=2400.0,
         min_free_system_memory_mb=2048.0,
@@ -81,20 +82,14 @@ def test_runtime_only_changes_do_not_change_semantic_task_config():
     assert semantic_teacher_task_config(left) == semantic_teacher_task_config(right)
 
 
-def test_disable_cache_remains_semantic_until_legacy_approximate_cache_is_removed():
-    enabled = semantic_teacher_task_config(_task_config(disable_cache=False))
-    disabled = semantic_teacher_task_config(_task_config(disable_cache=True))
-
-    assert enabled != disabled
-
-
-def test_legacy_checkpoint_accepts_runtime_changes_on_resume(tmp_path):
+def test_legacy_checkpoint_accepts_cache_and_runtime_changes_on_resume(tmp_path):
     config_path = tmp_path / "teacher_checkpoint_config.json"
     original = _checkpoint_config(_task_config())
     config_path.write_text(json.dumps(original), encoding="utf-8")
 
     resumed = _checkpoint_config(
         _task_config(
+            disable_cache=True,
             clear_caches_every=0,
             max_worker_memory_mb=2400.0,
             min_free_system_memory_mb=1024.0,
@@ -103,9 +98,6 @@ def test_legacy_checkpoint_accepts_runtime_changes_on_resume(tmp_path):
     )
 
     ensure_teacher_checkpoint_config(config_path, resumed)
-
-    # Existing legacy config is intentionally left untouched so its historical
-    # full-task-config run ID can still be reconstructed for unfinished runs.
     assert json.loads(config_path.read_text(encoding="utf-8")) == original
 
 
@@ -123,7 +115,7 @@ def test_checkpoint_rejects_semantic_search_change(tmp_path):
         )
 
 
-def test_new_checkpoint_config_persists_semantic_and_runtime_sections(tmp_path):
+def test_new_checkpoint_persists_cache_toggle_in_runtime_section(tmp_path):
     config_path = tmp_path / "teacher_checkpoint_config.json"
     ensure_teacher_checkpoint_config(
         config_path,
@@ -131,15 +123,14 @@ def test_new_checkpoint_config_persists_semantic_and_runtime_sections(tmp_path):
     )
 
     payload = json.loads(config_path.read_text(encoding="utf-8"))
-
     assert "task_config" not in payload
     assert payload["semantic_task_config"]["depth"] == 5
-    assert payload["semantic_task_config"]["disable_cache"] is False
-    assert payload["runtime_task_config"]["clear_caches_every"] == 2
+    assert "disable_cache" not in payload["semantic_task_config"]
+    assert payload["runtime_task_config"]["disable_cache"] is False
     assert payload["runtime_task_config"]["max_worker_memory_mb"] == 1000.0
 
 
-def test_new_run_id_is_independent_of_runtime_controls(tmp_path):
+def test_new_run_id_is_independent_of_cache_and_runtime_controls(tmp_path):
     states_dir = tmp_path / "run" / "states"
     states_dir.mkdir(parents=True)
 
@@ -147,6 +138,7 @@ def test_new_run_id_is_independent_of_runtime_controls(tmp_path):
     second = teacher_run_id(
         states_dir,
         _task_config(
+            disable_cache=True,
             clear_caches_every=0,
             max_worker_memory_mb=3000.0,
             min_free_system_memory_mb=4096.0,
@@ -155,20 +147,14 @@ def test_new_run_id_is_independent_of_runtime_controls(tmp_path):
     )
 
     assert first == second
-    assert first != teacher_run_id(
-        states_dir,
-        _task_config(depth=6),
-    )
-    assert first != teacher_run_id(
-        states_dir,
-        _task_config(disable_cache=True),
-    )
+    assert first != teacher_run_id(states_dir, _task_config(depth=6))
 
 
 def test_legacy_checkpoint_preserves_historical_full_config_run_id(tmp_path):
     states_dir = tmp_path / "legacy" / "states"
     states_dir.mkdir(parents=True)
     legacy_task_config = _task_config(
+        disable_cache=False,
         clear_caches_every=2,
         max_worker_memory_mb=1000.0,
     )
@@ -194,23 +180,47 @@ def test_legacy_checkpoint_preserves_historical_full_config_run_id(tmp_path):
     resumed = teacher_run_id(
         states_dir,
         _task_config(
+            disable_cache=True,
             clear_caches_every=0,
             max_worker_memory_mb=2400.0,
         ),
     )
-
     assert resumed == expected
+
+
+def test_existing_split_checkpoint_migrates_cache_toggle_to_runtime_on_compare(
+    tmp_path,
+):
+    config_path = tmp_path / "teacher_checkpoint_config.json"
+    old_split = {
+        "checkpoint_version": 2,
+        "raw_dir": "D:/data/raw",
+        "transitions_path": "D:/data/transitions.csv",
+        "scenario_ids": [1, 2, 3],
+        "checkpoint_config_schema_version": 1,
+        "semantic_task_config": {
+            **semantic_teacher_task_config(_task_config()),
+            "disable_cache": False,
+        },
+        "runtime_task_config": {
+            "max_worker_memory_mb": 1000.0,
+        },
+    }
+    config_path.write_text(json.dumps(old_split), encoding="utf-8")
+
+    ensure_teacher_checkpoint_config(
+        config_path,
+        _checkpoint_config(_task_config(disable_cache=True)),
+    )
 
 
 def test_split_checkpoint_task_config_can_be_loaded_for_diagnostics(tmp_path):
     path = tmp_path / "teacher_checkpoint_config.json"
-    payload = checkpoint_config_payload(
-        _checkpoint_config(_task_config())
-    )
+    payload = checkpoint_config_payload(_checkpoint_config(_task_config()))
     path.write_text(json.dumps(payload), encoding="utf-8")
 
     loaded = load_teacher_task_config(path)
-
     assert loaded["depth"] == 5
+    assert loaded["disable_cache"] is False
     assert loaded["clear_caches_every"] == 2
     assert loaded["max_worker_memory_mb"] == 1000.0

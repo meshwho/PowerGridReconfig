@@ -5,511 +5,292 @@ from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
-import pytest
+from pypower.idx_bus import VM
 
-from grid_topology_ai._pypower_backend_core import (
-    GridFMPowerFlowBackend as CoreGridFMPowerFlowBackend,
-)
-from grid_topology_ai.config.physics import PhysicsConfig
 from grid_topology_ai.data_adapter import (
     BRANCH_FEATURE_COLUMNS,
     BUS_FEATURE_COLUMNS,
-    GridFMState,
 )
-from grid_topology_ai.pypower_backend import GridFMPowerFlowBackend
+from grid_topology_ai.pypower_backend import (
+    GridFMPowerFlowBackend,
+    _GeneratorOperatingPointState,
+)
 from grid_topology_ai.topology_actions import GridFMAction
 
 
-def _state() -> GridFMState:
-    bus_features = np.zeros(
-        (2, len(BUS_FEATURE_COLUMNS)),
-        dtype=np.float32,
-    )
-    bus_features[:, BUS_FEATURE_COLUMNS.index("Pd")] = [45.0, 25.0]
-    bus_features[:, BUS_FEATURE_COLUMNS.index("Qd")] = [12.0, 7.0]
-    bus_features[:, BUS_FEATURE_COLUMNS.index("Pg")] = [70.0, 0.0]
-    bus_features[:, BUS_FEATURE_COLUMNS.index("Qg")] = [8.0, 0.0]
-    bus_features[:, BUS_FEATURE_COLUMNS.index("Vm")] = [1.01, 0.99]
-    bus_features[:, BUS_FEATURE_COLUMNS.index("Va")] = [0.0, -2.0]
-    bus_features[:, BUS_FEATURE_COLUMNS.index("min_vm_pu")] = 0.95
-    bus_features[:, BUS_FEATURE_COLUMNS.index("max_vm_pu")] = 1.05
+def _adapter() -> SimpleNamespace:
+    buses = []
+    branches = []
+    generators = []
+    for scenario_id in (1, 2):
+        for bus_id, bus_type in ((10, "REF"), (20, "PQ")):
+            row = {name: 0.0 for name in BUS_FEATURE_COLUMNS}
+            row.update(
+                {
+                    "scenario": scenario_id,
+                    "bus": bus_id,
+                    "Pd": 35.0 if bus_id == 20 else 0.0,
+                    "Qd": 8.0 if bus_id == 20 else 0.0,
+                    "Vm": 1.0,
+                    "Va": 0.0,
+                    "vn_kv": 110.0,
+                    "min_vm_pu": 0.95,
+                    "max_vm_pu": 1.05,
+                    bus_type: 1.0,
+                }
+            )
+            buses.append(row)
 
-    branch_features = np.zeros(
-        (2, len(BRANCH_FEATURE_COLUMNS)),
-        dtype=np.float32,
-    )
-    branch_features[:, BRANCH_FEATURE_COLUMNS.index("pf")] = [35.0, 18.0]
-    branch_features[:, BRANCH_FEATURE_COLUMNS.index("qf")] = [6.0, 3.0]
-    branch_features[:, BRANCH_FEATURE_COLUMNS.index("pt")] = [-34.5, -17.8]
-    branch_features[:, BRANCH_FEATURE_COLUMNS.index("qt")] = [-5.5, -2.8]
-    branch_features[:, BRANCH_FEATURE_COLUMNS.index("br_status")] = 1.0
-    branch_features[:, BRANCH_FEATURE_COLUMNS.index("loading_percent")] = [
-        36.0,
-        19.0,
-    ]
+        branch = {name: 0.0 for name in BRANCH_FEATURE_COLUMNS}
+        branch.update(
+            {
+                "scenario": scenario_id,
+                "idx": 7,
+                "from_bus": 10,
+                "to_bus": 20,
+                "r": 0.01,
+                "x": 0.1,
+                "b": 0.01,
+                "tap": 0.0,
+                "shift": 0.0,
+                "rate_a": 100.0,
+                "br_status": 1.0,
+                "ang_min": -30.0,
+                "ang_max": 30.0,
+            }
+        )
+        branches.append(branch)
+        generators.append(
+            {
+                "scenario": scenario_id,
+                "idx": 0,
+                "bus": 10,
+                "p_mw": 40.0,
+                "q_mvar": 5.0,
+                "min_p_mw": 0.0,
+                "max_p_mw": 100.0,
+                "min_q_mvar": -50.0,
+                "max_q_mvar": 50.0,
+                "in_service": 1.0,
+            }
+        )
 
-    return GridFMState(
-        scenario_id=7,
-        load_scenario_idx=2.0,
-        bus_features=bus_features,
-        branch_features=branch_features,
-        edge_index=np.array(
-            [[0, 1], [1, 0]],
-            dtype=np.int64,
-        ),
-        branch_ids=np.array([10, 20], dtype=np.int64),
-        branch_status=np.ones(2, dtype=np.float32),
+    return SimpleNamespace(
+        bus_df=pd.DataFrame(buses),
+        branch_df=pd.DataFrame(branches),
+        gen_df=pd.DataFrame(generators),
+    )
+
+
+def _state(
+    adapter: SimpleNamespace,
+    *,
+    scenario_id: int = 1,
+    generator_p_mw: float = 40.0,
+) -> _GeneratorOperatingPointState:
+    bus = adapter.bus_df[
+        adapter.bus_df["scenario"] == scenario_id
+    ].sort_values("bus").reset_index(drop=True)
+    branch = adapter.branch_df[
+        adapter.branch_df["scenario"] == scenario_id
+    ].sort_values("idx").reset_index(drop=True)
+    return _GeneratorOperatingPointState(
+        scenario_id=scenario_id,
+        load_scenario_idx=0.0,
+        bus_features=bus[BUS_FEATURE_COLUMNS].to_numpy(dtype=np.float32),
+        branch_features=branch[BRANCH_FEATURE_COLUMNS].to_numpy(dtype=np.float32),
+        edge_index=np.asarray([[0], [1]], dtype=np.int64),
+        branch_ids=branch["idx"].to_numpy(dtype=np.int64),
+        branch_status=branch["br_status"].to_numpy(dtype=np.float32),
         metrics={},
         outaged_branch_ids=[],
-        bus_ids=np.array([100, 200], dtype=np.int64),
+        bus_ids=bus["bus"].to_numpy(dtype=np.int64),
+        generator_ids=np.asarray([0], dtype=np.int64),
+        generator_p_mw=np.asarray([generator_p_mw], dtype=np.float64),
+        generator_q_mvar=np.asarray([5.0], dtype=np.float64),
+        generator_status=np.asarray([1.0], dtype=np.float64),
     )
 
 
-def _switch_off(branch_id: int, branch_pos: int) -> GridFMAction:
+def _switch_off() -> GridFMAction:
     return GridFMAction(
-        action_id=1 + branch_pos,
+        action_id=1,
         action_type="switch_off_branch",
-        branch_id=branch_id,
-        branch_pos=branch_pos,
+        branch_id=7,
+        branch_pos=0,
     )
 
 
-def _switch_on(branch_id: int, branch_pos: int) -> GridFMAction:
-    return GridFMAction(
-        action_id=1 + branch_pos,
-        action_type="switch_on_branch",
-        branch_id=branch_id,
-        branch_pos=branch_pos,
+def _install_deterministic_solver(backend, monkeypatch):
+    solve_inputs: list[dict[str, np.ndarray]] = []
+    state_inputs: list[dict[str, np.ndarray]] = []
+
+    def solve(ppc, *, context):
+        del context
+        result = {
+            "version": "2",
+            "baseMVA": float(ppc["baseMVA"]),
+            "bus": np.asarray(ppc["bus"], dtype=np.float64).copy(),
+            "branch": np.pad(
+                np.asarray(ppc["branch"], dtype=np.float64),
+                ((0, 0), (0, 4)),
+            ),
+            "gen": np.asarray(ppc["gen"], dtype=np.float64).copy(),
+        }
+        result["bus"][:, VM] = [1.01, 0.99]
+        solve_inputs.append(
+            {
+                "bus": np.asarray(ppc["bus"]).copy(),
+                "branch": np.asarray(ppc["branch"]).copy(),
+                "gen": np.asarray(ppc["gen"]).copy(),
+            }
+        )
+        return result, {"marker": 1.0}
+
+    def build_state(*, state, result_ppc, frames, metrics):
+        del frames, metrics
+        state_inputs.append(
+            {
+                "bus": np.asarray(result_ppc["bus"]).copy(),
+                "branch": np.asarray(result_ppc["branch"]).copy(),
+                "gen": np.asarray(result_ppc["gen"]).copy(),
+            }
+        )
+        branch_features = state.branch_features.copy()
+        branch_features[:, BRANCH_FEATURE_COLUMNS.index("br_status")] = 0.0
+        return replace(
+            state,
+            branch_features=branch_features,
+            branch_status=np.asarray([0.0], dtype=np.float32),
+            outaged_branch_ids=[7],
+        )
+
+    monkeypatch.setattr(backend, "_solve_ppc", solve)
+    monkeypatch.setattr(backend, "_state_from_solved_ppc", build_state)
+    return solve_inputs, state_inputs
+
+
+def test_exact_cache_hit_skips_solver_but_uses_same_state_build_path(
+    monkeypatch,
+) -> None:
+    adapter = _adapter()
+    backend = GridFMPowerFlowBackend(
+        adapter=adapter,
+        enable_cache=True,
+        exact_cache_max_bytes=1024 * 1024,
+    )
+    solve_inputs, state_inputs = _install_deterministic_solver(
+        backend,
+        monkeypatch,
+    )
+    state = _state(adapter)
+
+    first = backend.run_power_flow_from_state(state, action=_switch_off())
+    second = backend.run_power_flow_from_state(state, action=_switch_off())
+
+    assert first.success and second.success
+    assert len(solve_inputs) == 1
+    assert len(state_inputs) == 2
+    np.testing.assert_array_equal(state_inputs[0]["bus"], state_inputs[1]["bus"])
+    np.testing.assert_array_equal(
+        state_inputs[0]["branch"], state_inputs[1]["branch"]
+    )
+    np.testing.assert_array_equal(state_inputs[0]["gen"], state_inputs[1]["gen"])
+    np.testing.assert_array_equal(
+        first.next_state.branch_status,
+        second.next_state.branch_status,
     )
 
+    info = backend.cache_info()
+    assert info["hits"] == 1
+    assert info["misses"] == 1
+    assert info["bytes"] <= info["max_bytes"]
 
-def _with_topology(
-    state: GridFMState,
-    branch_status: tuple[int, int],
-) -> GridFMState:
-    status = np.asarray(branch_status, dtype=np.float32)
-    branch_features = state.branch_features.copy()
-    branch_features[:, BRANCH_FEATURE_COLUMNS.index("br_status")] = status
-    return replace(
-        state,
-        branch_features=branch_features,
-        branch_status=status,
-        outaged_branch_ids=[
-            int(branch_id)
-            for branch_id, active in zip(state.branch_ids, status)
-            if active <= 0.0
-        ],
+
+def test_cache_disabled_runs_identical_problem_every_time(monkeypatch) -> None:
+    adapter = _adapter()
+    backend = GridFMPowerFlowBackend(adapter=adapter, enable_cache=False)
+    solve_inputs, state_inputs = _install_deterministic_solver(
+        backend,
+        monkeypatch,
+    )
+    state = _state(adapter)
+
+    first = backend.run_power_flow_from_state(state, action=_switch_off())
+    second = backend.run_power_flow_from_state(state, action=_switch_off())
+
+    assert first.success and second.success
+    assert len(solve_inputs) == 2
+    assert len(state_inputs) == 2
+    np.testing.assert_array_equal(solve_inputs[0]["bus"], solve_inputs[1]["bus"])
+    np.testing.assert_array_equal(
+        solve_inputs[0]["branch"], solve_inputs[1]["branch"]
+    )
+    np.testing.assert_array_equal(solve_inputs[0]["gen"], solve_inputs[1]["gen"])
+    assert backend.cache_info()["hits"] == 0
+    assert backend.cache_info()["misses"] == 0
+
+
+def test_tiny_generator_change_is_an_exact_cache_miss(monkeypatch) -> None:
+    adapter = _adapter()
+    backend = GridFMPowerFlowBackend(
+        adapter=adapter,
+        enable_cache=True,
+        exact_cache_max_bytes=1024 * 1024,
+    )
+    solve_inputs, _state_inputs = _install_deterministic_solver(
+        backend,
+        monkeypatch,
     )
 
+    first = _state(adapter, generator_p_mw=40.0)
+    changed = _state(adapter, generator_p_mw=40.0 + 1e-7)
+    backend.run_power_flow_from_state(first, action=_switch_off())
+    backend.run_power_flow_from_state(changed, action=_switch_off())
 
-def _changed_feature(
-    state: GridFMState,
-    feature_group: str,
-    feature_name: str,
-) -> GridFMState:
-    if feature_group == "bus":
-        bus_features = state.bus_features.copy()
-        bus_features[0, BUS_FEATURE_COLUMNS.index(feature_name)] += 1.0
-        return replace(state, bus_features=bus_features)
-
-    branch_features = state.branch_features.copy()
-    branch_features[0, BRANCH_FEATURE_COLUMNS.index(feature_name)] += 1.0
-    return replace(state, branch_features=branch_features)
+    assert len(solve_inputs) == 2
+    assert backend.cache_info()["hits"] == 0
+    assert backend.cache_info()["misses"] == 2
 
 
-def _core_backend() -> CoreGridFMPowerFlowBackend:
-    return CoreGridFMPowerFlowBackend(
-        adapter=object(),  # type: ignore[arg-type]
-        enable_cache=False,
+def test_identical_physical_problem_reuses_result_across_scenario_ids(
+    monkeypatch,
+) -> None:
+    adapter = _adapter()
+    backend = GridFMPowerFlowBackend(
+        adapter=adapter,
+        enable_cache=True,
+        exact_cache_max_bytes=1024 * 1024,
     )
-
-
-def test_public_and_core_backends_share_cache_key_contract():
-    state = _state()
-    action = _switch_off(20, 1)
-    core = _core_backend()
-    public = GridFMPowerFlowBackend(
-        adapter=object(),  # type: ignore[arg-type]
-        enable_cache=False,
-    )
-
-    assert public._make_cache_key_from_state(
-        state,
-        action=action,
-    ) == core._make_cache_key_from_state(
-        state,
-        action=action,
-    )
-    assert public._make_topology_cache_key_from_state(
-        state,
-        action=action,
-    ) == core._make_topology_cache_key_from_state(
-        state,
-        action=action,
-    )
-
-
-@pytest.mark.parametrize(
-    ("feature_group", "feature_name"),
-    [
-        ("bus", "Pd"),
-        ("bus", "Pg"),
-        ("bus", "Vm"),
-        ("branch", "pf"),
-    ],
-)
-def test_physical_feature_changes_power_flow_cache_key(
-    feature_group: str,
-    feature_name: str,
-):
-    state = _state()
-    changed_state = _changed_feature(
-        state,
-        feature_group,
-        feature_name,
-    )
-    backend = _core_backend()
-    action = _switch_off(20, 1)
-
-    assert backend._make_cache_key_from_state(
-        state,
-        action=action,
-    ) != backend._make_cache_key_from_state(
-        changed_state,
-        action=action,
-    )
-
-
-def test_action_changes_power_flow_cache_key():
-    state = _state()
-    backend = _core_backend()
-
-    first_key = backend._make_cache_key_from_state(
-        state,
-        action=_switch_off(10, 0),
-    )
-    second_key = backend._make_cache_key_from_state(
-        state,
-        action=_switch_off(20, 1),
-    )
-
-    assert first_key != second_key
-
-
-def test_legacy_branch_id_matches_equivalent_action_key():
-    state = _state()
-    backend = _core_backend()
-
-    action_key = backend._make_cache_key_from_state(
-        state,
-        action=_switch_off(20, 1),
-    )
-    legacy_key = backend._make_cache_key_from_state(
-        state,
-        switched_off_branch_id=20,
-    )
-
-    assert action_key == legacy_key
-
-
-def test_physics_config_changes_power_flow_cache_key():
-    state = _state()
-    backend = _core_backend()
-    action = _switch_off(20, 1)
-
-    original_key = backend._make_cache_key_from_state(
-        state,
-        action=action,
-    )
-    backend.physics_config = replace(
-        backend.physics_config,
-        max_iterations=31,
-    )
-
-    assert original_key != backend._make_cache_key_from_state(
-        state,
-        action=action,
-    )
-
-
-def test_topology_cache_key_reuses_equivalent_open_order():
-    backend = _core_backend()
-
-    after_10 = _with_topology(_state(), (0, 1))
-    after_10 = _changed_feature(after_10, "bus", "Vm")
-    after_10 = _changed_feature(after_10, "branch", "pf")
-
-    after_20 = _with_topology(_state(), (1, 0))
-    after_20 = _changed_feature(after_20, "bus", "Va")
-    after_20 = _changed_feature(after_20, "branch", "qf")
-
-    first_key = backend._make_topology_cache_key_from_state(
-        after_10,
-        action=_switch_off(20, 1),
-    )
-    second_key = backend._make_topology_cache_key_from_state(
-        after_20,
-        action=_switch_off(10, 0),
-    )
-
-    assert first_key == second_key
-    assert first_key[-1] == ((10, 0), (20, 0))
-
-
-def test_topology_cache_key_reuses_equivalent_close_order():
-    backend = _core_backend()
-
-    branch_10_open = _with_topology(_state(), (0, 1))
-    branch_20_open = _with_topology(_state(), (1, 0))
-
-    first_key = backend._make_topology_cache_key_from_state(
-        branch_10_open,
-        action=_switch_on(10, 0),
-    )
-    second_key = backend._make_topology_cache_key_from_state(
-        branch_20_open,
-        action=_switch_on(20, 1),
-    )
-
-    assert first_key == second_key
-    assert first_key[-1] == ((10, 1), (20, 1))
-
-
-@pytest.mark.parametrize(
-    ("feature_group", "feature_name"),
-    [
-        ("bus", "Vm"),
-        ("bus", "Va"),
-        ("bus", "Pg"),
-        ("bus", "Qg"),
-        ("branch", "pf"),
-        ("branch", "qf"),
-        ("branch", "pt"),
-        ("branch", "qt"),
-        ("branch", "loading_percent"),
-    ],
-)
-def test_solved_outputs_do_not_split_topology_cache(
-    feature_group: str,
-    feature_name: str,
-):
-    state = _state()
-    changed_state = _changed_feature(state, feature_group, feature_name)
-    backend = _core_backend()
-    action = _switch_off(20, 1)
-
-    assert backend._make_topology_cache_key_from_state(
-        state,
-        action=action,
-    ) == backend._make_topology_cache_key_from_state(
-        changed_state,
-        action=action,
-    )
-
-
-@pytest.mark.parametrize(
-    ("feature_group", "feature_name"),
-    [
-        ("bus", "Pd"),
-        ("bus", "Qd"),
-        ("branch", "r"),
-        ("branch", "x"),
-        ("branch", "tap"),
-        ("branch", "rate_a"),
-    ],
-)
-def test_power_flow_inputs_split_topology_cache(
-    feature_group: str,
-    feature_name: str,
-):
-    state = _state()
-    changed_state = _changed_feature(state, feature_group, feature_name)
-    backend = _core_backend()
-    action = _switch_off(20, 1)
-
-    assert backend._make_topology_cache_key_from_state(
-        state,
-        action=action,
-    ) != backend._make_topology_cache_key_from_state(
-        changed_state,
-        action=action,
-    )
-
-
-def test_scenario_and_physics_contract_split_topology_cache():
-    state = _state()
-    action = _switch_off(20, 1)
-    backend = _core_backend()
-
-    original_key = backend._make_topology_cache_key_from_state(
-        state,
-        action=action,
-    )
-    other_scenario_key = backend._make_topology_cache_key_from_state(
-        replace(state, scenario_id=8),
-        action=action,
-    )
-
-    backend.physics_config = replace(
-        backend.physics_config,
-        max_iterations=31,
-    )
-    other_physics_key = backend._make_topology_cache_key_from_state(
-        state,
-        action=action,
-    )
-
-    assert original_key != other_scenario_key
-    assert original_key != other_physics_key
-
-
-def test_run_power_flow_cache_isolated_by_source_state():
-    state = _state()
-    changed_state = _changed_feature(state, "bus", "Pd")
-    action = _switch_off(20, 1)
-
-    backend = object.__new__(CoreGridFMPowerFlowBackend)
-    backend.adapter = object()
-    backend.physics_config = PhysicsConfig()
-    backend.enable_cache = True
-    backend.store_raw_result = False
-    backend._cache = {}
-    backend.cache_hits = 0
-    backend.cache_misses = 0
-
-    solve_calls: list[dict[str, object]] = []
-
-    backend._require_usable_next_state = lambda state: None
-    backend._build_ppc_from_state = lambda **kwargs: ({}, {})
-
-    def solve_ppc(
-        ppc: dict[str, object],
-        *,
-        context: str,
-    ) -> tuple[dict[str, object], dict[str, object]]:
-        solve_calls.append(ppc)
-        return {}, {}
-
-    backend._solve_ppc = solve_ppc
-    backend._build_state_from_pypower_result_fast = (
-        lambda **kwargs: kwargs["previous_state"]
+    solve_inputs, state_inputs = _install_deterministic_solver(
+        backend,
+        monkeypatch,
     )
 
     first = backend.run_power_flow_from_state(
-        state,
-        action=action,
-    )
-    repeated = backend.run_power_flow_from_state(
-        state,
-        action=action,
-    )
-    changed = backend.run_power_flow_from_state(
-        changed_state,
-        action=action,
-    )
-
-    assert first.success
-    assert repeated.success
-    assert changed.success
-    assert len(solve_calls) == 2
-    assert backend.cache_hits == 1
-    assert backend.cache_misses == 2
-    assert len(backend._cache) == 2
-
-
-def test_equivalent_topologies_reuse_one_power_flow_solve():
-    after_10 = _with_topology(_state(), (0, 1))
-    after_10 = _changed_feature(after_10, "bus", "Vm")
-    after_20 = _with_topology(_state(), (1, 0))
-    after_20 = _changed_feature(after_20, "branch", "pf")
-    both_open = _with_topology(_state(), (0, 0))
-
-    backend = object.__new__(CoreGridFMPowerFlowBackend)
-    backend.adapter = object()
-    backend.physics_config = PhysicsConfig()
-    backend.enable_cache = True
-    backend.store_raw_result = False
-    backend._cache = {}
-    backend.cache_hits = 0
-    backend.cache_misses = 0
-
-    solve_calls: list[dict[str, object]] = []
-    backend._require_usable_next_state = lambda state: None
-    backend._build_ppc_from_state = lambda **kwargs: ({}, {})
-
-    def solve_ppc(
-        ppc: dict[str, object],
-        *,
-        context: str,
-    ) -> tuple[dict[str, object], dict[str, object]]:
-        solve_calls.append(ppc)
-        return {}, {}
-
-    backend._solve_ppc = solve_ppc
-    backend._build_state_from_pypower_result_fast = lambda **kwargs: both_open
-
-    first = backend.run_power_flow_from_state(
-        after_10,
-        action=_switch_off(20, 1),
+        _state(adapter, scenario_id=1),
+        action=_switch_off(),
     )
     second = backend.run_power_flow_from_state(
-        after_20,
-        action=_switch_off(10, 0),
+        _state(adapter, scenario_id=2),
+        action=_switch_off(),
     )
 
-    assert first.success
-    assert second.success
-    assert second.next_state is both_open
-    assert len(solve_calls) == 1
-    assert backend.cache_hits == 1
-    assert backend.cache_misses == 1
-    assert len(backend._cache) == 1
+    assert first.success and second.success
+    assert first.scenario_id == 1
+    assert second.scenario_id == 2
+    assert len(solve_inputs) == 1
+    assert len(state_inputs) == 2
+    assert backend.cache_info()["hits"] == 1
 
 
-def test_generator_voltage_control_uses_scenario_setpoint_from_state():
-    backend = object.__new__(CoreGridFMPowerFlowBackend)
-    backend.physics_config = PhysicsConfig()
-    backend.adapter = SimpleNamespace(
-        bus_df=pd.DataFrame(
-            {
-                "scenario": [7, 7],
-                "bus": [100, 200],
-                "Vm": [1.03, 0.98],
-            }
-        ),
-        gen_df=pd.DataFrame(
-            {
-                "scenario": [7],
-                "idx": [0],
-                "bus": [100],
-            }
-        ),
+def test_public_backend_has_no_approximate_reuse_state() -> None:
+    backend = GridFMPowerFlowBackend(
+        adapter=_adapter(),
+        enable_cache=True,
     )
 
-    current_bus_df = pd.DataFrame(
-        {
-            "bus": [100, 200],
-            "Vm": [1.15, 0.91],
-        }
-    )
-    current_branch_df = pd.DataFrame(
-        {
-            "idx": [10, 20],
-            "br_status": [1.0, 1.0],
-        }
-    )
-
-    seen: dict[str, list[float]] = {}
-    backend._state_to_bus_df = lambda state: current_bus_df.copy()
-    backend._state_to_branch_df = lambda state: current_branch_df.copy()
-    backend._build_bus_matrix = lambda frame: np.zeros((len(frame), 13))
-    backend._build_branch_matrix = lambda frame: np.zeros((len(frame), 13))
-
-    def build_gen_matrix(gen_df, bus_df):
-        seen["vm"] = bus_df["Vm"].astype(float).tolist()
-        return np.zeros((len(gen_df), 21))
-
-    backend._build_gen_matrix = build_gen_matrix
-    backend._build_ppc_from_state(_state())
-
-    assert seen["vm"] == [1.03, 0.98]
+    assert not hasattr(backend, "_topology_cache")
+    assert not hasattr(backend, "_pending_warm_start_state")
+    assert not hasattr(backend, "tolerant_cache_hits")
+    assert not hasattr(backend, "warm_start_hits")
