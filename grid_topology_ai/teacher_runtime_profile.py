@@ -142,16 +142,21 @@ def cache_snapshot(backend: Any, action_space: Any) -> dict[str, Any]:
 
     backend_caches = _cache_containers(backend)
     action_caches = _cache_containers(action_space)
+
     backend_owned = backend_info.get("bytes")
     if not isinstance(backend_owned, (int, float)):
         backend_owned = estimate_object_bytes(tuple(backend_caches.values()))
+
+    action_owned = action_info.get("bytes")
+    if not isinstance(action_owned, (int, float)):
+        action_owned = estimate_object_bytes(tuple(action_caches.values()))
 
     return {
         "backend": backend_info,
         "action_space": action_info,
         "estimated_bytes": {
             "backend": int(backend_owned),
-            "action_space": estimate_object_bytes(tuple(action_caches.values())),
+            "action_space": int(action_owned),
         },
         "containers": {
             "backend": {
