@@ -8,12 +8,11 @@ from typing import Any, Mapping
 
 CHECKPOINT_CONFIG_SCHEMA_VERSION = 1
 
-# These settings control execution resources only. They are intentionally kept
-# out of teacher semantic identity. ``disable_cache`` is not in this set yet:
-# the legacy cache still contains tolerant/warm reuse and therefore cannot be
-# declared physically transparent until that implementation is removed.
+# These settings control execution resources only. Exact PF caching is physically
+# transparent, so enabling or disabling it cannot change teacher semantics.
 RUNTIME_TASK_CONFIG_FIELDS = frozenset(
     {
+        "disable_cache",
         "clear_caches_every",
         "max_worker_memory_mb",
         "print_memory_events",
@@ -92,9 +91,17 @@ def checkpoint_config_payload(
         raise TypeError("checkpoint config must be a mapping.")
 
     if isinstance(config.get("semantic_task_config"), Mapping):
-        semantic = dict(config["semantic_task_config"])
+        stored_semantic = dict(config["semantic_task_config"])
         runtime_value = config.get("runtime_task_config", {})
-        runtime = dict(runtime_value) if isinstance(runtime_value, Mapping) else {}
+        stored_runtime = (
+            dict(runtime_value) if isinstance(runtime_value, Mapping) else {}
+        )
+        # Re-split the stored sections with the current classification. This
+        # lets a setting become runtime-only once its implementation is proven
+        # physically transparent without invalidating an existing checkpoint.
+        semantic, runtime = split_teacher_task_config(
+            {**stored_semantic, **stored_runtime}
+        )
     else:
         task_config = config.get("task_config")
         if not isinstance(task_config, Mapping):
@@ -214,6 +221,9 @@ def _run_identity_task_config(
             if isinstance(legacy, dict):
                 return dict(legacy)
 
+            # A split checkpoint has already emitted rows using the semantic
+            # section that was stored at creation time. Preserve that exact
+            # historical identity even if a field is reclassified later.
             semantic = payload.get("semantic_task_config")
             if isinstance(semantic, dict):
                 return dict(semantic)

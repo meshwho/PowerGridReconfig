@@ -1,0 +1,197 @@
+from __future__ import annotations
+
+import hashlib
+from dataclasses import dataclass
+from typing import Mapping
+
+import numpy as np
+
+from grid_topology_ai.cache.byte_lru import ByteLRUCache
+from grid_topology_ai.power_flow_errors import PowerFlowFailureKind
+from grid_topology_ai.power_flow_problem import CanonicalPowerFlowProblem
+
+
+EXACT_POWER_FLOW_CACHE_SCHEMA_VERSION = 1
+EXACT_POWER_FLOW_SOLVER_CONTRACT = "pypower-ac-v1"
+DEFAULT_EXACT_POWER_FLOW_CACHE_BYTES = 64 * 1024 * 1024
+_ENTRY_OVERHEAD_BYTES = 128
+
+
+def _hash_array(digest: "hashlib._Hash", values: np.ndarray) -> None:
+    array = np.ascontiguousarray(values, dtype=np.float64)
+    digest.update(np.asarray(array.shape, dtype=np.int64).tobytes())
+    digest.update(array.tobytes())
+
+
+def exact_power_flow_fingerprint(
+    problem: CanonicalPowerFlowProblem,
+    *,
+    physics_fingerprint: str,
+) -> bytes:
+    """Return the exact identity of one canonical AC solver invocation."""
+
+    digest = hashlib.sha256()
+    digest.update(
+        f"schema:{EXACT_POWER_FLOW_CACHE_SCHEMA_VERSION};".encode("ascii")
+    )
+    digest.update(EXACT_POWER_FLOW_SOLVER_CONTRACT.encode("ascii"))
+    digest.update(b"\0")
+    digest.update(str(physics_fingerprint).encode("ascii"))
+    digest.update(b"\0")
+    digest.update(np.asarray([float(problem.base_mva)], dtype=np.float64).tobytes())
+    _hash_array(digest, problem.bus)
+    _hash_array(digest, problem.branch)
+    _hash_array(digest, problem.gen)
+    return digest.digest()
+
+
+def _readonly_float64_copy(values: np.ndarray) -> np.ndarray:
+    result = np.ascontiguousarray(values, dtype=np.float64).copy()
+    result.setflags(write=False)
+    return result
+
+
+@dataclass(frozen=True, slots=True)
+class CachedPowerFlowSuccess:
+    bus: np.ndarray
+    branch: np.ndarray
+    gen: np.ndarray
+
+    @classmethod
+    def from_result_ppc(
+        cls,
+        result_ppc: Mapping[str, object],
+    ) -> "CachedPowerFlowSuccess":
+        return cls(
+            bus=_readonly_float64_copy(np.asarray(result_ppc["bus"])),
+            branch=_readonly_float64_copy(np.asarray(result_ppc["branch"])),
+            gen=_readonly_float64_copy(np.asarray(result_ppc["gen"])),
+        )
+
+    @property
+    def owned_bytes(self) -> int:
+        return int(self.bus.nbytes + self.branch.nbytes + self.gen.nbytes)
+
+    def to_ppc(
+        self,
+        *,
+        base_mva: float,
+        copy_arrays: bool,
+    ) -> dict[str, object]:
+        if copy_arrays:
+            bus = self.bus.copy()
+            branch = self.branch.copy()
+            gen = self.gen.copy()
+        else:
+            bus = self.bus
+            branch = self.branch
+            gen = self.gen
+
+        return {
+            "version": "2",
+            "baseMVA": float(base_mva),
+            "bus": bus,
+            "branch": branch,
+            "gen": gen,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class CachedPowerFlowFailure:
+    failure_kind: PowerFlowFailureKind
+    message: str
+
+    @property
+    def owned_bytes(self) -> int:
+        return 64 + len(self.message.encode("utf-8"))
+
+
+ExactPowerFlowOutcome = CachedPowerFlowSuccess | CachedPowerFlowFailure
+
+
+class ExactPowerFlowCache:
+    """Byte-bounded cache for physically identical AC power-flow problems only."""
+
+    def __init__(self, max_bytes: int = DEFAULT_EXACT_POWER_FLOW_CACHE_BYTES) -> None:
+        self._cache: ByteLRUCache[bytes, ExactPowerFlowOutcome] = ByteLRUCache(
+            max_bytes=max_bytes
+        )
+        self.hits = 0
+        self.misses = 0
+        self.negative_hits = 0
+
+    @property
+    def max_bytes(self) -> int:
+        return int(self._cache.max_bytes)
+
+    def lookup(
+        self,
+        problem: CanonicalPowerFlowProblem,
+        *,
+        physics_fingerprint: str,
+    ) -> tuple[bytes, ExactPowerFlowOutcome | None]:
+        key = exact_power_flow_fingerprint(
+            problem,
+            physics_fingerprint=physics_fingerprint,
+        )
+        outcome = self._cache.get(key)
+        if outcome is None:
+            self.misses += 1
+            return key, None
+
+        self.hits += 1
+        if isinstance(outcome, CachedPowerFlowFailure):
+            self.negative_hits += 1
+        return key, outcome
+
+    def store_success(
+        self,
+        key: bytes,
+        result_ppc: Mapping[str, object],
+    ) -> bool:
+        outcome = CachedPowerFlowSuccess.from_result_ppc(result_ppc)
+        return self._cache.put(
+            key,
+            outcome,
+            size_bytes=(
+                outcome.owned_bytes + len(key) + _ENTRY_OVERHEAD_BYTES
+            ),
+        )
+
+    def store_not_converged(self, key: bytes, message: str) -> bool:
+        outcome = CachedPowerFlowFailure(
+            failure_kind=PowerFlowFailureKind.NOT_CONVERGED,
+            message=str(message),
+        )
+        return self._cache.put(
+            key,
+            outcome,
+            size_bytes=(
+                outcome.owned_bytes + len(key) + _ENTRY_OVERHEAD_BYTES
+            ),
+        )
+
+    def discard(self, key: bytes) -> None:
+        self._cache.discard(key)
+
+    def clear(self, *, reset_counters: bool = True) -> None:
+        self._cache.clear(reset_evictions=reset_counters)
+        if reset_counters:
+            self.reset_counters()
+
+    def reset_counters(self) -> None:
+        self.hits = 0
+        self.misses = 0
+        self.negative_hits = 0
+
+    def info(self) -> dict[str, int]:
+        info = self._cache.info()
+        return {
+            "size": int(info.entries),
+            "bytes": int(info.bytes),
+            "max_bytes": int(info.max_bytes),
+            "hits": int(self.hits),
+            "misses": int(self.misses),
+            "negative_hits": int(self.negative_hits),
+            "evictions": int(info.evictions),
+        }

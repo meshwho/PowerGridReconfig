@@ -1,18 +1,23 @@
 from __future__ import annotations
 
-import hashlib
 from dataclasses import dataclass, replace
 from typing import Any
 
 import numpy as np
 import pandas as pd
 from pypower.idx_brch import BR_STATUS, RATE_A
-from pypower.idx_bus import BUS_I, VA, VM
+from pypower.idx_bus import VM
 from pypower.idx_gen import GEN_STATUS, PG, QG
 
 from grid_topology_ai._pypower_backend_core import *  # noqa: F401,F403
 from grid_topology_ai._pypower_backend_core import (
     GridFMPowerFlowBackend as _CoreGridFMPowerFlowBackend,
+)
+from grid_topology_ai.cache import (
+    DEFAULT_EXACT_POWER_FLOW_CACHE_BYTES,
+    CachedPowerFlowFailure,
+    CachedPowerFlowSuccess,
+    ExactPowerFlowCache,
 )
 from grid_topology_ai.config.physics import (
     DEFAULT_PHYSICS_CONFIG,
@@ -31,7 +36,15 @@ from grid_topology_ai.physical_constraints import (
 )
 from grid_topology_ai.power_flow_errors import (
     InvalidPhysicalState,
+    PowerFlowFailureKind,
     PowerFlowNotConverged,
+)
+from grid_topology_ai.power_flow_problem import (
+    CanonicalPowerFlowProblem,
+    GeneratorOperatingPoint,
+    ScenarioPowerFlowTemplate,
+    build_power_flow_problem_from_state,
+    build_scenario_power_flow_template,
 )
 from grid_topology_ai.power_flow_state_builder import PowerFlowStateBuilder
 from grid_topology_ai.pypower_compat import (
@@ -50,7 +63,6 @@ _GENERATOR_COLUMNS = (
     "min_q_mvar",
     "max_q_mvar",
 )
-_TOPOLOGY_CACHE_MAX_ENTRIES = 8
 
 
 @dataclass(frozen=True)
@@ -63,23 +75,12 @@ class _GeneratorOperatingPointState(GridFMState):
     generator_status: np.ndarray | None = None
 
 
-@dataclass(frozen=True)
-class _TopologyCacheEntry:
-    """One solved target topology together with its source generator state."""
-
-    generator_ids: np.ndarray
-    generator_p_mw: np.ndarray
-    generator_q_mvar: np.ndarray
-    generator_status: np.ndarray
-    next_state: GridFMState
-
-
 # Preserve the public module path used by pickled results and type displays.
 GridFMPowerFlowResult.__module__ = __name__
 
 
 class GridFMPowerFlowBackend(_CoreGridFMPowerFlowBackend):
-    """PYPOWER backend with canonical initial and fast transition builders."""
+    """PYPOWER backend with a physically transparent exact-result cache."""
 
     def __init__(
         self,
@@ -87,6 +88,7 @@ class GridFMPowerFlowBackend(_CoreGridFMPowerFlowBackend):
         physics_config: PhysicsConfig = DEFAULT_PHYSICS_CONFIG,
         enable_cache: bool = True,
         store_raw_result: bool = False,
+        exact_cache_max_bytes: int = DEFAULT_EXACT_POWER_FLOW_CACHE_BYTES,
     ) -> None:
         self._require_matching_physics_contract(adapter, physics_config)
         super().__init__(
@@ -96,33 +98,27 @@ class GridFMPowerFlowBackend(_CoreGridFMPowerFlowBackend):
             store_raw_result=store_raw_result,
         )
         self._state_builder = PowerFlowStateBuilder(self.physics_config)
+        self._exact_power_flow_cache = ExactPowerFlowCache(
+            max_bytes=int(exact_cache_max_bytes)
+        )
+        self._active_problem_template: ScenarioPowerFlowTemplate | None = None
+        self._active_problem_frames: dict[str, pd.DataFrame] | None = None
         self.stock_runpf_calls = 0
         self.q_limit_resolves = 0
-        self.exact_cache_hits = 0
-        self.tolerant_cache_hits = 0
-        self.warm_start_hits = 0
-        self.cold_start_misses = 0
-        self._topology_cache: dict[tuple, list[_TopologyCacheEntry]] = {}
-        self._pending_warm_start_state: GridFMState | None = None
-        self._pending_warm_start_applied = False
+
+    def cache_info(self) -> dict[str, object]:
+        info: dict[str, object] = dict(self._exact_power_flow_cache.info())
+        info["enabled"] = bool(self.enable_cache)
+        return info
 
     def performance_info(self) -> dict[str, object]:
-        """Return backend-local cache and PYPOWER workload counters."""
+        """Return exact-cache and PYPOWER workload counters."""
 
         info = dict(self.cache_info())
         misses = int(info["misses"])
         stock_calls = int(self.stock_runpf_calls)
-
         info.update(
             {
-                "exact_cache_hits": int(self.exact_cache_hits),
-                "tolerant_cache_hits": int(self.tolerant_cache_hits),
-                "warm_start_hits": int(self.warm_start_hits),
-                "cold_start_misses": int(self.cold_start_misses),
-                "topology_cache_buckets": int(len(self._topology_cache)),
-                "topology_cache_entries": int(
-                    sum(len(entries) for entries in self._topology_cache.values())
-                ),
                 "stock_runpf_calls": stock_calls,
                 "q_limit_resolves": int(self.q_limit_resolves),
                 "solves_per_cache_miss": (
@@ -135,28 +131,16 @@ class GridFMPowerFlowBackend(_CoreGridFMPowerFlowBackend):
         return info
 
     def reset_performance_counters(self) -> None:
-        """Reset counters without discarding cached power-flow states."""
+        """Reset counters without discarding exact cached solutions."""
 
-        self.cache_hits = 0
-        self.cache_misses = 0
+        self._exact_power_flow_cache.reset_counters()
         self.stock_runpf_calls = 0
         self.q_limit_resolves = 0
-        self.exact_cache_hits = 0
-        self.tolerant_cache_hits = 0
-        self.warm_start_hits = 0
-        self.cold_start_misses = 0
 
     def clear_cache(self) -> None:
-        """Clear exact and topology-equivalent transition caches."""
+        """Discard exact cached solutions while keeping scenario templates."""
 
-        super().clear_cache()
-        self._topology_cache.clear()
-        self._pending_warm_start_state = None
-        self._pending_warm_start_applied = False
-        self.exact_cache_hits = 0
-        self.tolerant_cache_hits = 0
-        self.warm_start_hits = 0
-        self.cold_start_misses = 0
+        self._exact_power_flow_cache.clear(reset_counters=True)
 
     @staticmethod
     def _require_matching_physics_contract(
@@ -186,45 +170,15 @@ class GridFMPowerFlowBackend(_CoreGridFMPowerFlowBackend):
     def _generator_operating_point(
         state: GridFMState,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray] | None:
-        values = (
-            getattr(state, "generator_ids", None),
-            getattr(state, "generator_p_mw", None),
-            getattr(state, "generator_q_mvar", None),
-            getattr(state, "generator_status", None),
-        )
-
-        if all(value is None for value in values):
+        operating_point = GeneratorOperatingPoint.from_state(state)
+        if operating_point is None:
             return None
-        if any(value is None for value in values):
-            raise InvalidPhysicalState(
-                "Generator operating point is incomplete in GridFMState."
-            )
-
-        ids = np.asarray(values[0], dtype=np.int64)
-        pg = np.asarray(values[1], dtype=np.float64)
-        qg = np.asarray(values[2], dtype=np.float64)
-        status = np.asarray(values[3], dtype=np.float64)
-
-        if ids.ndim != 1:
-            raise InvalidPhysicalState("Generator IDs must be one-dimensional.")
-        if any(array.shape != ids.shape for array in (pg, qg, status)):
-            raise InvalidPhysicalState(
-                "Generator operating-point arrays must have matching shapes."
-            )
-        if np.unique(ids).size != ids.size:
-            raise InvalidPhysicalState("Generator IDs must be unique.")
-        if not np.isfinite(pg).all() or not np.isfinite(qg).all():
-            raise InvalidPhysicalState(
-                "Generator operating point contains NaN or infinity."
-            )
-        if not np.isfinite(status).all() or np.any(
-            (status != 0.0) & (status != 1.0)
-        ):
-            raise InvalidPhysicalState(
-                "Generator status must contain only 0 or 1."
-            )
-
-        return ids, pg, qg, status
+        return (
+            operating_point.generator_ids,
+            operating_point.p_mw,
+            operating_point.q_mvar,
+            operating_point.status,
+        )
 
     @staticmethod
     def _with_generator_operating_point(
@@ -233,7 +187,7 @@ class GridFMPowerFlowBackend(_CoreGridFMPowerFlowBackend):
         result_ppc: dict[str, Any],
         original_frames: dict[str, pd.DataFrame],
     ) -> GridFMState:
-        gen_df = original_frames["gen"].sort_values("idx").reset_index(drop=True)
+        gen_df = original_frames["gen"]
         gen_result = np.asarray(result_ppc["gen"])
 
         if gen_result.ndim != 2 or gen_result.shape[0] != len(gen_df):
@@ -264,208 +218,58 @@ class GridFMPowerFlowBackend(_CoreGridFMPowerFlowBackend):
             ).copy(),
         )
 
-    def _power_flow_input_fingerprint(self, state: GridFMState) -> str:
-        fingerprint = super()._power_flow_input_fingerprint(state)
-        operating_point = self._generator_operating_point(state)
-
-        if operating_point is None:
-            return fingerprint
-
-        digest = hashlib.sha256(fingerprint.encode("ascii"))
-        for values in operating_point:
-            self._hash_array(digest, values)
-        return digest.hexdigest()
-
-    def _topology_bucket_key(
+    def _scenario_problem_resources(
         self,
-        state: GridFMState,
-        *,
-        action: GridFMAction | None = None,
-        switched_off_branch_id: int | None = None,
-    ) -> tuple:
-        """Return a topology key that intentionally excludes generator P/Q."""
+        scenario_id: int,
+    ) -> tuple[ScenarioPowerFlowTemplate, dict[str, pd.DataFrame]]:
+        scenario_id = int(scenario_id)
+        template = self._active_problem_template
+        frames = self._active_problem_frames
+        if (
+            template is not None
+            and frames is not None
+            and int(template.scenario_id) == scenario_id
+        ):
+            return template, frames
 
-        base_input_fingerprint = (
-            _CoreGridFMPowerFlowBackend._power_flow_input_fingerprint(self, state)
-        )
-        return (
-            self.physics_config.fingerprint(),
-            int(state.scenario_id),
-            base_input_fingerprint,
-            self._resulting_topology_signature(
-                state,
-                action=action,
-                switched_off_branch_id=switched_off_branch_id,
-            ),
-        )
+        bus_df = self.adapter.bus_df[
+            self.adapter.bus_df["scenario"] == scenario_id
+        ].sort_values("bus").reset_index(drop=True)
+        branch_df = self.adapter.branch_df[
+            self.adapter.branch_df["scenario"] == scenario_id
+        ].sort_values("idx").reset_index(drop=True)
+        gen_df = self.adapter.gen_df[
+            self.adapter.gen_df["scenario"] == scenario_id
+        ].sort_values("idx").reset_index(drop=True)
 
-    def _select_topology_entry(
-        self,
-        bucket_key: tuple,
-        state: GridFMState,
-    ) -> tuple[_TopologyCacheEntry | None, _TopologyCacheEntry | None]:
-        """Find a tolerant reuse first, otherwise the nearest warm-start state."""
-
-        operating_point = self._generator_operating_point(state)
-        if operating_point is None:
-            return None, None
-
-        ids, pg, qg, status = operating_point
-        entries = list(self._topology_cache.get(bucket_key, ()))
-        if not entries:
-            return None, None
-
-        p_tolerance = float(self.physics_config.generator_p_tolerance_mw)
-        q_tolerance = float(self.physics_config.generator_q_tolerance_mvar)
-        p_scale = max(p_tolerance, 1e-12)
-        q_scale = max(q_tolerance, 1e-12)
-
-        valid_entries: list[_TopologyCacheEntry] = []
-        tolerant_entry: _TopologyCacheEntry | None = None
-        warm_entry: _TopologyCacheEntry | None = None
-        warm_distance = float("inf")
-
-        for entry in entries:
-            try:
-                self._require_usable_next_state(entry.next_state)
-            except InvalidPhysicalState:
-                continue
-
-            valid_entries.append(entry)
-            if not np.array_equal(ids, entry.generator_ids):
-                continue
-
-            max_delta_p = float(np.max(np.abs(pg - entry.generator_p_mw)))
-            max_delta_q = float(np.max(np.abs(qg - entry.generator_q_mvar)))
-            same_status = np.array_equal(status, entry.generator_status)
-
-            if (
-                same_status
-                and max_delta_p <= p_tolerance
-                and max_delta_q <= q_tolerance
-            ):
-                tolerant_entry = entry
-                break
-
-            distance = max(max_delta_p / p_scale, max_delta_q / q_scale)
-            if not same_status:
-                distance += 1e12
-
-            if distance < warm_distance:
-                warm_distance = distance
-                warm_entry = entry
-
-        if len(valid_entries) != len(entries):
-            if valid_entries:
-                self._topology_cache[bucket_key] = valid_entries
-            else:
-                self._topology_cache.pop(bucket_key, None)
-
-        if tolerant_entry is not None:
-            return tolerant_entry, tolerant_entry
-        return None, warm_entry
-
-    def _remember_topology_result(
-        self,
-        bucket_key: tuple,
-        source_state: GridFMState,
-        next_state: GridFMState,
-    ) -> None:
-        operating_point = self._generator_operating_point(source_state)
-        if operating_point is None:
-            return
-
-        ids, pg, qg, status = operating_point
-        entry = _TopologyCacheEntry(
-            generator_ids=ids.copy(),
-            generator_p_mw=pg.copy(),
-            generator_q_mvar=qg.copy(),
-            generator_status=status.copy(),
-            next_state=next_state,
-        )
-
-        entries = list(self._topology_cache.get(bucket_key, ()))
-        for index, existing in enumerate(entries):
-            if (
-                np.array_equal(existing.generator_ids, entry.generator_ids)
-                and np.array_equal(existing.generator_p_mw, entry.generator_p_mw)
-                and np.array_equal(existing.generator_q_mvar, entry.generator_q_mvar)
-                and np.array_equal(existing.generator_status, entry.generator_status)
-            ):
-                entries[index] = entry
-                self._topology_cache[bucket_key] = entries
-                return
-
-        entries.append(entry)
-        if len(entries) > _TOPOLOGY_CACHE_MAX_ENTRIES:
-            entries = entries[-_TOPOLOGY_CACHE_MAX_ENTRIES:]
-        self._topology_cache[bucket_key] = entries
-
-    def _apply_pending_warm_start(self, ppc: dict[str, Any]) -> None:
-        warm_state = self._pending_warm_start_state
-        if warm_state is None:
-            return
-
-        bus = np.asarray(ppc["bus"])
-        warm_features = np.asarray(warm_state.bus_features)
-        if warm_features.ndim != 2 or bus.ndim != 2:
-            return
-
-        vm = np.asarray(
-            warm_features[:, BUS_FEATURE_COLUMNS.index("Vm")],
-            dtype=np.float64,
-        )
-        va = np.asarray(
-            warm_features[:, BUS_FEATURE_COLUMNS.index("Va")],
-            dtype=np.float64,
-        )
-        if not np.isfinite(vm).all() or not np.isfinite(va).all():
-            return
-
-        warm_bus_ids = getattr(warm_state, "bus_ids", None)
-        if warm_bus_ids is None:
-            if len(vm) != len(bus):
-                return
-            bus[:, VM] = vm
-            bus[:, VA] = va
-            self._pending_warm_start_applied = True
-            return
-
-        warm_bus_ids = np.asarray(warm_bus_ids, dtype=np.int64)
-        if len(warm_bus_ids) != len(vm):
-            return
-
-        by_id = {
-            int(bus_id): position
-            for position, bus_id in enumerate(warm_bus_ids)
-        }
-        ppc_bus_ids = np.rint(bus[:, BUS_I]).astype(np.int64)
-        try:
-            positions = np.asarray(
-                [by_id[int(bus_id)] for bus_id in ppc_bus_ids],
-                dtype=np.int64,
+        if bus_df.empty:
+            raise InvalidPhysicalState(
+                f"Scenario {scenario_id} not found in bus_data."
             )
-        except KeyError:
-            return
+        if branch_df.empty:
+            raise InvalidPhysicalState(
+                f"Scenario {scenario_id} not found in branch_data."
+            )
+        if gen_df.empty:
+            raise InvalidPhysicalState(
+                f"Scenario {scenario_id} not found in gen_data."
+            )
 
-        bus[:, VM] = vm[positions]
-        bus[:, VA] = va[positions]
-        self._pending_warm_start_applied = True
-
-    def _make_cache_key_from_state(
-        self,
-        state: GridFMState,
-        switched_off_branch_id: int | None = None,
-        *,
-        action: GridFMAction | None = None,
-    ) -> tuple:
-        """Preserve the public legacy argument order."""
-
-        return super()._make_cache_key_from_state(
-            state=state,
-            action=action,
-            switched_off_branch_id=switched_off_branch_id,
+        template = build_scenario_power_flow_template(
+            scenario_id=scenario_id,
+            bus_df=bus_df,
+            branch_df=branch_df,
+            gen_df=gen_df,
+            base_mva=self.base_mva,
         )
+        frames = {
+            "bus": bus_df,
+            "branch": branch_df,
+            "gen": gen_df,
+        }
+        self._active_problem_template = template
+        self._active_problem_frames = frames
+        return template, frames
 
     def _build_ppc_from_state(
         self,
@@ -474,50 +278,48 @@ class GridFMPowerFlowBackend(_CoreGridFMPowerFlowBackend):
         *,
         action: GridFMAction | None = None,
     ) -> tuple[dict[str, Any], dict[str, pd.DataFrame]]:
-        """Build a case from the current topology and generator operating point."""
+        """Build the repeated AC problem without pandas reconstruction."""
 
-        if action is not None:
-            switched_off_branch_id = None
-
-        ppc, frames = super()._build_ppc_from_state(
-            state=state,
-            switched_off_branch_id=switched_off_branch_id,
+        branch_id, target_status = self._resolve_branch_status_action(
             action=action,
+            switched_off_branch_id=switched_off_branch_id,
+        )
+        template, frames = self._scenario_problem_resources(int(state.scenario_id))
+        problem = build_power_flow_problem_from_state(
+            template=template,
+            state=state,
+            branch_id=branch_id,
+            target_status=target_status,
+            generator_operating_point=GeneratorOperatingPoint.from_state(state),
+        )
+        return problem.to_ppc(), frames
+
+    @staticmethod
+    def _problem_from_ppc(ppc: dict[str, Any]) -> CanonicalPowerFlowProblem:
+        return CanonicalPowerFlowProblem(
+            base_mva=float(ppc["baseMVA"]),
+            bus=np.asarray(ppc["bus"], dtype=np.float64),
+            branch=np.asarray(ppc["branch"], dtype=np.float64),
+            gen=np.asarray(ppc["gen"], dtype=np.float64),
         )
 
-        operating_point = self._generator_operating_point(state)
-        if operating_point is None:
-            self._apply_pending_warm_start(ppc)
-            return ppc, frames
-
-        generator_ids, pg, qg, status = operating_point
-        gen_df = frames["gen"].sort_values("idx").reset_index(drop=True).copy()
-        frame_ids = gen_df["idx"].to_numpy(dtype=np.int64)
-
-        if not np.array_equal(frame_ids, generator_ids):
-            raise InvalidPhysicalState(
-                "Generator operating point does not match scenario generator IDs."
-            )
-
-        gen_df["p_mw"] = pg
-        gen_df["q_mvar"] = qg
-        gen_df["in_service"] = status
-
-        source_bus_df = self.adapter.bus_df[
-            self.adapter.bus_df["scenario"] == int(state.scenario_id)
-        ].copy()
-        if source_bus_df.empty:
-            raise InvalidPhysicalState(
-                f"Scenario {state.scenario_id} not found in bus_data."
-            )
-        source_bus_df = source_bus_df.sort_values("bus").reset_index(drop=True)
-
-        # Keep the original voltage-control setpoint while carrying forward the
-        # solved generator P/Q/status from the parent topology state.
-        ppc["gen"] = self._build_gen_matrix(gen_df, source_bus_df)
-        frames["gen"] = gen_df
-        self._apply_pending_warm_start(ppc)
-        return ppc, frames
+    def _state_from_solved_ppc(
+        self,
+        *,
+        state: GridFMState,
+        result_ppc: dict[str, Any],
+        frames: dict[str, pd.DataFrame],
+        metrics: dict[str, object],
+    ) -> GridFMState:
+        next_state = self._build_state_from_pypower_result_fast(
+            scenario_id=int(state.scenario_id),
+            result_ppc=result_ppc,
+            previous_state=state,
+            original_frames=frames,
+            physical_metrics=metrics,
+        )
+        self._require_usable_next_state(next_state)
+        return next_state
 
     def run_power_flow_from_state(
         self,
@@ -526,107 +328,134 @@ class GridFMPowerFlowBackend(_CoreGridFMPowerFlowBackend):
         *,
         action: GridFMAction | None = None,
     ) -> GridFMPowerFlowResult:
-        """Run from a solved state using exact, tolerant, then warm cache reuse."""
+        """Run one transition, reusing only an exactly identical AC problem."""
 
         branch_id, target_status = self._resolve_branch_status_action(
             action=action,
             switched_off_branch_id=switched_off_branch_id,
         )
         effective_switched_off = branch_id if target_status == 0 else None
+        context = f"scenario={state.scenario_id} from_state"
 
-        bucket_key: tuple | None = None
-        warm_entry: _TopologyCacheEntry | None = None
-
-        if self.enable_cache:
-            exact_key = self._make_topology_cache_key_from_state(
+        try:
+            ppc, frames = self._build_ppc_from_state(
                 state=state,
                 action=action,
                 switched_off_branch_id=switched_off_branch_id,
             )
-            cached_next_state = self._cache.get(exact_key)
-            if cached_next_state is not None:
-                try:
-                    self._require_usable_next_state(cached_next_state)
-                except InvalidPhysicalState:
-                    del self._cache[exact_key]
-                else:
-                    self.cache_hits += 1
-                    self.exact_cache_hits += 1
-                    return GridFMPowerFlowResult(
-                        success=True,
-                        scenario_id=int(state.scenario_id),
-                        switched_off_branch_id=effective_switched_off,
-                        next_state=cached_next_state,
-                        raw_result=None,
-                        message="Power flow converged. [cache hit]",
-                        switched_branch_id=branch_id,
-                        target_status=target_status,
-                    )
+            problem = self._problem_from_ppc(ppc)
 
-            bucket_key = self._topology_bucket_key(
-                state,
-                action=action,
-                switched_off_branch_id=switched_off_branch_id,
-            )
-            tolerant_entry, warm_entry = self._select_topology_entry(
-                bucket_key,
-                state,
-            )
-            if tolerant_entry is not None:
-                self.cache_hits += 1
-                self.tolerant_cache_hits += 1
+            cache_key: bytes | None = None
+            cached = None
+            if self.enable_cache:
+                cache_key, cached = self._exact_power_flow_cache.lookup(
+                    problem,
+                    physics_fingerprint=self.physics_config.fingerprint(),
+                )
+
+            if isinstance(cached, CachedPowerFlowFailure):
                 return GridFMPowerFlowResult(
-                    success=True,
+                    success=False,
                     scenario_id=int(state.scenario_id),
                     switched_off_branch_id=effective_switched_off,
-                    next_state=tolerant_entry.next_state,
+                    next_state=None,
                     raw_result=None,
-                    message="Power flow converged. [tolerant cache hit]",
+                    message=cached.message,
+                    failure_kind=cached.failure_kind,
                     switched_branch_id=branch_id,
                     target_status=target_status,
                 )
 
-        self._pending_warm_start_state = (
-            None if warm_entry is None else warm_entry.next_state
-        )
-        self._pending_warm_start_applied = False
-        misses_before = int(self.cache_misses)
+            if isinstance(cached, CachedPowerFlowSuccess):
+                cached_ppc = cached.to_ppc(
+                    base_mva=problem.base_mva,
+                    copy_arrays=bool(self.store_raw_result),
+                )
+                try:
+                    metrics = calculate_physical_metrics_from_result(
+                        cached_ppc,
+                        power_flow_converged=True,
+                        physics_config=self.physics_config,
+                    )
+                    next_state = self._state_from_solved_ppc(
+                        state=state,
+                        result_ppc=cached_ppc,
+                        frames=frames,
+                        metrics=metrics,
+                    )
+                except InvalidPhysicalState:
+                    assert cache_key is not None
+                    self._exact_power_flow_cache.discard(cache_key)
+                else:
+                    return GridFMPowerFlowResult(
+                        success=True,
+                        scenario_id=int(state.scenario_id),
+                        switched_off_branch_id=effective_switched_off,
+                        next_state=next_state,
+                        raw_result=(
+                            cached_ppc if self.store_raw_result else None
+                        ),
+                        message="Power flow converged.",
+                        switched_branch_id=branch_id,
+                        target_status=target_status,
+                    )
 
-        try:
-            result = super().run_power_flow_from_state(
+            try:
+                result_ppc, metrics = self._solve_ppc(ppc, context=context)
+            except PowerFlowNotConverged as exc:
+                if self.enable_cache and cache_key is not None:
+                    self._exact_power_flow_cache.store_not_converged(
+                        cache_key,
+                        str(exc),
+                    )
+                return GridFMPowerFlowResult(
+                    success=False,
+                    scenario_id=int(state.scenario_id),
+                    switched_off_branch_id=effective_switched_off,
+                    next_state=None,
+                    raw_result=None,
+                    message=str(exc),
+                    failure_kind=PowerFlowFailureKind.NOT_CONVERGED,
+                    switched_branch_id=branch_id,
+                    target_status=target_status,
+                )
+
+            next_state = self._state_from_solved_ppc(
                 state=state,
-                switched_off_branch_id=switched_off_branch_id,
-                action=action,
-            )
-            warm_start_applied = bool(self._pending_warm_start_applied)
-        finally:
-            self._pending_warm_start_state = None
-            self._pending_warm_start_applied = False
-
-        if self.enable_cache and self.cache_misses > misses_before:
-            if warm_start_applied:
-                self.warm_start_hits += 1
-            else:
-                self.cold_start_misses += 1
-
-        if (
-            self.enable_cache
-            and bucket_key is not None
-            and result.success
-            and result.next_state is not None
-        ):
-            self._remember_topology_result(
-                bucket_key,
-                source_state=state,
-                next_state=result.next_state,
+                result_ppc=result_ppc,
+                frames=frames,
+                metrics=metrics,
             )
 
-        return replace(
-            result,
-            switched_off_branch_id=effective_switched_off,
-            switched_branch_id=branch_id,
-            target_status=target_status,
-        )
+            if self.enable_cache and cache_key is not None:
+                self._exact_power_flow_cache.store_success(
+                    cache_key,
+                    result_ppc,
+                )
+
+            return GridFMPowerFlowResult(
+                success=True,
+                scenario_id=int(state.scenario_id),
+                switched_off_branch_id=effective_switched_off,
+                next_state=next_state,
+                raw_result=result_ppc if self.store_raw_result else None,
+                message="Power flow converged.",
+                switched_branch_id=branch_id,
+                target_status=target_status,
+            )
+
+        except InvalidPhysicalState as exc:
+            return GridFMPowerFlowResult(
+                success=False,
+                scenario_id=int(state.scenario_id),
+                switched_off_branch_id=effective_switched_off,
+                next_state=None,
+                raw_result=None,
+                message=str(exc),
+                failure_kind=PowerFlowFailureKind.INVALID_PHYSICAL_STATE,
+                switched_branch_id=branch_id,
+                target_status=target_status,
+            )
 
     def _solve_ppc(
         self,
@@ -634,10 +463,7 @@ class GridFMPowerFlowBackend(_CoreGridFMPowerFlowBackend):
         *,
         context: str,
     ) -> tuple[dict[str, Any], dict[str, object]]:
-        """
-        Solve through this public module so monkeypatched ``runpf`` remains
-        observable in tests and diagnostics after the implementation split.
-        """
+        """Solve through this module so monkeypatched runpf stays observable."""
 
         validate_ppc_input(ppc, self.physics_config, context=context)
         before = get_power_flow_workload_counters()
