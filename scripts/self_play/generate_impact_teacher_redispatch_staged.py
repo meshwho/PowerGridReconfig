@@ -12,6 +12,7 @@ _RUNTIME_READY_EVENT = "_redispatch_worker_ready_event"
 _RUNTIME_READY_COUNT = "_redispatch_worker_ready_count"
 _RUNTIME_READY_LOCK = "_redispatch_worker_ready_lock"
 _RUNTIME_EXPECTED_WORKERS = "_redispatch_expected_workers"
+_RUNTIME_CLEAR_CACHES_EVERY = 0
 _WORKER_START_BARRIER_TIMEOUT_SEC = 900.0
 
 _ORIGINAL_INIT_WORKER_CONTEXT = redispatch.init_worker_context
@@ -134,6 +135,8 @@ def run_parallel(
         return [], 0, 0
 
     workers = min(max(int(num_workers), 1), len(scenario_batches))
+    runtime_task_config = dict(task_config)
+    runtime_task_config["clear_caches_every"] = _RUNTIME_CLEAR_CACHES_EVERY
 
     if workers == 1:
         return _ORIGINAL_RUN_PARALLEL(
@@ -141,7 +144,7 @@ def run_parallel(
             scenario_ids=scenario_ids,
             raw_dir=raw_dir,
             states_dir=states_dir,
-            task_config=task_config,
+            task_config=runtime_task_config,
             checkpoint_path=checkpoint_path,
             num_workers=workers,
             verbose_success=verbose_success,
@@ -157,7 +160,6 @@ def run_parallel(
         workers,
     )
 
-    runtime_task_config = dict(task_config)
     runtime_task_config[redispatch._RUNTIME_WORKER_INIT_SEMAPHORE] = (
         mp.BoundedSemaphore(init_concurrency)
     )
@@ -176,6 +178,7 @@ def run_parallel(
         "before beam search starts"
     )
     print(f"Worker init concurrency: {init_concurrency}")
+    print("Periodic worker cache clearing: disabled; memory guards remain active")
     print(f"\nParallel sharded mode: {workers} workers")
     print(f"Batches:                {len(scenario_batches)}")
 
