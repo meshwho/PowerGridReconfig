@@ -14,15 +14,23 @@ from grid_topology_ai.teacher_runtime_profile import (
     cache_snapshot,
     process_memory_snapshot,
 )
-from scripts.self_play import generate_impact_teacher_redispatch as redispatch
 
 
 def load_task_config(path: Path) -> dict[str, Any]:
     return load_teacher_task_config(path)
 
 
-def _worker_components() -> tuple[Any, Any]:
-    ctx = redispatch.base.teacher._require_worker_context()
+def _redispatch_module():
+    """Import the heavy teacher stack only when profiling is actually requested."""
+
+    from scripts.self_play import generate_impact_teacher_redispatch
+
+    return generate_impact_teacher_redispatch
+
+
+def _worker_components(redispatch=None) -> tuple[Any, Any]:
+    module = redispatch if redispatch is not None else _redispatch_module()
+    ctx = module.base.teacher._require_worker_context()
     return ctx.get("backend"), ctx.get("action_space")
 
 
@@ -30,7 +38,8 @@ def profile_scenario(
     profiler: TeacherRuntimeProfiler,
     scenario_id: int,
 ) -> dict[str, Any]:
-    backend, action_space = _worker_components()
+    redispatch = _redispatch_module()
+    backend, action_space = _worker_components(redispatch)
     profiler.reset()
 
     memory_before = process_memory_snapshot()
@@ -91,6 +100,7 @@ def main() -> None:
 
     scenario_ids = [int(value) for value in args.scenario_ids]
     task_config = load_task_config(args.task_config)
+    redispatch = _redispatch_module()
 
     redispatch._install_overrides()
 
