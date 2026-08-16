@@ -37,10 +37,17 @@ def _state(
     features[:, _STATUS] = np.asarray(statuses, dtype=np.float32)
     features[:, _X] = np.asarray(reactance, dtype=np.float32)
     features[:, _PF] = np.asarray(pf, dtype=np.float32)
-    features[:, _RATE] = np.asarray(rate, dtype=np.float32)
+
+    rate_values = np.asarray(rate, dtype=np.float64)
+    flow_values = np.abs(np.asarray(pf, dtype=np.float64))
+    features[:, _RATE] = rate_values.astype(np.float32)
     features[:, _LOADING] = (
-        np.abs(np.asarray(pf, dtype=np.float64))
-        / np.asarray(rate, dtype=np.float64)
+        np.divide(
+            flow_values,
+            rate_values,
+            out=np.zeros_like(flow_values),
+            where=rate_values > 1e-9,
+        )
         * 100.0
     ).astype(np.float32)
 
@@ -63,13 +70,10 @@ def _dense_transfer(state) -> tuple[np.ndarray, np.ndarray]:
     features = state.branch_features
     status = features[:, _STATUS].astype(float)
     reactance = features[:, _X].astype(float)
-    rate = features[:, _RATE].astype(float)
     active = (
         (status > 0.0)
         & np.isfinite(reactance)
         & (np.abs(reactance) > 1e-9)
-        & np.isfinite(rate)
-        & (rate > 1e-9)
     )
     positions = np.where(active)[0]
     edge_index = state.edge_index.astype(int)
@@ -104,6 +108,18 @@ def test_sparse_lodf_structure_matches_dense_reference() -> None:
         expected_denominator,
         rtol=1e-10,
         atol=1e-12,
+    )
+
+
+def test_zero_rate_branch_remains_in_lodf_network() -> None:
+    unlimited = _state(rate=(100.0, 0.0, 100.0, 100.0, 80.0))
+    limited = _state(rate=(100.0, 150.0, 100.0, 100.0, 80.0))
+
+    structure = build_lodf_structure(unlimited)  # type: ignore[arg-type]
+    assert structure is not None
+    np.testing.assert_array_equal(structure.active_positions, np.arange(5))
+    assert lodf_structure_fingerprint(unlimited) == lodf_structure_fingerprint(
+        limited
     )
 
 

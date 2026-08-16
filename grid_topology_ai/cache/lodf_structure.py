@@ -15,7 +15,6 @@ _ENTRY_OVERHEAD_BYTES = 128
 _LODF_EPS = 1e-9
 _STATUS_IDX = BRANCH_FEATURE_COLUMNS.index("br_status")
 _X_IDX = BRANCH_FEATURE_COLUMNS.index("x")
-_RATE_IDX = BRANCH_FEATURE_COLUMNS.index("rate_a")
 
 
 def _hash_array(digest: "hashlib._Hash", values: np.ndarray) -> None:
@@ -28,9 +27,9 @@ def _hash_array(digest: "hashlib._Hash", values: np.ndarray) -> None:
 def lodf_structure_fingerprint(state: GridFMState) -> bytes:
     """Return exact identity of the topology math used by LODF screening.
 
-    Dynamic PF, loading, and positive thermal-rating magnitudes are excluded.
-    They do not affect PTDF/LODF structure and are read from the current state
-    when actions are scored.
+    Dynamic PF, loading, and thermal ratings are excluded. They do not affect
+    PTDF/LODF structure and are read from the current state when actions are
+    scored.
     """
 
     branch_features = np.asarray(state.branch_features)
@@ -45,13 +44,10 @@ def lodf_structure_fingerprint(state: GridFMState) -> bytes:
 
     status = np.asarray(branch_features[:, _STATUS_IDX], dtype=np.float64)
     reactance = np.asarray(branch_features[:, _X_IDX], dtype=np.float64)
-    rate = np.asarray(branch_features[:, _RATE_IDX], dtype=np.float64)
     eligible = (
         (status > 0.0)
         & np.isfinite(reactance)
         & (np.abs(reactance) > _LODF_EPS)
-        & np.isfinite(rate)
-        & (rate > _LODF_EPS)
     )
     positions = np.flatnonzero(eligible).astype(np.int64, copy=False)
 

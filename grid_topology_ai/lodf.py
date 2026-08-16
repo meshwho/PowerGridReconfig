@@ -113,14 +113,11 @@ def build_lodf_structure(state: GridFMState) -> LODFStructure | None:
 
     status = np.asarray(branch_features[:, _STATUS_IDX], dtype=np.float64)
     reactance = np.asarray(branch_features[:, _X_IDX], dtype=np.float64)
-    rate = np.asarray(branch_features[:, _RATE_IDX], dtype=np.float64)
 
     active_mask = (
         (status > 0.0)
         & np.isfinite(reactance)
         & (np.abs(reactance) > _LODF_EPS)
-        & np.isfinite(rate)
-        & (rate > _LODF_EPS)
     )
     active_positions = np.flatnonzero(active_mask).astype(np.int64, copy=False)
     if active_positions.size <= 1:
