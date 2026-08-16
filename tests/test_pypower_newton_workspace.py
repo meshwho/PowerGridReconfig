@@ -4,29 +4,31 @@ from copy import deepcopy
 
 import numpy as np
 import pytest
-from pypower.api import case9, case118, ppoption
+from pypower.api import case9, case118, ppoption, runpf as stock_runpf
 from pypower.bustypes import bustypes
 from pypower.dSbus_dV import dSbus_dV as stock_dSbus_dV
 from pypower.ext2int import ext2int
 from pypower.idx_brch import BR_STATUS, SHIFT, TAP
 from pypower.idx_bus import VA, VM
-from pypower.idx_gen import GEN_BUS, GEN_STATUS, VG
+from pypower.idx_gen import GEN_BUS, GEN_STATUS, QG, QMAX, QMIN, VG
 from pypower.makeSbus import makeSbus
 from pypower.makeYbus import makeYbus
 from pypower.newtonpf import newtonpf as stock_newtonpf
 
+from grid_topology_ai import pypower_compat as compat
 from grid_topology_ai.pypower_newton_workspace import (
     PowerDerivativeWorkspace,
     newton_power_flow,
 )
 
 
-def _options() -> dict[str, object]:
+def _options(*, qlim: int = 0) -> dict[str, object]:
     return ppoption(
         PF_ALG=1,
         PF_MAX_IT=30,
         VERBOSE=0,
         OUT_ALL=0,
+        ENFORCE_Q_LIMS=qlim,
     )
 
 
@@ -84,6 +86,46 @@ def _assert_same_derivatives(ybus, voltage) -> None:
     )
 
 
+def _force_upper_limit(
+    ppc: dict,
+    baseline: dict,
+    gen_index: int,
+    *,
+    margin: float,
+) -> None:
+    q_limit = float(baseline["gen"][gen_index, QG]) - float(margin)
+    ppc["gen"][gen_index, QMAX] = q_limit
+    if ppc["gen"][gen_index, QMIN] >= q_limit:
+        ppc["gen"][gen_index, QMIN] = q_limit - 1000.0
+
+
+def _stock_q_limit_reference(
+    ppc: dict,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    qlim: int,
+) -> dict:
+    def stock_iteration(working, solver_options, prepared_network):
+        del prepared_network
+        result, success = stock_runpf(
+            deepcopy(working),
+            solver_options,
+            "",
+            "",
+        )
+        return result, bool(success), None
+
+    with monkeypatch.context() as context:
+        context.setattr(compat, "_solve_q_limit_iteration", stock_iteration)
+        result, success = compat.runpf(
+            deepcopy(ppc),
+            _options(qlim=qlim),
+        )
+
+    assert bool(success)
+    return result
+
+
 @pytest.mark.parametrize("case_factory", [case9, case118])
 def test_sparse_power_derivatives_match_pypower(case_factory) -> None:
     ybus, _sbus, voltage, _ref, _pv, _pq = _newton_problem(case_factory())
@@ -134,3 +176,26 @@ def test_newton_workspace_matches_stock_iterations_and_voltage(case_factory) -> 
         rtol=1e-11,
         atol=1e-11,
     )
+
+
+def test_multiple_q_limit_resolves_match_stock_newton_sequence(monkeypatch) -> None:
+    ppc = case9()
+    baseline, success = stock_runpf(
+        deepcopy(ppc),
+        _options(),
+    )
+    assert bool(success)
+
+    _force_upper_limit(ppc, baseline, 1, margin=6.0)
+    _force_upper_limit(ppc, baseline, 2, margin=3.0)
+    expected = _stock_q_limit_reference(ppc, monkeypatch, qlim=2)
+
+    actual, success = compat.runpf(
+        deepcopy(ppc),
+        _options(qlim=2),
+    )
+
+    assert bool(success)
+    np.testing.assert_allclose(actual["bus"], expected["bus"], rtol=1e-10, atol=1e-10)
+    np.testing.assert_allclose(actual["gen"], expected["gen"], rtol=1e-10, atol=1e-10)
+    np.testing.assert_allclose(actual["branch"], expected["branch"], rtol=1e-10, atol=1e-10)
