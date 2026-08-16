@@ -12,9 +12,9 @@ from grid_topology_ai.cache.power_flow_warm_start import (
 )
 from grid_topology_ai.power_flow_errors import PowerFlowNotConverged
 from grid_topology_ai.power_flow_problem import CanonicalPowerFlowProblem
-from grid_topology_ai.runtime.scenario_store import (
-    MemoryMappedGridFMPowerFlowBackend,
-    build_memory_mapped_teacher_context as _build_memory_mapped_teacher_context,
+from grid_topology_ai.runtime.numpy_scenario import (
+    NumPyMemoryMappedGridFMPowerFlowBackend,
+    build_numpy_teacher_context as _build_numpy_teacher_context,
 )
 
 
@@ -22,7 +22,7 @@ _MAX_WARM_START_DISTANCE = 0.20
 
 
 class WarmStartMemoryMappedGridFMPowerFlowBackend(
-    MemoryMappedGridFMPowerFlowBackend
+    NumPyMemoryMappedGridFMPowerFlowBackend
 ):
     """Mmap backend with bounded warm seeds and no fuzzy result reuse."""
 
@@ -129,8 +129,6 @@ class WarmStartMemoryMappedGridFMPowerFlowBackend(
             if not used_warm_start or original_vm is None or original_va is None:
                 raise
 
-            # Warm start is only an optimization. If it changes convergence,
-            # restore the canonical solver starting point and retry once.
             self._warm_start_fallbacks += 1
             bus = np.asarray(ppc["bus"])
             bus[:, VM] = original_vm
@@ -153,9 +151,9 @@ def build_memory_mapped_teacher_context(
     scenario_ids: Sequence[int],
     memory_registry=None,
 ) -> dict[str, Any]:
-    """Build the mmap context, swapping in warm-start backend only if enabled."""
+    """Build the NumPy/mmap context and optionally add PF warm starts."""
 
-    context = _build_memory_mapped_teacher_context(
+    context = _build_numpy_teacher_context(
         runtime_store_dir=runtime_store_dir,
         states_dir=states_dir,
         task_config=task_config,
