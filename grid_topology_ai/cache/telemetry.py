@@ -17,19 +17,25 @@ def exact_power_flow_workload(
     after: Mapping[str, object],
     logical_evaluations: int,
 ) -> dict[str, object]:
-    """Return one scenario's exact-cache, warm-start and solver workload delta."""
+    """Return one scenario's PF-cache, warm-start and solver workload delta."""
 
     cache_hits = _counter_delta(before, after, "hits")
     cache_misses = _counter_delta(before, after, "misses")
+    positive_hits = _counter_delta(before, after, "positive_hits")
+    negative_hits = _counter_delta(before, after, "negative_hits")
     l1_hits = _counter_delta(before, after, "l1_hits")
     l1_misses = _counter_delta(before, after, "l1_misses")
     l2_hits = _counter_delta(before, after, "l2_hits")
     l2_misses = _counter_delta(before, after, "l2_misses")
-    negative_hits = _counter_delta(before, after, "negative_hits")
-    evictions = _counter_delta(before, after, "evictions")
+    positive_evictions = _counter_delta(before, after, "positive_evictions")
+    negative_evictions = _counter_delta(before, after, "negative_evictions")
     warm_start_hits = _counter_delta(before, after, "warm_start_hits")
     warm_start_misses = _counter_delta(before, after, "warm_start_misses")
     warm_start_evictions = _counter_delta(before, after, "warm_start_evictions")
+    warm_start_distance_rejections = _counter_delta(
+        before, after, "warm_start_distance_rejections"
+    )
+    warm_start_fallbacks = _counter_delta(before, after, "warm_start_fallbacks")
     stock_runpf_calls = _counter_delta(before, after, "stock_runpf_calls")
     q_limit_resolves = _counter_delta(before, after, "q_limit_resolves")
     cache_lookups = cache_hits + cache_misses
@@ -43,17 +49,21 @@ def exact_power_flow_workload(
             if cache_lookups > 0
             else 0.0
         ),
+        "positive_hits": int(positive_hits),
+        "negative_hits": int(negative_hits),
         "l1_hits": int(l1_hits),
         "l1_misses": int(l1_misses),
         "l2_enabled": bool(after.get("l2_enabled", False)),
         "l2_hits": int(l2_hits),
         "l2_misses": int(l2_misses),
-        "negative_hits": int(negative_hits),
-        "evictions": int(evictions),
+        "positive_evictions": int(positive_evictions),
+        "negative_evictions": int(negative_evictions),
         "warm_start_enabled": bool(after.get("warm_start_enabled", False)),
         "warm_start_hits": int(warm_start_hits),
         "warm_start_misses": int(warm_start_misses),
         "warm_start_evictions": int(warm_start_evictions),
+        "warm_start_distance_rejections": int(warm_start_distance_rejections),
+        "warm_start_fallbacks": int(warm_start_fallbacks),
         "stock_runpf_calls": int(stock_runpf_calls),
         "q_limit_resolves": int(q_limit_resolves),
         "solves_per_cache_miss": (
@@ -72,15 +82,19 @@ def aggregate_exact_power_flow_workloads(
         "logical_evaluations",
         "cache_hits",
         "cache_misses",
+        "positive_hits",
+        "negative_hits",
         "l1_hits",
         "l1_misses",
         "l2_hits",
         "l2_misses",
-        "negative_hits",
-        "evictions",
+        "positive_evictions",
+        "negative_evictions",
         "warm_start_hits",
         "warm_start_misses",
         "warm_start_evictions",
+        "warm_start_distance_rejections",
+        "warm_start_fallbacks",
         "stock_runpf_calls",
         "q_limit_resolves",
     )
@@ -124,25 +138,33 @@ def print_exact_power_flow_workload_summary(
 
     print(f"Instrumented scenarios:    {summary['scenarios']}")
     print(f"Logical evaluations:       {summary['logical_evaluations']}")
-    print(f"Exact PF cache hits:       {summary['cache_hits']}")
-    print(f"  L1 RAM hits:             {summary['l1_hits']}")
+    print(f"PF cache hits:             {summary['cache_hits']}")
+    print(f"  positive physical hits:  {summary['positive_hits']}")
+    print(f"  negative exact hits:     {summary['negative_hits']}")
     if bool(summary["l2_enabled"]):
-        print(f"  L2 persistent hits:      {summary['l2_hits']}")
+        print(f"  persistent success hits: {summary['l2_hits']}")
     else:
-        print("  L2 persistent cache:     disabled")
-    print(f"  negative hits:           {summary['negative_hits']}")
-    print(f"Exact PF cache misses:     {summary['cache_misses']}")
-    print(f"  L1 RAM misses:           {summary['l1_misses']}")
+        print("  persistent L2:           disabled")
+    print(f"PF cache misses:           {summary['cache_misses']}")
+    print(f"  positive L1 misses:      {summary['l1_misses']}")
     if bool(summary["l2_enabled"]):
-        print(f"  L2 persistent misses:    {summary['l2_misses']}")
-    print(f"  L1 evictions:            {summary['evictions']}")
-    print(f"Exact cache hit rate:      {summary['cache_hit_rate']:.1%}")
+        print(f"  persistent misses:       {summary['l2_misses']}")
+    print(f"  positive L1 evictions:   {summary['positive_evictions']}")
+    print(f"  negative L1 evictions:   {summary['negative_evictions']}")
+    print(f"PF cache hit rate:         {summary['cache_hit_rate']:.1%}")
+
     if bool(summary["warm_start_enabled"]):
         print(f"Warm-start applications:   {summary['warm_start_hits']}")
         print(f"Warm-start misses:         {summary['warm_start_misses']}")
+        print(
+            "Warm-start distance rejects: "
+            f"{summary['warm_start_distance_rejections']}"
+        )
+        print(f"Warm-start cold fallbacks: {summary['warm_start_fallbacks']}")
         print(f"Warm-start evictions:      {summary['warm_start_evictions']}")
     else:
         print("PF warm start:             disabled")
+
     print(f"Stock PYPOWER solves:      {summary['stock_runpf_calls']}")
     print(f"Q-limit re-solves:         {summary['q_limit_resolves']}")
     print(f"Solves / cache miss:       {summary['solves_per_cache_miss']:.3f}")
