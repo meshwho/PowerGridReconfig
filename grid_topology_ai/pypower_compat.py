@@ -21,6 +21,11 @@ from pypower.ppoption import ppoption
 from pypower.printpf import printpf
 from pypower.savecase import savecase
 
+from grid_topology_ai.pypower_network_workspace import (
+    PreparedACNetwork,
+    solve_newton_power_flow,
+)
+
 
 _WORKLOAD_COUNTERS = {
     "stock_runpf_calls": 0,
@@ -35,7 +40,7 @@ _Q_LIMIT_RESOLVE_HISTOGRAM: dict[int, int] = {}
 
 
 def get_power_flow_workload_counters() -> dict[str, object]:
-    """Return process-local counters for stock PYPOWER solves."""
+    """Return process-local counters for stock-equivalent PYPOWER solves."""
 
     return {
         "stock_runpf_calls": int(_WORKLOAD_COUNTERS["stock_runpf_calls"]),
@@ -69,6 +74,9 @@ def _record_stock_runpf(
     q_limit_resolve: bool = False,
     elapsed_seconds: float = 0.0,
 ) -> None:
+    # Keep the historical counter name so performance baselines remain comparable.
+    # A prepared Newton solve is mathematically the same PYPOWER solve, but skips
+    # rebuilding admittance matrices already known to be unchanged.
     _WORKLOAD_COUNTERS["stock_runpf_calls"] += 1
     _WORKLOAD_COUNTERS["stock_runpf_seconds"] += max(
         float(elapsed_seconds),
@@ -198,7 +206,7 @@ def _minimal_solver_case(
     bus: np.ndarray,
     gen: np.ndarray,
 ) -> dict[str, Any]:
-    """Build the smallest case stock runpf needs for another AC solve."""
+    """Build the smallest case needed for another AC solve."""
 
     case: dict[str, Any] = {
         "baseMVA": result["baseMVA"],
@@ -351,6 +359,31 @@ def _emit(
         savecase(solvedcase, result)
 
 
+def _solve_q_limit_iteration(
+    working: dict[str, Any],
+    solver_options: dict[str, Any],
+    prepared_network: PreparedACNetwork | None,
+) -> tuple[dict[str, Any], bool, PreparedACNetwork | None]:
+    if (
+        int(solver_options["PF_ALG"]) == 1
+        and not bool(solver_options["PF_DC"])
+    ):
+        result, success, prepared = solve_newton_power_flow(
+            working,
+            solver_options,
+            prepared_network=prepared_network,
+        )
+        return result, success, prepared
+
+    result, success = _runpf(
+        working,
+        solver_options,
+        "",
+        "",
+    )
+    return result, bool(success), None
+
+
 def _run_with_q_limits(
     casedata: Any,
     options: dict[str, Any],
@@ -387,6 +420,7 @@ def _run_with_q_limits(
     fixed_qg = np.full(ng, np.nan, dtype=float)
     limited: list[int] = []
     original_order = None
+    prepared_network: PreparedACNetwork | None = None
     elapsed = 0.0
     working = case
 
@@ -421,11 +455,10 @@ def _run_with_q_limits(
     for iteration in range(ng + 1):
         solve_started = perf_counter()
         try:
-            result, success = _runpf(
+            result, success, prepared_network = _solve_q_limit_iteration(
                 working,
                 solver_options,
-                "",
-                "",
+                prepared_network,
             )
         finally:
             solve_seconds = perf_counter() - solve_started
