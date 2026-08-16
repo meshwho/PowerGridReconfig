@@ -14,6 +14,7 @@ from grid_topology_ai.topology_actions import GridFMAction
 _LODF_EPS = 1e-9
 _STATUS_IDX = BRANCH_FEATURE_COLUMNS.index("br_status")
 _X_IDX = BRANCH_FEATURE_COLUMNS.index("x")
+_TAP_IDX = BRANCH_FEATURE_COLUMNS.index("tap")
 _PF_IDX = BRANCH_FEATURE_COLUMNS.index("pf")
 _RATE_IDX = BRANCH_FEATURE_COLUMNS.index("rate_a")
 _LOADING_IDX = BRANCH_FEATURE_COLUMNS.index("loading_percent")
@@ -113,11 +114,14 @@ def build_lodf_structure(state: GridFMState) -> LODFStructure | None:
 
     status = np.asarray(branch_features[:, _STATUS_IDX], dtype=np.float64)
     reactance = np.asarray(branch_features[:, _X_IDX], dtype=np.float64)
+    tap = np.asarray(branch_features[:, _TAP_IDX], dtype=np.float64)
+    effective_tap = np.where(tap != 0.0, tap, 1.0)
 
     active_mask = (
         (status > 0.0)
         & np.isfinite(reactance)
         & (np.abs(reactance) > _LODF_EPS)
+        & np.isfinite(effective_tap)
     )
     active_positions = np.flatnonzero(active_mask).astype(np.int64, copy=False)
     if active_positions.size <= 1:
@@ -134,7 +138,8 @@ def build_lodf_structure(state: GridFMState) -> LODFStructure | None:
         return None
 
     active_x = reactance[active_positions]
-    active_b = 1.0 / active_x
+    active_tap = effective_tap[active_positions]
+    active_b = 1.0 / (active_x * active_tap)
     incidence = _reduced_incidence(
         active_from=active_from,
         active_to=active_to,

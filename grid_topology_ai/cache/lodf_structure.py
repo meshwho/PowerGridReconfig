@@ -9,12 +9,13 @@ from grid_topology_ai.data_adapter import BRANCH_FEATURE_COLUMNS, GridFMState
 from grid_topology_ai.lodf import LODFStructure, build_lodf_structure
 
 
-LODF_STRUCTURE_CACHE_SCHEMA_VERSION = 1
+LODF_STRUCTURE_CACHE_SCHEMA_VERSION = 2
 DEFAULT_LODF_STRUCTURE_CACHE_BYTES = 16 * 1024 * 1024
 _ENTRY_OVERHEAD_BYTES = 128
 _LODF_EPS = 1e-9
 _STATUS_IDX = BRANCH_FEATURE_COLUMNS.index("br_status")
 _X_IDX = BRANCH_FEATURE_COLUMNS.index("x")
+_TAP_IDX = BRANCH_FEATURE_COLUMNS.index("tap")
 
 
 def _hash_array(digest: "hashlib._Hash", values: np.ndarray) -> None:
@@ -44,10 +45,13 @@ def lodf_structure_fingerprint(state: GridFMState) -> bytes:
 
     status = np.asarray(branch_features[:, _STATUS_IDX], dtype=np.float64)
     reactance = np.asarray(branch_features[:, _X_IDX], dtype=np.float64)
+    tap = np.asarray(branch_features[:, _TAP_IDX], dtype=np.float64)
+    effective_tap = np.where(tap != 0.0, tap, 1.0)
     eligible = (
         (status > 0.0)
         & np.isfinite(reactance)
         & (np.abs(reactance) > _LODF_EPS)
+        & np.isfinite(effective_tap)
     )
     positions = np.flatnonzero(eligible).astype(np.int64, copy=False)
 
@@ -65,6 +69,10 @@ def lodf_structure_fingerprint(state: GridFMState) -> bytes:
         _hash_array(
             digest,
             np.asarray(reactance[positions], dtype=np.float64),
+        )
+        _hash_array(
+            digest,
+            np.asarray(effective_tap[positions], dtype=np.float64),
         )
     return digest.digest()
 

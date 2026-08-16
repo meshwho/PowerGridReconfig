@@ -15,6 +15,7 @@ from grid_topology_ai.lodf import build_lodf_structure
 
 _STATUS = BRANCH_FEATURE_COLUMNS.index("br_status")
 _X = BRANCH_FEATURE_COLUMNS.index("x")
+_TAP = BRANCH_FEATURE_COLUMNS.index("tap")
 _PF = BRANCH_FEATURE_COLUMNS.index("pf")
 _RATE = BRANCH_FEATURE_COLUMNS.index("rate_a")
 _LOADING = BRANCH_FEATURE_COLUMNS.index("loading_percent")
@@ -26,6 +27,7 @@ def _state(
     scenario_id: int = 1,
     statuses: tuple[int, ...] = (1, 1, 1, 1, 1),
     reactance: tuple[float, ...] = (0.10, 0.11, 0.12, 0.13, 0.20),
+    tap: tuple[float, ...] = (0.0, 0.0, 0.0, 0.0, 0.0),
     pf: tuple[float, ...] = (70.0, 50.0, 40.0, -60.0, 20.0),
     rate: tuple[float, ...] = (100.0, 100.0, 100.0, 100.0, 80.0),
 ) -> SimpleNamespace:
@@ -36,6 +38,7 @@ def _state(
     )
     features[:, _STATUS] = np.asarray(statuses, dtype=np.float32)
     features[:, _X] = np.asarray(reactance, dtype=np.float32)
+    features[:, _TAP] = np.asarray(tap, dtype=np.float32)
     features[:, _PF] = np.asarray(pf, dtype=np.float32)
 
     rate_values = np.asarray(rate, dtype=np.float64)
@@ -70,16 +73,21 @@ def _dense_transfer(state) -> tuple[np.ndarray, np.ndarray]:
     features = state.branch_features
     status = features[:, _STATUS].astype(float)
     reactance = features[:, _X].astype(float)
+    tap = features[:, _TAP].astype(float)
+    effective_tap = np.where(tap != 0.0, tap, 1.0)
     active = (
         (status > 0.0)
         & np.isfinite(reactance)
         & (np.abs(reactance) > 1e-9)
+        & np.isfinite(effective_tap)
     )
     positions = np.where(active)[0]
     edge_index = state.edge_index.astype(int)
     active_from = edge_index[0, positions]
     active_to = edge_index[1, positions]
-    active_b = 1.0 / reactance[positions]
+    active_b = 1.0 / (
+        reactance[positions] * effective_tap[positions]
+    )
 
     incidence = np.zeros((len(positions), 4), dtype=np.float64)
     incidence[np.arange(len(positions)), active_from] = 1.0
@@ -92,7 +100,7 @@ def _dense_transfer(state) -> tuple[np.ndarray, np.ndarray]:
 
 
 def test_sparse_lodf_structure_matches_dense_reference() -> None:
-    state = _state()
+    state = _state(tap=(0.0, 1.10, 0.0, 0.0, 0.95))
     structure = build_lodf_structure(state)  # type: ignore[arg-type]
     assert structure is not None
 
@@ -142,19 +150,22 @@ def test_lodf_cache_reuses_topology_across_scenarios_and_dynamic_flows() -> None
     assert cache.info()["misses"] == 1
 
 
-def test_lodf_cache_invalidates_topology_and_reactance() -> None:
+def test_lodf_cache_invalidates_topology_reactance_and_tap() -> None:
     base = _state()
     opened = _state(statuses=(1, 1, 1, 1, 0))
     changed_x = _state(reactance=(0.10, 0.11, 0.12, 0.13, 0.25))
+    changed_tap = _state(tap=(0.0, 1.10, 0.0, 0.0, 0.0))
 
     assert lodf_structure_fingerprint(base) != lodf_structure_fingerprint(opened)
     assert lodf_structure_fingerprint(base) != lodf_structure_fingerprint(changed_x)
+    assert lodf_structure_fingerprint(base) != lodf_structure_fingerprint(changed_tap)
 
     cache = LODFStructureCache(max_bytes=8192)
     cache.get_or_build(base)  # type: ignore[arg-type]
     cache.get_or_build(opened)  # type: ignore[arg-type]
     cache.get_or_build(changed_x)  # type: ignore[arg-type]
-    assert cache.info()["misses"] == 3
+    cache.get_or_build(changed_tap)  # type: ignore[arg-type]
+    assert cache.info()["misses"] == 4
 
 
 def test_lodf_cache_builds_structure_only_on_miss(monkeypatch) -> None:
