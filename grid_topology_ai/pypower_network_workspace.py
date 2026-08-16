@@ -28,8 +28,12 @@ from pypower.int2ext import int2ext
 from pypower.loadcase import loadcase
 from pypower.makeSbus import makeSbus
 from pypower.makeYbus import makeYbus
-from pypower.newtonpf import newtonpf
 from pypower.pfsoln import pfsoln
+
+from grid_topology_ai.pypower_newton_workspace import (
+    PowerDerivativeWorkspace,
+    newton_power_flow,
+)
 
 
 _BUS_NETWORK_COLUMNS = (BUS_I, GS, BS)
@@ -69,6 +73,7 @@ class PreparedACNetwork:
     ybus: Any
     yf: Any
     yt: Any
+    derivatives: PowerDerivativeWorkspace
 
     @classmethod
     def build(
@@ -86,6 +91,7 @@ class PreparedACNetwork:
             ybus=ybus,
             yf=yf,
             yt=yt,
+            derivatives=PowerDerivativeWorkspace.from_ybus(ybus),
         )
 
     def require_matches(
@@ -175,7 +181,7 @@ def solve_newton_power_flow(
         )
 
     sbus = makeSbus(base_mva, bus, gen)
-    voltage, success, _iterations = newtonpf(
+    voltage, success, _iterations = newton_power_flow(
         prepared_network.ybus,
         sbus,
         v0,
@@ -183,6 +189,7 @@ def solve_newton_power_flow(
         pv,
         pq,
         options,
+        derivative_workspace=prepared_network.derivatives,
     )
     bus, gen, branch = pfsoln(
         base_mva,
