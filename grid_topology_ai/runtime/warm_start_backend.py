@@ -3,10 +3,14 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+import numpy as np
+from pypower.idx_bus import VA, VM
+
 from grid_topology_ai.cache.power_flow_warm_start import (
     PowerFlowWarmStartCache,
     warm_start_enabled_from_environment,
 )
+from grid_topology_ai.power_flow_errors import PowerFlowNotConverged
 from grid_topology_ai.power_flow_problem import CanonicalPowerFlowProblem
 from grid_topology_ai.runtime.scenario_store import (
     MemoryMappedGridFMPowerFlowBackend,
@@ -14,10 +18,13 @@ from grid_topology_ai.runtime.scenario_store import (
 )
 
 
+_MAX_WARM_START_DISTANCE = 0.20
+
+
 class WarmStartMemoryMappedGridFMPowerFlowBackend(
     MemoryMappedGridFMPowerFlowBackend
 ):
-    """Memory-mapped backend with optional warm starts and no fuzzy result reuse."""
+    """Mmap backend with bounded warm seeds and no fuzzy result reuse."""
 
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
@@ -26,6 +33,9 @@ class WarmStartMemoryMappedGridFMPowerFlowBackend(
             if bool(self.enable_cache)
             else None
         )
+        self._warm_start_applications = 0
+        self._warm_start_distance_rejections = 0
+        self._warm_start_fallbacks = 0
 
     def performance_info(self) -> dict[str, object]:
         info = dict(super().performance_info())
@@ -37,6 +47,8 @@ class WarmStartMemoryMappedGridFMPowerFlowBackend(
                     "warm_start_hits": 0,
                     "warm_start_misses": 0,
                     "warm_start_evictions": 0,
+                    "warm_start_distance_rejections": 0,
+                    "warm_start_fallbacks": 0,
                 }
             )
             return info
@@ -45,15 +57,22 @@ class WarmStartMemoryMappedGridFMPowerFlowBackend(
         info.update(
             {
                 "warm_start_enabled": True,
-                "warm_start_hits": int(warm_info["hits"]),
+                "warm_start_hits": int(self._warm_start_applications),
                 "warm_start_misses": int(warm_info["misses"]),
                 "warm_start_evictions": int(warm_info["evictions"]),
+                "warm_start_distance_rejections": int(
+                    self._warm_start_distance_rejections
+                ),
+                "warm_start_fallbacks": int(self._warm_start_fallbacks),
             }
         )
         return info
 
     def reset_performance_counters(self) -> None:
         super().reset_performance_counters()
+        self._warm_start_applications = 0
+        self._warm_start_distance_rejections = 0
+        self._warm_start_fallbacks = 0
         warm_cache = self._power_flow_warm_start_cache
         if warm_cache is not None:
             warm_cache.reset_counters()
@@ -63,6 +82,9 @@ class WarmStartMemoryMappedGridFMPowerFlowBackend(
         warm_cache = self._power_flow_warm_start_cache
         if warm_cache is not None:
             warm_cache.clear(reset_counters=True)
+        self._warm_start_applications = 0
+        self._warm_start_distance_rejections = 0
+        self._warm_start_fallbacks = 0
 
     def _solve_ppc(
         self,
@@ -85,10 +107,36 @@ class WarmStartMemoryMappedGridFMPowerFlowBackend(
             problem,
             physics_fingerprint=physics_fingerprint,
         )
-        if warm_start is not None:
-            warm_start.apply_to_ppc(ppc)
 
-        result_ppc, metrics = super()._solve_ppc(ppc, context=context)
+        used_warm_start = False
+        original_vm: np.ndarray | None = None
+        original_va: np.ndarray | None = None
+        if warm_start is not None:
+            distance = warm_start.distance_to(problem)
+            if not np.isfinite(distance) or distance > _MAX_WARM_START_DISTANCE:
+                self._warm_start_distance_rejections += 1
+            else:
+                bus = np.asarray(ppc["bus"])
+                original_vm = np.asarray(bus[:, VM], dtype=np.float64).copy()
+                original_va = np.asarray(bus[:, VA], dtype=np.float64).copy()
+                used_warm_start = bool(warm_start.apply_to_ppc(ppc))
+                if used_warm_start:
+                    self._warm_start_applications += 1
+
+        try:
+            result_ppc, metrics = super()._solve_ppc(ppc, context=context)
+        except PowerFlowNotConverged:
+            if not used_warm_start or original_vm is None or original_va is None:
+                raise
+
+            # Warm start is only an optimization. If it changes convergence,
+            # restore the canonical solver starting point and retry once.
+            self._warm_start_fallbacks += 1
+            bus = np.asarray(ppc["bus"])
+            bus[:, VM] = original_vm
+            bus[:, VA] = original_va
+            result_ppc, metrics = super()._solve_ppc(ppc, context=context)
+
         warm_cache.store_success(
             problem,
             result_ppc,
@@ -105,7 +153,7 @@ def build_memory_mapped_teacher_context(
     scenario_ids: Sequence[int],
     memory_registry=None,
 ) -> dict[str, Any]:
-    """Build the normal mmap context, swapping in warm-start backend only if enabled."""
+    """Build the mmap context, swapping in warm-start backend only if enabled."""
 
     context = _build_memory_mapped_teacher_context(
         runtime_store_dir=runtime_store_dir,
