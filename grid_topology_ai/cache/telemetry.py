@@ -17,7 +17,7 @@ def exact_power_flow_workload(
     after: Mapping[str, object],
     logical_evaluations: int,
 ) -> dict[str, object]:
-    """Return one scenario's exact-cache and solver workload delta."""
+    """Return one scenario's exact-cache, warm-start and solver workload delta."""
 
     cache_hits = _counter_delta(before, after, "hits")
     cache_misses = _counter_delta(before, after, "misses")
@@ -27,6 +27,9 @@ def exact_power_flow_workload(
     l2_misses = _counter_delta(before, after, "l2_misses")
     negative_hits = _counter_delta(before, after, "negative_hits")
     evictions = _counter_delta(before, after, "evictions")
+    warm_start_hits = _counter_delta(before, after, "warm_start_hits")
+    warm_start_misses = _counter_delta(before, after, "warm_start_misses")
+    warm_start_evictions = _counter_delta(before, after, "warm_start_evictions")
     stock_runpf_calls = _counter_delta(before, after, "stock_runpf_calls")
     q_limit_resolves = _counter_delta(before, after, "q_limit_resolves")
     cache_lookups = cache_hits + cache_misses
@@ -47,6 +50,10 @@ def exact_power_flow_workload(
         "l2_misses": int(l2_misses),
         "negative_hits": int(negative_hits),
         "evictions": int(evictions),
+        "warm_start_enabled": bool(after.get("warm_start_enabled", False)),
+        "warm_start_hits": int(warm_start_hits),
+        "warm_start_misses": int(warm_start_misses),
+        "warm_start_evictions": int(warm_start_evictions),
         "stock_runpf_calls": int(stock_runpf_calls),
         "q_limit_resolves": int(q_limit_resolves),
         "solves_per_cache_miss": (
@@ -71,12 +78,18 @@ def aggregate_exact_power_flow_workloads(
         "l2_misses",
         "negative_hits",
         "evictions",
+        "warm_start_hits",
+        "warm_start_misses",
+        "warm_start_evictions",
         "stock_runpf_calls",
         "q_limit_resolves",
     )
     result: dict[str, Any] = {
         "scenarios": len(rows),
         "l2_enabled": any(bool(item.get("l2_enabled", False)) for item in rows),
+        "warm_start_enabled": any(
+            bool(item.get("warm_start_enabled", False)) for item in rows
+        ),
     }
     for key in summed_keys:
         result[key] = sum(int(item.get(key, 0)) for item in rows)
@@ -124,6 +137,12 @@ def print_exact_power_flow_workload_summary(
         print(f"  L2 persistent misses:    {summary['l2_misses']}")
     print(f"  L1 evictions:            {summary['evictions']}")
     print(f"Exact cache hit rate:      {summary['cache_hit_rate']:.1%}")
+    if bool(summary["warm_start_enabled"]):
+        print(f"Warm-start applications:   {summary['warm_start_hits']}")
+        print(f"Warm-start misses:         {summary['warm_start_misses']}")
+        print(f"Warm-start evictions:      {summary['warm_start_evictions']}")
+    else:
+        print("PF warm start:             disabled")
     print(f"Stock PYPOWER solves:      {summary['stock_runpf_calls']}")
     print(f"Q-limit re-solves:         {summary['q_limit_resolves']}")
     print(f"Solves / cache miss:       {summary['solves_per_cache_miss']:.3f}")

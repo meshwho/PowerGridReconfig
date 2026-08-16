@@ -15,21 +15,28 @@ _NATIVE_MATH_THREAD_ENV_VARS = (
     "VECLIB_MAXIMUM_THREADS",
 )
 _EXACT_L1_CACHE_MAX_MB_ENV = "POWERGRID_EXACT_L1_CACHE_MAX_MB"
+_PF_WARM_START_ENV = "POWERGRID_ENABLE_PF_WARM_START"
 
 
-def _configure_exact_l1_cache_from_cli() -> None:
+def _configure_cache_runtime_from_cli() -> None:
     parser = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
     parser.add_argument("--exact-cache-max-mb", type=float, default=None)
+    parser.add_argument(
+        "--pf-warm-start",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
     parsed, remaining = parser.parse_known_args(sys.argv[1:])
 
-    if parsed.exact_cache_max_mb is None:
-        return
+    if parsed.exact_cache_max_mb is not None:
+        max_mb = float(parsed.exact_cache_max_mb)
+        if not math.isfinite(max_mb) or max_mb <= 0.0:
+            raise SystemExit("--exact-cache-max-mb must be a positive finite number.")
+        os.environ[_EXACT_L1_CACHE_MAX_MB_ENV] = f"{max_mb:.12g}"
 
-    max_mb = float(parsed.exact_cache_max_mb)
-    if not math.isfinite(max_mb) or max_mb <= 0.0:
-        raise SystemExit("--exact-cache-max-mb must be a positive finite number.")
+    if parsed.pf_warm_start is not None:
+        os.environ[_PF_WARM_START_ENV] = "1" if parsed.pf_warm_start else "0"
 
-    os.environ[_EXACT_L1_CACHE_MAX_MB_ENV] = f"{max_mb:.12g}"
     sys.argv[:] = [sys.argv[0], *remaining]
 
 
@@ -41,7 +48,7 @@ def _configure_native_math_threads() -> None:
 
 
 # These must run before importing the numerical/cache stack.
-_configure_exact_l1_cache_from_cli()
+_configure_cache_runtime_from_cli()
 _configure_native_math_threads()
 
 from pathlib import Path
@@ -54,13 +61,16 @@ from grid_topology_ai.cache.persistent_exact import (
     PERSISTENT_EXACT_CACHE_DISABLED_ENV,
     PERSISTENT_EXACT_CACHE_MAX_BYTES_ENV,
 )
+from grid_topology_ai.cache.power_flow_warm_start import (
+    warm_start_enabled_from_environment,
+)
 from grid_topology_ai.cache.telemetry import (
     exact_power_flow_workload,
     print_exact_power_flow_workload_summary,
 )
-from grid_topology_ai.runtime import (
+from grid_topology_ai.runtime import ensure_runtime_scenario_store
+from grid_topology_ai.runtime.warm_start_backend import (
     build_memory_mapped_teacher_context,
-    ensure_runtime_scenario_store,
 )
 from scripts.self_play import generate_impact_teacher_redispatch_staged as staged
 
@@ -197,7 +207,13 @@ def run_parallel(
         "Exact L1 PF cache:          "
         f"{DEFAULT_EXACT_POWER_FLOW_CACHE_BYTES / (1024.0 * 1024.0):.1f} MiB / worker"
     )
-    print(f"Native math threads:        {_native_math_thread_summary()}")
+    warm_start_text = (
+        "enabled (real PF solve is still required)"
+        if warm_start_enabled_from_environment()
+        else "disabled (opt-in with --pf-warm-start)"
+    )
+    print(f"PF warm start:             {warm_start_text}")
+    print(f"Native math threads:       {_native_math_thread_summary()}")
 
     return _ORIGINAL_STAGED_RUN_PARALLEL(
         scenario_batches=scenario_batches,

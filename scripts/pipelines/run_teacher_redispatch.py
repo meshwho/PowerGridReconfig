@@ -17,6 +17,7 @@ _WORKER_INIT_CONCURRENCY_OPTION = "--worker-init-concurrency"
 _WORKER_INIT_CONCURRENCY_ENV = "POWERGRID_TEACHER_INIT_CONCURRENCY"
 _DEFAULT_WORKER_INIT_CONCURRENCY = 1
 _EXACT_L1_CACHE_MAX_MB_ENV = "POWERGRID_EXACT_L1_CACHE_MAX_MB"
+_PF_WARM_START_ENV = "POWERGRID_ENABLE_PF_WARM_START"
 
 
 def _option_value(argv: Sequence[str], name: str) -> str | None:
@@ -97,20 +98,26 @@ def _pop_worker_init_concurrency(argv: list[str]) -> int:
     return concurrency
 
 
-def _pop_exact_l1_cache_max_mb(argv: Sequence[str]) -> tuple[list[str], float | None]:
+def _pop_cache_runtime_options(
+    argv: Sequence[str],
+) -> tuple[list[str], float | None, bool | None]:
     values = [str(value) for value in argv]
     parser = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
     parser.add_argument("--exact-cache-max-mb", type=float, default=None)
+    parser.add_argument(
+        "--pf-warm-start",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
     parsed, remaining = parser.parse_known_args(values[1:])
 
-    if parsed.exact_cache_max_mb is None:
-        return values, None
+    exact_cache_max_mb = parsed.exact_cache_max_mb
+    if exact_cache_max_mb is not None:
+        exact_cache_max_mb = float(exact_cache_max_mb)
+        if not math.isfinite(exact_cache_max_mb) or exact_cache_max_mb <= 0.0:
+            raise ValueError("--exact-cache-max-mb must be a positive finite number.")
 
-    max_mb = float(parsed.exact_cache_max_mb)
-    if not math.isfinite(max_mb) or max_mb <= 0.0:
-        raise ValueError("--exact-cache-max-mb must be a positive finite number.")
-
-    return [values[0], *remaining], max_mb
+    return [values[0], *remaining], exact_cache_max_mb, parsed.pf_warm_start
 
 
 def canonical_argv(argv: Sequence[str]) -> list[str]:
@@ -146,13 +153,17 @@ def canonical_argv(argv: Sequence[str]) -> list[str]:
 
 def main() -> None:
     try:
-        argv, exact_cache_max_mb = _pop_exact_l1_cache_max_mb(sys.argv)
+        argv, exact_cache_max_mb, pf_warm_start = _pop_cache_runtime_options(
+            sys.argv
+        )
         init_concurrency = _pop_worker_init_concurrency(argv)
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
 
     if exact_cache_max_mb is not None:
         os.environ[_EXACT_L1_CACHE_MAX_MB_ENV] = f"{exact_cache_max_mb:.12g}"
+    if pf_warm_start is not None:
+        os.environ[_PF_WARM_START_ENV] = "1" if pf_warm_start else "0"
 
     from scripts.pipelines import run_teacher_by_difficulty as pipeline
 
