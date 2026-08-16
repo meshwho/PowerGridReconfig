@@ -24,6 +24,7 @@ _DEFAULT_MAX_TASKS_PER_CHILD: int | None = None
 
 _ORIGINAL_INIT_WORKER_CONTEXT = redispatch.init_worker_context
 _ORIGINAL_IMPACT_BEAM_SEARCH_CONFIG = redispatch.base.teacher.ImpactBeamSearchConfig
+_ORIGINAL_PROCESS_ONE_SCENARIO = redispatch.base.teacher.process_one_scenario_fast
 
 
 def _worker_run_id() -> str:
@@ -77,6 +78,13 @@ def _quiet_impact_beam_search_config(*args, **kwargs):
     return _ORIGINAL_IMPACT_BEAM_SEARCH_CONFIG(*args, **kwargs)
 
 
+def _timed_process_one_scenario(scenario_id: int) -> dict[str, Any]:
+    started = time.perf_counter()
+    result = _ORIGINAL_PROCESS_ONE_SCENARIO(int(scenario_id))
+    result["runtime_seconds"] = time.perf_counter() - started
+    return result
+
+
 def init_worker_context(
     raw_dir_str: str,
     states_dir_str: str,
@@ -107,6 +115,7 @@ def init_worker_context(
     # runtime overrides explicitly in the initializer as well as in the parent.
     redispatch.base._worker_run_id = _worker_run_id
     teacher.ImpactBeamSearchConfig = _quiet_impact_beam_search_config
+    teacher.process_one_scenario_fast = _timed_process_one_scenario
     teacher.rank_actions_by_lodf_screening = rank_actions_by_lodf_screening
     teacher.clear_worker_caches_if_needed = _bounded_worker_housekeeping
 
@@ -182,6 +191,17 @@ def _effective_max_tasks_per_child(
 ) -> int | None:
     configured = int(task_config.get("max_tasks_per_child", 0))
     return configured if configured > 0 else _DEFAULT_MAX_TASKS_PER_CHILD
+
+
+def _scenario_runtime_line(result: dict[str, Any]) -> str:
+    scenario_id = int(result["scenario_id"])
+    seconds = float(result.get("runtime_seconds", 0.0))
+    if bool(result.get("ok", False)):
+        status = "saved"
+    else:
+        reason = result.get("reason")
+        status = "skipped" if reason is None else f"skipped ({reason})"
+    return f"scenario {scenario_id} | {seconds:.1f}s | {status}"
 
 
 def run_parallel(
@@ -275,6 +295,13 @@ def run_parallel(
             total_saved += saved
             total_skipped += skipped
             completed_batches += 1
+
+            for result in batch_results:
+                line = _scenario_runtime_line(result)
+                if progress_bar is not None:
+                    progress_bar.write(line)
+                else:
+                    print(line, flush=True)
 
             if progress_bar is not None:
                 progress_bar.set_postfix(
