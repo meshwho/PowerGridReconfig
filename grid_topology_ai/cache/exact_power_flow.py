@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Mapping
 
 import numpy as np
+from pypower.idx_bus import BUS_TYPE, PQ, PV, REF, VA, VM
 
 from grid_topology_ai.cache.byte_lru import ByteLRUCache
 from grid_topology_ai.cache.persistent_exact import (
@@ -16,8 +17,8 @@ from grid_topology_ai.power_flow_errors import PowerFlowFailureKind
 from grid_topology_ai.power_flow_problem import CanonicalPowerFlowProblem
 
 
-EXACT_POWER_FLOW_CACHE_SCHEMA_VERSION = 1
-EXACT_POWER_FLOW_SOLVER_CONTRACT = "pypower-ac-v1"
+EXACT_POWER_FLOW_CACHE_SCHEMA_VERSION = 2
+EXACT_POWER_FLOW_SOLVER_CONTRACT = "pypower-ac-physical-input-v2"
 DEFAULT_EXACT_POWER_FLOW_CACHE_BYTES = 64 * 1024 * 1024
 _ENTRY_OVERHEAD_BYTES = 128
 
@@ -28,12 +29,42 @@ def _hash_array(digest: "hashlib._Hash", values: np.ndarray) -> None:
     digest.update(array.tobytes())
 
 
+def _physical_bus_cache_input(values: np.ndarray) -> np.ndarray:
+    """Return bus input with warm-start-only voltage guesses normalized away.
+
+    PYPOWER builds its AC starting vector from BUS_VM/BUS_VA, then overwrites the
+    voltage magnitude at online generator buses from GEN_VG. For normal solved
+    PQ/PV/REF buses, BUS_VM is therefore only a starting guess. BUS_VA is also a
+    starting guess except at REF buses, whose angle defines the reference frame.
+
+    Keep REF-bus VA and all non-standard bus rows exact. Normalize only the
+    starting-point fields that do not define the physical AC problem.
+    """
+
+    bus = np.ascontiguousarray(values, dtype=np.float64).copy()
+    if bus.ndim != 2 or bus.shape[1] <= max(BUS_TYPE, VM, VA):
+        raise ValueError("Canonical power-flow bus matrix has an invalid shape.")
+
+    bus_types = np.rint(bus[:, BUS_TYPE]).astype(np.int64)
+    solved_bus = np.isin(bus_types, (PQ, PV, REF))
+    non_reference_solved_bus = solved_bus & (bus_types != REF)
+
+    bus[solved_bus, VM] = 0.0
+    bus[non_reference_solved_bus, VA] = 0.0
+    return bus
+
+
 def exact_power_flow_fingerprint(
     problem: CanonicalPowerFlowProblem,
     *,
     physics_fingerprint: str,
 ) -> bytes:
-    """Return the exact identity of one canonical AC solver invocation."""
+    """Return the identity of one physical AC power-flow problem.
+
+    Generator P/Q/status, loads, topology, ratings, voltage limits, generator
+    voltage setpoints and the physics contract remain exact. Only warm-start-only
+    BUS_VM/BUS_VA values are normalized, while REF-bus VA remains part of the key.
+    """
 
     digest = hashlib.sha256()
     digest.update(
@@ -44,7 +75,7 @@ def exact_power_flow_fingerprint(
     digest.update(str(physics_fingerprint).encode("ascii"))
     digest.update(b"\0")
     digest.update(np.asarray([float(problem.base_mva)], dtype=np.float64).tobytes())
-    _hash_array(digest, problem.bus)
+    _hash_array(digest, _physical_bus_cache_input(problem.bus))
     _hash_array(digest, problem.branch)
     _hash_array(digest, problem.gen)
     return digest.digest()
@@ -122,7 +153,7 @@ ExactPowerFlowOutcome = CachedPowerFlowSuccess | CachedPowerFlowFailure
 
 
 class ExactPowerFlowCache:
-    """Exact two-level cache: bounded RAM first, optional bounded persistent L2."""
+    """Exact physical-input cache: bounded RAM first, optional persistent L2."""
 
     def __init__(
         self,
@@ -217,14 +248,15 @@ class ExactPowerFlowCache:
         return stored
 
     def store_not_converged(self, key: bytes, message: str) -> bool:
-        outcome = CachedPowerFlowFailure(
-            failure_kind=PowerFlowFailureKind.NOT_CONVERGED,
-            message=str(message),
-        )
-        stored = self._put_l1(key, outcome)
-        if self._persistent is not None:
-            self._persistent.store_not_converged(key, outcome.message)
-        return stored
+        """Do not reuse solver failure across different voltage starting guesses.
+
+        Successful solutions are keyed by physical inputs with warm-start-only
+        BUS_VM/BUS_VA normalized. Non-convergence, however, can depend on that
+        starting point, so a failure must not be promoted to a physical-input hit.
+        """
+
+        del key, message
+        return False
 
     def discard(self, key: bytes) -> None:
         self._cache.discard(key)
