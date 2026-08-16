@@ -14,9 +14,11 @@ from pypower.idx_gen import GEN_BUS, GEN_STATUS, QG, QMAX, QMIN, VG
 from pypower.makeSbus import makeSbus
 from pypower.makeYbus import makeYbus
 from pypower.newtonpf import newtonpf as stock_newtonpf
+from scipy.sparse import hstack, vstack
 
 from grid_topology_ai import pypower_compat as compat
 from grid_topology_ai.pypower_newton_workspace import (
+    JacobianWorkspace,
     PowerDerivativeWorkspace,
     newton_power_flow,
 )
@@ -86,6 +88,36 @@ def _assert_same_derivatives(ybus, voltage) -> None:
     )
 
 
+def _stock_jacobian(ybus, voltage, pv, pq):
+    d_vm, d_va = stock_dSbus_dV(ybus, voltage)
+    pvpq = np.r_[pv, pq]
+
+    j11 = d_va[np.array([pvpq]).T, pvpq].real
+    j12 = d_vm[np.array([pvpq]).T, pq].real
+    j21 = d_va[np.array([pq]).T, pvpq].imag
+    j22 = d_vm[np.array([pq]).T, pq].imag
+    return vstack(
+        [hstack([j11, j12]), hstack([j21, j22])],
+        format="csr",
+    )
+
+
+def _assert_same_jacobian(ybus, voltage, pv, pq) -> None:
+    expected = _stock_jacobian(ybus, voltage, pv, pq)
+    derivatives = PowerDerivativeWorkspace.from_ybus(ybus)
+    workspace = JacobianWorkspace.from_derivatives(derivatives, pv, pq)
+    actual = workspace.jacobian(voltage)
+
+    assert actual.shape == expected.shape
+    assert actual.has_sorted_indices
+    np.testing.assert_allclose(
+        actual.toarray(),
+        expected.toarray(),
+        rtol=1e-12,
+        atol=1e-12,
+    )
+
+
 def _force_upper_limit(
     ppc: dict,
     baseline: dict,
@@ -140,6 +172,36 @@ def test_sparse_power_derivatives_match_with_tap_shift_and_outage() -> None:
 
     ybus, _sbus, voltage, _ref, _pv, _pq = _newton_problem(ppc)
     _assert_same_derivatives(ybus, _perturbed_voltage(voltage))
+
+
+@pytest.mark.parametrize("case_factory", [case9, case118])
+def test_prepared_jacobian_matches_stock(case_factory) -> None:
+    ybus, _sbus, voltage, _ref, pv, pq = _newton_problem(case_factory())
+    _assert_same_jacobian(ybus, _perturbed_voltage(voltage), pv, pq)
+
+
+def test_prepared_jacobian_matches_stock_with_tap_shift_and_outage() -> None:
+    ppc = case118()
+    ppc["branch"][0, TAP] = 1.05
+    ppc["branch"][1, SHIFT] = 2.0
+    ppc["branch"][2, BR_STATUS] = 0.0
+
+    ybus, _sbus, voltage, _ref, pv, pq = _newton_problem(ppc)
+    _assert_same_jacobian(ybus, _perturbed_voltage(voltage), pv, pq)
+
+
+def test_prepared_jacobian_matches_stock_after_pv_to_pq() -> None:
+    ybus, _sbus, voltage, _ref, pv, pq = _newton_problem(case9())
+    moved = int(pv[0])
+    converted_pv = np.asarray(pv[1:], dtype=int)
+    converted_pq = np.sort(np.r_[pq, moved]).astype(int)
+
+    _assert_same_jacobian(
+        ybus,
+        _perturbed_voltage(voltage),
+        converted_pv,
+        converted_pq,
+    )
 
 
 @pytest.mark.parametrize("case_factory", [case9, case118])
