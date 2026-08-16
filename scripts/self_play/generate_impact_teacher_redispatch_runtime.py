@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import argparse
+import math
 import os
+import sys
 
 
 _NATIVE_MATH_THREAD_ENV_VARS = (
@@ -11,6 +14,23 @@ _NATIVE_MATH_THREAD_ENV_VARS = (
     "BLIS_NUM_THREADS",
     "VECLIB_MAXIMUM_THREADS",
 )
+_EXACT_L1_CACHE_MAX_MB_ENV = "POWERGRID_EXACT_L1_CACHE_MAX_MB"
+
+
+def _configure_exact_l1_cache_from_cli() -> None:
+    parser = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
+    parser.add_argument("--exact-cache-max-mb", type=float, default=None)
+    parsed, remaining = parser.parse_known_args(sys.argv[1:])
+
+    if parsed.exact_cache_max_mb is None:
+        return
+
+    max_mb = float(parsed.exact_cache_max_mb)
+    if not math.isfinite(max_mb) or max_mb <= 0.0:
+        raise SystemExit("--exact-cache-max-mb must be a positive finite number.")
+
+    os.environ[_EXACT_L1_CACHE_MAX_MB_ENV] = f"{max_mb:.12g}"
+    sys.argv[:] = [sys.argv[0], *remaining]
 
 
 def _configure_native_math_threads() -> None:
@@ -20,12 +40,14 @@ def _configure_native_math_threads() -> None:
         os.environ.setdefault(name, "1")
 
 
-# This must run before importing NumPy/SciPy through the runtime/teacher stack.
+# These must run before importing the numerical/cache stack.
+_configure_exact_l1_cache_from_cli()
 _configure_native_math_threads()
 
 from pathlib import Path
 from typing import Any, Sequence
 
+from grid_topology_ai.cache import DEFAULT_EXACT_POWER_FLOW_CACHE_BYTES
 from grid_topology_ai.cache.persistent_exact import (
     DEFAULT_PERSISTENT_EXACT_CACHE_BYTES,
     PERSISTENT_EXACT_CACHE_DIR_ENV,
@@ -171,6 +193,10 @@ def run_parallel(
         )
     else:
         print(f"Persistent exact PF cache:  {persistent_root}")
+    print(
+        "Exact L1 PF cache:          "
+        f"{DEFAULT_EXACT_POWER_FLOW_CACHE_BYTES / (1024.0 * 1024.0):.1f} MiB / worker"
+    )
     print(f"Native math threads:        {_native_math_thread_summary()}")
 
     return _ORIGINAL_STAGED_RUN_PARALLEL(

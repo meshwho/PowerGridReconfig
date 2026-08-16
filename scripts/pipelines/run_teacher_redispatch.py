@@ -1,10 +1,10 @@
 from __future__ import annotations
 
+import argparse
+import math
 import os
 import sys
 from collections.abc import Sequence
-
-from scripts.pipelines import run_teacher_by_difficulty as pipeline
 
 
 REDISPATCH_TEACHER_MODULE = (
@@ -16,6 +16,7 @@ _SAFE_MEMORY_RESERVE_MB = 3072.0
 _WORKER_INIT_CONCURRENCY_OPTION = "--worker-init-concurrency"
 _WORKER_INIT_CONCURRENCY_ENV = "POWERGRID_TEACHER_INIT_CONCURRENCY"
 _DEFAULT_WORKER_INIT_CONCURRENCY = 1
+_EXACT_L1_CACHE_MAX_MB_ENV = "POWERGRID_EXACT_L1_CACHE_MAX_MB"
 
 
 def _option_value(argv: Sequence[str], name: str) -> str | None:
@@ -96,6 +97,22 @@ def _pop_worker_init_concurrency(argv: list[str]) -> int:
     return concurrency
 
 
+def _pop_exact_l1_cache_max_mb(argv: Sequence[str]) -> tuple[list[str], float | None]:
+    values = [str(value) for value in argv]
+    parser = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
+    parser.add_argument("--exact-cache-max-mb", type=float, default=None)
+    parsed, remaining = parser.parse_known_args(values[1:])
+
+    if parsed.exact_cache_max_mb is None:
+        return values, None
+
+    max_mb = float(parsed.exact_cache_max_mb)
+    if not math.isfinite(max_mb) or max_mb <= 0.0:
+        raise ValueError("--exact-cache-max-mb must be a positive finite number.")
+
+    return [values[0], *remaining], max_mb
+
+
 def canonical_argv(argv: Sequence[str]) -> list[str]:
     result = [str(value) for value in argv]
 
@@ -128,12 +145,18 @@ def canonical_argv(argv: Sequence[str]) -> list[str]:
 
 
 def main() -> None:
-    argv = canonical_argv(sys.argv)
     try:
+        argv, exact_cache_max_mb = _pop_exact_l1_cache_max_mb(sys.argv)
         init_concurrency = _pop_worker_init_concurrency(argv)
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
 
+    if exact_cache_max_mb is not None:
+        os.environ[_EXACT_L1_CACHE_MAX_MB_ENV] = f"{exact_cache_max_mb:.12g}"
+
+    from scripts.pipelines import run_teacher_by_difficulty as pipeline
+
+    argv = canonical_argv(argv)
     os.environ[_WORKER_INIT_CONCURRENCY_ENV] = str(init_concurrency)
     sys.argv[:] = argv
     pipeline.main()
