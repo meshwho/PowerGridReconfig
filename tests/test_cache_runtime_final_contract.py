@@ -30,12 +30,12 @@ def test_production_runtime_has_no_global_cache_clear_protocol() -> None:
         assert forbidden not in combined
 
 
-def test_production_runtime_uses_bounded_worker_recycling() -> None:
+def test_production_runtime_does_not_force_worker_recycling() -> None:
     staged = _source(
         "scripts/self_play/generate_impact_teacher_redispatch_staged.py"
     )
 
-    assert "_DEFAULT_MAX_TASKS_PER_CHILD = 32" in staged
+    assert "_DEFAULT_MAX_TASKS_PER_CHILD: int | None = None" in staged
     assert "max_tasks_per_child=max_tasks_per_child" in staged
     assert "byte-bounded caches; no global cache clearing" in staged
 
