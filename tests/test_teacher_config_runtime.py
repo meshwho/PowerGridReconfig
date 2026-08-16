@@ -12,6 +12,7 @@ from grid_topology_ai.teacher_config import (
     semantic_teacher_task_config,
     split_teacher_task_config,
     teacher_run_id,
+    teacher_source_identity,
 )
 
 
@@ -40,14 +41,28 @@ def _task_config(**overrides):
     return config
 
 
-def _checkpoint_config(task_config):
-    return {
+def _checkpoint_config(task_config, *, source_identity=None):
+    config = {
         "checkpoint_version": 2,
         "raw_dir": "D:/data/raw",
         "transitions_path": "D:/data/transitions.csv",
         "scenario_ids": [1, 2, 3],
         "task_config": task_config,
     }
+    if source_identity is not None:
+        config["source_identity"] = source_identity
+    return config
+
+
+def _source_files(tmp_path):
+    raw_dir = tmp_path / "raw"
+    raw_dir.mkdir()
+    (raw_dir / "bus_data.parquet").write_bytes(b"bus-v1")
+    (raw_dir / "branch_data.parquet").write_bytes(b"branch-v1")
+    (raw_dir / "gen_data.parquet").write_bytes(b"gen-v1")
+    transitions = tmp_path / "transitions.csv"
+    transitions.write_bytes(b"scenario\n1\n2\n3\n")
+    return raw_dir, transitions
 
 
 def test_task_config_split_keeps_cache_and_memory_controls_runtime_only():
@@ -112,6 +127,51 @@ def test_checkpoint_rejects_semantic_search_change(tmp_path):
         ensure_teacher_checkpoint_config(
             config_path,
             _checkpoint_config(_task_config(depth=6)),
+        )
+
+
+def test_teacher_source_identity_changes_with_raw_content(tmp_path):
+    raw_dir, transitions = _source_files(tmp_path)
+    original = teacher_source_identity(raw_dir, transitions)
+
+    (raw_dir / "branch_data.parquet").write_bytes(b"branch-v2")
+    changed = teacher_source_identity(raw_dir, transitions)
+
+    assert changed != original
+
+
+def test_teacher_source_identity_changes_with_transitions_content(tmp_path):
+    raw_dir, transitions = _source_files(tmp_path)
+    original = teacher_source_identity(raw_dir, transitions)
+
+    transitions.write_bytes(b"scenario\n1\n2\n4\n")
+    changed = teacher_source_identity(raw_dir, transitions)
+
+    assert changed != original
+
+
+def test_checkpoint_rejects_changed_source_content_at_same_paths(tmp_path):
+    raw_dir, transitions = _source_files(tmp_path)
+    config_path = tmp_path / "teacher_checkpoint_config.json"
+    original_identity = teacher_source_identity(raw_dir, transitions)
+    ensure_teacher_checkpoint_config(
+        config_path,
+        _checkpoint_config(
+            _task_config(),
+            source_identity=original_identity,
+        ),
+    )
+
+    (raw_dir / "bus_data.parquet").write_bytes(b"bus-v2")
+    changed_identity = teacher_source_identity(raw_dir, transitions)
+
+    with pytest.raises(RuntimeError, match="does not match"):
+        ensure_teacher_checkpoint_config(
+            config_path,
+            _checkpoint_config(
+                _task_config(),
+                source_identity=changed_identity,
+            ),
         )
 
 
