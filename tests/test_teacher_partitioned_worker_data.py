@@ -42,7 +42,7 @@ def test_parallel_runner_routes_batches_to_matching_adapter_shards(monkeypatch) 
 
     class FakeFuture:
         def result(self):
-            return []
+            return [], 0.0
 
     class FakeExecutor:
         def __init__(self, **kwargs):
@@ -50,7 +50,8 @@ def test_parallel_runner_routes_batches_to_matching_adapter_shards(monkeypatch) 
             self.submitted = []
             executors.append(self)
 
-        def submit(self, fn, batch):
+        def submit(self, fn, process_batch, batch):
+            assert fn is staged._run_timed_batch
             self.submitted.append(list(batch))
             return FakeFuture()
 

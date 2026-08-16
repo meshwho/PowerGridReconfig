@@ -294,7 +294,6 @@ class ExactPowerFlowCache:
                 # Old persistent negative records were keyed by the physical
                 # problem and are unsafe under the split-key contract.
                 self._persistent.discard(positive_key)
-            self.l2_misses += 1
 
         failure = self._failure_cache.get(negative_key)
         if failure is not None:
@@ -302,6 +301,24 @@ class ExactPowerFlowCache:
             self.negative_hits += 1
             self.l1_hits += 1
             return key, failure
+
+        if self._persistent is not None:
+            persistent = self._persistent.lookup(negative_key)
+            if isinstance(persistent, PersistentPowerFlowFailure):
+                failure = CachedPowerFlowFailure(
+                    failure_kind=PowerFlowFailureKind.NOT_CONVERGED,
+                    message=persistent.message,
+                )
+                self._put_failure(negative_key, failure)
+                self.hits += 1
+                self.negative_hits += 1
+                self.l2_hits += 1
+                return key, failure
+            if isinstance(persistent, PersistentPowerFlowSuccess):
+                # A success under the invocation key belongs to an obsolete
+                # key contract and must not be reused as a physical result.
+                self._persistent.discard(negative_key)
+            self.l2_misses += 1
 
         self.misses += 1
         return key, None
@@ -323,6 +340,7 @@ class ExactPowerFlowCache:
                 branch=outcome.branch,
                 gen=outcome.gen,
             )
+            self._persistent.discard(negative_key)
         return stored
 
     def store_not_converged(
@@ -330,11 +348,15 @@ class ExactPowerFlowCache:
         key: PowerFlowCacheKey | bytes,
         message: str,
     ) -> bool:
+        negative_key = self._negative_key(key)
         outcome = CachedPowerFlowFailure(
             failure_kind=PowerFlowFailureKind.NOT_CONVERGED,
             message=str(message),
         )
-        return self._put_failure(self._negative_key(key), outcome)
+        stored = self._put_failure(negative_key, outcome)
+        if self._persistent is not None:
+            self._persistent.store_not_converged(negative_key, outcome.message)
+        return stored
 
     def discard(self, key: PowerFlowCacheKey | bytes) -> None:
         positive_key = self._positive_key(key)
@@ -343,6 +365,7 @@ class ExactPowerFlowCache:
         self._failure_cache.discard(negative_key)
         if self._persistent is not None:
             self._persistent.discard(positive_key)
+            self._persistent.discard(negative_key)
 
     def clear(self, *, reset_counters: bool = True) -> None:
         """Clear worker-local caches; persistent successes survive recycling."""

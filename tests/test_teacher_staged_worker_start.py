@@ -54,19 +54,20 @@ def test_worker_init_installs_bounded_runtime_policy(monkeypatch) -> None:
         teacher._WORKER_CONTEXT = previous_context
 
 
-def test_parallel_workers_are_recycled_by_default(monkeypatch, tmp_path: Path) -> None:
+def test_parallel_workers_are_not_recycled_by_default(monkeypatch, tmp_path: Path) -> None:
     executors = []
 
     class FakeFuture:
         def result(self):
-            return []
+            return [], 0.0
 
     class FakeExecutor:
         def __init__(self, **kwargs):
             self.kwargs = kwargs
             executors.append(self)
 
-        def submit(self, fn, batch):
+        def submit(self, fn, process_batch, batch):
+            assert fn is staged._run_timed_batch
             return FakeFuture()
 
         def shutdown(self, *, wait, cancel_futures):
@@ -95,8 +96,7 @@ def test_parallel_workers_are_recycled_by_default(monkeypatch, tmp_path: Path) -
     assert task_config["max_tasks_per_child"] == 0
     assert len(executors) == 2
     assert all(
-        executor.kwargs["max_tasks_per_child"]
-        == staged._DEFAULT_MAX_TASKS_PER_CHILD
+        executor.kwargs["max_tasks_per_child"] is None
         for executor in executors
     )
     assert all(executor.kwargs["initargs"][-1] is None for executor in executors)

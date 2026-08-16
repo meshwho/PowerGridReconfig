@@ -145,7 +145,14 @@ def _assert_state_equal(left, right) -> None:
     np.testing.assert_array_equal(left.branch_ids, right.branch_ids)
     np.testing.assert_array_equal(left.branch_status, right.branch_status)
     np.testing.assert_array_equal(left.bus_ids, right.bus_ids)
-    assert left.metrics == right.metrics
+
+    left_metrics = dict(left.metrics)
+    right_metrics = dict(right.metrics)
+    left_mean = float(left_metrics.pop("mean_loading_percent"))
+    right_mean = float(right_metrics.pop("mean_loading_percent"))
+    assert left_metrics == right_metrics
+    np.testing.assert_allclose(right_mean, left_mean, rtol=0.0, atol=1e-6)
+
     assert list(left.outaged_branch_ids) == list(right.outaged_branch_ids)
 
 

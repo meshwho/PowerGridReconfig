@@ -104,19 +104,27 @@ def test_exact_workload_uses_current_l1_l2_counters_only() -> None:
         "cache_hits": 8,
         "cache_misses": 5,
         "cache_hit_rate": 8 / 13,
+        "positive_hits": 0,
+        "negative_hits": 1,
         "l1_hits": 6,
         "l1_misses": 7,
         "l2_enabled": True,
         "l2_hits": 2,
         "l2_misses": 5,
-        "negative_hits": 1,
-        "evictions": 3,
+        "positive_evictions": 0,
+        "negative_evictions": 0,
+        "warm_start_enabled": False,
+        "warm_start_hits": 0,
+        "warm_start_misses": 0,
+        "warm_start_evictions": 0,
+        "warm_start_distance_rejections": 0,
+        "warm_start_fallbacks": 0,
         "stock_runpf_calls": 7,
         "q_limit_resolves": 2,
         "solves_per_cache_miss": 7 / 5,
     }
+    assert "evictions" not in workload
     assert "tolerant_cache_hits" not in workload
-    assert "warm_start_hits" not in workload
     assert "cold_start_misses" not in workload
 
 
@@ -129,13 +137,15 @@ def test_exact_workload_summary_reports_ram_cache_without_legacy_labels(
                 "logical_evaluations": 100,
                 "cache_hits": 20,
                 "cache_misses": 80,
+                "positive_hits": 17,
+                "negative_hits": 3,
                 "l1_hits": 20,
                 "l1_misses": 80,
                 "l2_enabled": False,
                 "l2_hits": 0,
                 "l2_misses": 0,
-                "negative_hits": 3,
-                "evictions": 2,
+                "positive_evictions": 1,
+                "negative_evictions": 1,
                 "stock_runpf_calls": 160,
                 "q_limit_resolves": 80,
             }
@@ -143,14 +153,16 @@ def test_exact_workload_summary_reports_ram_cache_without_legacy_labels(
     )
     output = capsys.readouterr().out
 
-    assert "Exact PF cache hits:       20" in output
-    assert "L1 RAM hits:             20" in output
-    assert "L2 persistent cache:     disabled" in output
-    assert "negative hits:           3" in output
-    assert "Exact PF cache misses:     80" in output
-    assert "L1 evictions:            2" in output
+    assert "PF cache hits:             20" in output
+    assert "  positive physical hits:  17" in output
+    assert "  negative exact hits:     3" in output
+    assert "  persistent L2:           disabled" in output
+    assert "PF cache misses:           80" in output
+    assert "  positive L1 misses:      80" in output
+    assert "  positive L1 evictions:   1" in output
+    assert "  negative L1 evictions:   1" in output
     assert "Stock PYPOWER solves:      160" in output
     assert "Q-limit re-solves:         80" in output
+    assert "Exact PF cache" not in output
     assert "tolerant" not in output.lower()
-    assert "warm-start" not in output.lower()
     assert "cold start" not in output.lower()
