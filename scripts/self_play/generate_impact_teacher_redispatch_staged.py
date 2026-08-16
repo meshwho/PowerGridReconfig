@@ -20,7 +20,7 @@ from scripts.self_play import generate_impact_teacher_redispatch as redispatch
 
 
 _RUNTIME_LODF_STRUCTURE_CACHE = "_redispatch_lodf_structure_cache"
-_DEFAULT_MAX_TASKS_PER_CHILD = 32
+_DEFAULT_MAX_TASKS_PER_CHILD: int | None = None
 
 _ORIGINAL_INIT_WORKER_CONTEXT = redispatch.init_worker_context
 _ORIGINAL_IMPACT_BEAM_SEARCH_CONFIG = redispatch.base.teacher.ImpactBeamSearchConfig
@@ -67,7 +67,7 @@ def rank_actions_by_lodf_screening(
 
 
 def _bounded_worker_housekeeping() -> None:
-    """Bounded caches and process recycling replace global cache clearing."""
+    """Bounded caches and process lifetime replace global cache clearing."""
 
     return None
 
@@ -177,7 +177,9 @@ def _run_timed_batch(
     return results, time.perf_counter() - started
 
 
-def _effective_max_tasks_per_child(task_config: dict[str, Any]) -> int:
+def _effective_max_tasks_per_child(
+    task_config: dict[str, Any],
+) -> int | None:
     configured = int(task_config.get("max_tasks_per_child", 0))
     return configured if configured > 0 else _DEFAULT_MAX_TASKS_PER_CHILD
 
@@ -208,7 +210,12 @@ def run_parallel(
         f"Partitioned adapters: {workers} workers, "
         f"{min(counts)}-{max(counts)} scenarios per worker"
     )
-    print(f"Worker recycle interval: {max_tasks_per_child} batches")
+    recycle_text = (
+        "disabled"
+        if max_tasks_per_child is None
+        else f"{max_tasks_per_child} batches"
+    )
+    print(f"Worker recycle interval: {recycle_text}")
     print("Worker cache policy: byte-bounded caches; no global cache clearing")
     print(f"\nParallel sharded mode: {workers} workers")
     print(f"Batches:                {len(scenario_batches)}")
