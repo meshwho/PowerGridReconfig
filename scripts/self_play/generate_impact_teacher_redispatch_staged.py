@@ -15,6 +15,7 @@ from grid_topology_ai.lodf import (
 from grid_topology_ai.teacher_config import (
     ensure_teacher_checkpoint_config,
     teacher_run_id,
+    teacher_source_identity,
 )
 from scripts.self_play import generate_impact_teacher_redispatch as redispatch
 
@@ -32,6 +33,24 @@ def _worker_run_id() -> str:
     ctx = teacher._require_worker_context()
     states_dir = Path(ctx["state_store"].output_dir)
     return teacher_run_id(states_dir, ctx["task_config"])
+
+
+def _ensure_source_bound_checkpoint_config(
+    config_path: Path,
+    config: dict[str, Any],
+) -> None:
+    bound_config = dict(config)
+    raw_dir = bound_config.get("raw_dir")
+    transitions_path = bound_config.get("transitions_path")
+    if raw_dir is None or transitions_path is None:
+        raise ValueError(
+            "Teacher checkpoint config requires raw_dir and transitions_path."
+        )
+    bound_config["source_identity"] = teacher_source_identity(
+        raw_dir,
+        transitions_path,
+    )
+    ensure_teacher_checkpoint_config(config_path, bound_config)
 
 
 def rank_actions_by_lodf_screening(
@@ -333,7 +352,7 @@ def _install_staged_start() -> None:
     redispatch.init_worker_context = init_worker_context
     redispatch.run_parallel = run_parallel
     redispatch.base.teacher.ensure_checkpoint_config = (
-        ensure_teacher_checkpoint_config
+        _ensure_source_bound_checkpoint_config
     )
     redispatch.base._worker_run_id = _worker_run_id
     redispatch.base.teacher.rank_actions_by_lodf_screening = (

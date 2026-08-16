@@ -7,6 +7,12 @@ from typing import Any, Mapping
 
 
 CHECKPOINT_CONFIG_SCHEMA_VERSION = 1
+TEACHER_SOURCE_IDENTITY_SCHEMA_VERSION = 1
+_TEACHER_RAW_SOURCE_FILES = (
+    "bus_data.parquet",
+    "branch_data.parquet",
+    "gen_data.parquet",
+)
 
 # These settings control execution resources only. Exact PF caching is physically
 # transparent, so enabling or disabling it cannot change teacher semantics.
@@ -46,6 +52,56 @@ def _json_normalize(value: Any) -> Any:
             sort_keys=True,
             allow_nan=False,
         )
+    )
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while True:
+            chunk = handle.read(8 * 1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def teacher_source_identity(
+    raw_dir: str | Path,
+    transitions_path: str | Path,
+) -> dict[str, Any]:
+    """Hash teacher source contents so resume cannot mix changed inputs."""
+
+    raw_path = Path(raw_dir)
+    transitions = Path(transitions_path)
+    combined = hashlib.sha256()
+    combined.update(
+        f"teacher-source-v{TEACHER_SOURCE_IDENTITY_SCHEMA_VERSION}".encode("ascii")
+    )
+
+    raw_files: dict[str, str] = {}
+    for name in _TEACHER_RAW_SOURCE_FILES:
+        path = raw_path / name
+        if not path.is_file():
+            raise FileNotFoundError(f"Required GridFM file not found: {path}")
+        file_digest = _sha256_file(path)
+        raw_files[name] = file_digest
+        combined.update(name.encode("utf-8"))
+        combined.update(file_digest.encode("ascii"))
+
+    if not transitions.is_file():
+        raise FileNotFoundError(f"Transitions file not found: {transitions}")
+    transitions_digest = _sha256_file(transitions)
+    combined.update(b"transitions")
+    combined.update(transitions_digest.encode("ascii"))
+
+    return _json_normalize(
+        {
+            "schema_version": TEACHER_SOURCE_IDENTITY_SCHEMA_VERSION,
+            "raw_files": raw_files,
+            "transitions_sha256": transitions_digest,
+            "fingerprint": combined.hexdigest(),
+        }
     )
 
 
