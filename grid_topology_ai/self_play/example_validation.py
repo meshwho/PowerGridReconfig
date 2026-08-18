@@ -13,10 +13,8 @@ from grid_topology_ai.outcome_contract import (
     TERMINAL_OUTCOME_EVIDENCE_SCHEMA_VERSION,
     TerminalOutcomeEvidence,
 )
-from grid_topology_ai.value_targets import (
-    terminal_evidence_from_row,
-    terminal_value_from_outcome,
-)
+from grid_topology_ai.return_contract import terminal_utility_from_outcome
+from grid_topology_ai.value_targets import terminal_evidence_from_row
 from grid_topology_ai.self_play import _example_validation_core as _core
 from grid_topology_ai.self_play._example_validation_core import *  # noqa: F401,F403
 from grid_topology_ai.contracts import (
@@ -530,7 +528,7 @@ def _validate_outcome_contract(
             f"{index}. File: {source}"
         )
 
-    terminal_value, expected_class = terminal_value_from_outcome(
+    terminal_value, expected_class = terminal_utility_from_outcome(
         solved=solved,
         termination_reason=reason,
         evidence=evidence,

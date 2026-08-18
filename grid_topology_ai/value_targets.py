@@ -56,20 +56,6 @@ def _require_gamma(value: object) -> float:
     return gamma
 
 
-def terminal_value_from_outcome(
-    solved: bool,
-    termination_reason: TerminationReason | str | None,
-    *,
-    evidence: TerminalOutcomeEvidence | None = None,
-) -> tuple[float, str]:
-    """Compatibility name for the canonical terminal-utility mapping."""
-    return terminal_utility_from_outcome(
-        _require_bool(solved, field="solved"),
-        termination_reason,
-        evidence=evidence,
-    )
-
-
 def terminal_evidence_from_row(
     row: Mapping[str, object],
     *,

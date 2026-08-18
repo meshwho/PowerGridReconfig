@@ -21,6 +21,7 @@ from grid_topology_ai.contracts import (
 from grid_topology_ai.return_contract import (
     TERMINAL_UTILITY_GAMMA,
     VALUE_TARGET_MODE,
+    terminal_utility_from_outcome,
 )
 from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
 from grid_topology_ai.state_artifact_schema import (
@@ -37,7 +38,6 @@ from grid_topology_ai.topology_actions import (
     build_branch_action_slots,
     require_branch_status_policy_layout,
 )
-from grid_topology_ai.value_targets import terminal_value_from_outcome
 
 
 
@@ -555,7 +555,7 @@ def _validate_outcome_contract(
             f"File: {source}"
         )
 
-    terminal_value, expected_class = terminal_value_from_outcome(
+    terminal_value, expected_class = terminal_utility_from_outcome(
         solved=solved,
         termination_reason=reason,
     )
@@ -697,7 +697,6 @@ def validate_state_physics_provenance(
 
     if not isinstance(metadata, Mapping):
         raise ValueError(f"State metadata_json must be an object: {state_path}")
-
     require_physics_provenance(
         metadata,
         source=str(state_path),
