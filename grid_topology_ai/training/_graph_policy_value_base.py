@@ -16,9 +16,6 @@ from grid_topology_ai.contracts import require_physics_provenance
 from grid_topology_ai.models.graph_batch import (
     collate_graph_samples,
 )
-from grid_topology_ai.models.graph_policy_value_net import (
-    GraphPolicyValueNet,
-)
 from grid_topology_ai.models.graph_policy_value_net_v2 import (
     GraphPolicyValueNetV2,
 )
@@ -45,7 +42,8 @@ from grid_topology_ai.topology_actions import (
     STOP_PLUS_BRANCH_STATUS_POLICY_LAYOUT,
 )
 
-GraphModel = GraphPolicyValueNet | GraphPolicyValueNetV2
+GraphModel = GraphPolicyValueNetV2
+
 
 @dataclass(frozen=True, slots=True)
 class TrainingRequest:
@@ -128,6 +126,7 @@ def move_batch_to_device(
 
     return moved
 
+
 def _forward_graph_model(
     model: GraphModel,
     *,
@@ -139,30 +138,16 @@ def _forward_graph_model(
     node_batch: torch.Tensor | None = None,
     edge_batch: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """
-    Call graph V1 and V2 without changing the legacy V1 forward contract.
-
-    GraphPolicyValueNetV2 receives the physical edge activity mask.
-    GraphPolicyValueNet V1 keeps its existing input signature.
-    """
-
-    if isinstance(model, GraphPolicyValueNetV2):
-        return model(
-            bus_features=bus_features,
-            branch_features=branch_features,
-            edge_index=edge_index,
-            edge_active_mask=edge_active_mask,
-            action_mask=action_mask,
-            node_batch=node_batch,
-            edge_batch=edge_batch,
-        )
-
     return model(
         bus_features=bus_features,
         branch_features=branch_features,
         edge_index=edge_index,
+        edge_active_mask=edge_active_mask,
         action_mask=action_mask,
+        node_batch=node_batch,
+        edge_batch=edge_batch,
     )
+
 
 def train_one_epoch(
     model: GraphModel,
@@ -533,7 +518,6 @@ def _build_model(
     dataset: GraphSelfPlayDataset,
     device: torch.device,
 ) -> GraphModel:
-
     if (
         dataset.policy_layout
         != STOP_PLUS_BRANCH_STATUS_POLICY_LAYOUT
@@ -544,62 +528,13 @@ def _build_model(
             "'stop_plus_branch_status_v1'."
         )
 
-    if request.config.model_type == "graph_v2":
-        return GraphPolicyValueNetV2(
-            num_bus_features=(
-                dataset.num_bus_features
-            ),
-            num_branch_features=(
-                dataset.num_branch_features
-            ),
-            hidden_dim=(
-                request.config.hidden_dim
-            ),
-            num_layers=(
-                request.config.num_layers
-            ),
-            dropout=request.config.dropout,
-        ).to(device)
-
-    if request.config.model_type == "graph_v1":
-
-        if dataset.action_layout_count != 1:
-            raise ValueError(
-                "Graph V1 requires one fixed "
-                "action layout for the entire "
-                "dataset."
-            )
-
-        expected_num_actions = (
-            dataset.num_branches + 1
-        )
-
-        if (
-            dataset.num_actions
-            != expected_num_actions
-        ):
-            raise ValueError(
-                "Graph V1 requires num_actions "
-                "= num_branches + 1. "
-                f"Expected {expected_num_actions}, "
-                f"got {dataset.num_actions}."
-            )
-
-        return GraphPolicyValueNet(
-            num_bus_features=dataset.num_bus_features,
-            num_branch_features=dataset.num_branch_features,
-            num_actions=dataset.num_actions,
-            hidden_dim=request.config.hidden_dim,
-            num_layers=request.config.num_layers,
-            dropout=request.config.dropout,
-        ).to(device)
-
-    raise ValueError(
-        "Unsupported training model_type: "
-        f"{request.config.model_type!r}. "
-        "Expected 'graph_v1' or 'graph_v2'."
-    )
-
+    return GraphPolicyValueNetV2(
+        num_bus_features=dataset.num_bus_features,
+        num_branch_features=dataset.num_branch_features,
+        hidden_dim=request.config.hidden_dim,
+        num_layers=request.config.num_layers,
+        dropout=request.config.dropout,
+    ).to(device)
 
 
 def _normalization_provenance(
@@ -649,6 +584,7 @@ def _validate_normalization_feature_dimensions(
                 f"Expected dimension {expected}, observed shape {observed}. "
                 f"Checkpoint: {checkpoint_path}"
             )
+
 
 def train_graph_policy_value_model(
     request: TrainingRequest,
@@ -807,7 +743,7 @@ def train_graph_policy_value_model(
     print(f"Hidden dim:    {request.config.hidden_dim}")
     print(f"Num layers:    {request.config.num_layers}")
     print(f"Dropout:       {request.config.dropout}")
-    print(f"Model type:    {request.config.model_type}")
+    print("Model type:    graph_v2")
     print(f"Value loss:    HuberLoss(delta={request.config.value_huber_delta})")
 
     if val_dataset is not None:
@@ -822,12 +758,7 @@ def train_graph_policy_value_model(
     pin_memory = device.type == "cuda"
     train_generator = torch.Generator()
     train_generator.manual_seed(int(request.seed))
-
-    collate_fn = (
-        collate_graph_samples
-        if request.config.model_type == "graph_v2"
-        else None
-    )
+    collate_fn = collate_graph_samples
 
     loader = DataLoader(
         dataset,
@@ -857,7 +788,7 @@ def train_graph_policy_value_model(
             model=model,
             checkpoint_path=request.init_checkpoint,
             dataset=dataset,
-            model_type=request.config.model_type,
+            model_type="graph_v2",
             hidden_dim=request.config.hidden_dim,
             num_layers=request.config.num_layers,
             device=device,
