@@ -72,9 +72,6 @@ class GridFMReward:
         discount_factor: float = 0.95,
         overload_limit_percent: float = OVERLOAD_LIMIT_PERCENT,
         hard_overload_limit_percent: float = HARD_OVERLOAD_LIMIT_PERCENT,
-        switching_penalty: float = 0.0,
-        non_convergence_penalty: float = 0.0,
-        solved_bonus: float = 0.0,
         total_overload_weight: float = 2.0,
         hard_overload_weight: float = 5.0,
         num_overloaded_weight: float = 10.0,
@@ -92,22 +89,6 @@ class GridFMReward:
             overload_limit_percent = physics_config.overload_limit_percent
             hard_overload_limit_percent = physics_config.hard_overload_limit_percent
 
-        non_potential_terms = {
-            "switching_penalty": switching_penalty,
-            "non_convergence_penalty": non_convergence_penalty,
-            "solved_bonus": solved_bonus,
-        }
-        enabled = {
-            name: float(value)
-            for name, value in non_potential_terms.items()
-            if float(value) != 0.0
-        }
-        if enabled:
-            raise ValueError(
-                "GridFMReward accepts only potential-based shaping. "
-                f"Remove non-potential terms: {enabled}."
-            )
-
         self.physics_config = physics_config
         self.discount_factor = require_reward_discount_factor(
             discount_factor
@@ -122,10 +103,6 @@ class GridFMReward:
             voltage_violation=voltage_violation_weight,
         )
 
-        # Compatibility attributes remain zero by contract.
-        self.switching_penalty = 0.0
-        self.non_convergence_penalty = 0.0
-        self.solved_bonus = 0.0
         self.total_overload_weight = self.utility_weights.total_overload
         self.hard_overload_weight = self.utility_weights.hard_overload
         self.num_overloaded_weight = self.utility_weights.num_overloaded
@@ -152,12 +129,10 @@ class GridFMReward:
         self,
         before_state: GridFMState,
         after_state: GridFMState | None,
-        action_is_switching: bool,
         power_flow_success: bool,
     ) -> GridFMRewardBreakdown:
         """Compute ``gamma*Phi(after) - Phi(before)`` and diagnostics."""
 
-        _ = action_is_switching  # Switching costs are outside this contract.
         before = self._utility_breakdown(before_state)
         before_potential = -before.penalty
 
