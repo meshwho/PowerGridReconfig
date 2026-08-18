@@ -456,22 +456,6 @@ class GridFMAdapter:
 
             voltage_metrics = compute_voltage_violation_metrics(bus)
 
-            low_voltage_violation = np.maximum(
-                bus["min_vm_pu"].to_numpy(dtype=float) - bus["Vm"].to_numpy(dtype=float),
-                0.0,
-            )
-
-            high_voltage_violation = np.maximum(
-                bus["Vm"].to_numpy(dtype=float) - bus["max_vm_pu"].to_numpy(dtype=float),
-                0.0,
-            )
-
-            total_low_voltage_violation = float(np.sum(low_voltage_violation))
-            total_high_voltage_violation = float(np.sum(high_voltage_violation))
-            total_voltage_violation = (
-                    total_low_voltage_violation + total_high_voltage_violation
-            )
-
             rows.append(
                 {
                     "scenario": scenario_id,
