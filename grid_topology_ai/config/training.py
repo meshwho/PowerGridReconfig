@@ -43,14 +43,8 @@ class TrainingConfig:
                 self.examples_per_iteration,
             )
 
-        require_positive(
-            "training.batch_size",
-            self.batch_size,
-        )
-        require_positive(
-            "training.learning_rate",
-            self.learning_rate,
-        )
+        require_positive("training.batch_size", self.batch_size)
+        require_positive("training.learning_rate", self.learning_rate)
         require_non_negative(
             "training.value_loss_weight",
             self.value_loss_weight,
@@ -65,10 +59,7 @@ class TrainingConfig:
             "training.min_validation_scenarios",
             self.min_validation_scenarios,
         )
-        require_non_negative(
-            "training.num_workers",
-            self.num_workers,
-        )
+        require_non_negative("training.num_workers", self.num_workers)
         require_choice(
             "training.device",
             self.device,
@@ -77,20 +68,11 @@ class TrainingConfig:
         require_choice(
             "training.model_type",
             self.model_type,
-            {"graph_v1", "graph_v2"},
+            {"graph_v2"},
         )
-        require_positive(
-            "training.hidden_dim",
-            self.hidden_dim,
-        )
-        require_positive(
-            "training.num_layers",
-            self.num_layers,
-        )
-        require_fraction(
-            "training.dropout",
-            self.dropout,
-        )
+        require_positive("training.hidden_dim", self.hidden_dim)
+        require_positive("training.num_layers", self.num_layers)
+        require_fraction("training.dropout", self.dropout)
 
     @classmethod
     def from_mapping(
@@ -107,33 +89,21 @@ class TrainingConfig:
                 None if examples is None else int(examples)
             ),
             batch_size=int(data.get("batch_size", 64)),
-            learning_rate=float(
-                data.get("learning_rate", 3e-4)
-            ),
-            value_loss_weight=float(
-                data.get("value_loss_weight", 1.0)
-            ),
-            value_huber_delta=float(
-                data.get("value_huber_delta", 1.0)
-            ),
-            validation_fraction=float(
-                data.get("validation_fraction", 0.20)
-            ),
+            learning_rate=float(data.get("learning_rate", 3e-4)),
+            value_loss_weight=float(data.get("value_loss_weight", 1.0)),
+            value_huber_delta=float(data.get("value_huber_delta", 1.0)),
+            validation_fraction=float(data.get("validation_fraction", 0.20)),
             min_validation_scenarios=int(
                 data.get("min_validation_scenarios", 1)
             ),
             num_workers=int(data.get("num_workers", 0)),
             device=str(data.get("device", "auto")),
-            model_type=str(
-                data.get("model_type", "graph_v2")
-            ),
+            model_type=str(data.get("model_type", "graph_v2")),
             hidden_dim=int(data.get("hidden_dim", 128)),
             num_layers=int(data.get("num_layers", 3)),
             dropout=float(data.get("dropout", 0.0)),
             save_multiple_best=bool(
                 data.get("save_multiple_best", False)
             ),
-            no_tensorboard=bool(
-                data.get("no_tensorboard", True)
-            ),
+            no_tensorboard=bool(data.get("no_tensorboard", True)),
         )
