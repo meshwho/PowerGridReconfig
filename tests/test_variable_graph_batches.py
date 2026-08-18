@@ -188,9 +188,6 @@ def test_graph_v2_scores_variable_edge_counts_with_one_model() -> None:
         hidden_dim=16,
         num_layers=2,
         dropout=0.0,
-        # Reference metadata from the small topology must not
-        # constrain the larger graph at runtime.
-        num_actions=3,
     )
     model.eval()
 
@@ -399,9 +396,6 @@ def test_graph_v2_checkpoint_weights_cross_topology_cardinality(
         hidden_dim=16,
         num_layers=2,
         dropout=0.0,
-        num_actions=int(
-            small["action_mask"].numel()
-        ),
     )
     source_model.eval()
 
