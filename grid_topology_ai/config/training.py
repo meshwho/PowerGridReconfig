@@ -26,13 +26,17 @@ class TrainingConfig:
     num_workers: int = 0
     device: str = "auto"
 
-    model_type: str = "graph_v2"
     hidden_dim: int = 128
     num_layers: int = 3
     dropout: float = 0.0
 
     save_multiple_best: bool = False
     no_tensorboard: bool = True
+
+    @property
+    def model_type(self) -> str:
+        """Temporary internal bridge until the legacy training base is removed."""
+        return "graph_v2"
 
     def __post_init__(self) -> None:
         require_positive("training.epochs", self.epochs)
@@ -65,11 +69,6 @@ class TrainingConfig:
             self.device,
             {"auto", "cpu", "cuda"},
         )
-        require_choice(
-            "training.model_type",
-            self.model_type,
-            {"graph_v2"},
-        )
         require_positive("training.hidden_dim", self.hidden_dim)
         require_positive("training.num_layers", self.num_layers)
         require_fraction("training.dropout", self.dropout)
@@ -98,7 +97,6 @@ class TrainingConfig:
             ),
             num_workers=int(data.get("num_workers", 0)),
             device=str(data.get("device", "auto")),
-            model_type=str(data.get("model_type", "graph_v2")),
             hidden_dim=int(data.get("hidden_dim", 128)),
             num_layers=int(data.get("num_layers", 3)),
             dropout=float(data.get("dropout", 0.0)),
