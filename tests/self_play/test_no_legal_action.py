@@ -255,7 +255,7 @@ class _GenerationEnv:
     def reset(self, scenario_id: int) -> None:
         pass
 
-    def valid_action_mask(self) -> list[bool]:
+    def operational_action_mask(self) -> list[bool]:
         return [True, True]
 
     def step(self, action: object) -> SimpleNamespace:
