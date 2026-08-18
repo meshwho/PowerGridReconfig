@@ -737,7 +737,7 @@ def generate_self_play_examples(request: GenerationRequest) -> Path:
                     "Active self-play environment has no current state."
                 )
 
-            action_mask = env.valid_action_mask()
+            action_mask = env.operational_action_mask()
             search_result = planner.search_from_env(env)
             if search_result.best_action_id is None:
                 env.terminate_no_legal_action()
