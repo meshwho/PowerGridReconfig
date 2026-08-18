@@ -111,7 +111,9 @@ def test_build_model_uses_graph_v2_only(
     ]
 
 
-def test_checkpoint_training_config_records_graph_v2(tmp_path: Path) -> None:
+def test_checkpoint_training_config_has_no_architecture_knob(
+    tmp_path: Path,
+) -> None:
     payload = build_training_config_payload(
         _request(
             tmp_path,
@@ -124,7 +126,7 @@ def test_checkpoint_training_config_records_graph_v2(tmp_path: Path) -> None:
         )
     )
 
-    assert payload["model_type"] == "graph_v2"
+    assert "model_type" not in payload
     assert payload["epochs"] == 3
     assert payload["batch_size"] == 5
     assert payload["lr"] == 0.01

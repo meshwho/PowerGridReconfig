@@ -29,12 +29,9 @@ def test_training_rejects_invalid_device() -> None:
         TrainingConfig(device="tpu")
 
 
-def test_training_accepts_only_graph_v2() -> None:
+def test_training_has_no_model_architecture_field() -> None:
+    assert "model_type" not in TrainingConfig.__dataclass_fields__
     assert TrainingConfig().model_type == "graph_v2"
-    with pytest.raises(ValueError, match="training.model_type"):
-        TrainingConfig(model_type="graph_v1")
-    with pytest.raises(ValueError, match="training.model_type"):
-        TrainingConfig.from_mapping({"model_type": "graph-v3"})
 
 
 def test_evaluation_rejects_unknown_primary_policy_mode() -> None:
