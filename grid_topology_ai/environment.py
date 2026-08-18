@@ -137,9 +137,6 @@ class TopologySwitchingEnv:
         assert self.current_state is not None
         return self.action_space.operational_action_mask(self.current_state)
 
-    def valid_action_mask(self):
-        return self.operational_action_mask()
-
     def action_by_id(self, action_id: int) -> GridFMAction:
         self._require_active_episode()
         assert self.current_state is not None
