@@ -33,11 +33,6 @@ class TrainingConfig:
     save_multiple_best: bool = False
     no_tensorboard: bool = True
 
-    @property
-    def model_type(self) -> str:
-        """Temporary internal bridge until the legacy training base is removed."""
-        return "graph_v2"
-
     def __post_init__(self) -> None:
         require_positive("training.epochs", self.epochs)
 
