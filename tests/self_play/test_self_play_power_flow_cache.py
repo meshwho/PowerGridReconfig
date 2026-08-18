@@ -98,12 +98,9 @@ class _ActionSpace:
         del state
         return [self.stop, self.switch]
 
-    def valid_action_mask(self, state: GridFMState) -> np.ndarray:
+    def operational_action_mask(self, state: GridFMState) -> np.ndarray:
         del state
         return np.array([True, True], dtype=bool)
-
-    def operational_action_mask(self, state: GridFMState) -> np.ndarray:
-        return self.valid_action_mask(state)
 
 
 class _Reward:
