@@ -34,15 +34,13 @@ def test_core_and_optional_dependency_contract() -> None:
     assert any(dep.startswith("build") for dep in extras["test"])
 
 
-def test_constraints_and_requirements_contract() -> None:
+def test_constraints_contract() -> None:
     constraints = (ROOT / "constraints" / "py311.txt").read_text(encoding="utf-8")
-    requirements = (ROOT / "requirements.txt").read_text(encoding="utf-8")
 
     assert "numpy==1.26.4" in constraints
     assert "PYPOWER==5.1.19" in constraints
     assert "gridfm-datakit==1.0.5" in constraints
-    assert "constraints/py311.txt" in requirements
-    assert ".[data,test,train]" in requirements
+    assert not (ROOT / "requirements.txt").exists()
 
 
 def test_production_backend_has_no_numpy_runtime_monkeypatch() -> None:
