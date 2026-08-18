@@ -28,9 +28,6 @@ from grid_topology_ai.state_schema import (
 )
 
 
-# Retained for import compatibility. Schema v2 uses ``unlimited_rating``.
-UNRATED_LOADING_PERCENT = -1.0
-
 # Preserve the public path used by pickled states and type displays.
 GridFMState.__module__ = __name__
 
