@@ -996,7 +996,7 @@ def process_one_scenario_fast(scenario_id: int) -> dict[str, Any]:
             if state_before is None:
                 break
 
-            action_mask = replay_env.valid_action_mask()
+            action_mask = replay_env.operational_action_mask()
 
             selected_action_id = int(best.action_ids[step_idx])
             selected_branch_id = best.branch_ids[step_idx]
@@ -1124,7 +1124,7 @@ def process_one_scenario_fast(scenario_id: int) -> dict[str, Any]:
             final_teacher_state = replay_env.current_state
 
             if final_teacher_state is not None:
-                final_action_mask = replay_env.valid_action_mask()
+                final_action_mask = replay_env.operational_action_mask()
                 final_safety_before = safety_score(
                     final_teacher_state,
                     physics_config=physics_config,
