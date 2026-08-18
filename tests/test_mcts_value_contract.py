@@ -163,7 +163,7 @@ def test_neural_value_outside_terminal_utility_range_is_rejected() -> None:
     )
     node = _node()
     node.env.current_state = object()
-    node.env.valid_action_mask = lambda: [True]
+    node.env.operational_action_mask = lambda: [True]
 
     with pytest.raises(ValueError, match=r"\[-1, 1\]"):
         planner._leaf_value(node)
