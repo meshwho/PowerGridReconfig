@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-import argparse
 import time
 from pathlib import Path
-from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -12,6 +10,7 @@ try:
     from tqdm.auto import tqdm
 except ImportError:  # pragma: no cover
     tqdm = None
+
 
 def now() -> float:
     return time.perf_counter()
@@ -38,14 +37,11 @@ def read_parquet_columns(
     if not path.exists():
         raise FileNotFoundError(f"Parquet file not found: {path}")
 
-    # First read only metadata if possible.
-    # pandas itself will validate requested columns.
     columns = list(dict.fromkeys(required_columns + optional_columns))
 
     try:
         return pd.read_parquet(path, columns=columns)
     except Exception:
-        # Fallback: read full parquet only if column projection failed.
         df = pd.read_parquet(path)
 
         missing_required = set(required_columns) - set(df.columns)
@@ -61,17 +57,7 @@ def read_parquet_columns(
 
 
 def compute_branch_summary(branch_df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Vectorized branch summary per scenario.
-
-    Produces:
-        max_loading_percent
-        mean_loading_percent
-        num_overloaded_branches
-        num_hard_overloaded_branches
-        num_outaged_branches
-        outaged_branch_ids
-    """
+    """Build the vectorized branch summary for each scenario."""
 
     df = branch_df.copy()
 
@@ -122,7 +108,6 @@ def compute_branch_summary(branch_df: pd.DataFrame) -> pd.DataFrame:
 
     active = df[df["is_in_service"]].copy()
 
-    # If some scenario has no active branches, it will be filled with 0 later.
     active_loading_summary = active.groupby("scenario", sort=False).agg(
         max_loading_percent=("loading_percent", "max"),
         mean_loading_percent=("loading_percent", "mean"),
@@ -157,34 +142,20 @@ def compute_branch_summary(branch_df: pd.DataFrame) -> pd.DataFrame:
     summary["num_overloaded_branches"] = summary[
         "num_overloaded_branches"
     ].astype(int)
-
     summary["num_hard_overloaded_branches"] = summary[
         "num_hard_overloaded_branches"
     ].astype(int)
-
     summary["num_outaged_branches"] = summary["num_outaged_branches"].astype(int)
 
     summary["outaged_branch_ids"] = summary["outaged_branch_ids"].apply(
         lambda x: x if isinstance(x, list) else []
     )
 
-    summary = summary.reset_index()
-
-    return summary
+    return summary.reset_index()
 
 
 def compute_bus_summary(bus_df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Vectorized bus summary per scenario.
-
-    Produces:
-        load_scenario_idx
-        min_vm_pu
-        max_vm_pu
-        total_voltage_violation
-        num_low_voltage_buses
-        num_high_voltage_buses
-    """
+    """Build the vectorized bus summary for each scenario."""
 
     df = bus_df.copy()
 
@@ -237,15 +208,11 @@ def compute_bus_summary(bus_df: pd.DataFrame) -> pd.DataFrame:
     summary["num_low_voltage_buses"] = summary["num_low_voltage_buses"].astype(int)
     summary["num_high_voltage_buses"] = summary["num_high_voltage_buses"].astype(int)
 
-    summary = summary.reset_index()
-
-    return summary
+    return summary.reset_index()
 
 
 def add_seriousness_score(summary: pd.DataFrame) -> pd.DataFrame:
-    """
-    Add ranking score for selecting the most useful emergency scenarios.
-    """
+    """Add the existing emergency-scenario ranking score."""
 
     df = summary.copy()
 
@@ -264,19 +231,7 @@ def build_fast_summary(
     raw_dir: Path,
     show_progress: bool = True,
 ) -> pd.DataFrame:
-    """
-    Build scenario summary using vectorized groupby operations.
-
-    This replaces the slow adapter.build_summary() loop.
-
-    tqdm shows progress by major stages:
-        1. read bus parquet
-        2. read branch parquet
-        3. compute bus summary
-        4. compute branch summary
-        5. merge summaries
-        6. add seriousness score
-    """
+    """Build the existing vectorized GridFM scenario summary."""
 
     bus_path = raw_dir / "bus_data.parquet"
     branch_path = raw_dir / "branch_data.parquet"
@@ -341,7 +296,6 @@ def build_fast_summary(
         print_time("Compute bus summary", t0)
         update_progress("bus summary")
 
-        # Free memory earlier on large raw datasets.
         del bus_df
 
         t0 = now()
@@ -349,7 +303,6 @@ def build_fast_summary(
         print_time("Compute branch summary", t0)
         update_progress("branch summary")
 
-        # Free memory earlier on large raw datasets.
         del branch_df
 
         t0 = now()
@@ -380,54 +333,10 @@ def build_fast_summary(
             progress.close()
 
 
-def select_candidates(
-    summary: pd.DataFrame,
-    min_loading: float,
-    max_loading: float,
-    require_outage: bool,
-) -> pd.DataFrame:
-    mask = (
-        (summary["max_loading_percent"] >= float(min_loading))
-        & (summary["max_loading_percent"] <= float(max_loading))
-        & (summary["num_overloaded_branches"] > 0)
-    )
-
-    if require_outage:
-        mask = mask & (summary["num_outaged_branches"] > 0)
-
-    return summary.loc[mask].copy()
-
-
-def sort_candidates(
-    candidates: pd.DataFrame,
-    prefer_hard_overloads: bool,
-) -> pd.DataFrame:
-    sort_columns: list[str] = []
-
-    if prefer_hard_overloads:
-        sort_columns.append("num_hard_overloaded_branches")
-
-    sort_columns.extend(
-        [
-            "seriousness_score",
-            "max_loading_percent",
-            "num_overloaded_branches",
-            "num_outaged_branches",
-        ]
-    )
-
-    return candidates.sort_values(
-        sort_columns,
-        ascending=[False for _ in sort_columns],
-    )
-
-
 def make_output(selected: pd.DataFrame) -> pd.DataFrame:
-    """
-    Convert selected summary rows into transitions CSV format.
-    """
+    """Convert selected summary rows into the existing transitions format."""
 
-    output = pd.DataFrame(
+    return pd.DataFrame(
         {
             "scenario_id": selected["scenario"].astype(int),
             "load_scenario_idx": selected["load_scenario_idx"],
@@ -443,235 +352,3 @@ def make_output(selected: pd.DataFrame) -> pd.DataFrame:
             "outaged_branch_ids": selected["outaged_branch_ids"].astype(str),
         }
     )
-
-    return output
-
-
-def print_selected_preview(
-    output: pd.DataFrame,
-    print_top: int,
-) -> None:
-    """
-    Print only a preview, not thousands of selected rows.
-    """
-
-    if output.empty:
-        return
-
-    n = min(int(print_top), len(output))
-
-    if n <= 0:
-        return
-
-    print(f"\nSelected scenarios preview, top {n} of {len(output)}:")
-    print(
-        output[
-            [
-                "scenario_id",
-                "max_loading_percent",
-                "num_overloaded_branches",
-                "num_hard_overloaded_branches",
-                "num_outaged_branches",
-                "seriousness_score",
-            ]
-        ]
-        .head(n)
-        .to_string(index=False)
-    )
-
-
-def main() -> None:
-    parser = argparse.ArgumentParser(
-        description=(
-            "Build a transitions CSV with serious overloaded GridFM scenarios. "
-            "Optimized groupby version for large raw datasets."
-        )
-    )
-
-    parser.add_argument(
-        "raw_dir",
-        type=str,
-        help="Path to GridFM raw directory containing bus_data.parquet and branch_data.parquet.",
-    )
-
-    parser.add_argument(
-        "--output",
-        type=str,
-        required=True,
-        help="Output transitions CSV path.",
-    )
-
-    parser.add_argument(
-        "--top-n",
-        type=int,
-        default=100,
-        help="Number of selected scenarios to save.",
-    )
-
-    parser.add_argument(
-        "--min-loading",
-        type=float,
-        default=105.0,
-        help="Minimum max branch loading percent.",
-    )
-
-    parser.add_argument(
-        "--max-loading",
-        type=float,
-        default=250.0,
-        help="Maximum max branch loading percent.",
-    )
-
-    parser.add_argument(
-        "--require-outage",
-        action="store_true",
-        help="First selection requires at least one initially outaged branch.",
-    )
-
-    parser.add_argument(
-        "--fill-with-no-outage",
-        action="store_true",
-        help=(
-            "If --require-outage gives fewer than --top-n rows, fill remaining rows "
-            "with serious scenarios without requiring outage."
-        ),
-    )
-
-    parser.add_argument(
-        "--prefer-hard-overloads",
-        action="store_true",
-        help="Sort primarily by number of hard overloaded branches.",
-    )
-
-    parser.add_argument(
-        "--print-top",
-        type=int,
-        default=20,
-        help="How many selected rows to print as preview. Use 0 to disable.",
-    )
-
-    parser.add_argument(
-        "--no-progress",
-        action="store_true",
-        help="Disable tqdm progress bar.",
-    )
-
-    args = parser.parse_args()
-
-    total_start = now()
-
-    raw_dir = Path(args.raw_dir)
-    output_path = Path(args.output)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-
-    print("=" * 100)
-    print("Building serious transitions, optimized")
-    print("=" * 100)
-    print(f"Raw directory:          {raw_dir.resolve()}")
-    print(f"Output:                 {output_path}")
-    print(f"Top N requested:         {args.top_n}")
-    print(f"Min loading:             {args.min_loading}")
-    print(f"Max loading:             {args.max_loading}")
-    print(f"Require outage first:    {args.require_outage}")
-    print(f"Fill with no outage:     {args.fill_with_no_outage}")
-    print(f"Prefer hard overloads:   {args.prefer_hard_overloads}")
-    print(f"Print top:               {args.print_top}")
-    print(f"Progress bar:            {not args.no_progress}")
-
-    if not raw_dir.exists():
-        raise FileNotFoundError(f"Raw directory not found: {raw_dir}")
-
-    t0 = now()
-    summary = build_fast_summary(
-        raw_dir=raw_dir,
-        show_progress=not args.no_progress,
-    )
-    print_time("Build full summary", t0)
-
-    if summary.empty:
-        raise RuntimeError("GridFM summary is empty. Check raw_dir.")
-
-    t0 = now()
-
-    primary = select_candidates(
-        summary=summary,
-        min_loading=args.min_loading,
-        max_loading=args.max_loading,
-        require_outage=args.require_outage,
-    )
-
-    primary = sort_candidates(
-        candidates=primary,
-        prefer_hard_overloads=args.prefer_hard_overloads,
-    )
-
-    selected = primary.copy()
-
-    if args.require_outage and args.fill_with_no_outage and len(selected) < args.top_n:
-        selected_ids = set(int(x) for x in selected["scenario"].values)
-
-        filler = select_candidates(
-            summary=summary,
-            min_loading=args.min_loading,
-            max_loading=args.max_loading,
-            require_outage=False,
-        )
-
-        filler = filler[~filler["scenario"].astype(int).isin(selected_ids)].copy()
-
-        filler = sort_candidates(
-            candidates=filler,
-            prefer_hard_overloads=args.prefer_hard_overloads,
-        )
-
-        selected = pd.concat([selected, filler], ignore_index=True)
-
-    selected = selected.head(int(args.top_n)).copy()
-
-    print_time("Select and sort candidates", t0)
-
-    if selected.empty:
-        raise RuntimeError(
-            "No scenarios matched the filters. "
-            "Try lowering --min-loading or disabling --require-outage."
-        )
-
-    output = make_output(selected)
-    output.to_csv(output_path, index=False)
-
-    print_selected_preview(
-        output=output,
-        print_top=args.print_top,
-    )
-
-    print("\nSummary:")
-    print(f"  Total scenarios in raw data:      {len(summary)}")
-    print(f"  Primary matched scenarios:        {len(primary)}")
-    print(f"  Saved rows:                       {len(output)}")
-    print(f"  Requested top-n:                  {args.top_n}")
-    print(f"  Output:                           {output_path}")
-
-    if len(output) < args.top_n:
-        print("\nWARNING:")
-        print(
-            f"  Requested {args.top_n} scenarios, but only {len(output)} matched the filters."
-        )
-        print("  This is not a script error.")
-        print("  The current raw dataset is too small or not serious enough.")
-        print("  To get more examples, generate/load a larger GridFM raw dataset.")
-
-    weak_count = int((output["max_loading_percent"] < float(args.min_loading)).sum())
-
-    if weak_count > 0:
-        print("\nWARNING:")
-        print(
-            f"  Output still contains {weak_count} scenarios below "
-            f"min loading {args.min_loading}%."
-        )
-
-    print_time("\nTotal runtime", total_start)
-    print("\nDone.")
-
-
-if __name__ == "__main__":
-    main()
