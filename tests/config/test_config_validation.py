@@ -31,7 +31,6 @@ def test_training_rejects_invalid_device() -> None:
 
 def test_training_has_no_model_architecture_field() -> None:
     assert "model_type" not in TrainingConfig.__dataclass_fields__
-    assert TrainingConfig().model_type == "graph_v2"
 
 
 def test_evaluation_rejects_unknown_primary_policy_mode() -> None:
