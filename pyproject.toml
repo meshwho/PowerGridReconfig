@@ -25,8 +25,6 @@ train = [
 ]
 data = [
     "gridfm-datakit==1.0.5",
-    "pandapower==2.14.11",
-    "numba>=0.60,<0.61",
     "pyarrow>=18.1,<19",
 ]
 test = [
