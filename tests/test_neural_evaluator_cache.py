@@ -59,16 +59,15 @@ def _evaluator(
     evaluator._cache = {}
     evaluator.cache_hits = 0
     evaluator.cache_misses = 0
-    evaluator.model_type = "simple_policy_value_net"
+    evaluator.model_type = "graph_policy_value_net_v2"
     evaluator.physics_config = PhysicsConfig()
-    evaluator.num_actions = 3
     evaluator.action_layout_fingerprint = action_layout_fingerprint(
         build_branch_action_slots(state.branch_ids)
     )
 
     calls: list[GridFMState] = []
 
-    def evaluate_mlp(
+    def evaluate_graph(
         *,
         state: GridFMState,
         action_mask: np.ndarray,
@@ -76,7 +75,7 @@ def _evaluator(
         calls.append(state)
         return np.array([0.6, 0.3, 0.1], dtype=np.float32), 0.25
 
-    evaluator._evaluate_mlp = evaluate_mlp
+    evaluator._evaluate_graph = evaluate_graph
     return evaluator, calls
 
 
@@ -108,7 +107,7 @@ def test_repeated_evaluation_uses_cache():
     assert len(calls) == 1
     assert evaluator.cache_info() == {
         "enabled": True,
-        "model_type": "simple_policy_value_net",
+        "model_type": "graph_policy_value_net_v2",
         "size": 1,
         "hits": 1,
         "misses": 1,
