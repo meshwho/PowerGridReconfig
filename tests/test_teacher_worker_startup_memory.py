@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from grid_topology_ai._data_adapter_core import GridFMAdapter
+from grid_topology_ai.data_adapter import GridFMAdapter
 from scripts.self_play import generate_impact_teacher_redispatch as redispatch
 
 

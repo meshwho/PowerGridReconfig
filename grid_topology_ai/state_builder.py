@@ -10,7 +10,6 @@ from pypower.idx_brch import BR_STATUS, PF, PT, QF, QT, RATE_A
 from pypower.idx_bus import VA, VM
 from pypower.idx_gen import GEN_STATUS, PG, QG
 
-from grid_topology_ai._data_adapter_core import GridFMState as _CoreGridFMState
 from grid_topology_ai.config.physics import (
     DEFAULT_PHYSICS_CONFIG,
     PhysicsConfig,
@@ -35,9 +34,18 @@ MetricsCalculator = Callable[..., Mapping[str, object]]
 
 
 @dataclass(frozen=True)
-class GridFMState(_CoreGridFMState):
+class GridFMState:
     """A graph state with original bus IDs beside contiguous graph indices."""
 
+    scenario_id: int
+    load_scenario_idx: float
+    bus_features: np.ndarray
+    branch_features: np.ndarray
+    edge_index: np.ndarray
+    branch_ids: np.ndarray
+    branch_status: np.ndarray
+    metrics: dict[str, Any]
+    outaged_branch_ids: list[int]
     bus_ids: np.ndarray | None = None
 
 
