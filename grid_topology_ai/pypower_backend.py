@@ -46,11 +46,11 @@ from grid_topology_ai.power_flow_problem import (
     build_power_flow_problem_from_state,
     build_scenario_power_flow_template,
 )
-from grid_topology_ai.power_flow_state_builder import PowerFlowStateBuilder
 from grid_topology_ai.pypower_compat import (
     get_power_flow_workload_counters,
     runpf,
 )
+from grid_topology_ai.state_builder import GridFMStateBuilder
 from grid_topology_ai.topology_actions import GridFMAction
 
 
@@ -97,7 +97,10 @@ class GridFMPowerFlowBackend(_CoreGridFMPowerFlowBackend):
             enable_cache=enable_cache,
             store_raw_result=store_raw_result,
         )
-        self._state_builder = PowerFlowStateBuilder(self.physics_config)
+        self._state_builder = GridFMStateBuilder(
+            physics_config=self.physics_config,
+            result_metrics_calculator=calculate_physical_metrics_from_result,
+        )
         self._exact_power_flow_cache = ExactPowerFlowCache(
             max_bytes=int(exact_cache_max_bytes)
         )
@@ -764,7 +767,7 @@ class GridFMPowerFlowBackend(_CoreGridFMPowerFlowBackend):
         original_frames: dict[str, pd.DataFrame],
         physical_metrics: dict[str, object] | None,
     ) -> GridFMState:
-        return self._state_builder.build(
+        return self._state_builder.build_from_pypower_result(
             scenario_id=scenario_id,
             result_ppc=result_ppc,
             original_frames=original_frames,
