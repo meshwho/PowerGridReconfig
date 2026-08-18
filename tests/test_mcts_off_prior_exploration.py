@@ -45,7 +45,7 @@ class _FakeEnv:
     def valid_actions(self) -> list[GridFMAction]:
         return list(self._actions)
 
-    def valid_action_mask(self) -> np.ndarray:
+    def operational_action_mask(self) -> np.ndarray:
         size = max(action.action_id for action in self._actions) + 1
         mask = np.zeros(size, dtype=bool)
         for action in self._actions:
