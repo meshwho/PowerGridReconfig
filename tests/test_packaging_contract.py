@@ -28,7 +28,8 @@ def test_core_and_optional_dependency_contract() -> None:
     assert "PYPOWER==5.1.19" in deps
     assert any(dep.startswith("scipy") for dep in deps)
     assert any(dep.startswith("torch") for dep in deps)
-    assert "pandapower==2.14.11" in extras["data"]
+    assert "gridfm-datakit==1.0.5" in extras["data"]
+    assert any(dep.startswith("pyarrow") for dep in extras["data"])
     assert any(dep.startswith("pytest") for dep in extras["test"])
     assert any(dep.startswith("build") for dep in extras["test"])
 
@@ -39,6 +40,7 @@ def test_constraints_and_requirements_contract() -> None:
 
     assert "numpy==1.26.4" in constraints
     assert "PYPOWER==5.1.19" in constraints
+    assert "gridfm-datakit==1.0.5" in constraints
     assert "constraints/py311.txt" in requirements
     assert ".[data,test,train]" in requirements
 
