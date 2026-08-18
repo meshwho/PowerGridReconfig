@@ -68,8 +68,6 @@ class _TeeTextIO(io.TextIOBase):
 
 @contextmanager
 def _working_directory(path: Path) -> Iterator[None]:
-    """Temporarily switch process cwd for a stage API call."""
-
     previous = Path.cwd()
     os.chdir(path)
     try:
@@ -378,7 +376,6 @@ def run_train(
 ) -> Path:
     project_root = Path(project_root)
     output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
 
     self_play_config = _resolved_self_play_config(output_dir)
     if self_play_config is None and bool(config.save_multiple_best):
@@ -403,76 +400,80 @@ def run_train(
         else int(self_play_config.checkpoint_selection.calibration_bins)
     )
 
-    examples_csv = Path(examples_csv)
-    validation_examples_csv = Path(validation_examples_csv)
-    if not examples_csv.is_file():
-        raise FileNotFoundError(f"Training examples CSV not found: {examples_csv}")
-    if not validation_examples_csv.is_file():
-        raise FileNotFoundError(
-            f"Validation examples CSV not found: {validation_examples_csv}"
+    with validation_diagnostic_options(calibration_bins=bins):
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        examples_path = Path(examples_csv)
+        validation_path = Path(validation_examples_csv)
+        if not examples_path.is_file():
+            raise FileNotFoundError(f"Training examples CSV not found: {examples_path}")
+        if not validation_path.is_file():
+            raise FileNotFoundError(
+                f"Validation examples CSV not found: {validation_path}"
+            )
+
+        candidate_checkpoint = output_dir / "candidate_checkpoint.pt"
+        metrics_csv = output_dir / "train_metrics.csv"
+        log_path = output_dir / "train.log"
+
+        request = TrainingRequest(
+            project_root=project_root.resolve(),
+            examples_csv=examples_path,
+            output_path=candidate_checkpoint,
+            config=config,
+            init_checkpoint=Path(init_checkpoint),
+            validation_examples_csv=validation_path,
+            use_amp=False,
+            normalize_features=True,
+            save_best=True,
+            tensorboard_log_dir=None,
+            run_name=f"self_play_iter_{int(iteration):03d}",
+            metrics_csv=metrics_csv,
+            seed=int(seed),
+            physics_config=physics_config,
         )
 
-    candidate_checkpoint = output_dir / "candidate_checkpoint.pt"
-    metrics_csv = output_dir / "train_metrics.csv"
-    log_path = output_dir / "train.log"
-
-    request = TrainingRequest(
-        project_root=project_root.resolve(),
-        examples_csv=examples_csv,
-        output_path=candidate_checkpoint,
-        config=config,
-        init_checkpoint=Path(init_checkpoint),
-        validation_examples_csv=validation_examples_csv,
-        use_amp=False,
-        normalize_features=True,
-        save_best=True,
-        tensorboard_log_dir=None,
-        run_name=f"self_play_iter_{int(iteration):03d}",
-        metrics_csv=metrics_csv,
-        seed=int(seed),
-        physics_config=physics_config,
-    )
-
-    with validation_diagnostic_options(calibration_bins=bins):
         with _working_directory(project_root):
             with _stage_output(log_path):
                 result_path = train_graph_policy_value_model(request)
 
-    if Path(result_path) != candidate_checkpoint:
-        raise RuntimeError(
-            "Training API returned unexpected checkpoint path: "
-            f"{result_path} != {candidate_checkpoint}"
-        )
-    if not candidate_checkpoint.exists():
-        raise FileNotFoundError(
-            f"Candidate checkpoint was not created: {candidate_checkpoint}"
-        )
+        if Path(result_path) != candidate_checkpoint:
+            raise RuntimeError(
+                "Training API returned unexpected checkpoint path: "
+                f"{result_path} != {candidate_checkpoint}"
+            )
+        if not candidate_checkpoint.exists():
+            raise FileNotFoundError(
+                f"Candidate checkpoint was not created: {candidate_checkpoint}"
+            )
 
-    import torch
+        import torch
 
-    checkpoint_payload = torch.load(
-        candidate_checkpoint,
-        map_location="cpu",
-        weights_only=False,
-    )
-    if not isinstance(checkpoint_payload, dict):
-        raise RuntimeError("Candidate checkpoint payload must be a mapping.")
-    require_checkpoint_contracts(
-        checkpoint_payload,
-        source=str(candidate_checkpoint),
-        expected_physics_config=physics_config,
-    )
-    if checkpoint_payload.get("checkpoint_selection_metric") != "validation_loss":
-        raise RuntimeError(
-            "Self-play fine-tuning candidate must be selected by validation_loss; "
-            f"observed {checkpoint_payload.get('checkpoint_selection_metric')!r}."
+        checkpoint_payload = torch.load(
+            candidate_checkpoint,
+            map_location="cpu",
+            weights_only=False,
         )
+        if not isinstance(checkpoint_payload, dict):
+            raise RuntimeError("Candidate checkpoint payload must be a mapping.")
+        require_checkpoint_contracts(
+            checkpoint_payload,
+            source=str(candidate_checkpoint),
+            expected_physics_config=physics_config,
+        )
+        if checkpoint_payload.get("checkpoint_selection_metric") != "validation_loss":
+            raise RuntimeError(
+                "Self-play fine-tuning candidate must be selected by validation_loss; "
+                f"observed {checkpoint_payload.get('checkpoint_selection_metric')!r}."
+            )
+
+        checkpoint = candidate_checkpoint
 
     if (
         self_play_config is None
         or not self_play_config.checkpoint_selection.enabled
     ):
-        return candidate_checkpoint
+        return checkpoint
 
     paths = SelfPlayPaths.from_config(self_play_config, project_root)
     if paths.tuning_csv is None or paths.tuning_raw_dir is None:
@@ -481,7 +482,7 @@ def run_train(
         )
 
     selection = select_checkpoint_in_tuning_arena(
-        canonical_checkpoint=candidate_checkpoint,
+        canonical_checkpoint=checkpoint,
         project_root=project_root,
         output_dir=output_dir / "checkpoint_selection",
         config=self_play_config.checkpoint_selection,
