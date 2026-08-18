@@ -788,7 +788,6 @@ def train_graph_policy_value_model(
             model=model,
             checkpoint_path=request.init_checkpoint,
             dataset=dataset,
-            model_type="graph_v2",
             hidden_dim=request.config.hidden_dim,
             num_layers=request.config.num_layers,
             device=device,
