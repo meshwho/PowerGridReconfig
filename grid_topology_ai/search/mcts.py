@@ -1370,7 +1370,7 @@ class MCTSPlanner:
                     node.neural_value,
                     context="cached neural leaf value",
                 )
-            action_mask = node.env.valid_action_mask()
+            action_mask = node.env.operational_action_mask()
             _, neural_value = self.evaluator.evaluate(
                 state=state,
                 action_mask=action_mask,
