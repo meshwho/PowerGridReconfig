@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -8,14 +10,28 @@ from pathlib import Path
 from typing import Any, Callable, Sequence
 
 from grid_topology_ai.cache import LODFStructureCache
+from grid_topology_ai.contracts import (
+    OUTCOME_OBJECTIVE_VERSION,
+    OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
+    PHYSICS_CONFIG_CONTRACT_VERSION,
+    TOPOLOGY_ACTION_CONTRACT_VERSION,
+)
 from grid_topology_ai.lodf import (
     build_lodf_structure,
     rank_actions_with_lodf_structure,
+)
+from grid_topology_ai.outcome_contract import (
+    TERMINAL_OUTCOME_EVIDENCE_SCHEMA_VERSION,
 )
 from grid_topology_ai.teacher_config import (
     ensure_teacher_checkpoint_config,
     teacher_run_id,
     teacher_source_identity,
+)
+from grid_topology_ai.teacher_resume_index import (
+    append_resume_delta,
+    load_resume_index,
+    write_resume_snapshot,
 )
 from scripts.self_play import generate_impact_teacher_redispatch as redispatch
 
@@ -26,6 +42,8 @@ _DEFAULT_MAX_TASKS_PER_CHILD: int | None = None
 _ORIGINAL_INIT_WORKER_CONTEXT = redispatch.init_worker_context
 _ORIGINAL_IMPACT_BEAM_SEARCH_CONFIG = redispatch.base.teacher.ImpactBeamSearchConfig
 _ORIGINAL_PROCESS_ONE_SCENARIO = redispatch.base.teacher.process_one_scenario_fast
+_ORIGINAL_LOAD_SCENARIO_CHECKPOINTS = redispatch.base.load_scenario_checkpoints
+_ORIGINAL_APPEND_SCENARIO_CHECKPOINT = redispatch.base.append_scenario_checkpoint
 
 
 def _worker_run_id() -> str:
@@ -51,6 +69,111 @@ def _ensure_source_bound_checkpoint_config(
         transitions_path,
     )
     ensure_teacher_checkpoint_config(config_path, bound_config)
+
+
+def _resume_contract_fingerprint() -> str:
+    base = redispatch.base
+    payload = {
+        "checkpoint_version": int(base.teacher.CHECKPOINT_VERSION),
+        "physics_config_contract_version": PHYSICS_CONFIG_CONTRACT_VERSION,
+        "topology_action_contract_version": TOPOLOGY_ACTION_CONTRACT_VERSION,
+        "outcome_objective_version": OUTCOME_OBJECTIVE_VERSION,
+        "outcome_value_target_contract_version": (
+            OUTCOME_VALUE_TARGET_CONTRACT_VERSION
+        ),
+        "terminal_outcome_evidence_schema_version": (
+            TERMINAL_OUTCOME_EVIDENCE_SCHEMA_VERSION
+        ),
+        "teacher_selection_mode": str(base._TEACHER_SELECTION_MODE),
+        "required_checkpoint_row_fields": list(
+            base._REQUIRED_CHECKPOINT_ROW_FIELDS
+        ),
+    }
+    encoded = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _resume_placeholder(scenario_id: int) -> dict[str, Any]:
+    return {
+        "version": redispatch.base.teacher.CHECKPOINT_VERSION,
+        "scenario_id": int(scenario_id),
+        "ok": False,
+        "reason": "resume_index",
+        "rows": [],
+    }
+
+
+def _load_scenario_checkpoints(
+    checkpoint_path: Path,
+    allowed_scenario_ids: Sequence[int],
+) -> dict[int, dict[str, Any]]:
+    allowed = {int(value) for value in allowed_scenario_ids}
+    contract_fingerprint = _resume_contract_fingerprint()
+    indexed = load_resume_index(
+        checkpoint_path=checkpoint_path,
+        contract_fingerprint=contract_fingerprint,
+        allowed_scenario_ids=allowed_scenario_ids,
+    )
+
+    # During an incomplete run the caller only needs the completed IDs to build
+    # the pending list. Keep the expensive checkpoint rows on disk until final
+    # assembly, when every requested scenario is already checkpointed.
+    if indexed is not None and indexed != allowed:
+        return {
+            scenario_id: _resume_placeholder(scenario_id)
+            for scenario_id in sorted(indexed)
+        }
+
+    results = _ORIGINAL_LOAD_SCENARIO_CHECKPOINTS(
+        checkpoint_path=checkpoint_path,
+        allowed_scenario_ids=allowed_scenario_ids,
+    )
+
+    try:
+        write_resume_snapshot(
+            checkpoint_path=checkpoint_path,
+            contract_fingerprint=contract_fingerprint,
+            completed_scenario_ids=results,
+        )
+    except OSError:
+        pass
+
+    return results
+
+
+def _append_scenario_checkpoint(
+    checkpoint_path: Path,
+    result: dict[str, Any],
+) -> None:
+    checkpoint_path = Path(checkpoint_path)
+    try:
+        checkpoint_start = int(checkpoint_path.stat().st_size)
+    except FileNotFoundError:
+        checkpoint_start = 0
+
+    _ORIGINAL_APPEND_SCENARIO_CHECKPOINT(
+        checkpoint_path=checkpoint_path,
+        result=result,
+    )
+
+    try:
+        append_resume_delta(
+            checkpoint_path=checkpoint_path,
+            contract_fingerprint=_resume_contract_fingerprint(),
+            scenario_id=int(result["scenario_id"]),
+            complete=bool(
+                redispatch.base._checkpoint_result_is_current(result)
+            ),
+            checkpoint_start=checkpoint_start,
+        )
+    except (OSError, ValueError):
+        # The sidecar is only an accelerator. A stale or missing index falls
+        # back to the canonical checkpoint scan on the next resume.
+        pass
 
 
 def rank_actions_by_lodf_screening(
@@ -351,6 +474,8 @@ def run_parallel(
 def _install_staged_start() -> None:
     redispatch.init_worker_context = init_worker_context
     redispatch.run_parallel = run_parallel
+    redispatch.base.load_scenario_checkpoints = _load_scenario_checkpoints
+    redispatch.base.append_scenario_checkpoint = _append_scenario_checkpoint
     redispatch.base.teacher.ensure_checkpoint_config = (
         _ensure_source_bound_checkpoint_config
     )
