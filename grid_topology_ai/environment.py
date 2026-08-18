@@ -146,7 +146,7 @@ class TopologySwitchingEnv:
             raise ValueError(f"Invalid action_id: {action_id}")
 
         action = all_actions[action_id]
-        mask = self.action_space.valid_action_mask(self.current_state)
+        mask = self.action_space.operational_action_mask(self.current_state)
         if not bool(mask[action_id]):
             raise ValueError(
                 f"Action {action_id} is not valid in current state."
@@ -228,7 +228,6 @@ class TopologySwitchingEnv:
         reward_breakdown = self.reward_fn.compute(
             before_state=self.current_state,
             after_state=self.current_state,
-            action_is_switching=False,
             power_flow_success=assessment.power_flow_converged,
         )
         outcome = classify_stop_outcome(
@@ -270,7 +269,6 @@ class TopologySwitchingEnv:
         reward_breakdown = self.reward_fn.compute(
             before_state=before_state,
             after_state=power_flow_result.next_state,
-            action_is_switching=True,
             power_flow_success=power_flow_result.success,
         )
 
