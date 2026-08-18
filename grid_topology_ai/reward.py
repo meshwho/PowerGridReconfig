@@ -229,17 +229,3 @@ class GridFMReward:
             ),
             weights=self.utility_weights,
         )
-
-    def _state_penalty(self, state: GridFMState) -> float:
-        """Compatibility wrapper around the canonical grid utility."""
-
-        return self._utility_breakdown(state).penalty
-
-    def _total_overload(self, state: GridFMState) -> float:
-        return self._utility_breakdown(state).total_overload
-
-    def _total_hard_overload(self, state: GridFMState) -> float:
-        return self._utility_breakdown(state).total_hard_overload
-
-    def _voltage_penalty(self, state: GridFMState) -> float:
-        return self._utility_breakdown(state).voltage_violation
