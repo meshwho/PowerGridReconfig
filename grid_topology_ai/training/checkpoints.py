@@ -341,17 +341,11 @@ def load_initial_checkpoint_into_model(
     model: torch.nn.Module,
     checkpoint_path: str | Path,
     dataset: GraphSelfPlayDataset,
-    model_type: str,
     hidden_dim: int,
     num_layers: int,
     device: torch.device,
     checkpoint_payload: Mapping[str, object] | None = None,
 ) -> None:
-    if model_type != "graph_v2":
-        raise ValueError(
-            "Only Graph V2 checkpoints are supported for training initialization."
-        )
-
     checkpoint_path = Path(checkpoint_path)
     if not checkpoint_path.exists():
         raise FileNotFoundError(
