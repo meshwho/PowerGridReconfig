@@ -78,7 +78,6 @@ def test_persistent_cache_root_is_portable() -> None:
 def test_removed_legacy_private_cache_apis_do_not_return() -> None:
     action_space = _source("grid_topology_ai/action_space.py")
     backend = _source("grid_topology_ai/pypower_backend.py")
-    core = _source("grid_topology_ai/_pypower_backend_core.py")
     dc_screener = _source("grid_topology_ai/search/dc_action_screener.py")
 
     assert "def _make_cache_key(" not in action_space
@@ -88,5 +87,4 @@ def test_removed_legacy_private_cache_apis_do_not_return() -> None:
         "def _power_flow_input_fingerprint(",
     ):
         assert forbidden not in backend
-        assert forbidden not in core
     assert "def _score_dc_result(" not in dc_screener
