@@ -36,10 +36,7 @@ def test_cli_topology_action_config_is_canonical() -> None:
     assert config.require_connected_after_switch is False
     assert config.min_loading_for_switch_percent == pytest.approx(25.0)
     assert config.closeable_branch_ids == (10, 20)
-    assert action_space_kwargs(
-        config,
-        enable_cache=False,
-    ) == {
+    assert action_space_kwargs(config, enable_cache=False) == {
         "require_connected_after_switch": False,
         "min_loading_for_switch_percent": 25.0,
         "closeable_branch_ids": (10, 20),
@@ -50,49 +47,23 @@ def test_cli_topology_action_config_is_canonical() -> None:
 @pytest.mark.parametrize(
     "path",
     [
-        "scripts/planning/run_mcts.py",
-        "scripts/planning/run_mcts_episode.py",
-        "scripts/planning/run_beam_search.py",
-        "scripts/planning/run_impact_beam_search.py",
         "scripts/analyze_mcts_root_branches.py",
         "scripts/check_action_space.py",
     ],
 )
-def test_nonlegacy_cli_uses_resolved_topology_config(
-    path: str,
-) -> None:
+def test_remaining_topology_clis_use_resolved_config(path: str) -> None:
     source = Path(path).read_text(encoding="utf-8")
     compact = "".join(source.split())
 
     assert "action_space_kwargs(" in source
-    assert (
-        "GridFMActionSpace("
-        "require_connected_after_switch=True"
-        not in compact
-    )
+    assert "GridFMActionSpace(require_connected_after_switch=True" not in compact
 
 
-@pytest.mark.parametrize(
-    "path",
-    [
-        "scripts/planning/run_mcts.py",
-        "scripts/planning/run_mcts_episode.py",
-        "scripts/planning/run_beam_search.py",
-        "scripts/planning/run_impact_beam_search.py",
-        "scripts/check_action_space.py",
-    ],
-)
-def test_configurable_cli_exposes_topology_arguments(
-    path: str,
-) -> None:
-    source = Path(path).read_text(encoding="utf-8")
+def test_configurable_check_cli_exposes_topology_arguments() -> None:
+    source = Path("scripts/check_action_space.py").read_text(encoding="utf-8")
     assert "add_topology_action_arguments(" in source
 
 
-def test_checkpoint_driven_clis_use_checkpoint_action_config() -> None:
-    for path in (
-        "scripts/planning/run_mcts_episode.py",
-        "scripts/analyze_mcts_root_branches.py",
-    ):
-        source = Path(path).read_text(encoding="utf-8")
-        assert "evaluator.topology_action_config" in source
+def test_checkpoint_diagnostic_uses_checkpoint_action_config() -> None:
+    source = Path("scripts/analyze_mcts_root_branches.py").read_text(encoding="utf-8")
+    assert "evaluator.topology_action_config" in source
