@@ -1,2 +1,0 @@
--c constraints/py311.txt
--e .[data,test,train]
