@@ -191,7 +191,7 @@ def ensure_required_transition_columns(frame: pd.DataFrame, path: Path) -> str:
 
     if unknown:
         raise PipelineError(
-            f"Unsupported difficulty values in {source_path}: {unknown}. "
+            f"Unsupported difficulty values in {path}: {unknown}. "
             f"Expected only {list(DIFFICULTIES)}."
         )
 
