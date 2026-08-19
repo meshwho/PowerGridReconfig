@@ -5,6 +5,7 @@ import gc
 import hashlib
 import json
 import math
+import multiprocessing as mp
 import os
 import sys
 import time
@@ -26,6 +27,7 @@ _NATIVE_MATH_THREAD_ENV_VARS = (
 )
 _EXACT_L1_CACHE_MAX_MB_ENV = "POWERGRID_EXACT_L1_CACHE_MAX_MB"
 _PF_WARM_START_ENV = "POWERGRID_ENABLE_PF_WARM_START"
+_WORKER_INIT_CONCURRENCY_ENV = "POWERGRID_TEACHER_INIT_CONCURRENCY"
 
 
 def _configure_cache_runtime_from_cli() -> None:
@@ -89,6 +91,7 @@ try:
     from tqdm.auto import tqdm
 except ImportError:  # pragma: no cover
     tqdm = None
+
 from grid_topology_ai.cache import (
     DEFAULT_EXACT_POWER_FLOW_CACHE_BYTES,
     LODFStructureCache,
@@ -3076,6 +3079,7 @@ def process_scenario_batch(
 
 _RUNTIME_LODF_STRUCTURE_CACHE = "_redispatch_lodf_structure_cache"
 _RUNTIME_SCENARIO_STORE_DIR = "_redispatch_runtime_scenario_store_dir"
+_RUNTIME_WORKER_INIT_SEMAPHORE = "_redispatch_worker_init_semaphore"
 
 _PERSISTENT_CACHE_DIRECTORY_NAME = "exact_pf_cache_v1"
 _PERSISTENT_CACHE_ENABLED_ENV = (
@@ -3150,6 +3154,28 @@ def _native_math_thread_summary() -> str:
         f"{name}={os.environ.get(name, '<unset>')}"
         for name in _NATIVE_MATH_THREAD_ENV_VARS
     )
+
+def _worker_init_concurrency() -> int:
+    raw_value = os.environ.get(
+        _WORKER_INIT_CONCURRENCY_ENV,
+        "1",
+    ).strip()
+
+    try:
+        concurrency = int(raw_value)
+    except ValueError as exc:
+        raise ValueError(
+            f"{_WORKER_INIT_CONCURRENCY_ENV} must be a positive integer, "
+            f"got {raw_value!r}."
+        ) from exc
+
+    if concurrency <= 0:
+        raise ValueError(
+            f"{_WORKER_INIT_CONCURRENCY_ENV} must be >= 1, "
+            f"got {concurrency}."
+        )
+
+    return concurrency
 
 def _worker_run_id() -> str:
     ctx = _require_worker_context()
@@ -3345,6 +3371,10 @@ def init_worker_context(
 
     runtime_task_config = dict(task_config)
 
+    init_semaphore = runtime_task_config.pop(
+        _RUNTIME_WORKER_INIT_SEMAPHORE,
+        None,
+    )
     store_dir = runtime_task_config.pop(
         _RUNTIME_SCENARIO_STORE_DIR,
         None,
@@ -3355,19 +3385,26 @@ def init_worker_context(
             raw_dir_str
         )
 
-    _configure_persistent_exact_cache(
-        store_dir
-    )
+    _configure_persistent_exact_cache(store_dir)
 
-    _WORKER_CONTEXT = (
-        build_memory_mapped_teacher_context(
+    def build_context() -> dict[str, Any]:
+        return build_memory_mapped_teacher_context(
             runtime_store_dir=store_dir,
             states_dir=states_dir_str,
             task_config=runtime_task_config,
             scenario_ids=scenario_ids,
             memory_registry=None,
         )
-    )
+
+    if init_semaphore is None:
+        _WORKER_CONTEXT = build_context()
+    else:
+        init_semaphore.acquire()
+        try:
+            _WORKER_CONTEXT = build_context()
+            gc.collect()
+        finally:
+            init_semaphore.release()
 
     ctx = _require_worker_context()
     ctx.pop("memory_registry", None)
@@ -3551,10 +3588,27 @@ def run_parallel(
         len(scenario_batches),
     )
 
+    init_concurrency = min(
+        _worker_init_concurrency(),
+        workers,
+    )
+
+    print(
+        f"Worker init concurrency: {init_concurrency}"
+    )
+
+    if init_concurrency < workers:
+        runtime_task_config[
+            _RUNTIME_WORKER_INIT_SEMAPHORE
+        ] = mp.BoundedSemaphore(
+            init_concurrency
+        )
+
     shards = _partition_batches(
         scenario_batches,
         workers,
     )
+
     workers = len(shards)
 
     shard_sizes = [
