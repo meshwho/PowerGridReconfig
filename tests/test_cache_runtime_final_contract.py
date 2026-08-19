@@ -11,13 +11,9 @@ def _source(path: str) -> str:
 
 
 def test_production_runtime_has_no_global_cache_clear_protocol() -> None:
-    staged = _source(
-        "scripts/self_play/generate_impact_teacher_redispatch_staged.py"
-    )
     runtime = _source(
         "scripts/self_play/generate_impact_teacher_redispatch_runtime.py"
     )
-    combined = staged + "\n" + runtime
 
     for forbidden in (
         "_RUNTIME_GLOBAL_MEMORY_CLEAR_LOCK",
@@ -27,17 +23,17 @@ def test_production_runtime_has_no_global_cache_clear_protocol() -> None:
         "Manager()",
         "manager.dict()",
     ):
-        assert forbidden not in combined
+        assert forbidden not in runtime
 
 
 def test_production_runtime_does_not_force_worker_recycling() -> None:
-    staged = _source(
-        "scripts/self_play/generate_impact_teacher_redispatch_staged.py"
+    runtime = _source(
+        "scripts/self_play/generate_impact_teacher_redispatch_runtime.py"
     )
 
-    assert "_DEFAULT_MAX_TASKS_PER_CHILD: int | None = None" in staged
-    assert "max_tasks_per_child=max_tasks_per_child" in staged
-    assert "byte-bounded caches; no global cache clearing" in staged
+    assert "_DEFAULT_MAX_TASKS_PER_CHILD: int | None = None" in runtime
+    assert "max_tasks_per_child=max_tasks_per_child" in runtime
+    assert "byte-bounded caches; no global cache clearing" in runtime
 
 
 def test_persistent_l2_is_separate_from_physics_and_exact_l1() -> None:

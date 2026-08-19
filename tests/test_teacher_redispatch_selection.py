@@ -7,7 +7,7 @@ from typing import Any
 import pytest
 
 from grid_topology_ai.termination import TerminationReason
-from scripts.self_play import generate_impact_teacher_redispatch as teacher
+from scripts.self_play import generate_impact_teacher_redispatch_runtime as teacher
 
 
 @dataclass
@@ -222,7 +222,7 @@ def test_replay_promotes_search_stop_to_teacher_redispatch_handoff(
 
     monkeypatch.setattr(
         teacher,
-        "_ORIGINAL_REPLAY_TERMINAL_EVIDENCE",
+        "_provenance_replay_terminal_evidence",
         fake_replay,
     )
 
@@ -244,7 +244,7 @@ def test_replay_promotes_search_stop_to_teacher_redispatch_handoff(
 def test_task_config_records_redispatch_selection_contract(monkeypatch) -> None:
     monkeypatch.setattr(
         teacher,
-        "_ORIGINAL_MAKE_TASK_CONFIG",
+        "_provenance_make_task_config",
         lambda args: {"min_safety_improvement": 123.0},
     )
 

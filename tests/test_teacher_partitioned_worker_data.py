@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from scripts.self_play import generate_impact_teacher_redispatch_staged as staged
+from pathlib import Path
+
+from scripts.self_play import generate_impact_teacher_redispatch_runtime as teacher
 
 
 def test_partition_batches_keeps_each_scenario_in_one_worker_shard() -> None:
@@ -13,16 +15,16 @@ def test_partition_batches_keeps_each_scenario_in_one_worker_shard() -> None:
         [11, 12],
     ]
 
-    shards = staged._partition_batches(batches, 3)
+    shards = teacher._partition_batches(batches, 3)
 
     assert shards == [
         [[1, 2], [7, 8]],
         [[3, 4], [9, 10]],
         [[5, 6], [11, 12]],
     ]
-    assert staged._shard_scenario_ids(shards[0]) == (1, 2, 7, 8)
-    assert staged._shard_scenario_ids(shards[1]) == (3, 4, 9, 10)
-    assert staged._shard_scenario_ids(shards[2]) == (5, 6, 11, 12)
+    assert teacher._shard_scenario_ids(shards[0]) == (1, 2, 7, 8)
+    assert teacher._shard_scenario_ids(shards[1]) == (3, 4, 9, 10)
+    assert teacher._shard_scenario_ids(shards[2]) == (5, 6, 11, 12)
 
 
 def test_parallel_runner_routes_batches_to_matching_adapter_shards(monkeypatch) -> None:
@@ -51,21 +53,30 @@ def test_parallel_runner_routes_batches_to_matching_adapter_shards(monkeypatch) 
             executors.append(self)
 
         def submit(self, fn, process_batch, batch):
-            assert fn is staged._run_timed_batch
+            assert fn is teacher._run_timed_batch
             self.submitted.append(list(batch))
             return FakeFuture()
 
         def shutdown(self, *, wait, cancel_futures):
             return None
 
-    teacher = staged.redispatch.base.teacher
-    monkeypatch.setattr(staged, "ProcessPoolExecutor", FakeExecutor)
-    monkeypatch.setattr(staged, "as_completed", lambda futures: list(futures))
-    monkeypatch.setattr(staged.redispatch, "_worker_init_concurrency", lambda: 1)
+    monkeypatch.setattr(
+        teacher,
+        "ensure_runtime_scenario_store",
+        lambda raw_dir: Path("runtime-store"),
+    )
+    monkeypatch.setattr(
+        teacher,
+        "_configure_persistent_exact_cache",
+        lambda store_dir: None,
+    )
+    monkeypatch.setattr(teacher, "ProcessPoolExecutor", FakeExecutor)
+    monkeypatch.setattr(teacher, "as_completed", lambda futures: list(futures))
+    monkeypatch.setattr(teacher, "_worker_init_concurrency", lambda: 3)
     monkeypatch.setattr(teacher, "tqdm", None)
     monkeypatch.setattr(teacher, "process_scenario_batch", lambda batch: [])
 
-    result = staged.run_parallel(
+    result = teacher.run_parallel(
         scenario_batches=batches,
         scenario_ids=list(range(1, 13)),
         raw_dir="raw",
@@ -84,9 +95,9 @@ def test_parallel_runner_routes_batches_to_matching_adapter_shards(monkeypatch) 
     assert len(executors) == 3
 
     expected = [
-        (((1, 2, 7, 8)), [[1, 2], [7, 8]]),
-        (((3, 4, 9, 10)), [[3, 4], [9, 10]]),
-        (((5, 6, 11, 12)), [[5, 6], [11, 12]]),
+        ((1, 2, 7, 8), [[1, 2], [7, 8]]),
+        ((3, 4, 9, 10), [[3, 4], [9, 10]]),
+        ((5, 6, 11, 12), [[5, 6], [11, 12]]),
     ]
 
     for executor, (scenario_ids, submitted) in zip(executors, expected):

@@ -6,10 +6,10 @@ from pathlib import Path
 from scripts.pipelines import run_teacher_by_difficulty as pipeline
 
 
-PROVENANCE_TEACHER = "scripts.self_play.generate_impact_teacher_provenance"
+RUNTIME_TEACHER = "scripts.self_play.generate_impact_teacher_redispatch_runtime"
 
 
-def test_teacher_pipeline_defaults_to_provenance_module(
+def test_teacher_pipeline_defaults_to_runtime_module(
     monkeypatch,
 ) -> None:
     monkeypatch.setattr(
@@ -20,7 +20,7 @@ def test_teacher_pipeline_defaults_to_provenance_module(
 
     args = pipeline.parse_args()
 
-    assert args.teacher_module == PROVENANCE_TEACHER
+    assert args.teacher_module == RUNTIME_TEACHER
 
 
 def test_teacher_pipeline_passes_canonical_pf_alg_by_default(

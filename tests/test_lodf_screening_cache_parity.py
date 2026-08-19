@@ -205,15 +205,15 @@ def test_lodf_cache_and_math_stay_in_separate_modules() -> None:
     cache_source = (
         root / "grid_topology_ai" / "cache" / "lodf_structure.py"
     ).read_text(encoding="utf-8")
-    staged_source = (
+    runtime_source = (
         root
         / "scripts"
         / "self_play"
-        / "generate_impact_teacher_redispatch_staged.py"
+        / "generate_impact_teacher_redispatch_runtime.py"
     ).read_text(encoding="utf-8")
 
     assert "ByteLRUCache" not in math_source
     assert "cache_info" not in math_source
     assert "from grid_topology_ai.lodf import" in cache_source
-    assert "rank_actions_by_lodf_screening = (" in staged_source
-    assert "_RUNTIME_LODF_STRUCTURE_CACHE" in staged_source
+    assert "def rank_actions_by_lodf_screening(" in runtime_source
+    assert "_RUNTIME_LODF_STRUCTURE_CACHE" in runtime_source

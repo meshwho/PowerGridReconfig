@@ -25,7 +25,7 @@ from grid_topology_ai.topology_actions import (
     ActionSpaceConfig,
     build_branch_action_slots,
 )
-from scripts.self_play import generate_impact_teacher_provenance as provenance
+from scripts.self_play import generate_impact_teacher_redispatch_runtime as provenance
 from tests.outcome_evidence_helpers import terminal_evidence
 
 

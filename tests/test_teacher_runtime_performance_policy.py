@@ -55,14 +55,13 @@ def test_persistent_l2_is_explicit_opt_in_in_production_runtime() -> None:
     assert "opt-in with" in source
 
 
-def test_runtime_installs_exact_cache_telemetry() -> None:
+def test_runtime_uses_exact_cache_telemetry_directly() -> None:
     source = _runtime_source()
 
-    assert "base._search_workload = exact_power_flow_workload" in source
-    assert (
-        "base._print_power_flow_workload_summary = "
-        "_print_power_flow_workload_summary"
-    ) in source
+    assert "return exact_power_flow_workload(" in source
+    assert "print_exact_power_flow_workload_summary(" in source
+    assert "base._search_workload" not in source
+    assert "base._print_power_flow_workload_summary" not in source
 
 
 def test_exact_workload_uses_current_l1_l2_counters_only() -> None:
