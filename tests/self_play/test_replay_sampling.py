@@ -8,11 +8,11 @@ import numpy as np
 import pandas as pd
 
 from grid_topology_ai.config import ReplayBufferConfig
-from grid_topology_ai.self_play.replay import RollingReplayBuffer
-from grid_topology_ai.self_play.replay_sampling import (
+from grid_topology_ai.self_play.replay import (
     AGE_DECAY,
     ERROR_PRIORITY_SCALE,
     SAMPLING_CONTRACT_VERSION,
+    RollingReplayBuffer,
 )
 
 

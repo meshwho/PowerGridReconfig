@@ -11,11 +11,11 @@ import torch
 
 from grid_topology_ai.config import ReplayBufferConfig
 from grid_topology_ai.config.physics import DEFAULT_PHYSICS_CONFIG
-from grid_topology_ai.self_play import replay_priority
+from grid_topology_ai.self_play import replay as replay_priority
 from grid_topology_ai.self_play.artifacts import sha256_file
-from grid_topology_ai.self_play.replay import RollingReplayBuffer
-from grid_topology_ai.self_play.replay_error_sampling import (
+from grid_topology_ai.self_play.replay import (
     PREDICTION_ERROR_SCHEMA_VERSION,
+    RollingReplayBuffer,
 )
 
 
