@@ -13,9 +13,6 @@ from torch import nn
 from torch.nn import functional as F
 from torch.utils.data import DataLoader
 
-from grid_topology_ai.models.graph_policy_value_net import GraphPolicyValueNet
-from grid_topology_ai.models.graph_policy_value_net_v2 import GraphPolicyValueNetV2
-
 
 DIFFICULTY_CLASSES = ("simple", "medium", "hard", "unknown")
 
@@ -142,23 +139,10 @@ def _forward_graph_model(
         "branch_features": batch["branch_features"],
         "edge_index": batch["edge_index"],
         "action_mask": batch["action_mask"],
+        "edge_active_mask": batch["edge_active_mask"],
+        "node_batch": batch.get("node_batch"),
+        "edge_batch": batch.get("edge_batch"),
     }
-    if isinstance(model, GraphPolicyValueNetV2):
-        kwargs.update(
-            {
-                "edge_active_mask": batch["edge_active_mask"],
-                "node_batch": batch.get("node_batch"),
-                "edge_batch": batch.get("edge_batch"),
-            }
-        )
-    elif not isinstance(model, GraphPolicyValueNet):
-        kwargs.update(
-            {
-                "edge_active_mask": batch["edge_active_mask"],
-                "node_batch": batch.get("node_batch"),
-                "edge_batch": batch.get("edge_batch"),
-            }
-        )
     return model(**kwargs)
 
 

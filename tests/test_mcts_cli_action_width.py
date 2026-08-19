@@ -7,7 +7,6 @@ import argparse
 import pytest
 
 from grid_topology_ai.evaluation.checkpoint import EvaluationRequest
-from scripts import analyze_mcts_root_branches
 from scripts.evaluation import evaluate_checkpoint as evaluation_cli
 from scripts.planning import run_mcts, run_mcts_episode
 
@@ -20,11 +19,6 @@ ParserFactory = Callable[[], argparse.ArgumentParser]
     [
         (run_mcts.build_parser, ["raw"], 30),
         (run_mcts_episode.build_parser, ["raw"], 40),
-        (
-            analyze_mcts_root_branches.build_parser,
-            ["raw", "--checkpoint", "checkpoint.pt"],
-            30,
-        ),
         (
             evaluation_cli.build_parser,
             [
@@ -64,10 +58,6 @@ def test_mcts_clis_expose_progressive_widening_defaults(
     [
         (run_mcts.build_parser, ["raw"]),
         (run_mcts_episode.build_parser, ["raw"]),
-        (
-            analyze_mcts_root_branches.build_parser,
-            ["raw", "--checkpoint", "checkpoint.pt"],
-        ),
         (
             evaluation_cli.build_parser,
             [
