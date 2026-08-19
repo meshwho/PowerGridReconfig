@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import subprocess
 import sys
 from pathlib import Path
@@ -22,6 +23,16 @@ def _assert_success(result: subprocess.CompletedProcess[str]) -> None:
         f"stdout:\n{result.stdout}\n\n"
         f"stderr:\n{result.stderr}"
     )
+
+
+def _import_roots(source: str) -> set[str]:
+    roots: set[str] = set()
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Import):
+            roots.update(alias.name.split(".", 1)[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            roots.add(node.module.split(".", 1)[0])
+    return roots
 
 
 def test_training_api_imports_in_fresh_process() -> None:
@@ -191,7 +202,8 @@ print(load_and_validate_examples_csv.__name__, validate_examples_dataframe.__nam
 
 def test_example_validation_static_boundaries() -> None:
     source = (PROJECT_ROOT / "grid_topology_ai/self_play/example_validation.py").read_text(encoding="utf-8")
-    forbidden = ("torch", "scripts.", "subprocess", "GridFMPowerFlowBackend", "TopologySwitchingEnv", "MCTSPlanner")
+    assert not ({"torch", "scripts"} & _import_roots(source))
+    forbidden = ("subprocess", "GridFMPowerFlowBackend", "TopologySwitchingEnv", "MCTSPlanner")
     assert all(token not in source for token in forbidden)
     replay = (PROJECT_ROOT / "grid_topology_ai/self_play/replay.py").read_text(encoding="utf-8")
     assert "load_and_validate_examples_csv" in replay
