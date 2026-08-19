@@ -68,7 +68,6 @@ def _evaluator(
     calls: list[GridFMState] = []
 
     def evaluate_graph(
-        *,
         state: GridFMState,
         action_mask: np.ndarray,
     ) -> tuple[np.ndarray, float]:

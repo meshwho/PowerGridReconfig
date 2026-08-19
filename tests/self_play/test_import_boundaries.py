@@ -54,7 +54,7 @@ def test_training_cli_help_works_in_fresh_process() -> None:
     )
 
     _assert_success(result)
-    assert "Train graph/GNN policy-value baseline" in result.stdout
+    assert "Train the Graph V2 policy-value network" in result.stdout
 
 
 def test_artifact_import_does_not_eagerly_load_pipeline_or_training() -> None:

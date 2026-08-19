@@ -79,7 +79,7 @@ class _RecordingStateBuilder:
         self.state = state
         self.calls: list[dict[str, Any]] = []
 
-    def build(self, **kwargs: Any) -> GridFMState:
+    def build_from_pypower_result(self, **kwargs: Any) -> GridFMState:
         self.calls.append(kwargs)
         return self.state
 

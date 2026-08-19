@@ -339,7 +339,6 @@ def test_graph_v2_checkpoint_compatibility_ignores_reference_cardinality() -> No
         checkpoint=checkpoint,
         checkpoint_path=Path("checkpoint.pt"),
         dataset=Dataset(),
-        is_graph_v2=True,
     )
 
 

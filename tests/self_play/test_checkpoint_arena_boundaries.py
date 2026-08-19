@@ -95,28 +95,21 @@ def test_enabled_arena_rejects_training_request_without_candidates(
     )
     training_started = False
 
-    def fake_train(
-        *,
-        project_root,
-        examples_csv,
-        validation_examples_csv,
-        init_checkpoint,
-        output_dir,
-        config,
-        physics_config,
-        iteration,
-        seed,
-    ) -> Path:
+    def fake_train(_request) -> Path:
         nonlocal training_started
         training_started = True
-        return Path(output_dir) / "candidate_checkpoint.pt"
+        return output_dir / "candidate_checkpoint.pt"
 
     monkeypatch.setattr(
         stages,
         "_resolved_self_play_config",
         lambda path: self_play_config,
     )
-    monkeypatch.setattr(stages._base, "run_train", fake_train)
+    monkeypatch.setattr(
+        stages,
+        "train_graph_policy_value_model",
+        fake_train,
+    )
 
     with pytest.raises(
         RuntimeError,

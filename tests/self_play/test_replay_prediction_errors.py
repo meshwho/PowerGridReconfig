@@ -195,6 +195,11 @@ def test_graph_v2_scorer_computes_value_and_policy_errors(
 
     monkeypatch.setattr(
         replay_priority,
+        "_resolve_device",
+        lambda: torch.device("cpu"),
+    )
+    monkeypatch.setattr(
+        replay_priority,
         "load_checkpoint_payload",
         lambda *args, **kwargs: checkpoint,
     )

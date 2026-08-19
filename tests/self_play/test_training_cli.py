@@ -67,7 +67,7 @@ def test_cli_builds_graph_v2_training_request(
     assert request.save_best is True
 
     config = request.config
-    assert config.model_type == "graph_v2"
+    assert not hasattr(config, "model_type")
     assert config.epochs == 7
     assert config.learning_rate == 0.02
     assert config.hidden_dim == 64

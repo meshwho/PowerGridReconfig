@@ -97,11 +97,10 @@ def test_reward_uses_the_default_grid_utility() -> None:
         max_loading=130.0,
     )
     canonical = state_security_penalty(state, physics_config=physics)
+    reward = GridFMReward(physics_config=physics)
 
     assert canonical == pytest.approx(140.0)
-    assert GridFMReward(physics_config=physics)._state_penalty(state) == pytest.approx(
-        canonical
-    )
+    assert reward._utility_breakdown(state).penalty == pytest.approx(canonical)
 
 
 def test_potential_shaping_uses_exact_discounted_difference() -> None:

@@ -164,7 +164,9 @@ def test_mcts_backup_has_no_dense_reward_path() -> None:
 
 
 def test_training_datasets_have_no_shaped_return_fallback() -> None:
-    root = Path("grid_topology_ai/models")
+    text = Path(
+        "grid_topology_ai/models/graph_self_play_dataset.py"
+    ).read_text(encoding="utf-8")
     forbidden = (
         'row.get("outcome_value_target", row["discounted_return_from_step"])',
         'row.get("outcome_value_target", row["final_return"])',
@@ -172,14 +174,9 @@ def test_training_datasets_have_no_shaped_return_fallback() -> None:
         'target_value = row["final_return"]',
     )
 
-    for relative_path in (
-        "self_play_dataset.py",
-        "graph_self_play_dataset.py",
-    ):
-        text = (root / relative_path).read_text(encoding="utf-8")
-        assert "outcome_value_target" in text
-        for token in forbidden:
-            assert token not in text
+    assert "outcome_value_target" in text
+    for token in forbidden:
+        assert token not in text
 
 
 def test_generation_diagnostic_returns_use_transition_rewards_only() -> None:
