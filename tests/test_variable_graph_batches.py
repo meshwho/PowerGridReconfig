@@ -8,12 +8,12 @@ import torch
 from grid_topology_ai.contracts import (
     require_graph_batching_checkpoint_contract,
 )
-from grid_topology_ai.models.graph_batch import (
-    GRAPH_BATCHING_CONTRACT_VERSION,
-    collate_graph_samples,
-)
 from grid_topology_ai.models.graph_policy_value_net_v2 import (
     GraphPolicyValueNetV2,
+)
+from grid_topology_ai.models.graph_self_play_dataset import (
+    GRAPH_BATCHING_CONTRACT_VERSION,
+    collate_graph_samples,
 )
 from scripts.evaluation.evaluate_examples_with_checkpoint import (
     validate_checkpoint_dataset_compatibility,
@@ -171,6 +171,34 @@ def test_collate_packs_variable_graphs_without_node_or_edge_padding() -> None:
                 0.0,
                 0.0,
             ]
+        ),
+    )
+
+
+def test_collate_accepts_one_based_edge_indices() -> None:
+    sample = _sample(
+        num_nodes=3,
+        edge_index=torch.tensor(
+            [
+                [1, 2],
+                [2, 3],
+            ],
+            dtype=torch.long,
+        ),
+        scenario_id=3,
+        seed=33,
+    )
+
+    batch = collate_graph_samples([sample])
+
+    torch.testing.assert_close(
+        batch["edge_index"],
+        torch.tensor(
+            [
+                [0, 1],
+                [1, 2],
+            ],
+            dtype=torch.long,
         ),
     )
 
