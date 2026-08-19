@@ -72,15 +72,14 @@ from grid_topology_ai.runtime import ensure_runtime_scenario_store
 from grid_topology_ai.runtime.warm_start_backend import (
     build_memory_mapped_teacher_context,
 )
-from scripts.self_play import generate_impact_teacher_redispatch_staged as staged
-
+from scripts.self_play import generate_impact_teacher_redispatch as redispatch
 
 _RUNTIME_SCENARIO_STORE_DIR = "_redispatch_runtime_scenario_store_dir"
 _PERSISTENT_CACHE_DIRECTORY_NAME = "exact_pf_cache_v1"
 _PERSISTENT_CACHE_ENABLED_ENV = "POWERGRID_ENABLE_PERSISTENT_EXACT_CACHE"
 _TRUE_ENV_VALUES = {"1", "true", "yes", "on"}
-_ORIGINAL_STAGED_INIT = staged.init_worker_context
-_ORIGINAL_STAGED_RUN_PARALLEL = staged.run_parallel
+_ORIGINAL_REDISPATCH_INIT = redispatch.init_worker_context
+_ORIGINAL_REDISPATCH_RUN_PARALLEL = redispatch.run_parallel
 
 
 def _env_flag(name: str) -> bool:
@@ -122,15 +121,14 @@ def _native_math_thread_summary() -> str:
 
 
 def _install_runtime_telemetry() -> None:
-    base = staged.redispatch.base
-    base._search_workload = exact_power_flow_workload
-    base._print_power_flow_workload_summary = _print_power_flow_workload_summary
-
+    redispatch._search_workload = exact_power_flow_workload
+    redispatch._print_power_flow_workload_summary = (
+        _print_power_flow_workload_summary
+    )
 
 def _print_power_flow_workload_summary() -> None:
-    base = staged.redispatch.base
     print_exact_power_flow_workload_summary(
-        base._PARENT_WORKLOAD_BY_SCENARIO.values()
+        redispatch._PARENT_WORKLOAD_BY_SCENARIO.values()
     )
 
 
@@ -142,7 +140,6 @@ def _memory_mapped_base_init(
     memory_registry=None,
 ) -> None:
     _install_runtime_telemetry()
-    teacher = staged.redispatch.base.teacher
     runtime_task_config = dict(task_config)
     store_dir = runtime_task_config.pop(_RUNTIME_SCENARIO_STORE_DIR, None)
 
@@ -150,7 +147,7 @@ def _memory_mapped_base_init(
         store_dir = ensure_runtime_scenario_store(raw_dir_str)
     _configure_persistent_exact_cache(store_dir)
 
-    teacher._WORKER_CONTEXT = build_memory_mapped_teacher_context(
+    redispatch._WORKER_CONTEXT = build_memory_mapped_teacher_context(
         runtime_store_dir=store_dir,
         states_dir=states_dir_str,
         task_config=runtime_task_config,
@@ -167,10 +164,12 @@ def init_worker_context(
     memory_registry=None,
 ) -> None:
     _install_runtime_telemetry()
-    previous = staged._ORIGINAL_INIT_WORKER_CONTEXT
-    staged._ORIGINAL_INIT_WORKER_CONTEXT = _memory_mapped_base_init
+
+    previous = redispatch._staged_init_worker_context
+    redispatch._staged_init_worker_context = _memory_mapped_base_init
+
     try:
-        _ORIGINAL_STAGED_INIT(
+        _ORIGINAL_REDISPATCH_INIT(
             raw_dir_str,
             states_dir_str,
             task_config,
@@ -178,7 +177,7 @@ def init_worker_context(
             None,
         )
     finally:
-        staged._ORIGINAL_INIT_WORKER_CONTEXT = previous
+        redispatch._staged_init_worker_context = previous
 
 
 def run_parallel(
@@ -215,7 +214,7 @@ def run_parallel(
     print(f"PF warm start:             {warm_start_text}")
     print(f"Native math threads:       {_native_math_thread_summary()}")
 
-    return _ORIGINAL_STAGED_RUN_PARALLEL(
+    return _ORIGINAL_REDISPATCH_RUN_PARALLEL(
         scenario_batches=scenario_batches,
         scenario_ids=scenario_ids,
         raw_dir=raw_dir,
@@ -229,13 +228,13 @@ def run_parallel(
 
 def _install_runtime_store() -> None:
     _install_runtime_telemetry()
-    staged.init_worker_context = init_worker_context
-    staged.run_parallel = run_parallel
+    redispatch.init_worker_context = init_worker_context
+    redispatch.run_parallel = run_parallel
 
 
 def main() -> None:
     _install_runtime_store()
-    staged.main()
+    redispatch.main()
 
 
 if __name__ == "__main__":
