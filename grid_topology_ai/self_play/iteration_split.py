@@ -26,7 +26,7 @@ from grid_topology_ai.self_play.physical_split import (
     assign_physical_split,
     load_physical_split_manifest,
 )
-from grid_topology_ai.self_play.replay_sampling import (
+from grid_topology_ai.self_play.replay import (
     EpisodeSamplingMixin,
     _save_manifest,
 )

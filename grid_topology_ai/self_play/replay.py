@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import gzip
 import json
+import math
 import tempfile
+from collections import defaultdict
 from collections.abc import Mapping
 from numbers import Integral, Real
 from dataclasses import asdict
@@ -11,6 +13,8 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
+import torch
+from torch.utils.data import DataLoader
 
 from grid_topology_ai.config import ReplayBufferConfig
 from grid_topology_ai.config.physics import DEFAULT_PHYSICS_CONFIG, PhysicsConfig
@@ -26,17 +30,19 @@ from grid_topology_ai.contracts import (
     require_topology_action_provenance,
     topology_action_provenance,
 )
+from grid_topology_ai.models.graph_batch import collate_graph_samples
+from grid_topology_ai.models.graph_policy_value_net_v2 import GraphPolicyValueNetV2
+from grid_topology_ai.models.graph_self_play_dataset import GraphSelfPlayDataset
 from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
 from grid_topology_ai.self_play.artifacts import sha256_file, sha256_json
 from grid_topology_ai.self_play.example_validation import (
     load_and_validate_examples_csv,
     validate_example_outcome_contracts,
 )
-from grid_topology_ai.self_play.replay_error_sampling import (
-    PREDICTION_ERROR_FILENAME,
-    ReplayPredictionErrorMixin,
+from grid_topology_ai.training.checkpoints import (
+    extract_normalization_stats,
+    load_checkpoint_payload,
 )
-from grid_topology_ai.self_play.replay_sampling import _episode_key, _save_manifest
 from grid_topology_ai.topology_actions import (
     STOP_PLUS_BRANCH_STATUS_POLICY_LAYOUT,
     ActionSlot,
@@ -339,6 +345,929 @@ def _require_non_negative_integer(
     if parsed is None or parsed < 0:
         raise ValueError(f"Invalid {name} for {source}: {value!r}")
     return parsed
+
+
+SAMPLING_CONTRACT_VERSION = 2
+AGE_DECAY = 0.95
+ERROR_PRIORITY_SCALE = 0.10
+_ERROR_FIELDS = (
+    "value_error",
+    "value_abs_error",
+    "td_error",
+    "policy_error",
+    "policy_kl_error",
+)
+_DIFFICULTY_FIELDS = (
+    "difficulty",
+    "difficulty_class",
+    "difficulty_label",
+    "scenario_difficulty",
+    "difficulty_bucket",
+    "difficulty_level",
+)
+
+
+def _save_manifest(
+    manifest: dict[str, Any],
+    path: str | Path,
+) -> None:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path: Path | None = None
+
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            temporary_path = Path(handle.name)
+            json.dump(
+                manifest,
+                handle,
+                indent=2,
+                ensure_ascii=False,
+            )
+            handle.write("\n")
+
+        temporary_path.replace(path)
+    finally:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
+
+
+def _episode_key(row: Mapping[str, Any]) -> tuple[str, ...]:
+    episode_id = str(row.get("episode_id", "")).strip()
+    if episode_id:
+        return ("episode", episode_id)
+
+    return (
+        "scenario",
+        str(row.get("run_id", "")),
+        str(row.get("replay_iteration", row.get("iteration", ""))),
+        str(row.get("scenario_id", "")),
+    )
+
+
+def _first_text(rows: list[dict[str, Any]], *fields: str) -> str:
+    for field in fields:
+        for row in rows:
+            value = row.get(field)
+            if value is not None and str(value).strip():
+                return str(value).strip()
+    return ""
+
+
+def _finite_error(value: object) -> float | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        number = abs(float(value))
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not np.isfinite(number):
+        return None
+    return number
+
+
+def _selected_action_policy_error(row: dict[str, Any]) -> float | None:
+    """Return one-hot policy loss when explicit training errors are absent."""
+
+    selected = row.get("selected_action_id")
+    raw_policy = row.get("mcts_policy_json")
+    if selected is None or raw_policy is None or isinstance(selected, bool):
+        return None
+
+    try:
+        selected_action_id = int(selected)
+        policy = json.loads(str(raw_policy))
+    except (TypeError, ValueError, json.JSONDecodeError, OverflowError):
+        return None
+
+    if selected_action_id < 0 or not isinstance(policy, Mapping):
+        return None
+
+    probability = _finite_error(
+        policy.get(str(selected_action_id), policy.get(selected_action_id))
+    )
+    if probability is None or probability <= 0.0 or probability > 1.0:
+        return None
+
+    return float(-math.log(max(probability, 1e-12)))
+
+
+def _error_score(rows: list[dict[str, Any]]) -> float:
+    explicit: list[float] = []
+    for row in rows:
+        for field in _ERROR_FIELDS:
+            value = _finite_error(row.get(field))
+            if value is not None:
+                explicit.append(value)
+
+    values = explicit
+    if not values:
+        values = [
+            value
+            for row in rows
+            if (value := _selected_action_policy_error(row)) is not None
+        ]
+    if not values:
+        return 0.0
+
+    largest = max(values)
+    return float(largest / (1.0 + largest))
+
+
+class EpisodeSamplingMixin:
+    """Sample replay by episode before selecting states."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        self.scenario_metadata: dict[str, dict[str, Any]] = {}
+        super().__init__(*args, **kwargs)
+
+    def set_scenario_metadata(self, pool_metadata: Mapping[str, Any]) -> None:
+        scenarios = pool_metadata.get("scenarios", {})
+        if not isinstance(scenarios, Mapping):
+            raise ValueError("Pool metadata scenarios must be a mapping.")
+
+        normalized: dict[str, dict[str, Any]] = {}
+        for scenario_id, metadata in scenarios.items():
+            if not isinstance(metadata, Mapping):
+                raise ValueError(
+                    "Pool scenario metadata must be a mapping: "
+                    f"scenario_id={scenario_id!r}."
+                )
+            try:
+                key = str(int(scenario_id))
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise ValueError(
+                    f"Invalid scenario_id in pool metadata: {scenario_id!r}."
+                ) from exc
+            normalized[key] = dict(metadata)
+        self.scenario_metadata = normalized
+
+    def _difficulty(self, rows: list[dict[str, Any]]) -> str:
+        explicit = _first_text(rows, *_DIFFICULTY_FIELDS)
+        if explicit:
+            return explicit
+        scenario_id = _first_text(rows, "scenario_id")
+        metadata = self.scenario_metadata.get(scenario_id, {})
+        return str(metadata.get("difficulty_class", "unknown")).strip() or "unknown"
+
+    def _episode_groups(
+        self,
+        rows: list[dict[str, Any]],
+        current_iteration: int,
+        rng: np.random.Generator,
+    ) -> tuple[
+        list[dict[str, Any]],
+        dict[tuple[str, str], list[dict[str, Any]]],
+    ]:
+        grouped: dict[tuple[str, ...], list[dict[str, Any]]] = defaultdict(list)
+        for row in rows:
+            grouped[_episode_key(row)].append(row)
+
+        episodes: list[dict[str, Any]] = []
+        strata: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+        for episode_rows in grouped.values():
+            shuffled = list(episode_rows)
+            rng.shuffle(shuffled)
+            iteration = max(
+                int(row.get("replay_iteration", -1))
+                for row in episode_rows
+            )
+            age = max(0, int(current_iteration) - iteration)
+            priority = AGE_DECAY ** age * (
+                1.0 + ERROR_PRIORITY_SCALE * _error_score(episode_rows)
+            )
+            outcome = _first_text(
+                episode_rows,
+                "outcome_class",
+                "termination_reason",
+            ) or "unknown"
+            stratum = (outcome, self._difficulty(episode_rows))
+            episode = {
+                "rows": shuffled,
+                "priority": priority,
+                "selected": 0,
+            }
+            episodes.append(episode)
+            strata[stratum].append(episode)
+        return episodes, strata
+
+    def _sample_episode_rows(
+        self,
+        rows: list[dict[str, Any]],
+        n_examples: int,
+        current_iteration: int,
+        rng: np.random.Generator,
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        if n_examples <= 0 or not rows:
+            return [], {
+                "source_examples": len(rows),
+                "source_episodes": 0,
+                "selected_examples": 0,
+                "selected_episodes": 0,
+                "source_strata": {},
+                "selected_strata": {},
+            }
+
+        episodes, strata = self._episode_groups(
+            rows,
+            current_iteration,
+            rng,
+        )
+        target = min(int(n_examples), len(rows))
+        selected: list[dict[str, Any]] = []
+        selected_strata: dict[str, int] = defaultdict(int)
+
+        while len(selected) < target:
+            queues: dict[tuple[str, str], list[dict[str, Any]]] = {}
+            for stratum, members in strata.items():
+                active = [
+                    episode
+                    for episode in members
+                    if episode["rows"]
+                ]
+                if not active:
+                    continue
+                weights = np.asarray(
+                    [
+                        max(float(episode["priority"]), 1e-12)
+                        for episode in active
+                    ],
+                    dtype=np.float64,
+                )
+                keys = rng.exponential(scale=1.0 / weights)
+                queues[stratum] = [
+                    active[int(index)]
+                    for index in np.argsort(keys)[::-1]
+                ]
+
+            if not queues:
+                break
+
+            order = list(queues)
+            rng.shuffle(order)
+            while order and len(selected) < target:
+                next_order: list[tuple[str, str]] = []
+                for stratum in order:
+                    queue = queues[stratum]
+                    if not queue:
+                        continue
+                    episode = queue.pop()
+                    selected.append(episode["rows"].pop())
+                    episode["selected"] += 1
+                    label = (
+                        f"outcome={stratum[0]}|difficulty={stratum[1]}"
+                    )
+                    selected_strata[label] += 1
+                    if queue:
+                        next_order.append(stratum)
+                    if len(selected) >= target:
+                        break
+                order = next_order
+                rng.shuffle(order)
+
+        source_strata = {
+            f"outcome={key[0]}|difficulty={key[1]}": len(value)
+            for key, value in sorted(strata.items())
+        }
+        return selected, {
+            "source_examples": len(rows),
+            "source_episodes": len(episodes),
+            "selected_examples": len(selected),
+            "selected_episodes": sum(
+                episode["selected"] > 0
+                for episode in episodes
+            ),
+            "source_strata": source_strata,
+            "selected_strata": dict(sorted(selected_strata.items())),
+        }
+
+    def export_mixed_batch(
+        self,
+        output_path: str | Path,
+        *,
+        current_iteration: int,
+        n_examples: int | None = None,
+        fresh_fraction: float | None = None,
+        seed: int | None = None,
+    ) -> dict[str, Any]:
+        if len(self.buffer) < int(self.config.min_size_to_train):
+            raise ValueError(
+                f"Replay buffer has only {len(self.buffer)} examples, "
+                f"but min_size_to_train={self.config.min_size_to_train}."
+            )
+
+        total = (
+            len(self.buffer)
+            if n_examples is None
+            else min(int(n_examples), len(self.buffer))
+        )
+        if total <= 0:
+            raise ValueError("n_examples must be positive.")
+        fraction = (
+            self.config.fresh_fraction
+            if fresh_fraction is None
+            else fresh_fraction
+        )
+        fraction = float(np.clip(fraction, 0.0, 1.0))
+        rng_seed = int(
+            self.config.random_seed
+            if seed is None
+            else seed
+        )
+        rng = np.random.default_rng(rng_seed)
+        fresh, old = self._split_fresh_old(
+            current_iteration=current_iteration
+        )
+
+        n_fresh = min(int(round(total * fraction)), len(fresh))
+        n_old = min(total - n_fresh, len(old))
+        remaining = total - n_fresh - n_old
+        take_fresh = min(remaining, len(fresh) - n_fresh)
+        n_fresh += take_fresh
+        remaining -= take_fresh
+        n_old += min(remaining, len(old) - n_old)
+
+        fresh_rows, fresh_meta = self._sample_episode_rows(
+            fresh,
+            n_fresh,
+            current_iteration,
+            rng,
+        )
+        old_rows, old_meta = self._sample_episode_rows(
+            old,
+            n_old,
+            current_iteration,
+            rng,
+        )
+        selected = fresh_rows + old_rows
+        if not selected:
+            raise ValueError(
+                "Could not sample any examples from replay buffer."
+            )
+        rng.shuffle(selected)
+
+        output_path = Path(output_path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        pd.DataFrame(selected).to_csv(output_path, index=False)
+
+        metadata = {
+            **physics_provenance(self.physics_config),
+            "path": str(output_path),
+            "n_examples": len(selected),
+            "n_fresh": len(fresh_rows),
+            "n_old": len(old_rows),
+            "fresh_fraction_target": fraction,
+            "fresh_fraction_actual": len(fresh_rows) / len(selected),
+            "current_iteration": int(current_iteration),
+            "seed": rng_seed,
+            "sampling_contract_version": SAMPLING_CONTRACT_VERSION,
+            "sampling_unit": "episode_then_state",
+            "sampling_strata": ["outcome", "difficulty"],
+            "scenario_metadata_count": len(self.scenario_metadata),
+            "age_decay_per_iteration": AGE_DECAY,
+            "error_priority_scale": ERROR_PRIORITY_SCALE,
+            "error_priority_source": (
+                "explicit_error_or_selected_action_policy_loss"
+            ),
+            "fresh_sampling": fresh_meta,
+            "old_sampling": old_meta,
+        }
+        _save_manifest(
+            metadata,
+            output_path.with_suffix(".metadata.json"),
+        )
+        return metadata
+
+
+PREDICTION_ERROR_SCHEMA_VERSION = 1
+PREDICTION_ERROR_FILENAME = "replay_prediction_errors.json"
+
+
+def _require_prediction_error_sha256(value: object, *, source: str) -> str:
+    text = str(value or "").strip().lower()
+    if len(text) != 64 or any(
+        character not in "0123456789abcdef"
+        for character in text
+    ):
+        raise ValueError(
+            f"Invalid replay prediction checkpoint SHA-256 for {source}."
+        )
+    return text
+
+
+def _non_negative_float(
+    value: object,
+    *,
+    name: str,
+    source: str,
+) -> float:
+    if isinstance(value, bool):
+        raise ValueError(f"Invalid {name} for {source}: {value!r}.")
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError(
+            f"Invalid {name} for {source}: {value!r}."
+        ) from exc
+    if not np.isfinite(number) or number < 0.0:
+        raise ValueError(f"Invalid {name} for {source}: {value!r}.")
+    return number
+
+
+class ReplayPredictionErrorMixin(EpisodeSamplingMixin):
+    """Persist model errors and feed them into episode sampling priority."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.prediction_error_path = self.save_dir / PREDICTION_ERROR_FILENAME
+        (
+            self.prediction_errors,
+            self.prediction_error_last_iteration,
+        ) = self._load_prediction_errors()
+        self._prune_prediction_errors(persist=False)
+
+    def _load_prediction_errors(
+        self,
+    ) -> tuple[dict[str, dict[str, Any]], int]:
+        if not self.prediction_error_path.exists():
+            return {}, 0
+
+        payload = json.loads(
+            self.prediction_error_path.read_text(encoding="utf-8")
+        )
+        if not isinstance(payload, dict):
+            raise ValueError(
+                "Replay prediction error sidecar must be an object: "
+                f"{self.prediction_error_path}"
+            )
+        require_exact_contract_version(
+            payload.get("schema_version"),
+            expected=PREDICTION_ERROR_SCHEMA_VERSION,
+            name="replay prediction-error schema",
+            source=str(self.prediction_error_path),
+            regeneration_command=(
+                f"remove {self.prediction_error_path.name} and rerun self-play"
+            ),
+        )
+        require_physics_provenance(
+            payload,
+            source=str(self.prediction_error_path),
+            expected_physics_config=self.physics_config,
+        )
+        raw_entries = payload.get("entries", {})
+        if not isinstance(raw_entries, Mapping):
+            raise ValueError(
+                "Replay prediction error entries must be a mapping: "
+                f"{self.prediction_error_path}"
+            )
+
+        entries: dict[str, dict[str, Any]] = {}
+        for raw_state_id, raw_entry in raw_entries.items():
+            state_id = str(raw_state_id).strip()
+            if not state_id or not isinstance(raw_entry, Mapping):
+                raise ValueError(
+                    "Invalid replay prediction error entry in "
+                    f"{self.prediction_error_path}."
+                )
+            source = f"{self.prediction_error_path} state_id={state_id!r}"
+            scored_iteration = int(raw_entry.get("scored_iteration", 0))
+            if scored_iteration <= 0:
+                raise ValueError(
+                    f"Invalid scored_iteration for {source}."
+                )
+            entries[state_id] = {
+                "value_error": _non_negative_float(
+                    raw_entry.get("value_error"),
+                    name="value_error",
+                    source=source,
+                ),
+                "policy_kl_error": _non_negative_float(
+                    raw_entry.get("policy_kl_error"),
+                    name="policy_kl_error",
+                    source=source,
+                ),
+                "checkpoint_sha256": _require_prediction_error_sha256(
+                    raw_entry.get("checkpoint_sha256"),
+                    source=source,
+                ),
+                "scored_iteration": scored_iteration,
+            }
+
+        last_iteration = int(payload.get("last_updated_iteration", 0))
+        if last_iteration < 0:
+            raise ValueError(
+                "Invalid last_updated_iteration in "
+                f"{self.prediction_error_path}."
+            )
+        if int(payload.get("entry_count", len(entries))) != len(entries):
+            raise ValueError(
+                "Replay prediction error entry_count mismatch in "
+                f"{self.prediction_error_path}."
+            )
+        return entries, last_iteration
+
+    def _save_prediction_errors(self) -> None:
+        payload = {
+            "schema_version": PREDICTION_ERROR_SCHEMA_VERSION,
+            "algorithm": "absolute_value_error_and_policy_kl_v1",
+            **physics_provenance(self.physics_config),
+            "last_updated_iteration": int(
+                self.prediction_error_last_iteration
+            ),
+            "entry_count": len(self.prediction_errors),
+            "entries": dict(sorted(self.prediction_errors.items())),
+        }
+        _save_manifest(payload, self.prediction_error_path)
+
+    def _prune_prediction_errors(self, *, persist: bool = True) -> None:
+        active_state_ids = {
+            str(row.get("state_id", "")).strip()
+            for row in self.buffer
+            if str(row.get("state_id", "")).strip()
+        }
+        retained = {
+            state_id: entry
+            for state_id, entry in self.prediction_errors.items()
+            if state_id in active_state_ids
+        }
+        if retained == self.prediction_errors:
+            return
+        self.prediction_errors = retained
+        if persist and (self.prediction_error_path.exists() or retained):
+            self._save_prediction_errors()
+
+    def save_manifest(self) -> None:
+        super().save_manifest()
+        self._prune_prediction_errors()
+
+    def _record_prediction_errors(
+        self,
+        report: Mapping[str, Any],
+        *,
+        iteration: int,
+    ) -> None:
+        require_exact_contract_version(
+            report.get("schema_version"),
+            expected=PREDICTION_ERROR_SCHEMA_VERSION,
+            name="replay prediction-error report",
+            source="replay priority scorer",
+            regeneration_command="rerun replay prediction scoring",
+        )
+        checkpoint_sha = _require_prediction_error_sha256(
+            report.get("checkpoint_sha256"),
+            source="replay priority scorer",
+        )
+        raw_entries = report.get("entries", {})
+        if not isinstance(raw_entries, Mapping):
+            raise ValueError("Replay prediction error report entries are invalid.")
+        if int(report.get("example_count", -1)) != len(raw_entries):
+            raise ValueError(
+                "Replay prediction error report example_count mismatch."
+            )
+
+        iteration = int(iteration)
+        if iteration <= 0:
+            raise ValueError("Replay prediction scoring iteration must be positive.")
+
+        for raw_state_id, raw_entry in raw_entries.items():
+            state_id = str(raw_state_id).strip()
+            if not state_id or not isinstance(raw_entry, Mapping):
+                raise ValueError("Invalid replay prediction error report entry.")
+            source = f"replay prediction report state_id={state_id!r}"
+            self.prediction_errors[state_id] = {
+                "value_error": _non_negative_float(
+                    raw_entry.get("value_error"),
+                    name="value_error",
+                    source=source,
+                ),
+                "policy_kl_error": _non_negative_float(
+                    raw_entry.get("policy_kl_error"),
+                    name="policy_kl_error",
+                    source=source,
+                ),
+                "checkpoint_sha256": checkpoint_sha,
+                "scored_iteration": iteration,
+            }
+
+        self.prediction_error_last_iteration = iteration
+        self._prune_prediction_errors(persist=False)
+        self._save_prediction_errors()
+
+    def _refresh_prediction_errors(
+        self,
+        *,
+        current_iteration: int,
+    ) -> dict[str, Any]:
+        if self.producer_checkpoint is None or not self.buffer:
+            return {
+                "checkpoint_sha256": None,
+                "refreshed_examples": 0,
+                "available_entries": len(self.prediction_errors),
+            }
+
+        checkpoint_sha = sha256_file(self.producer_checkpoint)
+        stale_rows = [
+            row
+            for row in self.buffer
+            if self.prediction_errors.get(
+                str(row.get("state_id", "")).strip(),
+                {},
+            ).get("checkpoint_sha256")
+            != checkpoint_sha
+        ]
+        if not stale_rows:
+            return {
+                "checkpoint_sha256": checkpoint_sha,
+                "refreshed_examples": 0,
+                "available_entries": len(self.prediction_errors),
+            }
+
+        temporary_path: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                dir=self.save_dir,
+                prefix=".replay_priority_",
+                suffix=".csv",
+                delete=False,
+            ) as handle:
+                temporary_path = Path(handle.name)
+            pd.DataFrame(stale_rows).to_csv(temporary_path, index=False)
+
+            report = score_replay_prediction_errors(
+                examples_csv=temporary_path,
+                checkpoint_path=self.producer_checkpoint,
+                physics_config=self.physics_config,
+            )
+            self._record_prediction_errors(
+                report,
+                iteration=current_iteration,
+            )
+        finally:
+            if temporary_path is not None:
+                temporary_path.unlink(missing_ok=True)
+
+        return {
+            "checkpoint_sha256": checkpoint_sha,
+            "refreshed_examples": len(stale_rows),
+            "available_entries": len(self.prediction_errors),
+            "mean_value_error": report["mean_value_error"],
+            "mean_policy_kl_error": report["mean_policy_kl_error"],
+        }
+
+    def _episode_groups(
+        self,
+        rows: list[dict[str, Any]],
+        current_iteration: int,
+        rng: np.random.Generator,
+    ) -> tuple[
+        list[dict[str, Any]],
+        dict[tuple[str, str], list[dict[str, Any]]],
+    ]:
+        enriched_rows: list[dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            state_id = str(row.get("state_id", "")).strip()
+            entry = self.prediction_errors.get(state_id)
+            if entry is not None:
+                item["value_error"] = entry["value_error"]
+                item["policy_kl_error"] = entry["policy_kl_error"]
+            enriched_rows.append(item)
+        return super()._episode_groups(
+            enriched_rows,
+            current_iteration,
+            rng,
+        )
+
+    def export_mixed_batch(
+        self,
+        output_path: str | Path,
+        *,
+        current_iteration: int,
+        n_examples: int | None = None,
+        fresh_fraction: float | None = None,
+        seed: int | None = None,
+    ) -> dict[str, Any]:
+        error_refresh = self._refresh_prediction_errors(
+            current_iteration=current_iteration
+        )
+        metadata = super().export_mixed_batch(
+            output_path=output_path,
+            current_iteration=current_iteration,
+            n_examples=n_examples,
+            fresh_fraction=fresh_fraction,
+            seed=seed,
+        )
+        metadata.update(
+            {
+                "prediction_error_schema_version": (
+                    PREDICTION_ERROR_SCHEMA_VERSION
+                ),
+                "prediction_error_entries": len(self.prediction_errors),
+                "prediction_error_refresh": error_refresh,
+            }
+        )
+        metadata_path = Path(output_path).with_suffix(".metadata.json")
+        _save_manifest(metadata, metadata_path)
+        return metadata
+
+
+_MODEL_TYPE = "graph_policy_value_net_v2"
+
+
+def _resolve_device() -> torch.device:
+    return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
+def _load_model(
+    checkpoint: dict[str, Any],
+    *,
+    device: torch.device,
+) -> GraphPolicyValueNetV2:
+    model_type = str(checkpoint.get("model_type", "")).strip()
+    if model_type != _MODEL_TYPE:
+        raise ValueError(
+            "Replay priority scoring requires a Graph V2 checkpoint, "
+            f"got model_type={model_type!r}."
+        )
+
+    model = GraphPolicyValueNetV2(
+        num_bus_features=int(checkpoint["num_bus_features"]),
+        num_branch_features=int(checkpoint["num_branch_features"]),
+        hidden_dim=int(checkpoint.get("hidden_dim", 128)),
+        num_layers=int(checkpoint.get("num_layers", 3)),
+        dropout=float(checkpoint.get("dropout", 0.0)),
+    )
+    model.load_state_dict(checkpoint["model_state_dict"])
+    model.to(device)
+    model.eval()
+    return model
+
+
+def _move_batch(
+    batch: dict[str, Any],
+    device: torch.device,
+) -> dict[str, Any]:
+    return {
+        name: value.to(device, non_blocking=True)
+        if torch.is_tensor(value)
+        else value
+        for name, value in batch.items()
+    }
+
+
+def score_replay_prediction_errors(
+    *,
+    examples_csv: str | Path,
+    checkpoint_path: str | Path,
+    physics_config: PhysicsConfig,
+    batch_size: int = 128,
+) -> dict[str, Any]:
+    """Score replay examples against one Graph V2 checkpoint."""
+
+    examples_csv = Path(examples_csv)
+    checkpoint_path = Path(checkpoint_path)
+    device = _resolve_device()
+    checkpoint = dict(
+        load_checkpoint_payload(
+            checkpoint_path,
+            map_location=device,
+            expected_physics_config=physics_config,
+        )
+    )
+
+    if str(checkpoint.get("model_type", "")).strip() != _MODEL_TYPE:
+        raise ValueError(
+            "Replay priority scoring requires a Graph V2 checkpoint."
+        )
+
+    dataset = GraphSelfPlayDataset(
+        examples_csv=examples_csv,
+        normalize_features=False,
+        normalization_stats=extract_normalization_stats(
+            checkpoint,
+            source=checkpoint_path,
+        ),
+        physics_config=physics_config,
+    )
+
+    mismatches = [
+        name
+        for name, expected in {
+            "num_bus_features": dataset.num_bus_features,
+            "num_branch_features": dataset.num_branch_features,
+        }.items()
+        if int(checkpoint.get(name, -1)) != int(expected)
+    ]
+    if mismatches:
+        raise ValueError(
+            "Replay examples are incompatible with the scoring checkpoint: "
+            + ", ".join(mismatches)
+            + "."
+        )
+
+    require_topology_action_provenance(
+        checkpoint,
+        source=str(checkpoint_path),
+        expected_action_space_config=dataset.topology_action_config,
+    )
+
+    model = _load_model(checkpoint, device=device)
+    loader = DataLoader(
+        dataset,
+        batch_size=min(max(1, int(batch_size)), len(dataset)),
+        shuffle=False,
+        num_workers=0,
+        pin_memory=(device.type == "cuda"),
+        collate_fn=collate_graph_samples,
+    )
+
+    entries: dict[str, dict[str, float]] = {}
+    value_errors: list[float] = []
+    policy_errors: list[float] = []
+
+    with torch.no_grad():
+        for batch in loader:
+            batch = _move_batch(batch, device)
+            policy_logits, predicted_value = model(
+                bus_features=batch["bus_features"],
+                branch_features=batch["branch_features"],
+                edge_index=batch["edge_index"],
+                edge_active_mask=batch["edge_active_mask"],
+                action_mask=batch["action_mask"],
+                node_batch=batch["node_batch"],
+                edge_batch=batch["edge_batch"],
+            )
+            target_policy = batch["target_policy"].float()
+            target_value = batch["target_value"].float().reshape(-1)
+            predicted_value = predicted_value.float().reshape(-1)
+
+            log_probs = torch.log_softmax(policy_logits.float(), dim=1)
+            positive = target_policy > 0.0
+            target_log = torch.zeros_like(target_policy)
+            target_log[positive] = torch.log(target_policy[positive])
+            policy_kl = torch.where(
+                positive,
+                target_policy * (target_log - log_probs),
+                torch.zeros_like(target_policy),
+            ).sum(dim=1).clamp_min(0.0)
+            value_error = torch.abs(predicted_value - target_value)
+
+            state_ids = [str(value) for value in batch["state_id"]]
+            batch_value_errors = value_error.detach().cpu().numpy()
+            batch_policy_errors = policy_kl.detach().cpu().numpy()
+
+            for state_id, value_item, policy_item in zip(
+                state_ids,
+                batch_value_errors,
+                batch_policy_errors,
+            ):
+                if state_id in entries:
+                    raise ValueError(
+                        f"Duplicate state_id while scoring replay: {state_id!r}."
+                    )
+                value_number = float(value_item)
+                policy_number = float(policy_item)
+                if not np.isfinite(value_number) or not np.isfinite(policy_number):
+                    raise ValueError(
+                        f"Non-finite replay prediction error for state {state_id!r}."
+                    )
+                entries[state_id] = {
+                    "value_error": value_number,
+                    "policy_kl_error": policy_number,
+                }
+                value_errors.append(value_number)
+                policy_errors.append(policy_number)
+
+    if len(entries) != len(dataset):
+        raise RuntimeError(
+            "Replay prediction scoring did not cover every example: "
+            f"expected {len(dataset)}, observed {len(entries)}."
+        )
+
+    return {
+        "schema_version": PREDICTION_ERROR_SCHEMA_VERSION,
+        "checkpoint_path": str(checkpoint_path),
+        "checkpoint_sha256": sha256_file(checkpoint_path),
+        "checkpoint_contract_version": int(
+            checkpoint["checkpoint_contract_version"]
+        ),
+        "model_type": str(checkpoint["model_type"]),
+        "examples_csv": str(examples_csv),
+        "examples_csv_sha256": sha256_file(examples_csv),
+        "example_count": len(entries),
+        "mean_value_error": float(np.mean(value_errors)),
+        "mean_policy_kl_error": float(np.mean(policy_errors)),
+        "entries": entries,
+    }
 
 
 class RollingReplayBuffer(ReplayPredictionErrorMixin):
