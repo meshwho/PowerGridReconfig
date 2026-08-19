@@ -10,7 +10,9 @@ from grid_topology_ai.contracts import (
     OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
     physics_provenance,
 )
-from grid_topology_ai.models.graph_batch import GRAPH_BATCHING_CONTRACT_VERSION
+from grid_topology_ai.models.graph_self_play_dataset import (
+    GRAPH_BATCHING_CONTRACT_VERSION,
+)
 from grid_topology_ai.models.graph_policy_value_net_v2 import GraphPolicyValueNetV2
 from grid_topology_ai.models.neural_evaluator import NeuralPolicyValueEvaluator
 from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
