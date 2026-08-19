@@ -2,12 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from grid_topology_ai.teacher_resume_index import (
-    append_resume_delta,
-    load_resume_index,
-    resume_index_path,
-    write_resume_snapshot,
-)
+from scripts.self_play import generate_impact_teacher_redispatch_runtime as teacher
 
 
 def _append_checkpoint(path: Path, payload: bytes) -> int:
@@ -20,7 +15,7 @@ def test_resume_index_tracks_snapshot_and_contiguous_deltas(tmp_path) -> None:
     checkpoint = tmp_path / "teacher_checkpoint.jsonl"
     checkpoint.write_bytes(b"first\n")
 
-    write_resume_snapshot(
+    teacher._write_resume_snapshot(
         checkpoint_path=checkpoint,
         contract_fingerprint="contract-a",
         completed_scenario_ids=[1, 2],
@@ -28,7 +23,7 @@ def test_resume_index_tracks_snapshot_and_contiguous_deltas(tmp_path) -> None:
 
     start = checkpoint.stat().st_size
     _append_checkpoint(checkpoint, b"second\n")
-    append_resume_delta(
+    teacher._append_resume_delta(
         checkpoint_path=checkpoint,
         contract_fingerprint="contract-a",
         scenario_id=3,
@@ -36,7 +31,7 @@ def test_resume_index_tracks_snapshot_and_contiguous_deltas(tmp_path) -> None:
         checkpoint_start=start,
     )
 
-    restored = load_resume_index(
+    restored = teacher._load_resume_index(
         checkpoint_path=checkpoint,
         contract_fingerprint="contract-a",
         allowed_scenario_ids=[1, 2, 3, 4],
@@ -49,7 +44,7 @@ def test_resume_index_rejects_unindexed_checkpoint_tail(tmp_path) -> None:
     checkpoint = tmp_path / "teacher_checkpoint.jsonl"
     checkpoint.write_bytes(b"first\n")
 
-    write_resume_snapshot(
+    teacher._write_resume_snapshot(
         checkpoint_path=checkpoint,
         contract_fingerprint="contract-a",
         completed_scenario_ids=[1],
@@ -57,7 +52,7 @@ def test_resume_index_rejects_unindexed_checkpoint_tail(tmp_path) -> None:
 
     _append_checkpoint(checkpoint, b"unindexed\n")
 
-    assert load_resume_index(
+    assert teacher._load_resume_index(
         checkpoint_path=checkpoint,
         contract_fingerprint="contract-a",
         allowed_scenario_ids=[1, 2],
@@ -68,13 +63,13 @@ def test_resume_index_rejects_different_contract(tmp_path) -> None:
     checkpoint = tmp_path / "teacher_checkpoint.jsonl"
     checkpoint.write_bytes(b"first\n")
 
-    write_resume_snapshot(
+    teacher._write_resume_snapshot(
         checkpoint_path=checkpoint,
         contract_fingerprint="contract-a",
         completed_scenario_ids=[1],
     )
 
-    assert load_resume_index(
+    assert teacher._load_resume_index(
         checkpoint_path=checkpoint,
         contract_fingerprint="contract-b",
         allowed_scenario_ids=[1],
@@ -85,7 +80,7 @@ def test_resume_index_delta_can_mark_scenario_retryable(tmp_path) -> None:
     checkpoint = tmp_path / "teacher_checkpoint.jsonl"
     checkpoint.write_bytes(b"first\n")
 
-    write_resume_snapshot(
+    teacher._write_resume_snapshot(
         checkpoint_path=checkpoint,
         contract_fingerprint="contract-a",
         completed_scenario_ids=[1, 2],
@@ -93,7 +88,7 @@ def test_resume_index_delta_can_mark_scenario_retryable(tmp_path) -> None:
 
     start = checkpoint.stat().st_size
     _append_checkpoint(checkpoint, b"retry\n")
-    append_resume_delta(
+    teacher._append_resume_delta(
         checkpoint_path=checkpoint,
         contract_fingerprint="contract-a",
         scenario_id=2,
@@ -101,11 +96,11 @@ def test_resume_index_delta_can_mark_scenario_retryable(tmp_path) -> None:
         checkpoint_start=start,
     )
 
-    assert load_resume_index(
+    assert teacher._load_resume_index(
         checkpoint_path=checkpoint,
         contract_fingerprint="contract-a",
         allowed_scenario_ids=[1, 2],
     ) == {1}
-    assert resume_index_path(checkpoint).name == (
+    assert teacher._resume_index_path(checkpoint).name == (
         "teacher_checkpoint_resume_index.jsonl"
     )
