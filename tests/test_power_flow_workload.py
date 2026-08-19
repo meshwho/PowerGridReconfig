@@ -14,7 +14,7 @@ from grid_topology_ai.pypower_compat import (
     reset_power_flow_workload_counters,
     runpf,
 )
-from scripts.self_play import generate_impact_teacher_provenance as provenance
+from scripts.self_play import generate_impact_teacher_redispatch_runtime as teacher
 
 
 def _options(*, qlim: int) -> dict[str, object]:
@@ -195,7 +195,7 @@ def test_search_workload_uses_counter_deltas() -> None:
         "q_limit_resolves": 6,
     }
 
-    workload = provenance._search_workload(
+    workload = teacher._search_workload(
         before=before,
         after=after,
         logical_evaluations=15,
@@ -216,20 +216,32 @@ def test_instrumented_search_records_one_scenario_delta(monkeypatch) -> None:
             {
                 "hits": 2,
                 "misses": 3,
-                "exact_cache_hits": 1,
-                "tolerant_cache_hits": 1,
+                "positive_hits": 1,
+                "negative_hits": 1,
+                "l1_hits": 1,
+                "l1_misses": 4,
+                "l2_enabled": True,
+                "l2_hits": 1,
+                "l2_misses": 3,
+                "warm_start_enabled": True,
                 "warm_start_hits": 2,
-                "cold_start_misses": 1,
+                "warm_start_misses": 1,
                 "stock_runpf_calls": 4,
                 "q_limit_resolves": 1,
             },
             {
                 "hits": 7,
                 "misses": 5,
-                "exact_cache_hits": 4,
-                "tolerant_cache_hits": 3,
+                "positive_hits": 4,
+                "negative_hits": 3,
+                "l1_hits": 4,
+                "l1_misses": 6,
+                "l2_enabled": True,
+                "l2_hits": 3,
+                "l2_misses": 5,
+                "warm_start_enabled": True,
                 "warm_start_hits": 3,
-                "cold_start_misses": 2,
+                "warm_start_misses": 2,
                 "stock_runpf_calls": 7,
                 "q_limit_resolves": 2,
             },
@@ -253,45 +265,66 @@ def test_instrumented_search_records_one_scenario_delta(monkeypatch) -> None:
             pareto_front=[object(), object()],
         )
 
-    monkeypatch.setattr(provenance, "_original_planner_search", _fake_search)
-    provenance._SEARCH_WORKLOAD_BY_SCENARIO.clear()
-    provenance._SELECTION_PROVENANCE_BY_SCENARIO.clear()
+    diagnostics = {
+        "terminal_redispatch_relative_epsilon": 0.01,
+        "terminal_redispatch_absolute_epsilon_mw": 1.0,
+        "min_meaningful_safety_improvement": 1.0,
+        "teacher_terminal_selection_applied": False,
+        "teacher_terminal_candidate_count": 0,
+        "teacher_terminal_pareto_front_size": 0,
+    }
 
-    result = provenance._instrumented_planner_search(
+    monkeypatch.setattr(teacher, "_original_planner_search", _fake_search)
+    monkeypatch.setattr(
+        teacher,
+        "_require_worker_context",
+        lambda: {"task_config": {}},
+    )
+    monkeypatch.setattr(
+        teacher,
+        "_redispatch_aware_selection",
+        lambda result, *, task_config: (result, diagnostics),
+    )
+    teacher._SEARCH_WORKLOAD_BY_SCENARIO.clear()
+    teacher._SELECTION_PROVENANCE_BY_SCENARIO.clear()
+
+    result = teacher._instrumented_planner_search(
         SimpleNamespace(evaluated_actions=0),
         SimpleNamespace(backend=_Backend()),
         scenario_id=42,
     )
 
     assert result.evaluated_actions == 9
-    assert provenance._SEARCH_WORKLOAD_BY_SCENARIO[42] == {
-        "logical_evaluations": 9,
-        "cache_hits": 5,
-        "cache_misses": 2,
-        "cache_hit_rate": 5 / 7,
-        "exact_cache_hits": 3,
-        "tolerant_cache_hits": 2,
-        "warm_start_hits": 1,
-        "cold_start_misses": 1,
-        "warm_start_rate": 0.5,
-        "stock_runpf_calls": 3,
-        "q_limit_resolves": 1,
-        "solves_per_cache_miss": 1.5,
-    }
-    assert provenance._SELECTION_PROVENANCE_BY_SCENARIO[42] == {
-        "teacher_selection_mode": "epsilon_optimal_minimum_switch",
+    workload = teacher._SEARCH_WORKLOAD_BY_SCENARIO[42]
+    assert workload["logical_evaluations"] == 9
+    assert workload["cache_hits"] == 5
+    assert workload["cache_misses"] == 2
+    assert workload["cache_hit_rate"] == 5 / 7
+    assert workload["positive_hits"] == 3
+    assert workload["negative_hits"] == 2
+    assert workload["l1_hits"] == 3
+    assert workload["l2_hits"] == 2
+    assert workload["warm_start_hits"] == 1
+    assert workload["warm_start_misses"] == 1
+    assert workload["stock_runpf_calls"] == 3
+    assert workload["q_limit_resolves"] == 1
+    assert workload["solves_per_cache_miss"] == 1.5
+
+    assert teacher._SELECTION_PROVENANCE_BY_SCENARIO[42] == {
+        "teacher_selection_mode": "redispatch_aware_epsilon_minimum_switch",
         "relative_physical_epsilon": 0.01,
         "teacher_best_physical_safety": 20.0,
         "teacher_selected_safety": 20.1,
         "teacher_selected_switch_count": 2,
         "teacher_retained_improvement_fraction": 0.995,
         "teacher_pareto_front_size": 2,
+        **diagnostics,
     }
 
 
 def test_parent_aggregation_sums_worker_scenario_results(capsys) -> None:
-    provenance._PARENT_WORKLOAD_BY_SCENARIO.clear()
-    provenance._PARENT_WORKLOAD_BY_SCENARIO.update(
+    teacher._PARENT_WORKLOAD_BY_SCENARIO.clear()
+    teacher._PARENT_WORKLOAD_BY_SCENARIO.update(
         {
             1: {
                 "logical_evaluations": 100,
@@ -310,7 +343,7 @@ def test_parent_aggregation_sums_worker_scenario_results(capsys) -> None:
         }
     )
 
-    provenance._print_power_flow_workload_summary()
+    teacher._print_power_flow_workload_summary()
     output = capsys.readouterr().out
 
     assert "Instrumented scenarios:    2" in output

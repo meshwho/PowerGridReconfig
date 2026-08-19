@@ -23,6 +23,24 @@ from scripts.self_play import generate_impact_teacher_redispatch_runtime as teac
 from tests.outcome_evidence_helpers import terminal_evidence
 
 
+def _selection_fields() -> dict[str, object]:
+    return {
+        "teacher_selection_mode": "redispatch_aware_epsilon_minimum_switch",
+        "relative_physical_epsilon": 0.01,
+        "teacher_best_physical_safety": 35.5,
+        "teacher_selected_safety": 36.0,
+        "teacher_selected_switch_count": 3,
+        "teacher_retained_improvement_fraction": 0.995,
+        "teacher_pareto_front_size": 5,
+        "terminal_redispatch_relative_epsilon": 0.01,
+        "terminal_redispatch_absolute_epsilon_mw": 1.0,
+        "min_meaningful_safety_improvement": 1.0,
+        "teacher_terminal_selection_applied": False,
+        "teacher_terminal_candidate_count": 0,
+        "teacher_terminal_pareto_front_size": 0,
+    }
+
+
 def _current_row(scenario_id: int = 4) -> dict[str, object]:
     evidence = terminal_evidence(
         TerminationReason.HANDOFF_TO_REDISPATCH_TEACHER
@@ -55,13 +73,7 @@ def _current_row(scenario_id: int = 4) -> dict[str, object]:
         "redispatch_attempted": False,
         "redispatch_opf_success": False,
         "redispatch_validated": False,
-        "teacher_selection_mode": "epsilon_optimal_minimum_switch",
-        "relative_physical_epsilon": 0.01,
-        "teacher_best_physical_safety": 35.5,
-        "teacher_selected_safety": 36.0,
-        "teacher_selected_switch_count": 3,
-        "teacher_retained_improvement_fraction": 0.995,
-        "teacher_pareto_front_size": 5,
+        **_selection_fields(),
     }
 
 

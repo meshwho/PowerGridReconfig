@@ -4,7 +4,7 @@ from grid_topology_ai.search.impact_beam_search import (
     ImpactBeamSearchConfig,
     ImpactBeamSearchPlanner,
 )
-from scripts.self_play.generate_impact_teacher_parallel_fast import (
+from scripts.self_play.generate_impact_teacher_redispatch_runtime import (
     LODFScreenedImpactBeamSearchPlanner,
 )
 

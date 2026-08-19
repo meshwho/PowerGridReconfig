@@ -31,13 +31,43 @@ from tests.outcome_evidence_helpers import terminal_evidence
 
 def _selection_fields() -> dict[str, object]:
     return {
-        "teacher_selection_mode": "epsilon_optimal_minimum_switch",
+        "teacher_selection_mode": "redispatch_aware_epsilon_minimum_switch",
         "relative_physical_epsilon": 0.01,
         "teacher_best_physical_safety": 35.563075,
         "teacher_selected_safety": 36.510767,
         "teacher_selected_switch_count": 3,
         "teacher_retained_improvement_fraction": 0.993496,
         "teacher_pareto_front_size": 6,
+        "terminal_redispatch_relative_epsilon": 0.01,
+        "terminal_redispatch_absolute_epsilon_mw": 1.0,
+        "min_meaningful_safety_improvement": 1.0,
+        "teacher_terminal_selection_applied": False,
+        "teacher_terminal_candidate_count": 0,
+        "teacher_terminal_pareto_front_size": 0,
+    }
+
+
+def _terminal_selection_diagnostics() -> dict[str, object]:
+    fields = _selection_fields()
+    return {
+        "terminal_redispatch_relative_epsilon": fields[
+            "terminal_redispatch_relative_epsilon"
+        ],
+        "terminal_redispatch_absolute_epsilon_mw": fields[
+            "terminal_redispatch_absolute_epsilon_mw"
+        ],
+        "min_meaningful_safety_improvement": fields[
+            "min_meaningful_safety_improvement"
+        ],
+        "teacher_terminal_selection_applied": fields[
+            "teacher_terminal_selection_applied"
+        ],
+        "teacher_terminal_candidate_count": fields[
+            "teacher_terminal_candidate_count"
+        ],
+        "teacher_terminal_pareto_front_size": fields[
+            "teacher_terminal_pareto_front_size"
+        ],
     }
 
 
@@ -134,6 +164,19 @@ def test_instrumented_search_captures_selection_provenance(
         provenance,
         "_original_planner_search",
         lambda self, env, scenario_id: search_result,
+    )
+    monkeypatch.setattr(
+        provenance,
+        "_require_worker_context",
+        lambda: {"task_config": {}},
+    )
+    monkeypatch.setattr(
+        provenance,
+        "_redispatch_aware_selection",
+        lambda result, *, task_config: (
+            result,
+            _terminal_selection_diagnostics(),
+        ),
     )
     provenance._SELECTION_PROVENANCE_BY_SCENARIO.clear()
 

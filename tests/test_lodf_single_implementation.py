@@ -5,11 +5,11 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-BASE_TEACHER = (
+TEACHER_RUNTIME = (
     ROOT
     / "scripts"
     / "self_play"
-    / "generate_impact_teacher_parallel_fast.py"
+    / "generate_impact_teacher_redispatch_runtime.py"
 )
 LODF_MODULE = ROOT / "grid_topology_ai" / "lodf.py"
 
@@ -28,8 +28,8 @@ def _function_source(source: str, name: str) -> str:
     raise AssertionError(f"Function {name!r} was not found.")
 
 
-def test_base_teacher_delegates_lodf_math_to_shared_module() -> None:
-    source = _source(BASE_TEACHER)
+def test_teacher_runtime_delegates_lodf_math_to_shared_module() -> None:
+    source = _source(TEACHER_RUNTIME)
 
     # Parse first so this also catches accidental damage while editing the large
     # teacher entrypoint without importing its heavy runtime dependencies.
@@ -48,7 +48,7 @@ def test_base_teacher_delegates_lodf_math_to_shared_module() -> None:
 
 def test_lodf_safety_score_has_one_production_definition() -> None:
     lodf_source = _source(LODF_MODULE)
-    teacher_source = _source(BASE_TEACHER)
+    teacher_source = _source(TEACHER_RUNTIME)
 
     lodf_tree = ast.parse(lodf_source)
     teacher_tree = ast.parse(teacher_source)
@@ -72,7 +72,7 @@ def test_lodf_safety_score_has_one_production_definition() -> None:
 
 def test_dense_pseudoinverse_is_only_a_lodf_fallback() -> None:
     lodf_source = _source(LODF_MODULE)
-    teacher_source = _source(BASE_TEACHER)
+    teacher_source = _source(TEACHER_RUNTIME)
 
     assert "np.linalg.pinv" in lodf_source
     assert "np.linalg.pinv" not in teacher_source

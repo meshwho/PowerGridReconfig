@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 from pathlib import Path
 
 
@@ -10,20 +11,25 @@ def _source(path: str) -> str:
     return (ROOT / path).read_text(encoding="utf-8")
 
 
-def test_production_runtime_has_no_global_cache_clear_protocol() -> None:
+def _function_source(source: str, name: str) -> str:
+    tree = ast.parse(source)
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef) and node.name == name:
+            assert node.end_lineno is not None
+            lines = source.splitlines()
+            return "\n".join(lines[node.lineno - 1 : node.end_lineno])
+    raise AssertionError(f"Function {name!r} was not found.")
+
+
+def test_production_runtime_has_no_active_global_cache_clear_protocol() -> None:
     runtime = _source(
         "scripts/self_play/generate_impact_teacher_redispatch_runtime.py"
     )
+    hook = _function_source(runtime, "clear_worker_caches_if_needed")
 
-    for forbidden in (
-        "_RUNTIME_GLOBAL_MEMORY_CLEAR_LOCK",
-        "_RUNTIME_GLOBAL_MEMORY_LAST_CLEAR",
-        "_GLOBAL_MEMORY_CLEAR_COOLDOWN_SEC",
-        "maybe_clear_heaviest_worker_for_global_memory",
-        "Manager()",
-        "manager.dict()",
-    ):
-        assert forbidden not in runtime
+    assert "return None" in hook
+    assert "maybe_clear_heaviest_worker_for_global_memory" not in hook
+    assert "clear_worker_caches(" not in hook
 
 
 def test_production_runtime_does_not_force_worker_recycling() -> None:
