@@ -16,11 +16,13 @@ from torch.utils.data import DataLoader
 from grid_topology_ai.config import TrainingConfig
 from grid_topology_ai.config.physics import PhysicsConfig
 from grid_topology_ai.contracts import require_physics_provenance
-from grid_topology_ai.models.graph_batch import collate_graph_samples
 from grid_topology_ai.models.graph_policy_value_net_v2 import (
     GraphPolicyValueNetV2 as _GraphPolicyValueNetV2,
 )
-from grid_topology_ai.models.graph_self_play_dataset import GraphSelfPlayDataset
+from grid_topology_ai.models.graph_self_play_dataset import (
+    GraphSelfPlayDataset,
+    collate_graph_samples,
+)
 from grid_topology_ai.training.checkpoints import (
     NORMALIZATION_STAT_KEYS,
     checkpoint_variant_path,

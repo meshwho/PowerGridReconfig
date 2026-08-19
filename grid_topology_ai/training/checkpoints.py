@@ -19,8 +19,10 @@ from grid_topology_ai.contracts import (
     topology_action_provenance,
     OUTCOME_OBJECTIVE_VERSION,
 )
-from grid_topology_ai.models.graph_batch import GRAPH_BATCHING_CONTRACT_VERSION
-from grid_topology_ai.models.graph_self_play_dataset import GraphSelfPlayDataset
+from grid_topology_ai.models.graph_self_play_dataset import (
+    GRAPH_BATCHING_CONTRACT_VERSION,
+    GraphSelfPlayDataset,
+)
 from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
 from grid_topology_ai.self_play.artifacts import sha256_file
 from grid_topology_ai.training.metrics import build_value_target_diagnostics
