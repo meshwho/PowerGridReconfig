@@ -8,7 +8,6 @@ from typing import Any, Protocol
 import pandas as pd
 
 from grid_topology_ai.config.physics import PhysicsConfig
-from grid_topology_ai.self_play._replay_core import _save_manifest
 from grid_topology_ai.self_play.artifacts import (
     save_json,
     sha256_file,
@@ -27,7 +26,10 @@ from grid_topology_ai.self_play.physical_split import (
     assign_physical_split,
     load_physical_split_manifest,
 )
-from grid_topology_ai.self_play.replay_sampling import EpisodeSamplingMixin
+from grid_topology_ai.self_play.replay_sampling import (
+    EpisodeSamplingMixin,
+    _save_manifest,
+)
 from grid_topology_ai.self_play.split_integrity import (
     manifest_scenario_lineages,
     physical_split_source_hashes,

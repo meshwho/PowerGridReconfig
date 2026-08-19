@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import math
+import tempfile
 from collections import defaultdict
 from collections.abc import Mapping
 from pathlib import Path
@@ -11,7 +12,6 @@ import numpy as np
 import pandas as pd
 
 from grid_topology_ai.contracts import physics_provenance
-from grid_topology_ai.self_play._replay_core import _episode_key, _save_manifest
 
 SAMPLING_CONTRACT_VERSION = 2
 AGE_DECAY = 0.95
@@ -31,6 +31,51 @@ _DIFFICULTY_FIELDS = (
     "difficulty_bucket",
     "difficulty_level",
 )
+
+
+def _save_manifest(
+    manifest: dict[str, Any],
+    path: str | Path,
+) -> None:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path: Path | None = None
+
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            temporary_path = Path(handle.name)
+            json.dump(
+                manifest,
+                handle,
+                indent=2,
+                ensure_ascii=False,
+            )
+            handle.write("\n")
+
+        temporary_path.replace(path)
+    finally:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
+
+
+def _episode_key(row: Mapping[str, Any]) -> tuple[str, ...]:
+    episode_id = str(row.get("episode_id", "")).strip()
+    if episode_id:
+        return ("episode", episode_id)
+
+    return (
+        "scenario",
+        str(row.get("run_id", "")),
+        str(row.get("replay_iteration", row.get("iteration", ""))),
+        str(row.get("scenario_id", "")),
+    )
 
 
 def _first_text(rows: list[dict[str, Any]], *fields: str) -> str:
@@ -143,7 +188,10 @@ class EpisodeSamplingMixin:
         rows: list[dict[str, Any]],
         current_iteration: int,
         rng: np.random.Generator,
-    ) -> tuple[list[dict[str, Any]], dict[tuple[str, str], list[dict[str, Any]]]]:
+    ) -> tuple[
+        list[dict[str, Any]],
+        dict[tuple[str, str], list[dict[str, Any]]],
+    ]:
         grouped: dict[tuple[str, ...], list[dict[str, Any]]] = defaultdict(list)
         for row in rows:
             grouped[_episode_key(row)].append(row)

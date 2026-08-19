@@ -14,9 +14,11 @@ from grid_topology_ai.contracts import (
     require_exact_contract_version,
     require_physics_provenance,
 )
-from grid_topology_ai.self_play._replay_core import _save_manifest
 from grid_topology_ai.self_play.artifacts import sha256_file
-from grid_topology_ai.self_play.replay_sampling import EpisodeSamplingMixin
+from grid_topology_ai.self_play.replay_sampling import (
+    EpisodeSamplingMixin,
+    _save_manifest,
+)
 
 PREDICTION_ERROR_SCHEMA_VERSION = 1
 PREDICTION_ERROR_FILENAME = "replay_prediction_errors.json"
