@@ -420,7 +420,7 @@ def require_graph_batching_checkpoint_contract(
     }:
         return
 
-    from grid_topology_ai.models.graph_batch import (
+    from grid_topology_ai.models.graph_self_play_dataset import (
         GRAPH_BATCHING_CONTRACT_VERSION,
     )
 

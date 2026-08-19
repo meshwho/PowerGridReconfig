@@ -30,9 +30,11 @@ from grid_topology_ai.contracts import (
     require_topology_action_provenance,
     topology_action_provenance,
 )
-from grid_topology_ai.models.graph_batch import collate_graph_samples
 from grid_topology_ai.models.graph_policy_value_net_v2 import GraphPolicyValueNetV2
-from grid_topology_ai.models.graph_self_play_dataset import GraphSelfPlayDataset
+from grid_topology_ai.models.graph_self_play_dataset import (
+    GraphSelfPlayDataset,
+    collate_graph_samples,
+)
 from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
 from grid_topology_ai.self_play.artifacts import sha256_file, sha256_json
 from grid_topology_ai.self_play.example_validation import (

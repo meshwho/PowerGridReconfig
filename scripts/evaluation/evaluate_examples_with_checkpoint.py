@@ -9,9 +9,11 @@ from torch import nn
 from torch.utils.data import DataLoader
 
 from grid_topology_ai.contracts import require_topology_action_provenance
-from grid_topology_ai.models.graph_batch import collate_graph_samples
 from grid_topology_ai.models.graph_policy_value_net_v2 import GraphPolicyValueNetV2
-from grid_topology_ai.models.graph_self_play_dataset import GraphSelfPlayDataset
+from grid_topology_ai.models.graph_self_play_dataset import (
+    GraphSelfPlayDataset,
+    collate_graph_samples,
+)
 from grid_topology_ai.training.checkpoints import load_checkpoint_payload
 from grid_topology_ai.training.graph_policy_value import (
     evaluate_one_epoch,
