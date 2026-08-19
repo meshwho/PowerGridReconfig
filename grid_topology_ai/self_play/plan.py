@@ -163,7 +163,7 @@ def render_execution_plan(
             f"  epochs_per_iteration:     {config.training.epochs}",
             f"  batch_size:               {config.training.batch_size}",
             f"  learning_rate:            {config.training.learning_rate}",
-            f"  model_type:               {config.training.model_type}",
+            "  model_type:               graph_v2",
             f"  hidden_dim:                {config.training.hidden_dim}",
             f"  num_layers:                {config.training.num_layers}",
             f"  dropout:                   {config.training.dropout}",
