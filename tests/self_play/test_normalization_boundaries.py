@@ -3,7 +3,7 @@ from pathlib import Path
 
 def test_training_pipeline_has_fine_tuning_normalization_boundaries() -> None:
     text = Path(
-        "grid_topology_ai/training/_graph_policy_value_base.py"
+        "grid_topology_ai/training/graph_policy_value.py"
     ).read_text(encoding="utf-8")
     branch = text.split("if request.init_checkpoint is not None:", 1)[1].split(
         "dataset = GraphSelfPlayDataset", 1

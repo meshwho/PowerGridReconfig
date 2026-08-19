@@ -12,7 +12,7 @@ def test_validation_protocol_static_boundaries() -> None:
         "grid_topology_ai/self_play/iteration_split.py"
     ).read_text()
     training = Path(
-        "grid_topology_ai/training/_graph_policy_value_base.py"
+        "grid_topology_ai/training/graph_policy_value.py"
     ).read_text()
     checkpoints = Path("grid_topology_ai/training/checkpoints.py").read_text()
 
