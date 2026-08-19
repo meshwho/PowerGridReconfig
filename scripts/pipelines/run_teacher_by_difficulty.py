@@ -191,7 +191,7 @@ def ensure_required_transition_columns(frame: pd.DataFrame, path: Path) -> str:
 
     if unknown:
         raise PipelineError(
-            f"Unsupported difficulty values in {path}: {unknown}. "
+            f"Unsupported difficulty values in {source_path}: {unknown}. "
             f"Expected only {list(DIFFICULTIES)}."
         )
 
@@ -1026,7 +1026,7 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument(
         "--teacher-module",
-        default="scripts.self_play.generate_impact_teacher_provenance",
+        default="scripts.self_play.generate_impact_teacher_redispatch_runtime",
         help=(
             "Teacher implementation to execute. The default includes terminal "
             "provenance and the final-topology trajectory replay contract."
