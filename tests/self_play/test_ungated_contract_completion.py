@@ -19,7 +19,7 @@ from grid_topology_ai.evaluation.policy_comparison import (
     PolicyMode,
     require_primary_policy_mode,
 )
-from grid_topology_ai.self_play import checkpoint_arena
+from grid_topology_ai.self_play import checkpoints as checkpoint_arena
 from grid_topology_ai.self_play import iteration as iteration_module
 from grid_topology_ai.self_play.acceptance import accept_candidate
 from grid_topology_ai.self_play.iteration import (

@@ -23,7 +23,7 @@ from grid_topology_ai.physical_objective import (
     physical_objective_contract,
 )
 from grid_topology_ai.self_play import iteration as iteration_module
-from grid_topology_ai.self_play.checkpoint_state import BestState
+from grid_topology_ai.self_play.checkpoints import BestState
 from grid_topology_ai.self_play.iteration import (
     IterationRequest,
     _count_examples_csv,

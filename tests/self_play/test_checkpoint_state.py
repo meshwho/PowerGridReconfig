@@ -18,7 +18,7 @@ from grid_topology_ai.physical_objective import (
     PHYSICAL_OBJECTIVE_SCHEMA_VERSION,
     physical_objective_contract,
 )
-from grid_topology_ai.self_play.checkpoint_state import (
+from grid_topology_ai.self_play.checkpoints import (
     initialize_best_state,
     promote_candidate,
 )

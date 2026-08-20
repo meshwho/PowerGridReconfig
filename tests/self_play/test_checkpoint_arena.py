@@ -15,8 +15,8 @@ from grid_topology_ai.config.checkpoint_selection import (
     CheckpointSelectionConfig,
 )
 from grid_topology_ai.config.physics import DEFAULT_PHYSICS_CONFIG
-from grid_topology_ai.self_play import checkpoint_arena, stages
-from grid_topology_ai.self_play.checkpoint_arena import (
+from grid_topology_ai.self_play import checkpoints as checkpoint_arena, stages
+from grid_topology_ai.self_play.checkpoints import (
     CheckpointArenaResult,
 )
 
