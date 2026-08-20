@@ -65,11 +65,6 @@ def test_parallel_runner_routes_batches_to_matching_adapter_shards(monkeypatch) 
         "ensure_runtime_scenario_store",
         lambda raw_dir: Path("runtime-store"),
     )
-    monkeypatch.setattr(
-        teacher,
-        "_configure_persistent_exact_cache",
-        lambda store_dir: None,
-    )
     monkeypatch.setattr(teacher, "ProcessPoolExecutor", FakeExecutor)
     monkeypatch.setattr(teacher, "as_completed", lambda futures: list(futures))
     monkeypatch.setattr(teacher, "_worker_init_concurrency", lambda: 3)

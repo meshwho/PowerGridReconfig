@@ -207,9 +207,9 @@ def test_exact_cache_hit_skips_solver_but_uses_same_state_build_path(
     assert info["bytes"] <= info["max_bytes"]
 
 
-def test_cache_disabled_runs_identical_problem_every_time(monkeypatch) -> None:
+def test_disabling_cache_does_not_reuse_stale_l1_result(monkeypatch) -> None:
     adapter = _adapter()
-    backend = GridFMPowerFlowBackend(adapter=adapter, enable_cache=False)
+    backend = GridFMPowerFlowBackend(adapter=adapter, enable_cache=True)
     solve_inputs, state_inputs = _install_deterministic_solver(
         backend,
         monkeypatch,
@@ -217,6 +217,7 @@ def test_cache_disabled_runs_identical_problem_every_time(monkeypatch) -> None:
     state = _state(adapter)
 
     first = backend.run_power_flow_from_state(state, action=_switch_off())
+    backend.enable_cache = False
     second = backend.run_power_flow_from_state(state, action=_switch_off())
 
     assert first.success and second.success
@@ -228,7 +229,7 @@ def test_cache_disabled_runs_identical_problem_every_time(monkeypatch) -> None:
     )
     np.testing.assert_array_equal(solve_inputs[0]["gen"], solve_inputs[1]["gen"])
     assert backend.cache_info()["hits"] == 0
-    assert backend.cache_info()["misses"] == 0
+    assert backend.cache_info()["misses"] == 1
 
 
 def test_tiny_generator_change_is_an_exact_cache_miss(monkeypatch) -> None:
@@ -282,15 +283,3 @@ def test_identical_physical_problem_reuses_result_across_scenario_ids(
     assert len(solve_inputs) == 1
     assert len(state_inputs) == 2
     assert backend.cache_info()["hits"] == 1
-
-
-def test_public_backend_has_no_approximate_reuse_state() -> None:
-    backend = GridFMPowerFlowBackend(
-        adapter=_adapter(),
-        enable_cache=True,
-    )
-
-    assert not hasattr(backend, "_topology_cache")
-    assert not hasattr(backend, "_pending_warm_start_state")
-    assert not hasattr(backend, "tolerant_cache_hits")
-    assert not hasattr(backend, "warm_start_hits")

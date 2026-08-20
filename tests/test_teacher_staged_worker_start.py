@@ -31,11 +31,6 @@ def test_worker_init_installs_bounded_runtime_policy(monkeypatch) -> None:
     )
     monkeypatch.setattr(
         teacher,
-        "_configure_persistent_exact_cache",
-        lambda store_dir: None,
-    )
-    monkeypatch.setattr(
-        teacher,
         "build_memory_mapped_teacher_context",
         fake_context,
     )
@@ -83,11 +78,6 @@ def test_parallel_workers_are_not_recycled_by_default(monkeypatch, tmp_path: Pat
         teacher,
         "ensure_runtime_scenario_store",
         lambda raw_dir: tmp_path / "runtime-store",
-    )
-    monkeypatch.setattr(
-        teacher,
-        "_configure_persistent_exact_cache",
-        lambda store_dir: None,
     )
     monkeypatch.setattr(teacher, "_worker_init_concurrency", lambda: 2)
     monkeypatch.setattr(teacher, "ProcessPoolExecutor", FakeExecutor)

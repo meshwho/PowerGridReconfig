@@ -25,6 +25,7 @@ ORACLE_TESTS: dict[str, tuple[str, ...]] = {
         "tests/test_pypower_network_workspace.py",
         "tests/test_pypower_newton_workspace.py",
         "tests/test_power_flow_cache_boundaries.py",
+        "tests/test_exact_power_flow_cache.py",
         "tests/test_power_flow_contracts.py",
     ),
     "actions_and_state": (
@@ -43,6 +44,7 @@ ORACLE_TESTS: dict[str, tuple[str, ...]] = {
     "teacher": (
         "tests/test_teacher_trajectory_replay_contract.py",
         "tests/test_teacher_checkpoint_resume.py",
+        "tests/test_numpy_runtime_scenario.py",
         "tests/test_teacher_config_runtime.py",
     ),
     "search": (
@@ -88,8 +90,8 @@ REQUIRED_DOMAINS = frozenset(
 
 TEACHER_MODULE = "scripts.self_play.generate_impact_teacher_redispatch_runtime"
 
-# Fixed workload for Full-vs-Light timing. Persistent L2 is disabled by the
-# benchmark environment; L1 remains enabled because --disable-cache is not used.
+# Fixed workload for Light timing. L1 remains enabled because --disable-cache
+# is not used; removed cache layers need no compatibility configuration.
 TEACHER_BENCHMARK_ARGS = (
     "--depth",
     "2",
@@ -164,13 +166,6 @@ def _run_behavior_oracle(extra_pytest_args: list[str]) -> int:
 
 def _benchmark_environment() -> dict[str, str]:
     env = os.environ.copy()
-
-    # Light intentionally removes persistent L2. Force the Full baseline into
-    # the same mode even if the caller has a persistent cache configured.
-    env["POWERGRID_DISABLE_PERSISTENT_EXACT_CACHE"] = "1"
-    env.pop("POWERGRID_ENABLE_PERSISTENT_EXACT_CACHE", None)
-    env.pop("POWERGRID_EXACT_PERSISTENT_CACHE_DIR", None)
-    env.pop("POWERGRID_EXACT_PERSISTENT_CACHE_MAX_BYTES", None)
 
     # Keep native numerical libraries deterministic and avoid nested
     # oversubscription while the teacher itself controls process parallelism.
@@ -279,9 +274,8 @@ def _run_teacher_benchmark(
         "workers": workers,
         "limit": limit,
         "repeat": repeat,
-        "persistent_l2": False,
         "l1_cache": True,
-        "warm_start_required": False,
+        "runtime": "numpy-mmap",
         "mean_seconds": statistics.fmean(timings),
         "min_seconds": min(timings),
         "max_seconds": max(timings),

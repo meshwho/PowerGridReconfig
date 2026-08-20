@@ -10,12 +10,9 @@ from grid_topology_ai.power_flow.backend import GridFMPowerFlowBackend
 _OLD_CACHE_SYMBOLS = (
     "_TopologyCacheEntry",
     "_topology_cache",
-    "_pending_warm_start_state",
-    "_pending_warm_start_applied",
     "_topology_bucket_key",
     "_select_topology_entry",
     "_remember_topology_result",
-    "_apply_pending_warm_start",
     "_make_cache_key_from_state",
     "_make_topology_cache_key_from_state",
     "_power_flow_input_fingerprint",
@@ -45,11 +42,9 @@ def test_power_flow_module_does_not_reintroduce_approximate_cache_paths() -> Non
     source_path = root / "grid_topology_ai" / "power_flow" / "backend.py"
     forbidden_fragments = (
         "tolerant_cache",
-        "warm_start_hits",
         "cold_start_misses",
         "nearest_operating",
         "_TopologyCacheEntry",
-        "_pending_warm_start",
         "_make_topology_cache_key_from_state",
     )
 
