@@ -32,7 +32,7 @@ from grid_topology_ai.self_play.artifacts import (
     sha256_file,
     sha256_json,
 )
-from grid_topology_ai.self_play.checkpoint_state import promote_candidate
+from grid_topology_ai.self_play.checkpoints import promote_candidate
 from grid_topology_ai.self_play.lineage_artifacts import (
     validate_lineage_columns,
 )

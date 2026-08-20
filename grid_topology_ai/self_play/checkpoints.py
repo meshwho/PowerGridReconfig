@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import csv
 import math
 import shutil
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pandas as pd
 import torch
@@ -18,18 +19,33 @@ from grid_topology_ai.evaluation.checkpoint import load_scenario_ids
 from grid_topology_ai.evaluation.policy_comparison import (
     PolicyMode,
     require_policy_mode_metrics,
-    require_primary_policy_mode,
+    require_primary_policy_mode as require_evaluation_primary_policy_mode,
 )
-from grid_topology_ai.self_play.physical_lineage import (
+from grid_topology_ai.self_play.acceptance import (
+    require_metrics_semantic_versions,
+)
+from grid_topology_ai.self_play.artifacts import (
+    load_json,
+    save_json,
+    sha256_file,
+)
+from grid_topology_ai.self_play.provenance import (
     PHYSICAL_LINEAGE_FINGERPRINT_FIELD,
 )
-from grid_topology_ai.self_play.artifacts import save_json, sha256_file
 from grid_topology_ai.training.checkpoints import (
     load_checkpoint_payload,
     make_json_safe,
 )
 
+if TYPE_CHECKING:
+    from grid_topology_ai.self_play.paths import SelfPlayPaths
 
+
+_PRIMARY_POLICY_MODE = PolicyMode.UNGATED.value
+CHECKPOINT_SELECTION_REPORT = Path(
+    "checkpoint_selection/checkpoint_selection.json"
+)
+CHECKPOINT_SELECTION_HASH_KEY = "checkpoint_selection_sha256"
 _ARENA_SCHEMA_VERSION = 3
 _RANKING_METRICS = (
     ("validation_loss", "loss"),
@@ -40,6 +56,12 @@ _RANKING_METRICS = (
 
 
 @dataclass(frozen=True, slots=True)
+class BestState:
+    checkpoint: Path
+    metrics: dict[str, object]
+
+
+@dataclass(frozen=True, slots=True)
 class CheckpointArenaResult:
     checkpoint: Path
     report_path: Path
@@ -47,6 +69,394 @@ class CheckpointArenaResult:
     metric_name: str
     metric_value: float
     candidate_count: int
+
+
+def _require_primary_policy_mode(
+    metrics: Mapping[str, object],
+    *,
+    source: str,
+) -> None:
+    require_evaluation_primary_policy_mode(
+        metrics,
+        PolicyMode.UNGATED,
+        source=source,
+    )
+
+    task_config = metrics.get("task_config")
+    configured_mode = (
+        task_config.get("primary_policy_mode")
+        if isinstance(task_config, Mapping)
+        else None
+    )
+
+    if configured_mode != _PRIMARY_POLICY_MODE:
+        raise ValueError(
+            "Incompatible evaluation primary policy mode for "
+            f"{source}: expected {_PRIMARY_POLICY_MODE!r}, "
+            f"observed task_config={configured_mode!r}. Regenerate fixed "
+            "evaluation metrics with the current ungated policy contract."
+        )
+
+
+def initialize_best_state(
+    *,
+    paths: SelfPlayPaths,
+) -> BestState:
+    paths.best_checkpoint.parent.mkdir(parents=True, exist_ok=True)
+    paths.best_metrics.parent.mkdir(parents=True, exist_ok=True)
+
+    if not paths.best_checkpoint.exists():
+        load_checkpoint_payload(paths.bootstrap_checkpoint, map_location="cpu")
+        print("Initializing self-play best checkpoint from bootstrap.")
+        print(f"Bootstrap checkpoint: {paths.bootstrap_checkpoint}")
+        print(f"Best checkpoint:      {paths.best_checkpoint}")
+        shutil.copy2(paths.bootstrap_checkpoint, paths.best_checkpoint)
+
+    load_checkpoint_payload(paths.best_checkpoint, map_location="cpu")
+
+    if not paths.best_metrics.exists():
+        bootstrap_metrics = load_json(paths.bootstrap_metrics)
+        require_metrics_semantic_versions(
+            bootstrap_metrics,
+            source=str(paths.bootstrap_metrics),
+        )
+        _require_primary_policy_mode(
+            bootstrap_metrics,
+            source=str(paths.bootstrap_metrics),
+        )
+        print("Initializing self-play best metrics from bootstrap.")
+        print(f"Bootstrap metrics: {paths.bootstrap_metrics}")
+        print(f"Best metrics:      {paths.best_metrics}")
+        shutil.copy2(paths.bootstrap_metrics, paths.best_metrics)
+
+    best_metrics = load_json(paths.best_metrics)
+    require_metrics_semantic_versions(
+        best_metrics,
+        source=str(paths.best_metrics),
+    )
+    _require_primary_policy_mode(
+        best_metrics,
+        source=str(paths.best_metrics),
+    )
+
+    return BestState(
+        checkpoint=paths.best_checkpoint,
+        metrics=best_metrics,
+    )
+
+
+def promote_candidate(
+    *,
+    candidate_checkpoint: Path,
+    candidate_metrics: Mapping[str, object],
+    paths: SelfPlayPaths,
+) -> BestState:
+    if not candidate_checkpoint.is_file():
+        raise FileNotFoundError(
+            f"Candidate checkpoint not found: {candidate_checkpoint}"
+        )
+
+    load_checkpoint_payload(candidate_checkpoint, map_location="cpu")
+    require_metrics_semantic_versions(
+        candidate_metrics,
+        source="candidate metrics",
+    )
+    _require_primary_policy_mode(
+        candidate_metrics,
+        source="candidate metrics",
+    )
+
+    paths.best_checkpoint.parent.mkdir(parents=True, exist_ok=True)
+    paths.best_metrics.parent.mkdir(parents=True, exist_ok=True)
+
+    metrics = dict(candidate_metrics)
+    shutil.copy2(candidate_checkpoint, paths.best_checkpoint)
+    save_json(metrics, paths.best_metrics)
+
+    return BestState(
+        checkpoint=paths.best_checkpoint,
+        metrics=metrics,
+    )
+
+
+def _require_file(path: Path, *, label: str) -> None:
+    if not path.is_file():
+        raise FileNotFoundError(f"Missing required {label}: {path}")
+
+
+def _checkpoint_selection_required(
+    metadata: Mapping[str, object],
+) -> bool:
+    config = metadata.get("config")
+    if not isinstance(config, Mapping):
+        return False
+    selection = config.get("checkpoint_selection")
+    if not isinstance(selection, Mapping):
+        return False
+    enabled = selection.get("enabled", False)
+    if not isinstance(enabled, bool):
+        raise ValueError(
+            "metadata.json checkpoint_selection.enabled must be a boolean."
+        )
+    return enabled
+
+
+def _summary(report: Mapping[str, object]) -> dict[str, object]:
+    candidates = report.get("candidates")
+    return {
+        "selection_method": report.get("selection_method"),
+        "metric": report.get("metric"),
+        "metric_direction": report.get("metric_direction"),
+        "selected_source_checkpoint": report.get(
+            "selected_source_checkpoint"
+        ),
+        "selected_archived_checkpoint": report.get(
+            "selected_archived_checkpoint"
+        ),
+        "selected_metric_value": report.get("selected_metric_value"),
+        "candidate_count": (
+            len(candidates) if isinstance(candidates, list) else 0
+        ),
+    }
+
+
+def _validate_report(
+    *,
+    metadata_path: Path,
+    report_path: Path,
+    expected_hash: str | None = None,
+) -> dict[str, object]:
+    _require_file(report_path, label="checkpoint selection report")
+    actual_hash = sha256_file(report_path)
+    if expected_hash is not None and actual_hash != expected_hash:
+        raise ValueError(
+            f"Corrupt checkpoint selection report: {report_path}"
+        )
+
+    report = load_json(report_path)
+    if report.get("selection_method") != "closed_loop_tuning_arena":
+        raise ValueError(
+            f"Invalid checkpoint selection method: {report_path}"
+        )
+
+    metadata = load_json(metadata_path)
+    candidate_checkpoint = Path(
+        str(metadata.get("candidate_checkpoint", ""))
+    )
+    selected_checkpoint = Path(
+        str(report.get("selected_checkpoint", ""))
+    )
+    if candidate_checkpoint.resolve() != selected_checkpoint.resolve():
+        raise ValueError(
+            "Checkpoint selection report does not reference the iteration "
+            f"candidate: {report_path}"
+        )
+    _require_file(
+        candidate_checkpoint,
+        label="selected candidate checkpoint",
+    )
+    if sha256_file(candidate_checkpoint) != report.get(
+        "selected_checkpoint_sha256"
+    ):
+        raise ValueError(
+            "Selected checkpoint does not match arena report: "
+            f"{candidate_checkpoint}"
+        )
+
+    candidates = report.get("candidates")
+    if not isinstance(candidates, list) or not candidates:
+        raise ValueError(
+            f"Checkpoint selection report has no candidates: {report_path}"
+        )
+    for item in candidates:
+        if not isinstance(item, Mapping):
+            raise ValueError(
+                "Checkpoint selection candidate must be an object: "
+                f"{report_path}"
+            )
+        archived = Path(str(item.get("archived_checkpoint", "")))
+        _require_file(
+            archived,
+            label="archived checkpoint candidate",
+        )
+        if sha256_file(archived) != item.get("checkpoint_sha256"):
+            raise ValueError(
+                f"Corrupt archived checkpoint candidate: {archived}"
+            )
+
+    return report
+
+
+def _update_learning_curve(
+    *,
+    path: Path,
+    iteration: int,
+    report_path: Path,
+    report: Mapping[str, object],
+) -> None:
+    with path.open("r", encoding="utf-8", newline="") as handle:
+        reader = csv.DictReader(handle)
+        rows = list(reader)
+        fieldnames = list(reader.fieldnames or ())
+
+    for name in (
+        "checkpoint_arena_metric",
+        "checkpoint_arena_metric_value",
+        "checkpoint_arena_candidate_count",
+        "checkpoint_selection_report",
+        CHECKPOINT_SELECTION_HASH_KEY,
+    ):
+        if name not in fieldnames:
+            fieldnames.append(name)
+
+    report_hash = sha256_file(report_path)
+    updated = False
+    for row in rows:
+        try:
+            row_iteration = int(row.get("iteration", ""))
+        except ValueError:
+            continue
+        if row_iteration != int(iteration):
+            continue
+
+        candidates = report.get("candidates")
+        row["checkpoint_selection_metric"] = "closed_loop_arena"
+        row["checkpoint_arena_metric"] = str(
+            report.get("metric", "")
+        )
+        row["checkpoint_arena_metric_value"] = str(
+            report.get("selected_metric_value", "")
+        )
+        row["checkpoint_arena_candidate_count"] = str(
+            len(candidates) if isinstance(candidates, list) else 0
+        )
+        row["checkpoint_selection_report"] = str(report_path)
+        row[CHECKPOINT_SELECTION_HASH_KEY] = report_hash
+        updated = True
+        break
+
+    if not updated:
+        raise ValueError(
+            f"learning_curve.csv is missing iteration {iteration}: {path}"
+        )
+
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def attach_checkpoint_selection_provenance(
+    *,
+    metadata_path: Path,
+    learning_curve_path: Path,
+    iteration: int,
+) -> Path | None:
+    report_path = metadata_path.parent / CHECKPOINT_SELECTION_REPORT
+    metadata = load_json(metadata_path)
+    if not report_path.is_file():
+        if _checkpoint_selection_required(metadata):
+            _require_file(
+                report_path,
+                label="checkpoint selection report",
+            )
+        return None
+
+    report = _validate_report(
+        metadata_path=metadata_path,
+        report_path=report_path,
+    )
+    report_hash = sha256_file(report_path)
+    hashes = metadata.setdefault("hashes", {})
+    extra = metadata.setdefault("extra", {})
+    if not isinstance(hashes, dict) or not isinstance(extra, dict):
+        raise ValueError(
+            "metadata.json has invalid provenance containers: "
+            f"{metadata_path}"
+        )
+
+    hashes[CHECKPOINT_SELECTION_HASH_KEY] = report_hash
+    extra[CHECKPOINT_SELECTION_HASH_KEY] = report_hash
+    extra["checkpoint_selection_path"] = str(report_path)
+    extra["checkpoint_selection"] = _summary(report)
+    save_json(metadata, metadata_path)
+
+    _update_learning_curve(
+        path=learning_curve_path,
+        iteration=iteration,
+        report_path=report_path,
+        report=report,
+    )
+    return report_path
+
+
+def validate_checkpoint_selection_provenance(
+    metadata_path: Path,
+) -> Path | None:
+    metadata = load_json(metadata_path)
+    report_path = metadata_path.parent / CHECKPOINT_SELECTION_REPORT
+    hashes = metadata.get("hashes")
+    extra = metadata.get("extra")
+    has_fields = (
+        isinstance(hashes, Mapping)
+        and CHECKPOINT_SELECTION_HASH_KEY in hashes
+    ) or (
+        isinstance(extra, Mapping)
+        and any(
+            key in extra
+            for key in (
+                CHECKPOINT_SELECTION_HASH_KEY,
+                "checkpoint_selection_path",
+                "checkpoint_selection",
+            )
+        )
+    )
+    if not report_path.exists() and not has_fields:
+        if _checkpoint_selection_required(metadata):
+            _require_file(
+                report_path,
+                label="checkpoint selection report",
+            )
+        return None
+    if not isinstance(hashes, Mapping) or not isinstance(extra, Mapping):
+        raise ValueError(
+            "metadata.json is missing checkpoint selection provenance: "
+            f"{metadata_path}"
+        )
+
+    expected_hash = hashes.get(CHECKPOINT_SELECTION_HASH_KEY)
+    if not isinstance(expected_hash, str) or not expected_hash:
+        raise ValueError(
+            "metadata.json is missing checkpoint selection hash: "
+            f"{metadata_path}"
+        )
+    if extra.get(CHECKPOINT_SELECTION_HASH_KEY) != expected_hash:
+        raise ValueError(
+            "metadata.json checkpoint selection hashes disagree: "
+            f"{metadata_path}"
+        )
+
+    stored_path = extra.get("checkpoint_selection_path")
+    if (
+        not isinstance(stored_path, str)
+        or Path(stored_path).name != report_path.name
+    ):
+        raise ValueError(
+            "metadata.json has invalid checkpoint selection path: "
+            f"{metadata_path}"
+        )
+
+    report = _validate_report(
+        metadata_path=metadata_path,
+        report_path=report_path,
+        expected_hash=expected_hash,
+    )
+    if extra.get("checkpoint_selection") != _summary(report):
+        raise ValueError(
+            "metadata.json checkpoint selection summary is stale: "
+            f"{metadata_path}"
+        )
+    return report_path
 
 
 def _finite_metric(
@@ -374,7 +784,7 @@ def select_checkpoint_in_tuning_arena(
             physics_config=physics_config,
             scenario_ids=scenario_ids,
         )
-        require_primary_policy_mode(
+        require_evaluation_primary_policy_mode(
             metrics,
             PolicyMode.UNGATED,
             source=str(candidate_dir),

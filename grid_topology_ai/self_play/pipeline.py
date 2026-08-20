@@ -13,7 +13,7 @@ from grid_topology_ai.self_play.acceptance import (
     require_metrics_physics_config,
 )
 from grid_topology_ai.self_play.artifacts import save_yaml
-from grid_topology_ai.self_play.checkpoint_state import initialize_best_state
+from grid_topology_ai.self_play.checkpoints import initialize_best_state
 from grid_topology_ai.self_play.curriculum_reporting import (
     persist_curriculum_pool_state,
     prepare_curriculum_sampling,

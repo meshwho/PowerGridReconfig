@@ -9,7 +9,7 @@ from typing import Any
 
 from grid_topology_ai.config import SelfPlayConfig
 from grid_topology_ai.self_play.artifacts import load_json, save_json, sha256_file
-from grid_topology_ai.self_play.checkpoint_provenance import (
+from grid_topology_ai.self_play.checkpoints import (
     CHECKPOINT_SELECTION_HASH_KEY,
     CHECKPOINT_SELECTION_REPORT,
     attach_checkpoint_selection_provenance,

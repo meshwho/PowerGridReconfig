@@ -30,7 +30,7 @@ from grid_topology_ai.evaluation.checkpoint import (
     evaluate_checkpoint,
 )
 from grid_topology_ai.self_play.artifacts import load_json, save_json, sha256_file
-from grid_topology_ai.self_play.checkpoint_arena import select_checkpoint_in_tuning_arena
+from grid_topology_ai.self_play.checkpoints import select_checkpoint_in_tuning_arena
 from grid_topology_ai.self_play.example_validation import validate_example_contract_versions
 from grid_topology_ai.self_play.generation import (
     GenerationRequest,
