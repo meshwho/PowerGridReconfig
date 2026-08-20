@@ -12,7 +12,7 @@ from grid_topology_ai.contracts import (
 from grid_topology_ai.models.graph_self_play_dataset import (
     GraphSelfPlayDataset,
 )
-from grid_topology_ai.physical_objective import (
+from grid_topology_ai.physics.objective import (
     PHYSICAL_OBJECTIVE_SCHEMA_VERSION,
 )
 from grid_topology_ai.return_contract import (

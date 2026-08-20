@@ -8,7 +8,7 @@ from grid_topology_ai.data_adapter import (
     BUS_FEATURE_COLUMNS,
     GridFMState,
 )
-from grid_topology_ai.grid_utility import state_potential
+from grid_topology_ai.physics.utility import state_potential
 from grid_topology_ai.reward import GridFMReward
 
 

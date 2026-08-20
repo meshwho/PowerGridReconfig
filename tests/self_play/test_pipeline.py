@@ -11,7 +11,7 @@ from grid_topology_ai.contracts import (
     EVALUATION_METRICS_CONTRACT_VERSION,
     physics_provenance,
 )
-from grid_topology_ai.physical_objective import physical_objective_contract
+from grid_topology_ai.physics.objective import physical_objective_contract
 from grid_topology_ai.self_play import pipeline as pipeline_module
 from grid_topology_ai.self_play.iteration import IterationResult
 from grid_topology_ai.self_play.paths import SelfPlayPaths

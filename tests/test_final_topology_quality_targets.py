@@ -6,13 +6,13 @@ import numpy as np
 import pytest
 
 from grid_topology_ai.data_adapter import BRANCH_FEATURE_COLUMNS, GridFMState
-from grid_topology_ai.grid_utility import state_security_penalty, state_utility
+from grid_topology_ai.physics.utility import state_security_penalty, state_utility
 from grid_topology_ai.outcome_contract import (
     RedispatchStatus,
     TERMINAL_OUTCOME_EVIDENCE_SCHEMA_VERSION,
     TerminalOutcomeEvidence,
 )
-from grid_topology_ai.physical_objective import (
+from grid_topology_ai.physics.objective import (
     PHYSICAL_OBJECTIVE_SCHEMA_VERSION,
     assess_physical_state,
 )

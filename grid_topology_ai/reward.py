@@ -5,13 +5,13 @@ from typing import Any
 
 from grid_topology_ai.config.physics import PhysicsConfig
 from grid_topology_ai.data_adapter import GridFMState
-from grid_topology_ai.grid_utility import (
+from grid_topology_ai.physics.utility import (
     GridUtilityBreakdown,
     GridUtilityWeights,
     grid_utility_breakdown,
     potential_shaping_reward,
 )
-from grid_topology_ai.physical_objective import (
+from grid_topology_ai.physics.objective import (
     HARD_OVERLOAD_LIMIT_PERCENT,
     OVERLOAD_LIMIT_PERCENT,
     assess_physical_state,

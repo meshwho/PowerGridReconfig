@@ -27,11 +27,11 @@ from pypower.idx_gen import (
 )
 
 from grid_topology_ai.config.physics import PhysicsConfig
-from grid_topology_ai.physical_constraints import (
+from grid_topology_ai.physics.constraints import (
     PhysicalNetworkArrays,
     calculate_physical_metrics,
 )
-from grid_topology_ai.physical_objective import assess_physical_state
+from grid_topology_ai.physics.objective import assess_physical_state
 
 
 def _arrays() -> PhysicalNetworkArrays:

@@ -3,7 +3,7 @@ import math
 
 import pytest
 
-from grid_topology_ai.physical_objective import (
+from grid_topology_ai.physics.objective import (
     PHYSICAL_OBJECTIVE_SCHEMA_VERSION,
     assess_physical_state,
     classify_stop_outcome,

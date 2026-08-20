@@ -14,7 +14,7 @@ from grid_topology_ai.contracts import (
     REPLAY_BUFFER_SCHEMA_VERSION,
 )
 from grid_topology_ai.evaluation import checkpoint as evaluation_checkpoint
-from grid_topology_ai.physical_objective import (
+from grid_topology_ai.physics.objective import (
     PHYSICAL_OBJECTIVE_SCHEMA_VERSION,
 )
 from grid_topology_ai.return_contract import (

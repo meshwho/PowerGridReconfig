@@ -130,8 +130,8 @@ from grid_topology_ai.teacher_config import (
 )
 from grid_topology_ai.data_adapter import GridFMAdapter
 from grid_topology_ai.environment import TopologySwitchingEnv
-from grid_topology_ai.grid_utility import state_utility
-from grid_topology_ai.lodf import (
+from grid_topology_ai.physics.utility import state_utility
+from grid_topology_ai.physics.lodf import (
     build_lodf_structure,
     lodf_loading_safety_score,
     rank_actions_with_lodf_structure,
@@ -141,12 +141,12 @@ from grid_topology_ai.outcome_contract import (
     TerminalOutcomeEvidence,
     redispatch_status_for_reason,
 )
-from grid_topology_ai.physical_objective import (
+from grid_topology_ai.physics.objective import (
     PHYSICAL_OBJECTIVE_SCHEMA_VERSION,
     assess_physical_state,
 )
 from grid_topology_ai.power_flow.backend import GridFMPowerFlowBackend
-from grid_topology_ai.redispatch import (
+from grid_topology_ai.physics.redispatch import (
     MinimalRedispatchResult,
     empty_redispatch_diagnostics,
     run_minimal_ac_redispatch,

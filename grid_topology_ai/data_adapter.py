@@ -12,7 +12,7 @@ from grid_topology_ai.config.physics import (
     PhysicsConfig,
     ZeroRateAPolicy,
 )
-from grid_topology_ai.physical_constraints import (
+from grid_topology_ai.physics.constraints import (
     calculate_physical_metrics_from_frames,
 )
 from grid_topology_ai.power_flow.errors import InvalidPhysicalState

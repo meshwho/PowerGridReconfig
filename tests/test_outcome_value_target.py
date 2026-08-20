@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from grid_topology_ai.physical_objective import (
+from grid_topology_ai.physics.objective import (
     PHYSICAL_OBJECTIVE_SCHEMA_VERSION,
 )
 from grid_topology_ai.return_contract import (

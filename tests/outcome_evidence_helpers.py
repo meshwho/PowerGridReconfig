@@ -5,7 +5,7 @@ from grid_topology_ai.outcome_contract import (
     TerminalOutcomeEvidence,
     redispatch_status_for_reason,
 )
-from grid_topology_ai.physical_objective import assess_physical_state
+from grid_topology_ai.physics.objective import assess_physical_state
 from grid_topology_ai.termination import (
     TerminationReason,
     parse_termination_reason,

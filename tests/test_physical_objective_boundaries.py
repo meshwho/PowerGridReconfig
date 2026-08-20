@@ -4,7 +4,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_physical_objective_has_no_heavy_or_cyclic_imports():
-    text = (ROOT / "grid_topology_ai/physical_objective.py").read_text()
+    text = (ROOT / "grid_topology_ai/physics/objective.py").read_text()
     for token in ("numpy", "pandas", "torch", "grid_topology_ai.environment", "grid_topology_ai.search", "grid_topology_ai.self_play"):
         assert token not in text
 
@@ -20,7 +20,7 @@ def test_objective_consumers_import_physical_objective_contract():
 
     for rel in files:
         text = (ROOT / "grid_topology_ai" / rel).read_text()
-        assert "physical_objective" in text
+        assert "grid_topology_ai.physics.objective" in text
 
 
 def test_runtime_threshold_consumers_import_physics_config():
@@ -66,7 +66,7 @@ def test_custom_runtime_thresholds_are_used_consistently():
         GridFMState,
     )
     from grid_topology_ai.evaluation.metrics import compute_safety_score
-    from grid_topology_ai.grid_utility import state_security_penalty
+    from grid_topology_ai.physics.utility import state_security_penalty
     from grid_topology_ai.search.continuation_gate import topology_penalty
     from grid_topology_ai.search.dc_action_screener import DCActionScreener
     from grid_topology_ai.search.impact_beam_search import safety_score

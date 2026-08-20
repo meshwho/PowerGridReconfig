@@ -214,7 +214,7 @@ def test_physical_objective_import_is_lightweight_in_fresh_process() -> None:
     result = _run_fresh_python(
         """
 import sys
-from grid_topology_ai.physical_objective import (
+from grid_topology_ai.physics.objective import (
     PhysicalStateAssessment,
     StopOutcome,
     assess_physical_state,

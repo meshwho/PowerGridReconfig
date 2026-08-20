@@ -5,7 +5,7 @@ from typing import Any
 
 from grid_topology_ai.action_space import GridFMAction, GridFMActionSpace
 from grid_topology_ai.data_adapter import GridFMAdapter, GridFMState
-from grid_topology_ai.grid_utility import state_utility
+from grid_topology_ai.physics.utility import state_utility
 from grid_topology_ai.outcome_contract import (
     TERMINAL_OUTCOME_EVIDENCE_SCHEMA_VERSION,
     TerminalOutcomeEvidence,
@@ -15,7 +15,7 @@ from grid_topology_ai.power_flow.backend import (
     GridFMPowerFlowBackend,
     GridFMPowerFlowResult,
 )
-from grid_topology_ai.physical_objective import (
+from grid_topology_ai.physics.objective import (
     PhysicalStateAssessment,
     assess_physical_state,
     classify_stop_outcome,
