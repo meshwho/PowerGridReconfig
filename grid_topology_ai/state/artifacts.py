@@ -4,7 +4,7 @@ from pathlib import Path
 
 import numpy as np
 
-from grid_topology_ai.state_schema import (
+from grid_topology_ai.state.schema import (
     BRANCH_FEATURE_COLUMNS,
     BUS_FEATURE_COLUMNS,
 )

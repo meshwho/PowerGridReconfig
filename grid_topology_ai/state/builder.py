@@ -20,14 +20,14 @@ from grid_topology_ai.physical_constraints import (
     calculate_physical_metrics_from_result,
 )
 from grid_topology_ai.power_flow_errors import InvalidPhysicalState
-from grid_topology_ai.state_schema import (
+from grid_topology_ai.state.schema import (
     BRANCH_FEATURE_COLUMNS,
     BUS_FEATURE_COLUMNS,
     finite_feature_matrix,
     with_branch_rating_features,
     with_bus_generator_features,
 )
-from grid_topology_ai.state_topology import validate_state_topology
+from grid_topology_ai.state.topology import validate_state_topology
 
 
 MetricsCalculator = Callable[..., Mapping[str, object]]

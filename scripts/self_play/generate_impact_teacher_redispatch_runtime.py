@@ -170,7 +170,7 @@ from grid_topology_ai.self_play.example_validation import (
     validate_example_contract_versions,
     validate_example_outcome_contracts,
 )
-from grid_topology_ai.state_store import GridFMStateStore
+from grid_topology_ai.state.store import GridFMStateStore
 from grid_topology_ai.termination import (
     TerminationReason,
     parse_termination_reason,

@@ -27,7 +27,7 @@ from grid_topology_ai.return_contract import (
     VALUE_TARGET_MODE,
     terminal_utility_from_outcome,
 )
-from grid_topology_ai.state_artifact_schema import validate_state_npz_schema_arrays
+from grid_topology_ai.state.artifacts import validate_state_npz_schema_arrays
 from grid_topology_ai.topology_actions import (
     ActionSlot,
     ActionSpaceConfig,
