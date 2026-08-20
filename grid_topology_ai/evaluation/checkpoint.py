@@ -218,7 +218,7 @@ def _ensure_runtime_dependencies() -> None:
     from grid_topology_ai.models.neural_evaluator import (
         NeuralPolicyValueEvaluator as Evaluator,
     )
-    from grid_topology_ai.pypower_backend import GridFMPowerFlowBackend as Backend
+    from grid_topology_ai.power_flow.backend import GridFMPowerFlowBackend as Backend
     from grid_topology_ai.reward import GridFMReward as Reward
     from grid_topology_ai.search.continuation_gate import (
         analyze_root_branches as analyze,

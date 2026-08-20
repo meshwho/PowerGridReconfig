@@ -79,19 +79,19 @@ from grid_topology_ai.physical_constraints import (
     validate_pypower_result,
 )
 from grid_topology_ai.physical_objective import assess_physical_state
-from grid_topology_ai.power_flow_errors import (
+from grid_topology_ai.power_flow.errors import (
     InvalidPhysicalState,
     PowerFlowFailureKind,
     PowerFlowNotConverged,
 )
-from grid_topology_ai.power_flow_problem import (
+from grid_topology_ai.power_flow.problem import (
     CanonicalPowerFlowProblem,
     GeneratorOperatingPoint,
     ScenarioPowerFlowTemplate,
     build_power_flow_problem_from_state,
     build_scenario_power_flow_template,
 )
-from grid_topology_ai.pypower_compat import (
+from grid_topology_ai.power_flow.solver import (
     get_power_flow_workload_counters,
     runpf,
 )

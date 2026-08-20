@@ -30,7 +30,7 @@ from pypower.makeSbus import makeSbus
 from pypower.makeYbus import makeYbus
 from pypower.pfsoln import pfsoln
 
-from grid_topology_ai.pypower_newton_workspace import (
+from grid_topology_ai.power_flow.newton_workspace import (
     PowerDerivativeWorkspace,
     newton_power_flow,
 )

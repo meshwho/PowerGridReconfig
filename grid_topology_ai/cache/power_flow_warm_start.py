@@ -11,7 +11,7 @@ from pypower.idx_bus import BUS_TYPE, PQ, PV, REF, VA, VM
 from pypower.idx_gen import PG, QG
 
 from grid_topology_ai.cache.byte_lru import ByteLRUCache
-from grid_topology_ai.power_flow_problem import CanonicalPowerFlowProblem
+from grid_topology_ai.power_flow.problem import CanonicalPowerFlowProblem
 
 
 POWER_FLOW_WARM_START_ENABLED_ENV = "POWERGRID_ENABLE_PF_WARM_START"

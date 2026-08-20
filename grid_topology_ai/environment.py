@@ -11,7 +11,7 @@ from grid_topology_ai.outcome_contract import (
     TerminalOutcomeEvidence,
     redispatch_status_for_reason,
 )
-from grid_topology_ai.pypower_backend import (
+from grid_topology_ai.power_flow.backend import (
     GridFMPowerFlowBackend,
     GridFMPowerFlowResult,
 )

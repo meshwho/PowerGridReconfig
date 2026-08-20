@@ -7,7 +7,7 @@ from typing import Any
 import numpy as np
 
 from grid_topology_ai.cache.byte_lru import ByteLRUCache
-from grid_topology_ai.power_flow_problem import CanonicalPowerFlowProblem
+from grid_topology_ai.power_flow.problem import CanonicalPowerFlowProblem
 
 
 DEFAULT_DC_SCREENING_CACHE_BYTES = 16 * 1024 * 1024

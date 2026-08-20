@@ -16,8 +16,8 @@ from grid_topology_ai.cache import (
 )
 from grid_topology_ai.config.physics import DEFAULT_PHYSICS_CONFIG, PhysicsConfig
 from grid_topology_ai.data_adapter import GridFMState
-from grid_topology_ai.power_flow_problem import CanonicalPowerFlowProblem
-from grid_topology_ai.pypower_backend import GridFMPowerFlowBackend
+from grid_topology_ai.power_flow.problem import CanonicalPowerFlowProblem
+from grid_topology_ai.power_flow.backend import GridFMPowerFlowBackend
 
 
 @dataclass(frozen=True)
