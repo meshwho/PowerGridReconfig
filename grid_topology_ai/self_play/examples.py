@@ -20,13 +20,13 @@ from grid_topology_ai.outcome_contract import (
     TERMINAL_OUTCOME_EVIDENCE_SCHEMA_VERSION,
     TerminalOutcomeEvidence,
 )
-from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
+from grid_topology_ai.physics.objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
 from grid_topology_ai.return_contract import TERMINAL_UTILITY_GAMMA
 from grid_topology_ai.search.root_policy import (
     normalize_policy,
     require_action_in_policy_support,
 )
-from grid_topology_ai.state_store import GridFMStateStore
+from grid_topology_ai.state.store import GridFMStateStore
 from grid_topology_ai.termination import (
     TerminationReason,
     termination_reason_value,

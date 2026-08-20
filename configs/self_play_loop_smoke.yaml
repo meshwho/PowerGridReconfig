@@ -130,7 +130,6 @@ training:
   value_huber_delta: 1.0
   num_workers: 0
   device: cpu
-  model_type: graph_v2
   hidden_dim: 128
   num_layers: 3
   dropout: 0.0

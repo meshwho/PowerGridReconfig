@@ -6,10 +6,10 @@ from pathlib import Path
 from scripts.pipelines import run_teacher_by_difficulty as pipeline
 
 
-PROVENANCE_TEACHER = "scripts.self_play.generate_impact_teacher_provenance"
+RUNTIME_TEACHER = "scripts.self_play.generate_impact_teacher_redispatch_runtime"
 
 
-def test_teacher_pipeline_defaults_to_provenance_module(
+def test_teacher_pipeline_defaults_to_runtime_module(
     monkeypatch,
 ) -> None:
     monkeypatch.setattr(
@@ -20,7 +20,7 @@ def test_teacher_pipeline_defaults_to_provenance_module(
 
     args = pipeline.parse_args()
 
-    assert args.teacher_module == PROVENANCE_TEACHER
+    assert args.teacher_module == RUNTIME_TEACHER
 
 
 def test_teacher_pipeline_passes_canonical_pf_alg_by_default(
@@ -56,17 +56,3 @@ def test_teacher_pipeline_passes_canonical_pf_alg_by_default(
 
     assert args.pf_alg == 1
     assert command[pf_alg_index + 1] == "1"
-
-
-def test_split_transition_runner_uses_provenance_module() -> None:
-    project_root = Path(__file__).resolve().parents[1]
-    runner_path = (
-        project_root
-        / "scripts"
-        / "pipelines"
-        / "run_teacher_on_split_transitions.ps1"
-    )
-    text = runner_path.read_text(encoding="utf-8")
-
-    assert "python -m scripts.self_play.generate_impact_teacher_provenance" in text
-    assert "python -m scripts.self_play.generate_impact_teacher_parallel_fast" not in text

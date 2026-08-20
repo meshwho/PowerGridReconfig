@@ -16,7 +16,7 @@ from grid_topology_ai.contracts import (
     REPLAY_BUFFER_SCHEMA_VERSION,
     physics_provenance,
 )
-from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
+from grid_topology_ai.physics.objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
 from grid_topology_ai.self_play import replay as replay_module
 from grid_topology_ai.self_play.artifacts import sha256_file
 from grid_topology_ai.self_play.replay import RollingReplayBuffer

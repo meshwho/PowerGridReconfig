@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 from grid_topology_ai.config.physics import DEFAULT_PHYSICS_CONFIG
-from scripts.self_play import generate_impact_teacher_provenance as provenance
+from scripts.self_play import generate_impact_teacher_redispatch_runtime as provenance
 
 
 def test_teacher_replay_keeps_temporarily_worse_selected_step() -> None:

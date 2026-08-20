@@ -9,7 +9,7 @@ from grid_topology_ai.config.physics import (
     PhysicsConfig,
 )
 from grid_topology_ai.contracts import physics_provenance
-from grid_topology_ai.physical_objective import (
+from grid_topology_ai.physics.objective import (
     PHYSICAL_OBJECTIVE_SCHEMA_VERSION,
 )
 from grid_topology_ai.return_contract import TERMINAL_UTILITY_GAMMA

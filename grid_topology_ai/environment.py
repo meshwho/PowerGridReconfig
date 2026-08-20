@@ -5,17 +5,17 @@ from typing import Any
 
 from grid_topology_ai.action_space import GridFMAction, GridFMActionSpace
 from grid_topology_ai.data_adapter import GridFMAdapter, GridFMState
-from grid_topology_ai.grid_utility import state_utility
+from grid_topology_ai.physics.utility import state_utility
 from grid_topology_ai.outcome_contract import (
     TERMINAL_OUTCOME_EVIDENCE_SCHEMA_VERSION,
     TerminalOutcomeEvidence,
     redispatch_status_for_reason,
 )
-from grid_topology_ai.pypower_backend import (
+from grid_topology_ai.power_flow.backend import (
     GridFMPowerFlowBackend,
     GridFMPowerFlowResult,
 )
-from grid_topology_ai.physical_objective import (
+from grid_topology_ai.physics.objective import (
     PhysicalStateAssessment,
     assess_physical_state,
     classify_stop_outcome,
@@ -137,9 +137,6 @@ class TopologySwitchingEnv:
         assert self.current_state is not None
         return self.action_space.operational_action_mask(self.current_state)
 
-    def valid_action_mask(self):
-        return self.operational_action_mask()
-
     def action_by_id(self, action_id: int) -> GridFMAction:
         self._require_active_episode()
         assert self.current_state is not None
@@ -149,7 +146,7 @@ class TopologySwitchingEnv:
             raise ValueError(f"Invalid action_id: {action_id}")
 
         action = all_actions[action_id]
-        mask = self.action_space.valid_action_mask(self.current_state)
+        mask = self.action_space.operational_action_mask(self.current_state)
         if not bool(mask[action_id]):
             raise ValueError(
                 f"Action {action_id} is not valid in current state."
@@ -231,7 +228,6 @@ class TopologySwitchingEnv:
         reward_breakdown = self.reward_fn.compute(
             before_state=self.current_state,
             after_state=self.current_state,
-            action_is_switching=False,
             power_flow_success=assessment.power_flow_converged,
         )
         outcome = classify_stop_outcome(
@@ -273,7 +269,6 @@ class TopologySwitchingEnv:
         reward_breakdown = self.reward_fn.compute(
             before_state=before_state,
             after_state=power_flow_result.next_state,
-            action_is_switching=True,
             power_flow_success=power_flow_result.success,
         )
 

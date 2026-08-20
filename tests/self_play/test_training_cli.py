@@ -13,105 +13,61 @@ def _capture_request(
     checkpoint_path: Path,
     captured: list[TrainingRequest],
 ) -> None:
-    def fake_train_graph_policy_value_model(request: TrainingRequest) -> Path:
+    def fake_train(request: TrainingRequest) -> Path:
         captured.append(request)
-        checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
-        checkpoint_path.write_bytes(b"checkpoint")
         return checkpoint_path
 
-    monkeypatch.setattr(
-        train_cli,
-        "train_graph_policy_value_model",
-        fake_train_graph_policy_value_model,
-    )
+    monkeypatch.setattr(train_cli, "train_graph_policy_value_model", fake_train)
 
 
-def test_cli_builds_training_request_paths(
+def test_cli_builds_graph_v2_training_request(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     captured: list[TrainingRequest] = []
-    checkpoint = tmp_path / "out" / "model.pt"
+    checkpoint = tmp_path / "model.pt"
     _capture_request(monkeypatch, checkpoint, captured)
 
-    examples_csv = tmp_path / "examples.csv"
-    init_checkpoint = tmp_path / "init.pt"
-    val_csv = tmp_path / "val.csv"
-    metrics_csv = tmp_path / "metrics.csv"
-    tensorboard_dir = tmp_path / "tb"
+    examples = tmp_path / "examples.csv"
+    val = tmp_path / "val.csv"
+    init = tmp_path / "init.pt"
+    metrics = tmp_path / "metrics.csv"
 
     assert train_cli.main(
         [
-            str(examples_csv),
-            "--output",
-            str(checkpoint),
-            "--init-checkpoint",
-            str(init_checkpoint),
-            "--val-examples-csv",
-            str(val_csv),
-            "--tensorboard-log-dir",
-            str(tensorboard_dir),
-            "--run-name",
-            "unit-run",
-            "--metrics-csv",
-            str(metrics_csv),
+            str(examples),
+            "--output", str(checkpoint),
+            "--init-checkpoint", str(init),
+            "--val-examples-csv", str(val),
+            "--metrics-csv", str(metrics),
+            "--epochs", "7",
+            "--lr", "0.02",
+            "--hidden-dim", "64",
+            "--num-layers", "5",
+            "--dropout", "0.3",
+            "--batch-size", "9",
+            "--value-loss-weight", "1.5",
+            "--value-huber-delta", "0.25",
+            "--device", "cpu",
+            "--num-workers", "2",
             "--amp",
-            "--no-normalize-features",
             "--save-best",
-        ]
-    ) == 0
-
-    request = captured[0]
-    assert request.examples_csv == examples_csv
-    assert request.output_path == checkpoint
-    assert request.init_checkpoint == init_checkpoint
-    assert request.validation_examples_csv == val_csv
-    assert request.tensorboard_log_dir == tensorboard_dir
-    assert request.run_name == "unit-run"
-    assert request.metrics_csv == metrics_csv
-    assert request.use_amp is True
-    assert request.normalize_features is False
-    assert request.save_best is True
-
-
-def test_cli_builds_training_config(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    captured: list[TrainingRequest] = []
-    _capture_request(monkeypatch, tmp_path / "model.pt", captured)
-
-    assert train_cli.main(
-        [
-            str(tmp_path / "examples.csv"),
-            "--epochs",
-            "7",
-            "--lr",
-            "0.02",
-            "--hidden-dim",
-            "64",
-            "--num-layers",
-            "5",
-            "--dropout",
-            "0.3",
-            "--batch-size",
-            "9",
-            "--value-loss-weight",
-            "1.5",
-            "--value-huber-delta",
-            "0.25",
-            "--device",
-            "cpu",
-            "--num-workers",
-            "2",
-            "--model-type",
-            "graph_v2",
             "--save-multiple-best",
             "--no-tensorboard",
         ]
     ) == 0
 
-    config = captured[0].config
+    request = captured[0]
+    assert request.examples_csv == examples
+    assert request.output_path == checkpoint
+    assert request.init_checkpoint == init
+    assert request.validation_examples_csv == val
+    assert request.metrics_csv == metrics
+    assert request.use_amp is True
+    assert request.save_best is True
+
+    config = request.config
+    assert not hasattr(config, "model_type")
     assert config.epochs == 7
     assert config.learning_rate == 0.02
     assert config.hidden_dim == 64
@@ -122,31 +78,10 @@ def test_cli_builds_training_config(
     assert config.value_huber_delta == 0.25
     assert config.device == "cpu"
     assert config.num_workers == 2
-    assert config.model_type == "graph_v2"
     assert config.save_multiple_best is True
     assert config.no_tensorboard is True
 
 
-def test_cli_prints_checkpoint_and_returns_zero(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    captured: list[TrainingRequest] = []
-    checkpoint = tmp_path / "model.pt"
-    _capture_request(monkeypatch, checkpoint, captured)
-
-    assert train_cli.main([str(tmp_path / "examples.csv")]) == 0
-
-    assert capsys.readouterr().out.strip() == str(checkpoint)
-
-
-def test_cli_help_still_works(capsys: pytest.CaptureFixture[str]) -> None:
-    with pytest.raises(SystemExit) as exc_info:
-        train_cli.build_parser().parse_args(["--help"])
-
-    assert exc_info.value.code == 0
-    output = capsys.readouterr().out
-    assert "--epochs" in output
-    assert "--save-multiple-best" in output
-    assert "--val-examples-csv" in output
+def test_cli_no_longer_exposes_model_selection() -> None:
+    parser = train_cli.build_parser()
+    assert "--model-type" not in parser.format_help()

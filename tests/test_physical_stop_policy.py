@@ -1,4 +1,4 @@
-from grid_topology_ai.physical_objective import assess_physical_state, stop_allowed_for_policy
+from grid_topology_ai.physics.objective import assess_physical_state, stop_allowed_for_policy
 from grid_topology_ai.search.mcts import MCTSConfig, MCTSPlanner
 from tests.test_reward_logic import _state
 

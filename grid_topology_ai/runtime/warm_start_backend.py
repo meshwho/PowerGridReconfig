@@ -10,8 +10,8 @@ from grid_topology_ai.cache.power_flow_warm_start import (
     PowerFlowWarmStartCache,
     warm_start_enabled_from_environment,
 )
-from grid_topology_ai.power_flow_errors import PowerFlowNotConverged
-from grid_topology_ai.power_flow_problem import CanonicalPowerFlowProblem
+from grid_topology_ai.power_flow.errors import PowerFlowNotConverged
+from grid_topology_ai.power_flow.problem import CanonicalPowerFlowProblem
 from grid_topology_ai.runtime.numpy_scenario import (
     NumPyMemoryMappedGridFMPowerFlowBackend,
     build_numpy_teacher_context as _build_numpy_teacher_context,

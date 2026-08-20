@@ -23,7 +23,7 @@ from grid_topology_ai.outcome_contract import (
 from grid_topology_ai.outcome_record import (
     terminal_evidence_from_metadata,
 )
-from grid_topology_ai.physical_objective import (
+from grid_topology_ai.physics.objective import (
     PHYSICAL_OBJECTIVE_SCHEMA_VERSION,
 )
 from grid_topology_ai.return_contract import (

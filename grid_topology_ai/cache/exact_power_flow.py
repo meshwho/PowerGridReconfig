@@ -13,8 +13,8 @@ from grid_topology_ai.cache.persistent_exact import (
     PersistentPowerFlowFailure,
     PersistentPowerFlowSuccess,
 )
-from grid_topology_ai.power_flow_errors import PowerFlowFailureKind
-from grid_topology_ai.power_flow_problem import CanonicalPowerFlowProblem
+from grid_topology_ai.power_flow.errors import PowerFlowFailureKind
+from grid_topology_ai.power_flow.problem import CanonicalPowerFlowProblem
 
 
 EXACT_POWER_FLOW_CACHE_SCHEMA_VERSION = 2

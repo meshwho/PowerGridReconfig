@@ -43,7 +43,7 @@ from grid_topology_ai.evaluation.policy_comparison import (
     print_policy_comparison_summary,
     select_evaluation_root_policy,
 )
-from grid_topology_ai.physical_objective import STOP_POLICIES
+from grid_topology_ai.physics.objective import STOP_POLICIES
 from grid_topology_ai.self_play.artifacts import (
     read_git_state,
     save_json,
@@ -218,7 +218,7 @@ def _ensure_runtime_dependencies() -> None:
     from grid_topology_ai.models.neural_evaluator import (
         NeuralPolicyValueEvaluator as Evaluator,
     )
-    from grid_topology_ai.pypower_backend import GridFMPowerFlowBackend as Backend
+    from grid_topology_ai.power_flow.backend import GridFMPowerFlowBackend as Backend
     from grid_topology_ai.reward import GridFMReward as Reward
     from grid_topology_ai.search.continuation_gate import (
         analyze_root_branches as analyze,

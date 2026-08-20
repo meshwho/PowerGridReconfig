@@ -28,23 +28,23 @@ def test_core_and_optional_dependency_contract() -> None:
     assert "PYPOWER==5.1.19" in deps
     assert any(dep.startswith("scipy") for dep in deps)
     assert any(dep.startswith("torch") for dep in deps)
-    assert "pandapower==2.14.11" in extras["data"]
+    assert "gridfm-datakit==1.0.5" in extras["data"]
+    assert any(dep.startswith("pyarrow") for dep in extras["data"])
     assert any(dep.startswith("pytest") for dep in extras["test"])
     assert any(dep.startswith("build") for dep in extras["test"])
 
 
-def test_constraints_and_requirements_contract() -> None:
+def test_constraints_contract() -> None:
     constraints = (ROOT / "constraints" / "py311.txt").read_text(encoding="utf-8")
-    requirements = (ROOT / "requirements.txt").read_text(encoding="utf-8")
 
     assert "numpy==1.26.4" in constraints
     assert "PYPOWER==5.1.19" in constraints
-    assert "constraints/py311.txt" in requirements
-    assert ".[data,test,train]" in requirements
+    assert "gridfm-datakit==1.0.5" in constraints
+    assert not (ROOT / "requirements.txt").exists()
 
 
 def test_production_backend_has_no_numpy_runtime_monkeypatch() -> None:
-    text = (ROOT / "grid_topology_ai" / "pypower_backend.py").read_text(encoding="utf-8")
+    text = (ROOT / "grid_topology_ai" / "power_flow" / "backend.py").read_text(encoding="utf-8")
 
     forbidden = ("np.in1d =", "setattr(np", "hasattr(np", "np.isin")
     assert all(pattern not in text for pattern in forbidden)

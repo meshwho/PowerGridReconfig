@@ -14,7 +14,7 @@ from grid_topology_ai.self_play.artifacts import (
     save_json,
     sha256_file,
 )
-from grid_topology_ai.self_play.completion import (
+from grid_topology_ai.self_play.paths import (
     validate_iteration_completion,
     write_iteration_completion_marker,
 )

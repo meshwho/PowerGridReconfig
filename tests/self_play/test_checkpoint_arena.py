@@ -8,14 +8,15 @@ from typing import Any
 
 import pandas as pd
 import pytest
+import torch
 
 from grid_topology_ai.config import TrainingConfig
 from grid_topology_ai.config.checkpoint_selection import (
     CheckpointSelectionConfig,
 )
 from grid_topology_ai.config.physics import DEFAULT_PHYSICS_CONFIG
-from grid_topology_ai.self_play import checkpoint_arena, stages
-from grid_topology_ai.self_play.checkpoint_arena import (
+from grid_topology_ai.self_play import checkpoints as checkpoint_arena, stages
+from grid_topology_ai.self_play.checkpoints import (
     CheckpointArenaResult,
 )
 
@@ -393,7 +394,14 @@ def test_run_train_routes_candidate_through_tuning_arena(
     output_dir = tmp_path / "run" / "iter_001"
     output_dir.mkdir(parents=True)
     canonical = output_dir / "candidate_checkpoint.pt"
-    canonical.write_bytes(b"candidate")
+    torch.save(
+        {"checkpoint_selection_metric": "validation_loss"},
+        canonical,
+    )
+    train_csv = tmp_path / "train.csv"
+    validation_csv = tmp_path / "validation.csv"
+    train_csv.write_text("scenario_id\n1\n", encoding="utf-8")
+    validation_csv.write_text("scenario_id\n2\n", encoding="utf-8")
 
     selection_config = CheckpointSelectionConfig(
         enabled=True,
@@ -423,36 +431,20 @@ def test_run_train_routes_candidate_through_tuning_arena(
         lambda **kwargs: nullcontext(),
     )
     monkeypatch.setattr(
-        stages,
-        "_install_stage_overrides",
-        lambda: {},
-    )
-    monkeypatch.setattr(
-        stages,
-        "_restore_stage_overrides",
-        lambda previous: None,
-    )
-    monkeypatch.setattr(
         stages.SelfPlayPaths,
         "from_config",
         lambda config, project_root: resolved_paths,
     )
-
-    def fake_run_train(
-        *,
-        project_root,
-        examples_csv,
-        validation_examples_csv,
-        init_checkpoint,
-        output_dir,
-        config,
-        physics_config,
-        iteration,
-        seed,
-    ) -> Path:
-        return canonical
-
-    monkeypatch.setattr(stages._base, "run_train", fake_run_train)
+    monkeypatch.setattr(
+        stages,
+        "train_graph_policy_value_model",
+        lambda request: canonical,
+    )
+    monkeypatch.setattr(
+        stages,
+        "require_checkpoint_contracts",
+        lambda *args, **kwargs: None,
+    )
 
     captured: dict[str, Any] = {}
 
@@ -475,8 +467,8 @@ def test_run_train_routes_candidate_through_tuning_arena(
 
     result = stages.run_train(
         project_root=tmp_path,
-        examples_csv=tmp_path / "train.csv",
-        validation_examples_csv=tmp_path / "validation.csv",
+        examples_csv=train_csv,
+        validation_examples_csv=validation_csv,
         init_checkpoint=tmp_path / "parent.pt",
         output_dir=output_dir,
         config=TrainingConfig(save_multiple_best=True),

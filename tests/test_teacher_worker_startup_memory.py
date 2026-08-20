@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pandas as pd
 
-from grid_topology_ai._data_adapter_core import GridFMAdapter
-from scripts.self_play import generate_impact_teacher_redispatch as redispatch
+from grid_topology_ai.data_adapter import GridFMAdapter
+from scripts.self_play import generate_impact_teacher_redispatch_runtime as teacher
 
 
 def test_worker_init_semaphore_wraps_heavy_context_initialization(monkeypatch) -> None:
@@ -19,38 +20,51 @@ def test_worker_init_semaphore_wraps_heavy_context_initialization(monkeypatch) -
             events.append("release")
 
     semaphore = FakeSemaphore()
+    previous_context = teacher._WORKER_CONTEXT
 
-    def fake_init(
-        raw_dir_str,
-        states_dir_str,
-        task_config,
-        scenario_ids,
-        memory_registry,
-    ) -> None:
-        assert redispatch._RUNTIME_WORKER_INIT_SEMAPHORE not in task_config
+    def fake_build_context(**kwargs):
+        assert teacher._RUNTIME_WORKER_INIT_SEMAPHORE not in kwargs["task_config"]
         events.append("init")
+        return {
+            "task_config": dict(kwargs["task_config"]),
+            "state_store": SimpleNamespace(output_dir=Path("states")),
+            "memory_registry": object(),
+        }
 
     monkeypatch.setattr(
-        redispatch,
-        "_ORIGINAL_INIT_WORKER_CONTEXT",
-        fake_init,
+        teacher,
+        "ensure_runtime_scenario_store",
+        lambda raw_dir: Path("runtime-store"),
     )
     monkeypatch.setattr(
-        redispatch.gc,
+        teacher,
+        "_configure_persistent_exact_cache",
+        lambda store_dir: None,
+    )
+    monkeypatch.setattr(
+        teacher,
+        "build_memory_mapped_teacher_context",
+        fake_build_context,
+    )
+    monkeypatch.setattr(
+        teacher.gc,
         "collect",
         lambda: events.append("gc"),
     )
 
-    redispatch.init_worker_context(
-        raw_dir_str="raw",
-        states_dir_str="states",
-        task_config={
-            "physics": "unchanged",
-            redispatch._RUNTIME_WORKER_INIT_SEMAPHORE: semaphore,
-        },
-        scenario_ids=[1, 2],
-        memory_registry=None,
-    )
+    try:
+        teacher.init_worker_context(
+            raw_dir_str="raw",
+            states_dir_str="states",
+            task_config={
+                "physics": "unchanged",
+                teacher._RUNTIME_WORKER_INIT_SEMAPHORE: semaphore,
+            },
+            scenario_ids=[1, 2],
+            memory_registry=None,
+        )
+    finally:
+        teacher._WORKER_CONTEXT = previous_context
 
     assert events == ["acquire", "init", "gc", "release"]
 
@@ -60,31 +74,50 @@ def test_parallel_runtime_adds_init_semaphore_without_changing_checkpoint_config
     tmp_path: Path,
 ) -> None:
     sentinel = object()
-    captured: dict[str, object] = {}
+    executors = []
+
+    class FakeFuture:
+        def result(self):
+            return [], 0.0
+
+    class FakeExecutor:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+            executors.append(self)
+
+        def submit(self, fn, process_batch, batch):
+            assert fn is teacher._run_timed_batch
+            return FakeFuture()
+
+        def shutdown(self, *, wait, cancel_futures):
+            return None
 
     monkeypatch.setenv(
-        redispatch._WORKER_INIT_CONCURRENCY_ENV,
+        teacher._WORKER_INIT_CONCURRENCY_ENV,
         "1",
     )
     monkeypatch.setattr(
-        redispatch.mp,
+        teacher.mp,
         "BoundedSemaphore",
         lambda value: sentinel if value == 1 else None,
     )
-
-    def fake_run_parallel(**kwargs):
-        captured.update(kwargs)
-        return [], 0, 0
-
     monkeypatch.setattr(
-        redispatch,
-        "_ORIGINAL_RUN_PARALLEL",
-        fake_run_parallel,
+        teacher,
+        "ensure_runtime_scenario_store",
+        lambda raw_dir: tmp_path / "runtime-store",
     )
+    monkeypatch.setattr(
+        teacher,
+        "_configure_persistent_exact_cache",
+        lambda store_dir: None,
+    )
+    monkeypatch.setattr(teacher, "ProcessPoolExecutor", FakeExecutor)
+    monkeypatch.setattr(teacher, "as_completed", lambda futures: list(futures))
+    monkeypatch.setattr(teacher, "tqdm", None)
 
     task_config = {"physics_config_fingerprint": "stable"}
 
-    result = redispatch.run_parallel(
+    result = teacher.run_parallel(
         scenario_batches=[[1], [2]],
         scenario_ids=[1, 2],
         raw_dir=tmp_path,
@@ -97,9 +130,10 @@ def test_parallel_runtime_adds_init_semaphore_without_changing_checkpoint_config
 
     assert result == ([], 0, 0)
     assert task_config == {"physics_config_fingerprint": "stable"}
-    runtime_config = captured["task_config"]
-    assert isinstance(runtime_config, dict)
-    assert runtime_config[redispatch._RUNTIME_WORKER_INIT_SEMAPHORE] is sentinel
+    assert len(executors) == 2
+    for executor in executors:
+        runtime_config = executor.kwargs["initargs"][2]
+        assert runtime_config[teacher._RUNTIME_WORKER_INIT_SEMAPHORE] is sentinel
 
 
 def test_parquet_reader_returns_loaded_frame_without_reset_copy(

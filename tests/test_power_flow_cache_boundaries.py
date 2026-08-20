@@ -2,12 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from grid_topology_ai._pypower_backend_core import (
-    GridFMPowerFlowBackend as PhysicalCoreBackend,
-)
 from grid_topology_ai.cache import ExactPowerFlowCache
 from grid_topology_ai.config.physics import PhysicsConfig
-from grid_topology_ai.pypower_backend import GridFMPowerFlowBackend
+from grid_topology_ai.power_flow.backend import GridFMPowerFlowBackend
 
 
 _OLD_CACHE_SYMBOLS = (
@@ -27,20 +24,6 @@ _OLD_CACHE_SYMBOLS = (
 )
 
 
-def test_physical_core_contains_no_power_flow_cache_implementation() -> None:
-    backend = PhysicalCoreBackend(
-        adapter=object(),  # type: ignore[arg-type]
-        physics_config=PhysicsConfig(),
-        enable_cache=True,
-    )
-
-    assert "_cache" not in vars(backend)
-    assert not hasattr(PhysicalCoreBackend, "cache_info")
-    assert not hasattr(PhysicalCoreBackend, "clear_cache")
-    for name in _OLD_CACHE_SYMBOLS:
-        assert not hasattr(PhysicalCoreBackend, name), name
-
-
 def test_public_backend_has_only_exact_cache_component() -> None:
     backend = GridFMPowerFlowBackend(
         adapter=object(),  # type: ignore[arg-type]
@@ -57,12 +40,9 @@ def test_public_backend_has_only_exact_cache_component() -> None:
         assert not hasattr(backend, name), name
 
 
-def test_power_flow_modules_do_not_reintroduce_approximate_cache_paths() -> None:
+def test_power_flow_module_does_not_reintroduce_approximate_cache_paths() -> None:
     root = Path(__file__).resolve().parents[1]
-    source_paths = (
-        root / "grid_topology_ai" / "_pypower_backend_core.py",
-        root / "grid_topology_ai" / "pypower_backend.py",
-    )
+    source_path = root / "grid_topology_ai" / "power_flow" / "backend.py"
     forbidden_fragments = (
         "tolerant_cache",
         "warm_start_hits",
@@ -73,7 +53,6 @@ def test_power_flow_modules_do_not_reintroduce_approximate_cache_paths() -> None
         "_make_topology_cache_key_from_state",
     )
 
-    for path in source_paths:
-        source = path.read_text(encoding="utf-8")
-        for fragment in forbidden_fragments:
-            assert fragment not in source, f"{fragment} found in {path.name}"
+    source = source_path.read_text(encoding="utf-8")
+    for fragment in forbidden_fragments:
+        assert fragment not in source, fragment

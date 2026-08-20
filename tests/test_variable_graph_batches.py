@@ -8,12 +8,12 @@ import torch
 from grid_topology_ai.contracts import (
     require_graph_batching_checkpoint_contract,
 )
-from grid_topology_ai.models.graph_batch import (
-    GRAPH_BATCHING_CONTRACT_VERSION,
-    collate_graph_samples,
-)
 from grid_topology_ai.models.graph_policy_value_net_v2 import (
     GraphPolicyValueNetV2,
+)
+from grid_topology_ai.models.graph_self_play_dataset import (
+    GRAPH_BATCHING_CONTRACT_VERSION,
+    collate_graph_samples,
 )
 from scripts.evaluation.evaluate_examples_with_checkpoint import (
     validate_checkpoint_dataset_compatibility,
@@ -175,6 +175,34 @@ def test_collate_packs_variable_graphs_without_node_or_edge_padding() -> None:
     )
 
 
+def test_collate_accepts_one_based_edge_indices() -> None:
+    sample = _sample(
+        num_nodes=3,
+        edge_index=torch.tensor(
+            [
+                [1, 2],
+                [2, 3],
+            ],
+            dtype=torch.long,
+        ),
+        scenario_id=3,
+        seed=33,
+    )
+
+    batch = collate_graph_samples([sample])
+
+    torch.testing.assert_close(
+        batch["edge_index"],
+        torch.tensor(
+            [
+                [0, 1],
+                [1, 2],
+            ],
+            dtype=torch.long,
+        ),
+    )
+
+
 def test_graph_v2_scores_variable_edge_counts_with_one_model() -> None:
     small, large = _variable_samples()
     batch = collate_graph_samples(
@@ -188,9 +216,6 @@ def test_graph_v2_scores_variable_edge_counts_with_one_model() -> None:
         hidden_dim=16,
         num_layers=2,
         dropout=0.0,
-        # Reference metadata from the small topology must not
-        # constrain the larger graph at runtime.
-        num_actions=3,
     )
     model.eval()
 
@@ -342,7 +367,6 @@ def test_graph_v2_checkpoint_compatibility_ignores_reference_cardinality() -> No
         checkpoint=checkpoint,
         checkpoint_path=Path("checkpoint.pt"),
         dataset=Dataset(),
-        is_graph_v2=True,
     )
 
 
@@ -399,9 +423,6 @@ def test_graph_v2_checkpoint_weights_cross_topology_cardinality(
         hidden_dim=16,
         num_layers=2,
         dropout=0.0,
-        num_actions=int(
-            small["action_mask"].numel()
-        ),
     )
     source_model.eval()
 

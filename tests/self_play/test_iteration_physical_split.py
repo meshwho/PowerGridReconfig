@@ -9,7 +9,7 @@ import pytest
 
 from grid_topology_ai.config import ReplayBufferConfig
 from grid_topology_ai.config.physics import DEFAULT_PHYSICS_CONFIG
-from grid_topology_ai.self_play.iteration_split import (
+from grid_topology_ai.self_play.iteration import (
     prepare_physical_iteration_split,
 )
 from grid_topology_ai.self_play.paths import SelfPlayPaths

@@ -5,10 +5,10 @@ from pathlib import Path
 from grid_topology_ai.evaluation.checkpoint import (
     load_scenario_ids,
 )
-from grid_topology_ai.self_play.dataset_isolation import (
+from grid_topology_ai.self_play.paths import SelfPlayPaths
+from grid_topology_ai.self_play.physical_split import (
     validate_physical_dataset_isolation,
 )
-from grid_topology_ai.self_play.paths import SelfPlayPaths
 
 
 def _require_file(path: Path, label: str) -> None:

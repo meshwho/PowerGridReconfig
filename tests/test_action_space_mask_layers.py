@@ -73,7 +73,6 @@ def test_loading_filter_applies_only_to_operational_mask() -> None:
 
     assert structural.tolist() == [True, True, True]
     assert operational.tolist() == [True, False, True]
-    assert action_space.valid_action_mask(state).tolist() == operational.tolist()
     assert [a.action_id for a in action_space.valid_actions(state)] == [0, 2]
     assert [a.action_id for a in action_space.invalid_actions(state)] == [1]
 

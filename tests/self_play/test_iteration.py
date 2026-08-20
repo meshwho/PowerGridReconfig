@@ -18,12 +18,12 @@ from grid_topology_ai.contracts import (
     OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
     physics_provenance,
 )
-from grid_topology_ai.physical_objective import (
+from grid_topology_ai.physics.objective import (
     PHYSICAL_OBJECTIVE_SCHEMA_VERSION,
     physical_objective_contract,
 )
 from grid_topology_ai.self_play import iteration as iteration_module
-from grid_topology_ai.self_play.checkpoint_state import BestState
+from grid_topology_ai.self_play.checkpoints import BestState
 from grid_topology_ai.self_play.iteration import (
     IterationRequest,
     _count_examples_csv,

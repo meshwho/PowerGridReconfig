@@ -1,52 +1,28 @@
 from __future__ import annotations
 
-from collections.abc import Callable
 from pathlib import Path
 
-import argparse
 import pytest
 
 from grid_topology_ai.evaluation.checkpoint import EvaluationRequest
-from scripts import analyze_mcts_root_branches
 from scripts.evaluation import evaluate_checkpoint as evaluation_cli
-from scripts.planning import run_mcts, run_mcts_episode
 
 
-ParserFactory = Callable[[], argparse.ArgumentParser]
+def _base_args() -> list[str]:
+    return [
+        "raw",
+        "--transitions",
+        "transitions.csv",
+        "--checkpoint",
+        "checkpoint.pt",
+    ]
 
 
-@pytest.mark.parametrize(
-    ("parser_factory", "base_args", "default_top_k"),
-    [
-        (run_mcts.build_parser, ["raw"], 30),
-        (run_mcts_episode.build_parser, ["raw"], 40),
-        (
-            analyze_mcts_root_branches.build_parser,
-            ["raw", "--checkpoint", "checkpoint.pt"],
-            30,
-        ),
-        (
-            evaluation_cli.build_parser,
-            [
-                "raw",
-                "--transitions",
-                "transitions.csv",
-                "--checkpoint",
-                "checkpoint.pt",
-            ],
-            30,
-        ),
-    ],
-)
-def test_mcts_clis_expose_progressive_widening_defaults(
-    parser_factory: ParserFactory,
-    base_args: list[str],
-    default_top_k: int,
-) -> None:
-    parser = parser_factory()
-    args = parser.parse_args(base_args)
+def test_evaluation_cli_exposes_progressive_widening_defaults() -> None:
+    parser = evaluation_cli.build_parser()
+    args = parser.parse_args(_base_args())
 
-    assert args.top_k == default_top_k
+    assert args.top_k == 30
     assert args.widening_coefficient == pytest.approx(2.0)
     assert args.widening_exponent == pytest.approx(0.5)
     assert args.exploration_quota == 2
@@ -59,34 +35,10 @@ def test_mcts_clis_expose_progressive_widening_defaults(
     assert "--exploration-quota" in help_text
 
 
-@pytest.mark.parametrize(
-    ("parser_factory", "base_args"),
-    [
-        (run_mcts.build_parser, ["raw"]),
-        (run_mcts_episode.build_parser, ["raw"]),
-        (
-            analyze_mcts_root_branches.build_parser,
-            ["raw", "--checkpoint", "checkpoint.pt"],
-        ),
-        (
-            evaluation_cli.build_parser,
-            [
-                "raw",
-                "--transitions",
-                "transitions.csv",
-                "--checkpoint",
-                "checkpoint.pt",
-            ],
-        ),
-    ],
-)
-def test_mcts_clis_parse_action_width_overrides(
-    parser_factory: ParserFactory,
-    base_args: list[str],
-) -> None:
-    args = parser_factory().parse_args(
+def test_evaluation_cli_parses_action_width_overrides() -> None:
+    args = evaluation_cli.build_parser().parse_args(
         [
-            *base_args,
+            *_base_args(),
             "--top-k",
             "11",
             "--widening-coefficient",

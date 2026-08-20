@@ -10,7 +10,6 @@ from grid_topology_ai.config import TrainingConfig
 from grid_topology_ai.models.graph_self_play_dataset import (
     GraphSelfPlayDataset,
 )
-from grid_topology_ai.training import checkpoint_candidates
 from grid_topology_ai.training import graph_policy_value as training_api
 from grid_topology_ai.training.graph_policy_value import TrainingRequest
 
@@ -36,7 +35,7 @@ def test_candidate_tracker_saves_only_improving_objectives(
 ) -> None:
     saved: list[dict[str, Any]] = []
     monkeypatch.setattr(
-        checkpoint_candidates,
+        training_api,
         "_save_candidate",
         lambda **kwargs: saved.append(kwargs),
     )
@@ -44,11 +43,11 @@ def test_candidate_tracker_saves_only_improving_objectives(
     model = torch.nn.Linear(1, 1)
     device = torch.device("cpu")
 
-    with checkpoint_candidates.checkpoint_candidate_tracking(
+    with training_api.checkpoint_candidate_tracking(
         _request(tmp_path)
     ):
-        checkpoint_candidates.register_training_dataset(dataset)
-        checkpoint_candidates.record_validation_candidates(
+        training_api.register_training_dataset(dataset)
+        training_api.record_validation_candidates(
             model=model,
             validation_dataset=dataset,
             metrics={
@@ -59,7 +58,7 @@ def test_candidate_tracker_saves_only_improving_objectives(
             device=device,
             use_amp=False,
         )
-        checkpoint_candidates.record_validation_candidates(
+        training_api.record_validation_candidates(
             model=model,
             validation_dataset=dataset,
             metrics={
@@ -92,17 +91,17 @@ def test_candidate_tracker_is_disabled_without_multiple_best(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        checkpoint_candidates,
+        training_api,
         "_save_candidate",
         lambda **kwargs: pytest.fail("candidate should not be saved"),
     )
     dataset = cast(GraphSelfPlayDataset, object())
 
-    with checkpoint_candidates.checkpoint_candidate_tracking(
+    with training_api.checkpoint_candidate_tracking(
         _request(tmp_path, save_multiple_best=False)
     ):
-        checkpoint_candidates.register_training_dataset(dataset)
-        checkpoint_candidates.record_validation_candidates(
+        training_api.register_training_dataset(dataset)
+        training_api.record_validation_candidates(
             model=torch.nn.Linear(1, 1),
             validation_dataset=dataset,
             metrics={

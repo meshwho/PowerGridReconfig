@@ -12,13 +12,13 @@ from grid_topology_ai.contracts import (
     OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
     physics_provenance,
 )
-from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
+from grid_topology_ai.physics.objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
 from grid_topology_ai.self_play.example_validation import (
     REQUIRED_OUTCOME_COLUMNS,
     load_and_validate_examples_csv,
     validate_example_outcome_contracts,
 )
-from grid_topology_ai.state_schema import BUS_FEATURE_COLUMNS
+from grid_topology_ai.state.schema import BUS_FEATURE_COLUMNS
 
 
 def write_state(path: Path, **overrides: object) -> Path:

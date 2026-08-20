@@ -11,11 +11,15 @@ from grid_topology_ai.config.checkpoint_selection import (
     CheckpointSelectionConfig,
 )
 from grid_topology_ai.config.physics import DEFAULT_PHYSICS_CONFIG
-from grid_topology_ai.self_play import (
-    checkpoint_arena,
-    checkpoint_provenance,
-    stages,
-)
+from grid_topology_ai.self_play import checkpoints, stages
+
+
+def test_checkpoint_modules_are_consolidated() -> None:
+    root = Path("grid_topology_ai/self_play")
+    assert (root / "checkpoints.py").is_file()
+    assert not (root / "checkpoint_arena.py").exists()
+    assert not (root / "checkpoint_state.py").exists()
+    assert not (root / "checkpoint_provenance.py").exists()
 
 
 @pytest.mark.parametrize(
@@ -69,7 +73,7 @@ def test_tuning_arena_rejects_scenario_id_overlap(
     )
 
     with pytest.raises(ValueError, match="scenario-ID leakage"):
-        checkpoint_arena._validate_tuning_independence(
+        checkpoints._validate_tuning_independence(
             tuning_csv=tuning,
             excluded_csvs={
                 "self-play pool": pool,
@@ -95,28 +99,21 @@ def test_enabled_arena_rejects_training_request_without_candidates(
     )
     training_started = False
 
-    def fake_train(
-        *,
-        project_root,
-        examples_csv,
-        validation_examples_csv,
-        init_checkpoint,
-        output_dir,
-        config,
-        physics_config,
-        iteration,
-        seed,
-    ) -> Path:
+    def fake_train(_request) -> Path:
         nonlocal training_started
         training_started = True
-        return Path(output_dir) / "candidate_checkpoint.pt"
+        return output_dir / "candidate_checkpoint.pt"
 
     monkeypatch.setattr(
         stages,
         "_resolved_self_play_config",
         lambda path: self_play_config,
     )
-    monkeypatch.setattr(stages._base, "run_train", fake_train)
+    monkeypatch.setattr(
+        stages,
+        "train_graph_policy_value_model",
+        fake_train,
+    )
 
     with pytest.raises(
         RuntimeError,
@@ -150,4 +147,4 @@ def test_metadata_checkpoint_selection_flag_requires_boolean() -> None:
         ValueError,
         match="enabled must be a boolean",
     ):
-        checkpoint_provenance._checkpoint_selection_required(metadata)
+        checkpoints._checkpoint_selection_required(metadata)

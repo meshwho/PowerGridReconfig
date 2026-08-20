@@ -11,8 +11,8 @@ from grid_topology_ai.data_adapter import (
     BUS_FEATURE_COLUMNS,
     GridFMAdapter,
 )
-from grid_topology_ai.power_flow_errors import InvalidPhysicalState
-from grid_topology_ai.state_topology import validate_state_topology
+from grid_topology_ai.power_flow.errors import InvalidPhysicalState
+from grid_topology_ai.state.topology import validate_state_topology
 
 
 SCENARIO_ID = 4

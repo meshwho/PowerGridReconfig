@@ -10,7 +10,7 @@ import pandas as pd
 import pytest
 import torch
 
-from grid_topology_ai.state_schema import (
+from grid_topology_ai.state.schema import (
     BRANCH_FEATURE_COLUMNS,
     BUS_FEATURE_COLUMNS,
     state_feature_schema_provenance,

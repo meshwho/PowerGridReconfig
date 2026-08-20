@@ -19,12 +19,26 @@ from grid_topology_ai.topology_actions import (
     ActionSpaceConfig,
     build_branch_action_slots,
 )
-from scripts.self_play import generate_impact_teacher_parallel_fast as teacher
-from scripts.self_play.generate_impact_teacher_provenance import (
-    _search_workload,
-    load_scenario_checkpoints,
-)
+from scripts.self_play import generate_impact_teacher_redispatch_runtime as teacher
 from tests.outcome_evidence_helpers import terminal_evidence
+
+
+def _selection_fields() -> dict[str, object]:
+    return {
+        "teacher_selection_mode": "redispatch_aware_epsilon_minimum_switch",
+        "relative_physical_epsilon": 0.01,
+        "teacher_best_physical_safety": 35.5,
+        "teacher_selected_safety": 36.0,
+        "teacher_selected_switch_count": 3,
+        "teacher_retained_improvement_fraction": 0.995,
+        "teacher_pareto_front_size": 5,
+        "terminal_redispatch_relative_epsilon": 0.01,
+        "terminal_redispatch_absolute_epsilon_mw": 1.0,
+        "min_meaningful_safety_improvement": 1.0,
+        "teacher_terminal_selection_applied": False,
+        "teacher_terminal_candidate_count": 0,
+        "teacher_terminal_pareto_front_size": 0,
+    }
 
 
 def _current_row(scenario_id: int = 4) -> dict[str, object]:
@@ -59,13 +73,7 @@ def _current_row(scenario_id: int = 4) -> dict[str, object]:
         "redispatch_attempted": False,
         "redispatch_opf_success": False,
         "redispatch_validated": False,
-        "teacher_selection_mode": "epsilon_optimal_minimum_switch",
-        "relative_physical_epsilon": 0.01,
-        "teacher_best_physical_safety": 35.5,
-        "teacher_selected_safety": 36.0,
-        "teacher_selected_switch_count": 3,
-        "teacher_retained_improvement_fraction": 0.995,
-        "teacher_pareto_front_size": 5,
+        **_selection_fields(),
     }
 
 
@@ -118,7 +126,7 @@ def test_retryable_and_stale_checkpoints_are_not_restored(tmp_path) -> None:
         encoding="utf-8",
     )
 
-    restored = load_scenario_checkpoints(
+    restored = teacher.load_scenario_checkpoints(
         checkpoint_path=checkpoint_path,
         allowed_scenario_ids=[1, 2, 3, 4, 5],
     )
@@ -130,39 +138,44 @@ def test_retryable_and_stale_checkpoints_are_not_restored(tmp_path) -> None:
     assert 5 not in restored
 
 
-def test_teacher_workload_reports_cache_reuse_modes() -> None:
-    workload = _search_workload(
+def test_teacher_workload_uses_current_exact_cache_counters() -> None:
+    workload = teacher._search_workload(
         before={
             "hits": 10,
             "misses": 20,
-            "exact_cache_hits": 7,
-            "tolerant_cache_hits": 3,
-            "warm_start_hits": 8,
-            "cold_start_misses": 12,
-            "stock_runpf_calls": 60,
-            "q_limit_resolves": 40,
+            "l1_hits": 6,
+            "l1_misses": 24,
+            "l2_hits": 4,
+            "l2_misses": 20,
+            "negative_hits": 1,
+            "evictions": 2,
+            "l2_enabled": True,
+            "stock_runpf_calls": 30,
+            "q_limit_resolves": 4,
         },
         after={
-            "hits": 19,
-            "misses": 31,
-            "exact_cache_hits": 13,
-            "tolerant_cache_hits": 6,
-            "warm_start_hits": 15,
-            "cold_start_misses": 16,
-            "stock_runpf_calls": 95,
-            "q_limit_resolves": 64,
+            "hits": 18,
+            "misses": 25,
+            "l1_hits": 12,
+            "l1_misses": 31,
+            "l2_hits": 6,
+            "l2_misses": 25,
+            "negative_hits": 2,
+            "evictions": 5,
+            "l2_enabled": True,
+            "stock_runpf_calls": 37,
+            "q_limit_resolves": 6,
         },
-        logical_evaluations=20,
+        logical_evaluations=15,
     )
 
-    assert workload["cache_hits"] == 9
-    assert workload["cache_misses"] == 11
-    assert workload["exact_cache_hits"] == 6
-    assert workload["tolerant_cache_hits"] == 3
-    assert workload["warm_start_hits"] == 7
-    assert workload["cold_start_misses"] == 4
-    assert workload["cache_hit_rate"] == 9 / 20
-    assert workload["warm_start_rate"] == 7 / 11
-    assert workload["stock_runpf_calls"] == 35
-    assert workload["q_limit_resolves"] == 24
-    assert workload["solves_per_cache_miss"] == 35 / 11
+    assert workload["cache_hits"] == 8
+    assert workload["cache_misses"] == 5
+    assert workload["l1_hits"] == 6
+    assert workload["l2_hits"] == 2
+    assert workload["negative_hits"] == 1
+    assert workload["stock_runpf_calls"] == 7
+    assert workload["q_limit_resolves"] == 2
+    assert workload["solves_per_cache_miss"] == 7 / 5
+    assert "tolerant_cache_hits" not in workload
+    assert "cold_start_misses" not in workload

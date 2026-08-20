@@ -10,7 +10,7 @@ from grid_topology_ai.contracts import (
     OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
     REPLAY_BUFFER_SCHEMA_VERSION,
 )
-from grid_topology_ai.physical_objective import (
+from grid_topology_ai.physics.objective import (
     PHYSICAL_OBJECTIVE_SCHEMA_VERSION,
 )
 from grid_topology_ai.return_contract import TERMINAL_UTILITY_GAMMA
@@ -163,7 +163,7 @@ def test_neural_value_outside_terminal_utility_range_is_rejected() -> None:
     )
     node = _node()
     node.env.current_state = object()
-    node.env.valid_action_mask = lambda: [True]
+    node.env.operational_action_mask = lambda: [True]
 
     with pytest.raises(ValueError, match=r"\[-1, 1\]"):
         planner._leaf_value(node)

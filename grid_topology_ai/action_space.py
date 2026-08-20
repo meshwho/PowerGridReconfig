@@ -272,9 +272,6 @@ class GridFMActionSpace:
 
         return mask
 
-    def valid_action_mask(self, state: GridFMState) -> np.ndarray:
-        return self.operational_action_mask(state)
-
     def valid_actions(self, state: GridFMState) -> list[GridFMAction]:
         actions = self.build_all_actions(state)
         mask = self.operational_action_mask(state)

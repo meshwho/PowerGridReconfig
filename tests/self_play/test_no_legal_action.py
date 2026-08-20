@@ -15,7 +15,7 @@ from grid_topology_ai.outcome_contract import (
     RedispatchStatus,
     TerminalOutcomeEvidence,
 )
-from grid_topology_ai.pypower_backend import GridFMPowerFlowResult
+from grid_topology_ai.power_flow.backend import GridFMPowerFlowResult
 from grid_topology_ai.return_contract import (
     VALUE_TARGET_MODE,
     terminal_utility_from_outcome,
@@ -255,7 +255,7 @@ class _GenerationEnv:
     def reset(self, scenario_id: int) -> None:
         pass
 
-    def valid_action_mask(self) -> list[bool]:
+    def operational_action_mask(self) -> list[bool]:
         return [True, True]
 
     def step(self, action: object) -> SimpleNamespace:

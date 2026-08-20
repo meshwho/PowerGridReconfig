@@ -34,13 +34,13 @@ from grid_topology_ai.data_adapter import (
     BUS_FEATURE_COLUMNS,
     GridFMState,
 )
-from grid_topology_ai.physical_constraints import (
+from grid_topology_ai.physics.constraints import (
     validate_ppc_input,
     validate_pypower_result,
 )
-from grid_topology_ai.power_flow_errors import InvalidPhysicalState
-from grid_topology_ai.power_flow_problem import CanonicalPowerFlowProblem
-from grid_topology_ai.pypower_backend import GridFMPowerFlowBackend
+from grid_topology_ai.power_flow.errors import InvalidPhysicalState
+from grid_topology_ai.power_flow.problem import CanonicalPowerFlowProblem
+from grid_topology_ai.power_flow.backend import GridFMPowerFlowBackend
 
 
 def _valid_ppc() -> dict[str, object]:

@@ -7,7 +7,7 @@ import pytest
 
 from grid_topology_ai.config.physics import PhysicsConfig
 from grid_topology_ai.data_adapter import BRANCH_FEATURE_COLUMNS, GridFMState
-from grid_topology_ai.grid_utility import (
+from grid_topology_ai.physics.utility import (
     CONTINUATION_GRID_UTILITY_WEIGHTS,
     CONTINUATION_SWITCH_PENALTY,
     GridUtilityWeights,
@@ -97,11 +97,10 @@ def test_reward_uses_the_default_grid_utility() -> None:
         max_loading=130.0,
     )
     canonical = state_security_penalty(state, physics_config=physics)
+    reward = GridFMReward(physics_config=physics)
 
     assert canonical == pytest.approx(140.0)
-    assert GridFMReward(physics_config=physics)._state_penalty(state) == pytest.approx(
-        canonical
-    )
+    assert reward._utility_breakdown(state).penalty == pytest.approx(canonical)
 
 
 def test_potential_shaping_uses_exact_discounted_difference() -> None:

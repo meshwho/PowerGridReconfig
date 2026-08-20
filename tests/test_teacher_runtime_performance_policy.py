@@ -22,6 +22,18 @@ def _runtime_source() -> str:
     return RUNTIME_PATH.read_text(encoding="utf-8")
 
 
+def _function_node(source: str, name: str) -> ast.FunctionDef:
+    tree = ast.parse(source)
+    matches = [
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == name
+    ]
+    if not matches:
+        raise AssertionError(f"Function {name!r} was not found.")
+    return matches[-1]
+
+
 def test_native_thread_defaults_are_applied_before_numeric_stack_imports() -> None:
     source = _runtime_source()
     ast.parse(source)
@@ -47,22 +59,45 @@ def test_native_thread_defaults_are_applied_before_numeric_stack_imports() -> No
 
 def test_persistent_l2_is_explicit_opt_in_in_production_runtime() -> None:
     source = _runtime_source()
+    configure = _function_node(
+        source,
+        "_configure_persistent_exact_cache",
+    )
 
     assert '"POWERGRID_ENABLE_PERSISTENT_EXACT_CACHE"' in source
     assert "if not _persistent_cache_requested():" in source
-    assert "os.environ.pop(PERSISTENT_EXACT_CACHE_DIR_ENV, None)" in source
+
+    pop_calls = [
+        node
+        for node in ast.walk(configure)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "pop"
+        and isinstance(node.func.value, ast.Attribute)
+        and node.func.value.attr == "environ"
+        and isinstance(node.func.value.value, ast.Name)
+        and node.func.value.value.id == "os"
+    ]
+    assert any(
+        len(call.args) >= 2
+        and isinstance(call.args[0], ast.Name)
+        and call.args[0].id == "PERSISTENT_EXACT_CACHE_DIR_ENV"
+        and isinstance(call.args[1], ast.Constant)
+        and call.args[1].value is None
+        for call in pop_calls
+    )
+
     assert "Persistent exact PF cache:  disabled" in source
     assert "opt-in with" in source
 
 
-def test_runtime_installs_exact_cache_telemetry() -> None:
+def test_runtime_uses_exact_cache_telemetry_directly() -> None:
     source = _runtime_source()
 
-    assert "base._search_workload = exact_power_flow_workload" in source
-    assert (
-        "base._print_power_flow_workload_summary = "
-        "_print_power_flow_workload_summary"
-    ) in source
+    assert "return exact_power_flow_workload(" in source
+    assert "print_exact_power_flow_workload_summary(" in source
+    assert "base._search_workload" not in source
+    assert "base._print_power_flow_workload_summary" not in source
 
 
 def test_exact_workload_uses_current_l1_l2_counters_only() -> None:

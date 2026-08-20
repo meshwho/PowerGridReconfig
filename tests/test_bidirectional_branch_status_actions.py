@@ -2,16 +2,13 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from grid_topology_ai._pypower_backend_core import (
-    GridFMPowerFlowBackend as CoreGridFMPowerFlowBackend,
-)
 from grid_topology_ai.action_space import GridFMActionSpace
 from grid_topology_ai.data_adapter import (
     BRANCH_FEATURE_COLUMNS,
     BUS_FEATURE_COLUMNS,
     GridFMState,
 )
-from grid_topology_ai.pypower_backend import GridFMPowerFlowBackend
+from grid_topology_ai.power_flow.backend import GridFMPowerFlowBackend
 from grid_topology_ai.topology_actions import GridFMAction
 
 
@@ -172,32 +169,6 @@ def test_backend_resolves_bidirectional_branch_status_actions():
     ) == (20, 1)
     assert backend._resolve_branch_status_action(
         action=open_action,
-        switched_off_branch_id=None,
-    ) == (10, 0)
-
-
-def test_core_backend_resolves_actions_and_legacy_switched_off_ids():
-    backend = CoreGridFMPowerFlowBackend(
-        adapter=object(),  # type: ignore[arg-type]
-        enable_cache=False,
-    )
-
-    assert backend._resolve_branch_status_action(
-        action=GridFMAction(
-            action_id=2,
-            action_type="switch_on_branch",
-            branch_id=20,
-            branch_pos=1,
-        ),
-        switched_off_branch_id=None,
-    ) == (20, 1)
-    assert backend._resolve_branch_status_action(
-        action=GridFMAction(
-            action_id=1,
-            action_type="switch_off_branch",
-            branch_id=10,
-            branch_pos=0,
-        ),
         switched_off_branch_id=None,
     ) == (10, 0)
     assert backend._resolve_branch_status_action(

@@ -4,7 +4,7 @@ import pytest
 from grid_topology_ai.action_space import GridFMAction
 from grid_topology_ai.data_adapter import BRANCH_FEATURE_COLUMNS, GridFMState
 from grid_topology_ai.environment import TopologySwitchingEnv
-from grid_topology_ai.pypower_backend import GridFMPowerFlowResult
+from grid_topology_ai.power_flow.backend import GridFMPowerFlowResult
 from grid_topology_ai.reward import GridFMRewardBreakdown
 from grid_topology_ai.termination import TerminationReason
 
@@ -113,7 +113,7 @@ class FakeActionSpace:
             ),
         ]
 
-    def valid_action_mask(self, state):
+    def operational_action_mask(self, state):
         return np.array([True, True], dtype=bool)
 
     def valid_actions(self, state):
@@ -128,7 +128,6 @@ class FakeReward:
         self,
         before_state,
         after_state,
-        action_is_switching,
         power_flow_success,
     ):
         if not power_flow_success:

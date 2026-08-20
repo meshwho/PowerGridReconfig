@@ -8,7 +8,7 @@ import numpy as np
 from grid_topology_ai.cache import LODFStructureCache
 from grid_topology_ai.config.physics import PhysicsConfig
 from grid_topology_ai.data_adapter import BRANCH_FEATURE_COLUMNS
-from grid_topology_ai.lodf import (
+from grid_topology_ai.physics.lodf import (
     build_lodf_structure,
     lodf_loading_safety_score,
     rank_actions_with_lodf_structure,
@@ -199,21 +199,21 @@ def test_cached_structure_does_not_cache_dynamic_flow_or_rating() -> None:
 
 def test_lodf_cache_and_math_stay_in_separate_modules() -> None:
     root = Path(__file__).resolve().parents[1]
-    math_source = (root / "grid_topology_ai" / "lodf.py").read_text(
+    math_source = (root / "grid_topology_ai" / "physics" / "lodf.py").read_text(
         encoding="utf-8"
     )
     cache_source = (
         root / "grid_topology_ai" / "cache" / "lodf_structure.py"
     ).read_text(encoding="utf-8")
-    staged_source = (
+    runtime_source = (
         root
         / "scripts"
         / "self_play"
-        / "generate_impact_teacher_redispatch_staged.py"
+        / "generate_impact_teacher_redispatch_runtime.py"
     ).read_text(encoding="utf-8")
 
     assert "ByteLRUCache" not in math_source
     assert "cache_info" not in math_source
-    assert "from grid_topology_ai.lodf import" in cache_source
-    assert "rank_actions_by_lodf_screening = (" in staged_source
-    assert "_RUNTIME_LODF_STRUCTURE_CACHE" in staged_source
+    assert "from grid_topology_ai.physics.lodf import" in cache_source
+    assert "def rank_actions_by_lodf_screening(" in runtime_source
+    assert "_RUNTIME_LODF_STRUCTURE_CACHE" in runtime_source

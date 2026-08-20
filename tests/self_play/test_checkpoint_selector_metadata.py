@@ -1,19 +1,58 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import MagicMock
 
+import numpy as np
+import pandas as pd
 import pytest
 import torch
 
 from grid_topology_ai.config import TrainingConfig
+from grid_topology_ai.config.physics import DEFAULT_PHYSICS_CONFIG
 from grid_topology_ai.training.checkpoints import make_checkpoint, save_checkpoint_now
 from grid_topology_ai.training.graph_policy_value import TrainingRequest
-from tests.self_play.test_training_api import _FakeDataset, _FakeModel
+from tests.topology_contract_helpers import fake_dataset_topology_fields
+
+
+class _Model(torch.nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.weight = torch.nn.Parameter(torch.tensor(1.0))
+
+
+def _dataset(tmp_path: Path) -> MagicMock:
+    dataset = MagicMock()
+    dataset.__len__.return_value = 1
+    dataset.examples_csv = tmp_path / "examples.csv"
+    dataset.examples = pd.DataFrame(
+        {
+            "state_path": ["state.npz"],
+            "scenario_id": [1],
+            "outcome_value_target": [0.0],
+        }
+    )
+    dataset.physics_config = DEFAULT_PHYSICS_CONFIG
+    dataset.num_bus_features = 1
+    dataset.num_branch_features = 1
+    dataset.num_branches = 1
+    for name, value in fake_dataset_topology_fields(1).items():
+        setattr(dataset, name, value)
+    dataset.normalization_state_dict.return_value = {
+        "bus_feature_mean": np.array([1.0], dtype=np.float32),
+        "bus_feature_std": np.array([2.0], dtype=np.float32),
+        "branch_feature_mean": np.array([3.0], dtype=np.float32),
+        "branch_feature_std": np.array([4.0], dtype=np.float32),
+    }
+    return dataset
 
 
 def _request(tmp_path: Path) -> TrainingRequest:
     examples_csv = tmp_path / "examples.csv"
-    examples_csv.write_text("scenario_id,state_path,outcome_value_target\n1,state.npz,0\n")
+    examples_csv.write_text(
+        "scenario_id,state_path,outcome_value_target\n1,state.npz,0\n",
+        encoding="utf-8",
+    )
     return TrainingRequest(
         project_root=tmp_path,
         examples_csv=examples_csv,
@@ -39,8 +78,8 @@ def test_checkpoint_variant_records_exact_selector_metric(
     expected_metric: str,
 ) -> None:
     path = tmp_path / f"{selector_name}.pt"
-    dataset = _FakeDataset(examples_csv=tmp_path / "examples.csv", normalize_features=True)
-    model = _FakeModel()
+    dataset = _dataset(tmp_path)
+    model = _Model()
 
     save_checkpoint_now(
         path=path,
@@ -64,8 +103,8 @@ def test_checkpoint_variant_records_exact_selector_metric(
 
 
 def test_unknown_checkpoint_selector_is_rejected(tmp_path: Path) -> None:
-    dataset = _FakeDataset(examples_csv=tmp_path / "examples.csv", normalize_features=True)
-    model = _FakeModel()
+    dataset = _dataset(tmp_path)
+    model = _Model()
 
     with pytest.raises(ValueError, match="Unknown checkpoint selector"):
         save_checkpoint_now(
@@ -84,8 +123,8 @@ def test_unknown_checkpoint_selector_is_rejected(tmp_path: Path) -> None:
 
 
 def test_make_checkpoint_model_state_dict_is_parameter_snapshot(tmp_path: Path) -> None:
-    dataset = _FakeDataset(examples_csv=tmp_path / "examples.csv", normalize_features=True)
-    model = _FakeModel()
+    dataset = _dataset(tmp_path)
+    model = _Model()
     with torch.no_grad():
         model.weight.fill_(2.0)
 

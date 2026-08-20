@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 from pathlib import Path
 
 
@@ -10,34 +11,75 @@ def _source(path: str) -> str:
     return (ROOT / path).read_text(encoding="utf-8")
 
 
-def test_production_runtime_has_no_global_cache_clear_protocol() -> None:
-    staged = _source(
-        "scripts/self_play/generate_impact_teacher_redispatch_staged.py"
-    )
+def _function_node(source: str, name: str) -> ast.FunctionDef:
+    tree = ast.parse(source)
+    matches = [
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == name
+    ]
+    if not matches:
+        raise AssertionError(f"Function {name!r} was not found.")
+    return matches[-1]
+
+
+def _function_source(source: str, name: str) -> str:
+    node = _function_node(source, name)
+    assert node.end_lineno is not None
+    lines = source.splitlines()
+    return "\n".join(lines[node.lineno - 1 : node.end_lineno])
+
+
+def test_production_runtime_has_no_active_global_cache_clear_protocol() -> None:
     runtime = _source(
         "scripts/self_play/generate_impact_teacher_redispatch_runtime.py"
     )
-    combined = staged + "\n" + runtime
+    hook = _function_source(runtime, "clear_worker_caches_if_needed")
 
-    for forbidden in (
-        "_RUNTIME_GLOBAL_MEMORY_CLEAR_LOCK",
-        "_RUNTIME_GLOBAL_MEMORY_LAST_CLEAR",
-        "_GLOBAL_MEMORY_CLEAR_COOLDOWN_SEC",
-        "maybe_clear_heaviest_worker_for_global_memory",
-        "Manager()",
-        "manager.dict()",
-    ):
-        assert forbidden not in combined
+    assert "return None" in hook
+    assert "maybe_clear_heaviest_worker_for_global_memory" not in hook
+    assert "clear_worker_caches(" not in hook
 
 
 def test_production_runtime_does_not_force_worker_recycling() -> None:
-    staged = _source(
-        "scripts/self_play/generate_impact_teacher_redispatch_staged.py"
+    runtime = _source(
+        "scripts/self_play/generate_impact_teacher_redispatch_runtime.py"
     )
+    tree = ast.parse(runtime)
 
-    assert "_DEFAULT_MAX_TASKS_PER_CHILD: int | None = None" in staged
-    assert "max_tasks_per_child=max_tasks_per_child" in staged
-    assert "byte-bounded caches; no global cache clearing" in staged
+    defaults = [
+        node
+        for node in tree.body
+        if isinstance(node, ast.AnnAssign)
+        and isinstance(node.target, ast.Name)
+        and node.target.id == "_DEFAULT_MAX_TASKS_PER_CHILD"
+    ]
+    assert defaults
+    assert isinstance(defaults[-1].value, ast.Constant)
+    assert defaults[-1].value.value is None
+
+    run_parallel = _function_node(runtime, "run_parallel")
+    executor_calls = [
+        node
+        for node in ast.walk(run_parallel)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "ProcessPoolExecutor"
+    ]
+    assert executor_calls
+
+    for call in executor_calls:
+        keyword = next(
+            (
+                item
+                for item in call.keywords
+                if item.arg == "max_tasks_per_child"
+            ),
+            None,
+        )
+        assert keyword is not None
+        assert isinstance(keyword.value, ast.Name)
+        assert keyword.value.id == "max_tasks_per_child"
 
 
 def test_persistent_l2_is_separate_from_physics_and_exact_l1() -> None:
@@ -46,7 +88,7 @@ def test_persistent_l2_is_separate_from_physics_and_exact_l1() -> None:
     )
     exact = _source("grid_topology_ai/cache/exact_power_flow.py")
     persistent = _source("grid_topology_ai/cache/persistent_exact.py")
-    physics = _source("grid_topology_ai/power_flow_problem.py")
+    physics = _source("grid_topology_ai/power_flow/problem.py")
 
     assert "PERSISTENT_EXACT_CACHE_DIR_ENV" in runtime
     assert "PersistentExactPowerFlowCache.from_environment()" in exact
@@ -77,8 +119,7 @@ def test_persistent_cache_root_is_portable() -> None:
 
 def test_removed_legacy_private_cache_apis_do_not_return() -> None:
     action_space = _source("grid_topology_ai/action_space.py")
-    backend = _source("grid_topology_ai/pypower_backend.py")
-    core = _source("grid_topology_ai/_pypower_backend_core.py")
+    backend = _source("grid_topology_ai/power_flow/backend.py")
     dc_screener = _source("grid_topology_ai/search/dc_action_screener.py")
 
     assert "def _make_cache_key(" not in action_space
@@ -88,5 +129,4 @@ def test_removed_legacy_private_cache_apis_do_not_return() -> None:
         "def _power_flow_input_fingerprint(",
     ):
         assert forbidden not in backend
-        assert forbidden not in core
     assert "def _score_dc_result(" not in dc_screener

@@ -145,6 +145,24 @@ def _adapt_generation_fakes(
                     compatible_init,
                 )
 
+        env_cls = generation.TopologySwitchingEnv
+        if env_cls is not None and not hasattr(
+            env_cls,
+            "operational_action_mask",
+        ):
+            valid_action_mask = getattr(
+                env_cls,
+                "valid_action_mask",
+                None,
+            )
+            if valid_action_mask is not None:
+                monkeypatch.setattr(
+                    env_cls,
+                    "operational_action_mask",
+                    valid_action_mask,
+                    raising=False,
+                )
+
         return original_generate(generation_request)
 
     monkeypatch.setattr(

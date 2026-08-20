@@ -4,7 +4,7 @@ import math
 
 import pytest
 
-from grid_topology_ai.self_play.physical_lineage import (
+from grid_topology_ai.self_play.provenance import (
     PHYSICAL_LINEAGE_FINGERPRINT_FIELD,
     PhysicalLineage,
     load_physical_lineages,

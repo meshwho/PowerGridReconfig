@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from grid_topology_ai.config import SelfPlayConfig
-from grid_topology_ai.self_play import dataset_isolation as isolation_module
+from grid_topology_ai.self_play import physical_split as isolation_module
 from grid_topology_ai.self_play.paths import SelfPlayPaths
 from grid_topology_ai.self_play.physical_lineage import PhysicalLineage
 from grid_topology_ai.self_play.preflight import (

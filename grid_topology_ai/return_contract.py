@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import math
-from numbers import Integral, Real
+from numbers import Real
 
 from grid_topology_ai.config.physics import PhysicsConfig
 from grid_topology_ai.data_adapter import GridFMState
-from grid_topology_ai.grid_utility import (
+from grid_topology_ai.physics.utility import (
     DEFAULT_STATE_UTILITY_SCALE,
     state_utility,
 )
@@ -110,30 +110,6 @@ def terminal_utility_from_outcome(
         )
 
     return -1.0, "unsolved_terminal" if reason is None else reason.value
-
-
-def discounted_terminal_utility(
-    terminal_utility: object,
-    *,
-    steps_to_terminal: object,
-    gamma: object,
-) -> float:
-    """Discount terminal utility over an exact number of transitions."""
-    utility = require_bounded_utility(
-        terminal_utility,
-        context="terminal_utility",
-    )
-    if (
-        isinstance(steps_to_terminal, bool)
-        or not isinstance(steps_to_terminal, Integral)
-        or int(steps_to_terminal) < 0
-    ):
-        raise ValueError(
-            "steps_to_terminal must be a non-negative integer, "
-            f"got {steps_to_terminal!r}"
-        )
-    discount = require_reward_discount_factor(gamma)
-    return float(utility * discount ** int(steps_to_terminal))
 
 
 def heuristic_terminal_utility_estimate(

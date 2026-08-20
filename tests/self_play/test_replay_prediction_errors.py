@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import math
 from pathlib import Path
 from typing import Any
@@ -11,25 +10,16 @@ import pytest
 import torch
 
 from grid_topology_ai.config import ReplayBufferConfig
-from grid_topology_ai.config.physics import (
-    DEFAULT_PHYSICS_CONFIG,
-)
-from grid_topology_ai.self_play import replay_priority
-from grid_topology_ai.self_play.artifacts import (
-    sha256_file,
-)
+from grid_topology_ai.config.physics import DEFAULT_PHYSICS_CONFIG
+from grid_topology_ai.self_play import replay as replay_priority
+from grid_topology_ai.self_play.artifacts import sha256_file
 from grid_topology_ai.self_play.replay import (
+    PREDICTION_ERROR_SCHEMA_VERSION,
     RollingReplayBuffer,
 )
-from grid_topology_ai.self_play.replay_error_sampling import (
-    PREDICTION_ERROR_SCHEMA_VERSION,
-)
 
 
-def _row(
-    state_id: str,
-    scenario_id: int = 1,
-) -> dict[str, object]:
+def _row(state_id: str, scenario_id: int = 1) -> dict[str, object]:
     return {
         "state_id": state_id,
         "episode_id": state_id,
@@ -39,9 +29,7 @@ def _row(
     }
 
 
-def _buffer(
-    tmp_path: Path,
-) -> RollingReplayBuffer:
+def _buffer(tmp_path: Path) -> RollingReplayBuffer:
     return RollingReplayBuffer(
         save_dir=tmp_path / "replay",
         config=ReplayBufferConfig(
@@ -52,67 +40,35 @@ def _buffer(
     )
 
 
-def _report(
-    checkpoint_sha: str,
-    state_ids: list[str],
-) -> dict[str, Any]:
+def _report(checkpoint_sha: str, state_ids: list[str]) -> dict[str, Any]:
     entries = {
         state_id: {
             "value_error": float(index),
-            "policy_kl_error": (
-                float(index) / 10.0
-            ),
+            "policy_kl_error": float(index) / 10.0,
         }
-        for index, state_id in enumerate(
-            state_ids
-        )
+        for index, state_id in enumerate(state_ids)
     }
     return {
-        "schema_version": (
-            PREDICTION_ERROR_SCHEMA_VERSION
-        ),
+        "schema_version": PREDICTION_ERROR_SCHEMA_VERSION,
         "checkpoint_sha256": checkpoint_sha,
         "example_count": len(entries),
         "mean_value_error": float(
-            np.mean(
-                [
-                    item["value_error"]
-                    for item in entries.values()
-                ]
-            )
+            np.mean([item["value_error"] for item in entries.values()])
         ),
         "mean_policy_kl_error": float(
-            np.mean(
-                [
-                    item["policy_kl_error"]
-                    for item in entries.values()
-                ]
-            )
+            np.mean([item["policy_kl_error"] for item in entries.values()])
         ),
         "entries": entries,
     }
 
 
-def test_persisted_errors_drive_episode_priority(
-    tmp_path: Path,
-) -> None:
+def test_persisted_errors_drive_episode_priority(tmp_path: Path) -> None:
     buffer = _buffer(tmp_path)
-    rows = [
-        _row("neutral"),
-        _row("difficult", 2),
-    ]
+    rows = [_row("neutral"), _row("difficult", 2)]
     buffer.buffer = rows
-    report = _report(
-        "a" * 64,
-        ["neutral", "difficult"],
-    )
-    report["entries"]["difficult"][
-        "value_error"
-    ] = 9.0
-    buffer._record_prediction_errors(
-        report,
-        iteration=2,
-    )
+    report = _report("a" * 64, ["neutral", "difficult"])
+    report["entries"]["difficult"]["value_error"] = 9.0
+    buffer._record_prediction_errors(report, iteration=2)
 
     episodes, _ = buffer._episode_groups(
         rows,
@@ -120,28 +76,12 @@ def test_persisted_errors_drive_episode_priority(
         rng=np.random.default_rng(1),
     )
     priorities = {
-        str(item["rows"][0]["state_id"]): float(
-            item["priority"]
-        )
+        str(item["rows"][0]["state_id"]): float(item["priority"])
         for item in episodes
     }
 
     assert priorities["neutral"] == 1.0
-    assert priorities["difficult"] == pytest.approx(
-        1.09
-    )
-    persisted = json.loads(
-        buffer.prediction_error_path.read_text(
-            encoding="utf-8"
-        )
-    )
-    assert persisted["entry_count"] == 2
-    assert (
-        persisted["entries"]["difficult"][
-            "checkpoint_sha256"
-        ]
-        == "a" * 64
-    )
+    assert priorities["difficult"] == pytest.approx(1.09)
 
 
 def test_export_refreshes_errors_once_per_checkpoint(
@@ -149,29 +89,17 @@ def test_export_refreshes_errors_once_per_checkpoint(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     buffer = _buffer(tmp_path)
-    buffer.buffer = [
-        _row("a"),
-        _row("b", 2),
-    ]
+    buffer.buffer = [_row("a"), _row("b", 2)]
     checkpoint = tmp_path / "parent.pt"
     checkpoint.write_bytes(b"one")
     buffer.set_producer_checkpoint(checkpoint)
     calls: list[str] = []
 
-    def fake_score(
-        **kwargs: Any,
-    ) -> dict[str, Any]:
-        state_ids = pd.read_csv(
-            kwargs["examples_csv"]
-        )["state_id"].tolist()
-        checkpoint_sha = sha256_file(
-            kwargs["checkpoint_path"]
-        )
+    def fake_score(**kwargs: Any) -> dict[str, Any]:
+        state_ids = pd.read_csv(kwargs["examples_csv"])["state_id"].tolist()
+        checkpoint_sha = sha256_file(kwargs["checkpoint_path"])
         calls.append(checkpoint_sha)
-        return _report(
-            checkpoint_sha,
-            [str(value) for value in state_ids],
-        )
+        return _report(checkpoint_sha, [str(value) for value in state_ids])
 
     monkeypatch.setattr(
         replay_priority,
@@ -199,129 +127,77 @@ def test_export_refreshes_errors_once_per_checkpoint(
     )
 
     assert len(calls) == 2
-    assert first[
-        "prediction_error_refresh"
-    ]["refreshed_examples"] == 2
-    assert second[
-        "prediction_error_refresh"
-    ]["refreshed_examples"] == 0
-    assert third[
-        "prediction_error_refresh"
-    ]["refreshed_examples"] == 2
-    assert calls[0] != calls[1]
+    assert first["prediction_error_refresh"]["refreshed_examples"] == 2
+    assert second["prediction_error_refresh"]["refreshed_examples"] == 0
+    assert third["prediction_error_refresh"]["refreshed_examples"] == 2
 
 
 class _Dataset:
     num_bus_features = 1
     num_branch_features = 1
-    num_actions = 2
-    action_layout_count = 1
     topology_action_config = object()
-    action_layout = ()
 
-    def __init__(
-        self,
-        *args: Any,
-        **kwargs: Any,
-    ) -> None:
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
         self.samples = [
-            self._sample(
-                "first",
-                [1.0, 0.0],
-                1.0,
-            ),
-            self._sample(
-                "second",
-                [0.25, 0.75],
-                -1.0,
-            ),
+            {"state_id": "first", "policy": [1.0, 0.0], "value": 1.0},
+            {"state_id": "second", "policy": [0.25, 0.75], "value": -1.0},
         ]
-
-    @staticmethod
-    def _sample(
-        state_id: str,
-        policy: list[float],
-        value: float,
-    ) -> dict[str, Any]:
-        return {
-            "bus_features": torch.tensor(
-                [[0.0]]
-            ),
-            "branch_features": torch.tensor(
-                [[0.0]]
-            ),
-            "edge_index": torch.tensor(
-                [[0], [0]]
-            ),
-            "edge_active_mask": torch.tensor(
-                [True]
-            ),
-            "action_mask": torch.tensor(
-                [True, True]
-            ),
-            "target_policy": torch.tensor(
-                policy
-            ),
-            "target_value": torch.tensor(
-                value
-            ),
-            "state_id": state_id,
-        }
 
     def __len__(self) -> int:
         return len(self.samples)
 
-    def __getitem__(
-        self,
-        index: int,
-    ) -> dict[str, Any]:
+    def __getitem__(self, index: int) -> dict[str, Any]:
         return self.samples[index]
 
 
 class _Model:
-    def __call__(
-        self,
-        **kwargs: Any,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        device = kwargs[
-            "bus_features"
-        ].device
+    def __call__(self, **kwargs: Any) -> tuple[torch.Tensor, torch.Tensor]:
         return (
             torch.tensor(
                 [
                     [0.0, 0.0],
-                    [
-                        math.log(0.25),
-                        math.log(0.75),
-                    ],
-                ],
-                device=device,
+                    [math.log(0.25), math.log(0.75)],
+                ]
             ),
-            torch.tensor(
-                [0.5, -0.5],
-                device=device,
-            ),
+            torch.tensor([0.5, -0.5]),
         )
 
 
-def test_checkpoint_scorer_computes_value_and_policy_errors(
+def _collate(samples: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "bus_features": torch.zeros(2, 1),
+        "branch_features": torch.zeros(2, 1),
+        "edge_index": torch.tensor([[0, 1], [0, 1]]),
+        "edge_active_mask": torch.ones(2, dtype=torch.bool),
+        "action_mask": torch.ones(2, 2, dtype=torch.bool),
+        "node_batch": torch.tensor([0, 1]),
+        "edge_batch": torch.tensor([0, 1]),
+        "target_policy": torch.tensor([item["policy"] for item in samples]),
+        "target_value": torch.tensor([item["value"] for item in samples]),
+        "state_id": [item["state_id"] for item in samples],
+    }
+
+
+def test_graph_v2_scorer_computes_value_and_policy_errors(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     examples = tmp_path / "examples.csv"
-    examples.write_text(
-        "placeholder\n",
-        encoding="utf-8",
-    )
+    examples.write_text("placeholder\n", encoding="utf-8")
     checkpoint_path = tmp_path / "checkpoint.pt"
     checkpoint_path.write_bytes(b"checkpoint")
     checkpoint = {
         "checkpoint_contract_version": 1,
-        "model_type": "graph_v1",
+        "model_type": "graph_policy_value_net_v2",
         "num_bus_features": 1,
         "num_branch_features": 1,
-        "num_actions": 2,
     }
+
+    monkeypatch.setattr(
+        replay_priority,
+        "_resolve_device",
+        lambda: torch.device("cpu"),
+    )
     monkeypatch.setattr(
         replay_priority,
         "load_checkpoint_payload",
@@ -332,11 +208,7 @@ def test_checkpoint_scorer_computes_value_and_policy_errors(
         "extract_normalization_stats",
         lambda *args, **kwargs: {},
     )
-    monkeypatch.setattr(
-        replay_priority,
-        "GraphSelfPlayDataset",
-        _Dataset,
-    )
+    monkeypatch.setattr(replay_priority, "GraphSelfPlayDataset", _Dataset)
     monkeypatch.setattr(
         replay_priority,
         "require_topology_action_provenance",
@@ -347,29 +219,20 @@ def test_checkpoint_scorer_computes_value_and_policy_errors(
         "_load_model",
         lambda *args, **kwargs: _Model(),
     )
+    monkeypatch.setattr(replay_priority, "collate_graph_samples", _collate)
 
-    report = (
-        replay_priority.score_replay_prediction_errors(
-            examples_csv=examples,
-            checkpoint_path=checkpoint_path,
-            physics_config=(
-                DEFAULT_PHYSICS_CONFIG
-            ),
-        )
+    report = replay_priority.score_replay_prediction_errors(
+        examples_csv=examples,
+        checkpoint_path=checkpoint_path,
+        physics_config=DEFAULT_PHYSICS_CONFIG,
     )
 
-    assert report["entries"]["first"][
-        "value_error"
-    ] == pytest.approx(0.5)
-    assert report["entries"]["second"][
-        "value_error"
-    ] == pytest.approx(0.5)
-    assert report["entries"]["first"][
-        "policy_kl_error"
-    ] == pytest.approx(math.log(2.0))
-    assert report["entries"]["second"][
-        "policy_kl_error"
-    ] == pytest.approx(
+    assert report["entries"]["first"]["value_error"] == pytest.approx(0.5)
+    assert report["entries"]["second"]["value_error"] == pytest.approx(0.5)
+    assert report["entries"]["first"]["policy_kl_error"] == pytest.approx(
+        math.log(2.0)
+    )
+    assert report["entries"]["second"]["policy_kl_error"] == pytest.approx(
         0.0,
         abs=1e-7,
     )

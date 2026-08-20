@@ -44,7 +44,6 @@ def _context_probe_model() -> GraphPolicyValueNetV2:
     model = GraphPolicyValueNetV2(
         num_bus_features=hidden_dim,
         num_branch_features=hidden_dim,
-        num_actions=3,
         hidden_dim=hidden_dim,
         num_layers=1,
         dropout=0.0,

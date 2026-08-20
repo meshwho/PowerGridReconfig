@@ -110,7 +110,6 @@ def test_graph_policy_value_net_v2_forward_shapes_and_mask():
     model = GraphPolicyValueNetV2(
         num_bus_features=num_bus_features,
         num_branch_features=num_branch_features,
-        num_actions=num_actions,
         hidden_dim=32,
         num_layers=2,
         dropout=0.0,
@@ -151,7 +150,6 @@ def test_graph_policy_value_net_v2_rejects_wrong_edge_mask_shape():
     model = GraphPolicyValueNetV2(
         num_bus_features=4,
         num_branch_features=6,
-        num_actions=6,
         hidden_dim=16,
         num_layers=1,
         dropout=0.0,
@@ -178,7 +176,6 @@ def test_policy_can_select_a_closeable_inactive_branch():
     model = GraphPolicyValueNetV2(
         num_bus_features=3,
         num_branch_features=4,
-        num_actions=4,
         hidden_dim=16,
         num_layers=1,
         dropout=0.0,

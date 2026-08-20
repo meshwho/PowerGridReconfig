@@ -10,7 +10,6 @@ from grid_topology_ai.data_adapter import (
 from grid_topology_ai.return_contract import (
     TERMINAL_UTILITY_GAMMA,
     VALUE_TARGET_MODE,
-    discounted_terminal_utility,
     heuristic_terminal_utility_estimate,
     require_bounded_utility,
     require_discount_factor,
@@ -75,24 +74,6 @@ def test_terminal_utility_contract_distinguishes_safe_and_unsafe_handoffs() -> N
         False,
         TerminationReason.POWER_FLOW_FAILED,
     ) == (-1.0, "power_flow_failed")
-
-
-def test_discounted_terminal_utility_remains_a_generic_helper() -> None:
-    assert discounted_terminal_utility(
-        1.0,
-        steps_to_terminal=0,
-        gamma=0.5,
-    ) == 1.0
-    assert discounted_terminal_utility(
-        1.0,
-        steps_to_terminal=3,
-        gamma=0.5,
-    ) == 0.125
-    assert discounted_terminal_utility(
-        -1.0,
-        steps_to_terminal=2,
-        gamma=0.9,
-    ) == pytest.approx(-0.81)
 
 
 def test_policy_value_contract_is_undiscounted() -> None:

@@ -5,7 +5,7 @@ import pandas as pd
 from pypower.idx_bus import BS, GS
 
 from grid_topology_ai.config.physics import PhysicsConfig
-from grid_topology_ai.pypower_backend import GridFMPowerFlowBackend
+from grid_topology_ai.power_flow.backend import GridFMPowerFlowBackend
 
 
 def test_gridfm_per_unit_shunts_are_restored_for_pypower() -> None:

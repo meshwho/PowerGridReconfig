@@ -539,7 +539,6 @@ class GraphPolicyValueNetV2(nn.Module):
         hidden_dim: int = 128,
         num_layers: int = 4,
         dropout: float = 0.0,
-        num_actions: int | None = None,
     ):
         super().__init__()
 
@@ -554,14 +553,6 @@ class GraphPolicyValueNetV2(nn.Module):
         self.hidden_dim = int(hidden_dim)
         self.num_layers = int(num_layers)
         self.dropout = float(dropout)
-
-        # Retained only as reference metadata for old callers.
-        # Graph V2 forward must never use it to constrain topology size.
-        self.reference_num_actions = (
-            None
-            if num_actions is None
-            else int(num_actions)
-        )
 
         if self.num_bus_features <= 0:
             raise ValueError(
@@ -586,15 +577,6 @@ class GraphPolicyValueNetV2(nn.Module):
         if not 0.0 <= self.dropout < 1.0:
             raise ValueError(
                 "dropout must satisfy 0 <= dropout < 1."
-            )
-
-        if (
-                self.reference_num_actions is not None
-                and self.reference_num_actions < 2
-        ):
-            raise ValueError(
-                "Reference num_actions must contain "
-                "at least stop plus one branch action."
             )
 
         self.bus_encoder = nn.Sequential(

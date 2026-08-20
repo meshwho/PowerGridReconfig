@@ -2,7 +2,7 @@ import pandas as pd
 
 from grid_topology_ai.contracts import EVALUATION_METRICS_CONTRACT_VERSION
 from grid_topology_ai.evaluation.metrics import build_evaluation_metrics
-from grid_topology_ai.physical_objective import (
+from grid_topology_ai.physics.objective import (
     PHYSICAL_OBJECTIVE_SCHEMA_VERSION,
 )
 

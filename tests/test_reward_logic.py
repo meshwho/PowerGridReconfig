@@ -8,7 +8,7 @@ from grid_topology_ai.data_adapter import (
     BUS_FEATURE_COLUMNS,
     GridFMState,
 )
-from grid_topology_ai.grid_utility import state_potential
+from grid_topology_ai.physics.utility import state_potential
 from grid_topology_ai.reward import GridFMReward
 
 
@@ -83,7 +83,7 @@ def test_reward_is_exact_potential_shaping() -> None:
     before = _state(loadings=(130.0,))
     after = _state(loadings=(110.0,))
 
-    result = reward_fn.compute(before, after, True, True)
+    result = reward_fn.compute(before, after, power_flow_success=True)
 
     expected = 0.95 * state_potential(after) - state_potential(before)
     assert result.reward == pytest.approx(expected)
@@ -100,8 +100,7 @@ def test_worse_grid_has_negative_potential_shaping() -> None:
     result = GridFMReward(discount_factor=0.95).compute(
         _state(loadings=(110.0,)),
         _state(loadings=(130.0,)),
-        True,
-        True,
+        power_flow_success=True,
     )
 
     assert result.reward < 0.0
@@ -114,8 +113,7 @@ def test_solved_state_has_no_solved_bonus() -> None:
     result = GridFMReward(discount_factor=0.95).compute(
         before,
         after,
-        True,
-        True,
+        power_flow_success=True,
     )
 
     assert result.reward == pytest.approx(
@@ -129,8 +127,7 @@ def test_power_flow_failure_adds_no_second_terminal_penalty() -> None:
     result = GridFMReward(discount_factor=0.95).compute(
         _state(loadings=(130.0,)),
         None,
-        True,
-        False,
+        power_flow_success=False,
     )
 
     assert result.reward == 0.0
@@ -139,19 +136,6 @@ def test_power_flow_failure_adds_no_second_terminal_penalty() -> None:
     assert result.success is False
     assert result.done is True
     assert "no non-potential failure reward" in result.message
-
-
-@pytest.mark.parametrize(
-    "kwargs",
-    [
-        {"switching_penalty": 1.0},
-        {"non_convergence_penalty": 1.0},
-        {"solved_bonus": 1.0},
-    ],
-)
-def test_non_potential_reward_terms_are_rejected(kwargs: dict[str, float]) -> None:
-    with pytest.raises(ValueError, match="only potential-based shaping"):
-        GridFMReward(**kwargs)
 
 
 def test_reward_config_identifies_diagnostic_contract() -> None:

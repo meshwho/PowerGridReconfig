@@ -74,6 +74,3 @@ def test_environment_exposes_structural_and_operational_masks() -> None:
         True,
         False,
     ]
-    assert env.valid_action_mask().tolist() == (
-        operational.tolist()
-    )

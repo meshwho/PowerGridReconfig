@@ -18,7 +18,7 @@ from grid_topology_ai.outcome_contract import (
 from grid_topology_ai.outcome_record import (
     parse_terminal_outcome_fields,
 )
-from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
+from grid_topology_ai.physics.objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
 from grid_topology_ai.return_contract import (
     TERMINAL_UTILITY_GAMMA,
     VALUE_TARGET_MODE,
@@ -54,20 +54,6 @@ def _require_gamma(value: object) -> float:
         )
 
     return gamma
-
-
-def terminal_value_from_outcome(
-    solved: bool,
-    termination_reason: TerminationReason | str | None,
-    *,
-    evidence: TerminalOutcomeEvidence | None = None,
-) -> tuple[float, str]:
-    """Compatibility name for the canonical terminal-utility mapping."""
-    return terminal_utility_from_outcome(
-        _require_bool(solved, field="solved"),
-        termination_reason,
-        evidence=evidence,
-    )
 
 
 def terminal_evidence_from_row(

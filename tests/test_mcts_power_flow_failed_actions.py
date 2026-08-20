@@ -62,9 +62,6 @@ class _Env:
     def operational_action_mask(self) -> np.ndarray:
         return np.asarray([False, True, True], dtype=bool)
 
-    def valid_action_mask(self) -> np.ndarray:
-        return self.operational_action_mask()
-
     def step(self, action: GridFMAction) -> SimpleNamespace:
         action_id = int(action.action_id)
         self._calls[action_id] = self._calls.get(action_id, 0) + 1

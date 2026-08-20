@@ -10,12 +10,12 @@ from pypower.idx_brch import BR_STATUS, PF, PT, QF, QT
 from grid_topology_ai.action_space import GridFMActionSpace
 from grid_topology_ai.config.physics import DEFAULT_PHYSICS_CONFIG, PhysicsConfig
 from grid_topology_ai.contracts import PHYSICS_CONFIG_CONTRACT_VERSION
-from grid_topology_ai.physical_constraints import (
+from grid_topology_ai.physics.constraints import (
     PhysicalNetworkArrays,
     calculate_physical_metrics,
 )
-from grid_topology_ai.power_flow_errors import InvalidPhysicalState
-from grid_topology_ai.power_flow_problem import (
+from grid_topology_ai.power_flow.errors import InvalidPhysicalState
+from grid_topology_ai.power_flow.problem import (
     ScenarioPowerFlowTemplate,
     _build_branch_matrix,
     _build_bus_matrix,
@@ -26,9 +26,9 @@ from grid_topology_ai.runtime.scenario_store import (
     MemoryMappedGridFMPowerFlowBackend,
     MemoryMappedScenarioStore,
 )
-from grid_topology_ai.state_builder import GridFMState
-from grid_topology_ai.state_schema import BRANCH_FEATURE_COLUMNS, BUS_FEATURE_COLUMNS
-from grid_topology_ai.state_store import GridFMStateStore
+from grid_topology_ai.state.builder import GridFMState
+from grid_topology_ai.state.schema import BRANCH_FEATURE_COLUMNS, BUS_FEATURE_COLUMNS
+from grid_topology_ai.state.store import GridFMStateStore
 
 
 _BUS_FEATURE_INDEX = {

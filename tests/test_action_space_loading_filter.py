@@ -98,7 +98,7 @@ def test_nonzero_loading_threshold_filters_branch_actions(
         enable_cache=False,
     )
 
-    mask = action_space.valid_action_mask(
+    mask = action_space.operational_action_mask(
         _state(
             loadings=[loading],
         )
@@ -117,7 +117,7 @@ def test_inactive_branch_is_rejected_above_loading_threshold() -> None:
         enable_cache=False,
     )
 
-    mask = action_space.valid_action_mask(
+    mask = action_space.operational_action_mask(
         _state(
             loadings=[120.0],
             statuses=[0],
@@ -262,5 +262,5 @@ def test_structural_cache_key_excludes_operational_loading_filter() -> None:
     )
 
     assert unfiltered_key == filtered_key
-    assert unfiltered.valid_action_mask(state).tolist() == [True, True]
-    assert filtered.valid_action_mask(state).tolist() == [True, False]
+    assert unfiltered.operational_action_mask(state).tolist() == [True, True]
+    assert filtered.operational_action_mask(state).tolist() == [True, False]

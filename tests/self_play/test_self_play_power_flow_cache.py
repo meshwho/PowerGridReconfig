@@ -13,7 +13,7 @@ from grid_topology_ai.data_adapter import (
     GridFMState,
 )
 from grid_topology_ai.environment import TopologySwitchingEnv
-from grid_topology_ai.pypower_backend import GridFMPowerFlowResult
+from grid_topology_ai.power_flow.backend import GridFMPowerFlowResult
 from grid_topology_ai.search.continuation_gate import make_do_nothing_action
 from grid_topology_ai.search.mcts import MCTSConfig, MCTSPlanner
 from grid_topology_ai.self_play.generation import (
@@ -98,12 +98,9 @@ class _ActionSpace:
         del state
         return [self.stop, self.switch]
 
-    def valid_action_mask(self, state: GridFMState) -> np.ndarray:
+    def operational_action_mask(self, state: GridFMState) -> np.ndarray:
         del state
         return np.array([True, True], dtype=bool)
-
-    def operational_action_mask(self, state: GridFMState) -> np.ndarray:
-        return self.valid_action_mask(state)
 
 
 class _Reward:

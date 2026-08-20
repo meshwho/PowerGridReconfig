@@ -6,17 +6,15 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from grid_topology_ai.physical_objective import (
+from grid_topology_ai.physics.objective import (
     PHYSICAL_OBJECTIVE_SCHEMA_VERSION,
 )
 from grid_topology_ai.return_contract import (
     TERMINAL_UTILITY_GAMMA,
     VALUE_TARGET_MODE,
+    terminal_utility_from_outcome,
 )
-from grid_topology_ai.value_targets import (
-    add_outcome_value_targets_to_rows,
-    terminal_value_from_outcome,
-)
+from grid_topology_ai.value_targets import add_outcome_value_targets_to_rows
 from tests.outcome_evidence_helpers import terminal_evidence_fields
 
 
@@ -158,9 +156,9 @@ def test_invalid_done_is_atomic(done: object) -> None:
     )
 
 
-def test_terminal_value_helper_rejects_string_solved() -> None:
+def test_terminal_utility_helper_rejects_string_solved() -> None:
     with pytest.raises(ValueError, match="solved"):
-        terminal_value_from_outcome(
+        terminal_utility_from_outcome(
             solved="False",  # type: ignore[arg-type]
             termination_reason="solved",
         )
@@ -522,12 +520,12 @@ def test_episode_rejects_mixed_identity() -> None:
     )
 
 
-def test_terminal_value_from_outcome_public_helper() -> None:
-    assert terminal_value_from_outcome(
+def test_terminal_utility_from_outcome_public_helper() -> None:
+    assert terminal_utility_from_outcome(
         True,
         "solved",
     ) == (1.0, "solved")
-    assert terminal_value_from_outcome(
+    assert terminal_utility_from_outcome(
         False,
         "handoff_to_redispatch",
     ) == (

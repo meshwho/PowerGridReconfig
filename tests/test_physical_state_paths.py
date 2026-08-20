@@ -8,7 +8,7 @@ import pandas as pd
 from pypower.idx_brch import PF, PT, QF, QT, RATE_A
 from pypower.idx_bus import VM
 
-import grid_topology_ai.pypower_backend as backend_module
+import grid_topology_ai.power_flow.backend as backend_module
 from grid_topology_ai.config.physics import (
     DEFAULT_PHYSICS_CONFIG,
     PhysicsConfig,
@@ -19,10 +19,10 @@ from grid_topology_ai.data_adapter import (
     BUS_FEATURE_COLUMNS,
     GridFMAdapter,
 )
-from grid_topology_ai.physical_objective import assess_physical_state
-from grid_topology_ai.power_flow_errors import InvalidPhysicalState
-from grid_topology_ai.pypower_backend import GridFMPowerFlowBackend
-from grid_topology_ai.state_builder import GridFMStateBuilder
+from grid_topology_ai.physics.objective import assess_physical_state
+from grid_topology_ai.power_flow.errors import InvalidPhysicalState
+from grid_topology_ai.power_flow.backend import GridFMPowerFlowBackend
+from grid_topology_ai.state.builder import GridFMStateBuilder
 
 
 def _adapter() -> SimpleNamespace:

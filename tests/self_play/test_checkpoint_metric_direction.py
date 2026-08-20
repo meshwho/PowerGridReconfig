@@ -11,7 +11,7 @@ from grid_topology_ai.config.checkpoint_selection import (
     CheckpointSelectionConfig,
 )
 from grid_topology_ai.config.physics import DEFAULT_PHYSICS_CONFIG
-from grid_topology_ai.self_play import checkpoint_arena
+from grid_topology_ai.self_play import checkpoints
 
 
 def _candidate(
@@ -22,7 +22,7 @@ def _candidate(
 ) -> dict[str, Any]:
     return {
         "path": path,
-        "sha256": checkpoint_arena.sha256_file(path),
+        "sha256": checkpoints.sha256_file(path),
         "payload": {},
         "val_metrics": {
             "loss": loss,
@@ -51,12 +51,12 @@ def test_tuning_arena_minimizes_configured_metric(
     tuning_raw_dir.mkdir()
 
     monkeypatch.setattr(
-        checkpoint_arena,
+        checkpoints,
         "_validate_tuning_independence",
         lambda **kwargs: (1,),
     )
     monkeypatch.setattr(
-        checkpoint_arena,
+        checkpoints,
         "_load_candidates",
         lambda **kwargs: [
             _candidate(canonical, loss=0.1, policy_loss=0.9),
@@ -70,7 +70,7 @@ def test_tuning_arena_minimizes_configured_metric(
         )
 
     monkeypatch.setattr(
-        checkpoint_arena,
+        checkpoints,
         "_annotate_selected_checkpoint",
         fake_annotate,
     )
@@ -103,7 +103,7 @@ def test_tuning_arena_minimizes_configured_metric(
         metric="failed_scenario_rate_requested",
         metric_direction="minimize",
     )
-    result = checkpoint_arena.select_checkpoint_in_tuning_arena(
+    result = checkpoints.select_checkpoint_in_tuning_arena(
         canonical_checkpoint=canonical,
         project_root=tmp_path,
         output_dir=tmp_path / "selection",

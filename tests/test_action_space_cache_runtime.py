@@ -43,8 +43,8 @@ def test_action_cache_can_be_disabled_without_changing_masks() -> None:
     )
 
     np.testing.assert_array_equal(
-        cached.valid_action_mask(state),
-        uncached.valid_action_mask(state),
+        cached.operational_action_mask(state),
+        uncached.operational_action_mask(state),
     )
 
 

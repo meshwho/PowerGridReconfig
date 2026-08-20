@@ -10,7 +10,7 @@ from grid_topology_ai.action_space import GridFMAction
 from grid_topology_ai.config.physics import DEFAULT_PHYSICS_CONFIG, PhysicsConfig
 from grid_topology_ai.data_adapter import BRANCH_FEATURE_COLUMNS, GridFMState
 from grid_topology_ai.environment import TopologyStepResult, TopologySwitchingEnv
-from grid_topology_ai.physical_objective import (
+from grid_topology_ai.physics.objective import (
     assess_physical_state,
     stop_allowed_for_policy,
 )
@@ -1370,7 +1370,7 @@ class MCTSPlanner:
                     node.neural_value,
                     context="cached neural leaf value",
                 )
-            action_mask = node.env.valid_action_mask()
+            action_mask = node.env.operational_action_mask()
             _, neural_value = self.evaluator.evaluate(
                 state=state,
                 action_mask=action_mask,

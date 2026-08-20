@@ -11,7 +11,7 @@ from grid_topology_ai.data_adapter import (
     BRANCH_FEATURE_COLUMNS,
     BUS_FEATURE_COLUMNS,
 )
-from grid_topology_ai.pypower_backend import (
+from grid_topology_ai.power_flow.backend import (
     GridFMPowerFlowBackend,
     _GeneratorOperatingPointState,
 )

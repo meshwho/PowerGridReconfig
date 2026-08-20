@@ -23,7 +23,7 @@ from grid_topology_ai.self_play.final_test import (
     load_final_test_evaluation,
     run_final_test_evaluation,
 )
-from grid_topology_ai.self_play.iteration_split import (
+from grid_topology_ai.self_play.iteration import (
     prepare_physical_iteration_split,
 )
 from grid_topology_ai.self_play.paths import SelfPlayPaths
@@ -31,10 +31,10 @@ from grid_topology_ai.self_play.physical_lineage import (
     PHYSICAL_LINEAGE_FINGERPRINT_FIELD,
     PhysicalLineage,
 )
-from grid_topology_ai.self_play.replay import RollingReplayBuffer
-from grid_topology_ai.self_play.split_integrity import (
+from grid_topology_ai.self_play.physical_split import (
     physical_split_source_hashes,
 )
+from grid_topology_ai.self_play.replay import RollingReplayBuffer
 
 
 def _lineage(index: int) -> PhysicalLineage:
