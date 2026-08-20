@@ -18,7 +18,7 @@ from grid_topology_ai.self_play.example_validation import (
     load_and_validate_examples_csv,
     validate_example_outcome_contracts,
 )
-from grid_topology_ai.state_schema import BUS_FEATURE_COLUMNS
+from grid_topology_ai.state.schema import BUS_FEATURE_COLUMNS
 
 
 def write_state(path: Path, **overrides: object) -> Path:

@@ -1,0 +1,35 @@
+from __future__ import annotations
+
+import importlib
+import importlib.util
+
+from grid_topology_ai.data_adapter import GridFMState
+
+
+def test_canonical_state_package_layout():
+    canonical_modules = (
+        "grid_topology_ai.state.builder",
+        "grid_topology_ai.state.schema",
+        "grid_topology_ai.state.topology",
+        "grid_topology_ai.state.artifacts",
+        "grid_topology_ai.state.fingerprint",
+        "grid_topology_ai.state.store",
+    )
+    legacy_modules = (
+        "grid_topology_ai.state_builder",
+        "grid_topology_ai.state_schema",
+        "grid_topology_ai.state_topology",
+        "grid_topology_ai.state_artifact_schema",
+        "grid_topology_ai.state_fingerprint",
+        "grid_topology_ai.state_store",
+    )
+
+    for module_name in canonical_modules:
+        importlib.import_module(module_name)
+
+    for module_name in legacy_modules:
+        assert importlib.util.find_spec(module_name) is None
+
+
+def test_grid_fm_state_keeps_historical_public_identity():
+    assert GridFMState.__module__ == "grid_topology_ai.data_adapter"
