@@ -9,18 +9,8 @@ from typing import Any
 import pandas as pd
 
 from grid_topology_ai.config.physics import PhysicsConfig
-from grid_topology_ai.contracts import (
-    OUTCOME_OBJECTIVE_VERSION,
-    OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
-    physics_provenance,
-    topology_action_provenance,
-)
 from grid_topology_ai.data_adapter import GridFMState
-from grid_topology_ai.outcome_record import (
-    TERMINAL_OUTCOME_EVIDENCE_SCHEMA_VERSION,
-    TerminalOutcomeEvidence,
-)
-from grid_topology_ai.physics.objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
+from grid_topology_ai.outcome_record import TerminalOutcomeEvidence
 from grid_topology_ai.reward import TERMINAL_UTILITY_GAMMA
 from grid_topology_ai.search.root_policy import (
     normalize_policy,
@@ -34,6 +24,8 @@ from grid_topology_ai.termination import (
 )
 from grid_topology_ai.topology_actions import (
     ActionSpaceConfig,
+    action_layout_fingerprint,
+    action_layout_to_list,
     build_branch_action_slots,
 )
 from grid_topology_ai.value_targets import add_outcome_value_targets_to_rows
@@ -58,25 +50,11 @@ class SelfPlayExample:
     solved: bool
     done: bool
     termination_reason: str | None
-    terminal_outcome_evidence_schema_version: int
     terminal_outcome_evidence_json: str
-    physical_objective_schema_version: int
-    outcome_objective_version: int
-    outcome_value_target_contract_version: int
-    state_feature_schema_version: int
-    state_feature_schema_fingerprint: str
-    bus_feature_columns: str
-    branch_feature_columns: str
-    edge_index_semantics: str
-    bus_id_semantics: str
-    physics_config_contract_version: int
-    topology_action_contract_version: int
+    physics_config: str
     topology_action_config: str
-    topology_action_config_fingerprint: str
     action_layout: str
     action_layout_fingerprint: str
-    physics_config: str
-    physics_config_fingerprint: str
     visit_counts_json: str
     mcts_policy_json: str
     outcome_value_target: float | None = None
@@ -96,7 +74,7 @@ class SelfPlayExample:
 
 
 class ExampleWriter:
-    """Save self-play tensors plus on-policy and diagnostic metadata."""
+    """Save self-play tensors plus the data needed to train them."""
 
     def __init__(
         self,
@@ -173,13 +151,7 @@ class ExampleWriter:
                 "done": True,
                 "solved": bool(solved),
                 "termination_reason": reason_value,
-                "terminal_outcome_evidence_schema_version": (
-                    TERMINAL_OUTCOME_EVIDENCE_SCHEMA_VERSION
-                ),
                 "terminal_outcome_evidence_json": evidence_json,
-                "physical_objective_schema_version": (
-                    PHYSICAL_OBJECTIVE_SCHEMA_VERSION
-                ),
             }
             for step in steps
         ]
@@ -284,7 +256,7 @@ class ExampleWriter:
         mcts_visited_action_coverage: float | None = None,
         extra_metadata: dict[str, Any] | None = None,
     ) -> None:
-        """Save one terminal example for legacy one-row producers."""
+        """Save one completed example from the legacy one-row API."""
 
         del state_id
         metadata = dict(extra_metadata or {})
@@ -362,8 +334,7 @@ class ExampleWriter:
     ) -> TerminationReason:
         if not isinstance(evidence, TerminalOutcomeEvidence):
             raise TypeError(
-                "terminal_outcome_evidence must be "
-                "TerminalOutcomeEvidence."
+                "terminal_outcome_evidence must be TerminalOutcomeEvidence."
             )
         if not isinstance(done, bool) or not done:
             raise ValueError(
@@ -429,26 +400,27 @@ class ExampleWriter:
         )
 
         evidence_json = terminal_outcome_evidence.to_json()
+        physics_config = self.physics_config.to_dict()
+        topology_action_config = self.action_space_config.to_contract_dict()
+        action_layout = build_branch_action_slots(state.branch_ids)
+        action_layout_data = action_layout_to_list(action_layout)
+        layout_fingerprint = action_layout_fingerprint(action_layout)
+
         metadata = dict(extra_metadata or {})
-        provenance = physics_provenance(self.physics_config)
         metadata.update(
             {
                 "run_id": self.run_id,
                 "iteration": iteration,
                 "episode_id": episode_id,
-                "outcome_objective_version": OUTCOME_OBJECTIVE_VERSION,
-                "outcome_value_target_contract_version": (
-                    OUTCOME_VALUE_TARGET_CONTRACT_VERSION
-                ),
-                "terminal_outcome_evidence_schema_version": (
-                    TERMINAL_OUTCOME_EVIDENCE_SCHEMA_VERSION
-                ),
+                "physics_config": physics_config,
+                "topology_action_config": topology_action_config,
+                "action_layout": action_layout_data,
+                "action_layout_fingerprint": layout_fingerprint,
                 "terminal_outcome_evidence": (
                     terminal_outcome_evidence.to_dict()
                 ),
             }
         )
-        metadata.update(provenance)
 
         if outcome_fields is not None:
             for name in (
@@ -459,13 +431,6 @@ class ExampleWriter:
                 "outcome_gamma",
             ):
                 metadata[name] = outcome_fields[name]
-
-        action_layout = build_branch_action_slots(state.branch_ids)
-        action_provenance = topology_action_provenance(
-            self.action_space_config,
-            action_layout,
-        )
-        metadata.update(action_provenance)
 
         state_path = self.state_store.save_state(
             state=state,
@@ -498,74 +463,26 @@ class ExampleWriter:
             termination_reason=termination_reason_value(
                 termination_reason
             ),
-            terminal_outcome_evidence_schema_version=(
-                TERMINAL_OUTCOME_EVIDENCE_SCHEMA_VERSION
-            ),
             terminal_outcome_evidence_json=evidence_json,
-            physical_objective_schema_version=(
-                PHYSICAL_OBJECTIVE_SCHEMA_VERSION
-            ),
-            outcome_objective_version=(
-                OUTCOME_OBJECTIVE_VERSION
-            ),
-            outcome_value_target_contract_version=(
-                OUTCOME_VALUE_TARGET_CONTRACT_VERSION
-            ),
-            state_feature_schema_version=int(
-                provenance["state_feature_schema_version"]
-            ),
-            state_feature_schema_fingerprint=str(
-                provenance["state_feature_schema_fingerprint"]
-            ),
-            bus_feature_columns=json.dumps(
-                provenance["bus_feature_columns"],
+            physics_config=json.dumps(
+                physics_config,
+                sort_keys=True,
                 separators=(",", ":"),
                 allow_nan=False,
-            ),
-            branch_feature_columns=json.dumps(
-                provenance["branch_feature_columns"],
-                separators=(",", ":"),
-                allow_nan=False,
-            ),
-            edge_index_semantics=str(
-                provenance["edge_index_semantics"]
-            ),
-            bus_id_semantics=str(provenance["bus_id_semantics"]),
-            physics_config_contract_version=int(
-                provenance["physics_config_contract_version"]
-            ),
-            topology_action_contract_version=int(
-                action_provenance["topology_action_contract_version"]
             ),
             topology_action_config=json.dumps(
-                action_provenance["topology_action_config"],
+                topology_action_config,
                 sort_keys=True,
                 separators=(",", ":"),
                 allow_nan=False,
-            ),
-            topology_action_config_fingerprint=str(
-                action_provenance[
-                    "topology_action_config_fingerprint"
-                ]
             ),
             action_layout=json.dumps(
-                action_provenance["action_layout"],
+                action_layout_data,
                 sort_keys=True,
                 separators=(",", ":"),
                 allow_nan=False,
             ),
-            action_layout_fingerprint=str(
-                action_provenance["action_layout_fingerprint"]
-            ),
-            physics_config=json.dumps(
-                provenance["physics_config"],
-                sort_keys=True,
-                separators=(",", ":"),
-                allow_nan=False,
-            ),
-            physics_config_fingerprint=str(
-                provenance["physics_config_fingerprint"]
-            ),
+            action_layout_fingerprint=layout_fingerprint,
             visit_counts_json=json.dumps(
                 {
                     str(key): int(value)

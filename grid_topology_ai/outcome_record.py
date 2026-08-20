@@ -1,4 +1,4 @@
-"""Strict evidence attached to one terminal episode outcome."""
+"""Physical evidence attached to one terminal episode outcome."""
 
 from __future__ import annotations
 
@@ -19,6 +19,8 @@ from grid_topology_ai.termination import (
 )
 
 
+# Kept temporarily for teacher checkpoint/state metadata written by the existing
+# teacher runner. TerminalOutcomeEvidence itself is intentionally unversioned.
 TERMINAL_OUTCOME_EVIDENCE_SCHEMA_VERSION = 3
 
 
@@ -228,15 +230,12 @@ def _assessment_from_mapping(
         missing = sorted(expected_fields - observed_fields)
         unexpected = sorted(observed_fields - expected_fields)
         raise ValueError(
-            f"{field_name} fields do not match the current contract: "
+            f"{field_name} fields do not match the current state: "
             f"missing={missing}, unexpected={unexpected}."
         )
 
     assessment = PhysicalStateAssessment(
-        **{
-            name: value[name]
-            for name in expected_fields
-        }
+        **{name: value[name] for name in expected_fields}
     )
     _validate_assessment_values(
         assessment,
@@ -280,9 +279,7 @@ class TerminalOutcomeEvidence:
             allow_none=False,
         )
         assert reason is not None
-        status = _parse_redispatch_status(
-            self.redispatch_status
-        )
+        status = _parse_redispatch_status(self.redispatch_status)
         topology_utility = _parse_topology_utility(self.topology_utility)
         assessment = _assessment_from_mapping(
             self.assessment,
@@ -293,26 +290,10 @@ class TerminalOutcomeEvidence:
             field_name="redispatch_assessment",
         )
 
-        object.__setattr__(
-            self,
-            "termination_reason",
-            reason,
-        )
-        object.__setattr__(
-            self,
-            "redispatch_status",
-            status,
-        )
-        object.__setattr__(
-            self,
-            "topology_utility",
-            topology_utility,
-        )
-        object.__setattr__(
-            self,
-            "assessment",
-            assessment,
-        )
+        object.__setattr__(self, "termination_reason", reason)
+        object.__setattr__(self, "redispatch_status", status)
+        object.__setattr__(self, "topology_utility", topology_utility)
+        object.__setattr__(self, "assessment", assessment)
         object.__setattr__(
             self,
             "redispatch_assessment",
@@ -360,7 +341,6 @@ class TerminalOutcomeEvidence:
                 raise ValueError(
                     "An insecure topology must have topology_utility < 1.0."
                 )
-
             if (
                 reason is TerminationReason.POWER_FLOW_FAILED
                 and assessment.power_flow_converged
@@ -368,16 +348,13 @@ class TerminalOutcomeEvidence:
                 raise ValueError(
                     "power_flow_failed cannot carry a converged assessment."
                 )
-
             if (
                 reason in _SAFE_HANDOFF_REASONS
                 and not assessment.hard_overload_free
             ):
                 raise ValueError(
-                    f"{reason.value} requires a "
-                    "hard-overload-free assessment."
+                    f"{reason.value} requires a hard-overload-free assessment."
                 )
-
             if (
                 reason in _HARD_OVERLOAD_REASONS
                 and assessment.hard_overload_free
@@ -402,21 +379,17 @@ class TerminalOutcomeEvidence:
                 )
         elif redispatch_assessment is not None:
             raise ValueError(
-                "redispatch_assessment is allowed only for validated "
-                "redispatch."
+                "redispatch_assessment is allowed only for validated redispatch."
             )
 
     def to_dict(self) -> dict[str, object]:
         return {
-            "schema_version": TERMINAL_OUTCOME_EVIDENCE_SCHEMA_VERSION,
             "solved": self.solved,
             "termination_reason": self.termination_reason.value,
             "redispatch_status": self.redispatch_status.value,
             "topology_utility": self.topology_utility,
             "assessment": (
-                None
-                if self.assessment is None
-                else asdict(self.assessment)
+                None if self.assessment is None else asdict(self.assessment)
             ),
             "redispatch_assessment": (
                 None
@@ -434,10 +407,7 @@ class TerminalOutcomeEvidence:
         )
 
     @classmethod
-    def from_json(
-        cls,
-        value: object,
-    ) -> "TerminalOutcomeEvidence":
+    def from_json(cls, value: object) -> "TerminalOutcomeEvidence":
         if not isinstance(value, str) or not value.strip():
             raise TypeError(
                 "terminal outcome evidence JSON must be a non-empty string."
@@ -448,9 +418,7 @@ class TerminalOutcomeEvidence:
                 parse_constant=_reject_json_constant,
             )
         except (json.JSONDecodeError, ValueError) as exc:
-            raise ValueError(
-                "Invalid terminal outcome evidence JSON."
-            ) from exc
+            raise ValueError("Invalid terminal outcome evidence JSON.") from exc
         if not isinstance(payload, Mapping):
             raise ValueError(
                 "Terminal outcome evidence JSON must contain an object."
@@ -466,7 +434,6 @@ class TerminalOutcomeEvidence:
             raise TypeError("terminal outcome evidence must be a mapping.")
 
         expected_fields = {
-            "schema_version",
             "solved",
             "termination_reason",
             "redispatch_status",
@@ -479,21 +446,8 @@ class TerminalOutcomeEvidence:
             missing = sorted(expected_fields - observed_fields)
             unexpected = sorted(observed_fields - expected_fields)
             raise ValueError(
-                "terminal outcome evidence fields do not match the "
-                f"current contract: missing={missing}, "
-                f"unexpected={unexpected}."
-            )
-
-        version = value["schema_version"]
-        if (
-            isinstance(version, bool)
-            or not isinstance(version, Integral)
-            or int(version)
-            != TERMINAL_OUTCOME_EVIDENCE_SCHEMA_VERSION
-        ):
-            raise ValueError(
-                "Unsupported terminal outcome evidence schema version: "
-                f"{version!r}."
+                "terminal outcome evidence fields do not match the current "
+                f"format: missing={missing}, unexpected={unexpected}."
             )
 
         return cls(
@@ -510,6 +464,8 @@ class TerminalOutcomeEvidence:
                 field_name="redispatch_assessment",
             ),
         )
+
+
 def parse_terminal_outcome_fields(
     *,
     solved: object,
@@ -528,7 +484,6 @@ def parse_terminal_outcome_fields(
         allow_none=False,
     )
     assert reason is not None
-
     validate_outcome_invariants(
         solved=parsed_solved,
         termination_reason=reason,
@@ -543,26 +498,12 @@ def terminal_evidence_from_metadata(
     solved: object,
     termination_reason: object,
 ) -> TerminalOutcomeEvidence:
-    """Read terminal evidence from versioned artifact metadata."""
+    """Read terminal evidence from current artifact metadata."""
 
     parsed_solved, reason = parse_terminal_outcome_fields(
         solved=solved,
         termination_reason=termination_reason,
     )
-
-    version = metadata.get(
-        "terminal_outcome_evidence_schema_version"
-    )
-    if (
-        isinstance(version, bool)
-        or not isinstance(version, Integral)
-        or int(version)
-        != TERMINAL_OUTCOME_EVIDENCE_SCHEMA_VERSION
-    ):
-        raise ValueError(
-            f"{source} has unsupported terminal outcome evidence "
-            f"schema version {version!r}."
-        )
 
     raw_evidence = metadata.get("terminal_outcome_evidence")
     if not isinstance(raw_evidence, Mapping):
@@ -571,13 +512,10 @@ def terminal_evidence_from_metadata(
         )
 
     try:
-        evidence = TerminalOutcomeEvidence.from_mapping(
-            raw_evidence
-        )
+        evidence = TerminalOutcomeEvidence.from_mapping(raw_evidence)
     except (TypeError, ValueError) as exc:
         raise ValueError(
-            f"{source} contains invalid terminal_outcome_evidence: "
-            f"{exc}"
+            f"{source} contains invalid terminal_outcome_evidence: {exc}"
         ) from exc
 
     if (

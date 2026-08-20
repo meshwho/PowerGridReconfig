@@ -7,18 +7,10 @@ from numbers import Integral, Real
 import numpy as np
 import pandas as pd
 
-from grid_topology_ai.contracts import (
-    OUTCOME_OBJECTIVE_VERSION,
-    OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
-)
 from grid_topology_ai.outcome_record import (
-    TERMINAL_OUTCOME_EVIDENCE_SCHEMA_VERSION,
     TerminalOutcomeEvidence,
-)
-from grid_topology_ai.outcome_record import (
     parse_terminal_outcome_fields,
 )
-from grid_topology_ai.physics.objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
 from grid_topology_ai.reward import (
     TERMINAL_UTILITY_GAMMA,
     VALUE_TARGET_MODE,
@@ -72,18 +64,6 @@ def terminal_evidence_from_row(
         raise ValueError(
             f"{context}: invalid terminal outcome: {exc}"
         ) from exc
-
-    version = row.get("terminal_outcome_evidence_schema_version")
-    if (
-        isinstance(version, (bool, np.bool_))
-        or not isinstance(version, Integral)
-        or int(version)
-        != TERMINAL_OUTCOME_EVIDENCE_SCHEMA_VERSION
-    ):
-        raise ValueError(
-            f"{context}: unsupported terminal outcome evidence schema "
-            f"version {version!r}."
-        )
 
     try:
         evidence = TerminalOutcomeEvidence.from_json(
@@ -220,15 +200,6 @@ def add_outcome_value_targets_to_rows(
         list[tuple[int, dict[str, object]]],
     ] = {}
     for row in rows:
-        if (
-            row.get("physical_objective_schema_version")
-            != PHYSICAL_OBJECTIVE_SCHEMA_VERSION
-        ):
-            raise ValueError(
-                "Cannot derive current outcome value targets from "
-                "legacy solved labels."
-            )
-
         for field in _IDENTITY_FIELDS:
             _require_group_key(row, field)
 
@@ -328,19 +299,9 @@ def add_outcome_value_targets_to_rows(
                     {
                         "outcome_value_target": terminal_utility,
                         "outcome_class": outcome_class,
-                        "outcome_steps_to_terminal": (
-                            steps_to_terminal
-                        ),
-                        "outcome_value_target_mode": (
-                            VALUE_TARGET_MODE
-                        ),
+                        "outcome_steps_to_terminal": steps_to_terminal,
+                        "outcome_value_target_mode": VALUE_TARGET_MODE,
                         "outcome_gamma": normalized_gamma,
-                        "outcome_objective_version": (
-                            OUTCOME_OBJECTIVE_VERSION
-                        ),
-                        "outcome_value_target_contract_version": (
-                            OUTCOME_VALUE_TARGET_CONTRACT_VERSION
-                        ),
                     },
                 )
             )

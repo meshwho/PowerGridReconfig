@@ -10,18 +10,7 @@ import numpy as np
 import pandas as pd
 
 from grid_topology_ai.config.physics import PhysicsConfig
-from grid_topology_ai.contracts import (
-    OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
-    require_exact_contract_version,
-    require_outcome_objective_version,
-    require_physics_provenance,
-    require_topology_action_provenance,
-)
-from grid_topology_ai.outcome_record import (
-    TERMINAL_OUTCOME_EVIDENCE_SCHEMA_VERSION,
-    TerminalOutcomeEvidence,
-)
-from grid_topology_ai.physics.objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
+from grid_topology_ai.outcome_record import TerminalOutcomeEvidence
 from grid_topology_ai.reward import (
     TERMINAL_UTILITY_GAMMA,
     VALUE_TARGET_MODE,
@@ -32,6 +21,7 @@ from grid_topology_ai.topology_actions import (
     ActionSlot,
     ActionSpaceConfig,
     action_layout_fingerprint,
+    action_layout_from_value,
     build_branch_action_slots,
     require_branch_status_policy_layout,
 )
@@ -40,8 +30,6 @@ from grid_topology_ai.value_targets import terminal_evidence_from_row
 
 _BASE_OUTCOME_COLUMNS: tuple[str, ...] = (
     "outcome_value_target",
-    "outcome_value_target_contract_version",
-    "outcome_objective_version",
     "solved",
     "done",
     "termination_reason",
@@ -56,24 +44,12 @@ _BASE_EXAMPLE_COLUMNS: tuple[str, ...] = (
     "scenario_id",
     "step",
     "state_id",
-    "physical_objective_schema_version",
-    "state_feature_schema_version",
-    "state_feature_schema_fingerprint",
-    "bus_feature_columns",
-    "branch_feature_columns",
-    "edge_index_semantics",
-    "bus_id_semantics",
-    "physics_config_contract_version",
-    "topology_action_contract_version",
+    "physics_config",
     "topology_action_config",
-    "topology_action_config_fingerprint",
     "action_layout",
     "action_layout_fingerprint",
-    "physics_config",
-    "physics_config_fingerprint",
 ) + _BASE_OUTCOME_COLUMNS
 _EVIDENCE_COLUMNS: tuple[str, ...] = (
-    "terminal_outcome_evidence_schema_version",
     "terminal_outcome_evidence_json",
 )
 _IDENTITY_COLUMNS: tuple[str, ...] = (
@@ -82,7 +58,9 @@ _IDENTITY_COLUMNS: tuple[str, ...] = (
     "episode_id",
 )
 
-REQUIRED_OUTCOME_COLUMNS: tuple[str, ...] = _BASE_OUTCOME_COLUMNS + _EVIDENCE_COLUMNS
+REQUIRED_OUTCOME_COLUMNS: tuple[str, ...] = (
+    _BASE_OUTCOME_COLUMNS + _EVIDENCE_COLUMNS
+)
 REQUIRED_EXAMPLE_COLUMNS: tuple[str, ...] = (
     _BASE_EXAMPLE_COLUMNS + _EVIDENCE_COLUMNS + _IDENTITY_COLUMNS
 )
@@ -104,6 +82,77 @@ class _GraphDimensions(NamedTuple):
     num_actions: int
 
 
+def _json_value(value: object, *, name: str, source: str) -> object:
+    if not isinstance(value, str):
+        return value
+    try:
+        return json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid {name} JSON for {source}.") from exc
+
+
+def _physics_config_from_value(
+    value: object,
+    *,
+    source: str,
+) -> PhysicsConfig:
+    raw = _json_value(value, name="physics_config", source=source)
+    if not isinstance(raw, Mapping):
+        raise ValueError(
+            f"physics_config must be an object for {source}."
+        )
+    try:
+        return PhysicsConfig.from_mapping(raw)
+    except ValueError as exc:
+        raise ValueError(
+            f"Invalid physics_config for {source}: {exc}"
+        ) from exc
+
+
+def _action_config_from_value(
+    value: object,
+    *,
+    source: str,
+) -> ActionSpaceConfig:
+    raw = _json_value(
+        value,
+        name="topology_action_config",
+        source=source,
+    )
+    if not isinstance(raw, Mapping):
+        raise ValueError(
+            f"topology_action_config must be an object for {source}."
+        )
+    try:
+        return ActionSpaceConfig.from_contract_mapping(raw)
+    except ValueError as exc:
+        raise ValueError(
+            f"Invalid topology_action_config for {source}: {exc}"
+        ) from exc
+
+
+def _action_layout_from_value(
+    value: object,
+    *,
+    source: str,
+) -> tuple[ActionSlot, ...]:
+    try:
+        layout = action_layout_from_value(value)
+    except ValueError as exc:
+        raise ValueError(
+            f"Invalid action_layout for {source}: {exc}"
+        ) from exc
+    require_branch_status_policy_layout(layout)
+    return layout
+
+
+def _same_action_config(
+    left: ActionSpaceConfig,
+    right: ActionSpaceConfig,
+) -> bool:
+    return left.to_contract_dict() == right.to_contract_dict()
+
+
 def load_and_validate_examples_csv(path: str | Path) -> pd.DataFrame:
     path = Path(path)
     if not path.exists():
@@ -123,23 +172,43 @@ def validate_example_topology_action_contracts(
     *,
     source_path: str | Path,
 ) -> tuple[ActionSpaceConfig, tuple[ActionSlot, ...]]:
+    """Read the current action config/layout without provenance hashes."""
+
     source = Path(source_path)
     observed_config: ActionSpaceConfig | None = None
     representative_layout: tuple[ActionSlot, ...] | None = None
     observed_policy_layout: str | None = None
 
     for index, row in examples.iterrows():
-        row_config, row_layout = require_topology_action_provenance(
-            row.to_dict(),
-            source=f"{source} row {index}",
-            expected_action_space_config=observed_config,
+        row_source = f"{source} row {index}"
+        row_config = _action_config_from_value(
+            row.get("topology_action_config"),
+            source=row_source,
         )
-        row_policy_layout = require_branch_status_policy_layout(row_layout)
+        row_layout = _action_layout_from_value(
+            row.get("action_layout"),
+            source=row_source,
+        )
+        row_fingerprint = str(
+            row.get("action_layout_fingerprint", "")
+        ).strip()
+        expected_fingerprint = action_layout_fingerprint(row_layout)
+        if row_fingerprint != expected_fingerprint:
+            raise ValueError(
+                f"Action layout identity mismatch for {row_source}."
+            )
 
         if observed_config is None:
             observed_config = row_config
+        elif not _same_action_config(observed_config, row_config):
+            raise ValueError(
+                f"Topology action config mismatch for {row_source}."
+            )
+
         if representative_layout is None:
             representative_layout = row_layout
+
+        row_policy_layout = require_branch_status_policy_layout(row_layout)
         if observed_policy_layout is None:
             observed_policy_layout = row_policy_layout
         elif row_policy_layout != observed_policy_layout:
@@ -159,40 +228,26 @@ def validate_example_contract_versions(
     source_path: str | Path,
     expected_physics_config: PhysicsConfig | None = None,
 ) -> PhysicsConfig:
-    source = Path(source_path)
-    observed_physics_config: PhysicsConfig | None = None
-    for index, row in examples.iterrows():
-        require_exact_contract_version(
-            row.get("physical_objective_schema_version"),
-            expected=PHYSICAL_OBJECTIVE_SCHEMA_VERSION,
-            name="physical-objective contract",
-            source=f"{source} row {index}",
-            regeneration_command="python -m scripts.self_play.generate ...",
-        )
-        require_outcome_objective_version(
-            row.to_dict(),
-            source=f"{source} row {index}",
-        )
-        require_exact_contract_version(
-            row.get("outcome_value_target_contract_version"),
-            expected=OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
-            name="outcome/value-target contract",
-            source=f"{source} row {index}",
-            regeneration_command="python -m scripts.self_play.generate ...",
-        )
-        row_config = require_physics_provenance(
-            row.to_dict(),
-            source=f"{source} row {index}",
-            expected_physics_config=(
-                expected_physics_config or observed_physics_config
-            ),
-        )
-        if observed_physics_config is None:
-            observed_physics_config = row_config
+    """Return the single semantic PhysicsConfig used by the examples."""
 
-    if observed_physics_config is None:
+    source = Path(source_path)
+    observed: PhysicsConfig | None = None
+    for index, row in examples.iterrows():
+        row_config = _physics_config_from_value(
+            row.get("physics_config"),
+            source=f"{source} row {index}",
+        )
+        expected = expected_physics_config or observed
+        if expected is not None and row_config != expected:
+            raise ValueError(
+                f"PhysicsConfig mismatch for {source} row {index}."
+            )
+        if observed is None:
+            observed = row_config
+
+    if observed is None:
         raise ValueError(f"Examples CSV is empty: {source}")
-    return observed_physics_config
+    return observed
 
 
 def validate_examples_dataframe(
@@ -206,7 +261,9 @@ def validate_examples_dataframe(
             f"Examples CSV has no readable columns: {source}"
         )
 
-    missing = sorted(set(REQUIRED_EXAMPLE_COLUMNS) - set(examples.columns))
+    missing = sorted(
+        set(REQUIRED_EXAMPLE_COLUMNS) - set(examples.columns)
+    )
     if missing:
         raise ValueError(
             "Examples CSV is missing required columns: "
@@ -219,11 +276,9 @@ def validate_examples_dataframe(
         examples,
         source_path=source,
     )
-    action_space_config, _representative_action_layout = (
-        validate_example_topology_action_contracts(
-            examples,
-            source_path=source,
-        )
+    action_space_config, _ = validate_example_topology_action_contracts(
+        examples,
+        source_path=source,
     )
 
     for column in REQUIRED_EXAMPLE_COLUMNS:
@@ -240,7 +295,9 @@ def validate_examples_dataframe(
         source_path=source,
     )
 
-    state_ids = examples["state_id"].map(lambda value: str(value).strip())
+    state_ids = examples["state_id"].map(
+        lambda value: str(value).strip()
+    )
     duplicated = state_ids[state_ids.duplicated()]
     if not duplicated.empty:
         raise ValueError(
@@ -282,30 +339,27 @@ def validate_examples_dataframe(
                 f"State path is not a file: {state_path}. File: {source}"
             )
 
-        _, row_action_layout = require_topology_action_provenance(
-            row.to_dict(),
+        row_layout = _action_layout_from_value(
+            row["action_layout"],
             source=f"{source} row {index}",
-            expected_action_space_config=action_space_config,
         )
         dimensions, action_mask = _validate_npz_state(
             state_path,
             expected_physics_config=physics_config,
             expected_action_space_config=action_space_config,
-            expected_action_layout=row_action_layout,
+            expected_action_layout=row_layout,
         )
         feature_dimensions = (
             dimensions.num_bus_features,
             dimensions.num_branch_features,
         )
-
         if expected_feature_dimensions is None:
             expected_feature_dimensions = feature_dimensions
         elif feature_dimensions != expected_feature_dimensions:
             raise ValueError(
                 "Graph feature dimensions mismatch for "
-                f"{state_path}. Expected "
-                f"{expected_feature_dimensions}, observed "
-                f"{feature_dimensions}."
+                f"{state_path}. Expected {expected_feature_dimensions}, "
+                f"observed {feature_dimensions}."
             )
 
         _validate_policy_against_mask(
@@ -405,6 +459,7 @@ def _validate_policy_against_mask(
             )
         if bool(action_mask[action_id]):
             masked_mass += probability
+
     if masked_mass <= 0.0:
         raise ValueError(
             f"Policy probability mass after action_mask must be > 0 at row "
@@ -446,7 +501,10 @@ def _validate_episode_identity(
                 f"iteration must be > 0 at row {index}. File: {source}"
             )
 
-    for episode_id, group in examples.groupby("episode_id", sort=False):
+    for episode_id, group in examples.groupby(
+        "episode_id",
+        sort=False,
+    ):
         for column in ("run_id", "iteration", "scenario_id"):
             if group[column].nunique(dropna=False) != 1:
                 raise ValueError(
@@ -477,7 +535,10 @@ def _validate_episode_outcome_consistency(
     if "episode_id" not in examples.columns:
         return
 
-    for episode_id, group in examples.groupby("episode_id", sort=False):
+    for episode_id, group in examples.groupby(
+        "episode_id",
+        sort=False,
+    ):
         for column in ("run_id", "iteration", "scenario_id"):
             if (
                 column in group.columns
@@ -510,8 +571,6 @@ def _validate_episode_outcome_consistency(
                     index=index,
                     source=source,
                 ),
-                row["outcome_objective_version"],
-                row["outcome_value_target_contract_version"],
             )
             if expected is None:
                 expected = signature
@@ -528,7 +587,9 @@ def validate_example_outcome_contracts(
     source_path: str | Path,
 ) -> None:
     source = Path(source_path)
-    missing = sorted(set(REQUIRED_OUTCOME_COLUMNS) - set(examples.columns))
+    missing = sorted(
+        set(REQUIRED_OUTCOME_COLUMNS) - set(examples.columns)
+    )
     if missing:
         raise ValueError(
             "Examples CSV is missing required outcome columns: "
@@ -539,30 +600,22 @@ def validate_example_outcome_contracts(
         for column in REQUIRED_OUTCOME_COLUMNS:
             if _is_missing_required_value(row[column]):
                 raise ValueError(
-                    f"Missing required outcome value in column "
+                    "Missing required outcome value in column "
                     f"'{column}' at row {index}. File: {source}"
                 )
-        require_exact_contract_version(
-            row.get("outcome_value_target_contract_version"),
-            expected=OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
-            name="outcome/value-target contract",
-            source=f"{source} row {index}",
-            regeneration_command="python -m scripts.self_play.generate ...",
-        )
-        require_outcome_objective_version(
-            row.to_dict(),
-            source=f"{source} row {index}",
-        )
-        _validate_outcome_contract(
+        _validate_outcome(
             row,
             index=index,
             source=source,
         )
 
-    _validate_episode_outcome_consistency(examples, source=source)
+    _validate_episode_outcome_consistency(
+        examples,
+        source=source,
+    )
 
 
-def _validate_outcome_contract(
+def _validate_outcome(
     row: pd.Series,
     *,
     index: Any,
@@ -638,16 +691,15 @@ def _validate_outcome_contract(
         termination_reason=reason,
         evidence=evidence,
     )
-    expected_target = terminal_value
     if not math.isclose(
         actual_target,
-        expected_target,
+        terminal_value,
         rel_tol=1e-7,
         abs_tol=1e-7,
     ):
         raise ValueError(
             "outcome_value_target contradicts the terminal outcome "
-            f"at row {index}: expected {expected_target}, "
+            f"at row {index}: expected {terminal_value}, "
             f"observed {actual_target}. File: {source}"
         )
 
@@ -690,7 +742,10 @@ def _require_integer(
             f"{column} must be finite integer-valued at row {index}. "
             f"File: {source}"
         )
-    number = pd.to_numeric(pd.Series([value]), errors="coerce").iloc[0]
+    number = pd.to_numeric(
+        pd.Series([value]),
+        errors="coerce",
+    ).iloc[0]
     if (
         pd.isna(number)
         or not math.isfinite(float(number))
@@ -726,7 +781,8 @@ def _require_finite_number(
 ) -> float:
     if isinstance(value, (bool, np.bool_)):
         raise ValueError(
-            f"{column} must be finite numeric at row {index}. File: {source}"
+            f"{column} must be finite numeric at row {index}. "
+            f"File: {source}"
         )
     number = pd.to_numeric(
         pd.Series([value]),
@@ -734,23 +790,10 @@ def _require_finite_number(
     ).iloc[0]
     if pd.isna(number) or not math.isfinite(float(number)):
         raise ValueError(
-            f"{column} must be finite numeric at row {index}. File: {source}"
+            f"{column} must be finite numeric at row {index}. "
+            f"File: {source}"
         )
     return float(number)
-
-
-def _validate_outcome(value: Any, *, index: Any, source: Path) -> None:
-    number = pd.to_numeric(pd.Series([value]), errors="coerce").iloc[0]
-    if pd.isna(number) or not math.isfinite(float(number)):
-        raise ValueError(
-            f"outcome_value_target must be finite numeric at row {index}. "
-            f"File: {source}"
-        )
-    if abs(float(number)) > 1.0 + 1e-6:
-        raise ValueError(
-            f"outcome_value_target outside [-1, 1] at row {index}. "
-            f"File: {source}"
-        )
 
 
 def _parse_policy(
@@ -767,11 +810,13 @@ def _parse_policy(
         ) from exc
     if not isinstance(raw, dict):
         raise ValueError(
-            f"mcts_policy_json must be an object at row {index}. File: {source}"
+            f"mcts_policy_json must be an object at row {index}. "
+            f"File: {source}"
         )
     if not raw:
         raise ValueError(
-            f"mcts_policy_json must not be empty at row {index}. File: {source}"
+            f"mcts_policy_json must not be empty at row {index}. "
+            f"File: {source}"
         )
 
     policy: dict[int, float] = {}
@@ -786,7 +831,8 @@ def _parse_policy(
             ) from exc
         if action_id < 0:
             raise ValueError(
-                f"Policy action ID must be >= 0 at row {index}. File: {source}"
+                f"Policy action ID must be >= 0 at row {index}. "
+                f"File: {source}"
             )
         if isinstance(probability, bool) or not isinstance(
             probability,
@@ -818,39 +864,55 @@ def _parse_policy(
     return policy
 
 
+def _load_state_metadata(state_path: Path) -> Mapping[str, object]:
+    try:
+        with np.load(state_path, allow_pickle=False) as data:
+            if "metadata_json" not in data.files:
+                raise ValueError(
+                    "State NPZ is missing required metadata_json: "
+                    f"{state_path}"
+                )
+            raw_metadata = np.asarray(data["metadata_json"])
+    except (OSError, EOFError) as exc:
+        raise ValueError(
+            f"Could not read NPZ state: {state_path}"
+        ) from exc
+
+    if raw_metadata.size != 1:
+        raise ValueError(
+            "State metadata_json must contain one JSON object: "
+            f"{state_path}"
+        )
+    try:
+        metadata = json.loads(str(raw_metadata.item()))
+    except (json.JSONDecodeError, ValueError) as exc:
+        raise ValueError(
+            f"Invalid state metadata_json: {state_path}"
+        ) from exc
+    if not isinstance(metadata, Mapping):
+        raise ValueError(
+            f"State metadata_json must be an object: {state_path}"
+        )
+    return metadata
+
+
 def validate_state_physics_provenance(
     state_path: str | Path,
     *,
     expected_physics_config: PhysicsConfig,
 ) -> None:
-    state_path = Path(state_path)
-    try:
-        with np.load(state_path, allow_pickle=False) as data:
-            if "metadata_json" not in data.files:
-                raise ValueError(
-                    f"State NPZ is missing required metadata_json: {state_path}"
-                )
-            raw_metadata = np.asarray(data["metadata_json"])
-    except (OSError, EOFError) as exc:
-        raise ValueError(f"Could not read NPZ state: {state_path}") from exc
+    """Validate current physics semantics stored with one state."""
 
-    if raw_metadata.size != 1:
-        raise ValueError(
-            f"State metadata_json must contain one JSON object: {state_path}"
-        )
-    try:
-        metadata = json.loads(str(raw_metadata.item()))
-    except (json.JSONDecodeError, ValueError) as exc:
-        raise ValueError(f"Invalid state metadata_json: {state_path}") from exc
-    if not isinstance(metadata, Mapping):
-        raise ValueError(
-            f"State metadata_json must be an object: {state_path}"
-        )
-    require_physics_provenance(
-        metadata,
+    state_path = Path(state_path)
+    metadata = _load_state_metadata(state_path)
+    observed = _physics_config_from_value(
+        metadata.get("physics_config"),
         source=str(state_path),
-        expected_physics_config=expected_physics_config,
     )
+    if observed != expected_physics_config:
+        raise ValueError(
+            f"PhysicsConfig mismatch for {state_path}."
+        )
     validate_state_npz_schema_arrays(state_path)
 
 
@@ -860,45 +922,41 @@ def validate_state_topology_action_provenance(
     expected_action_space_config: ActionSpaceConfig,
     expected_action_layout: tuple[ActionSlot, ...],
 ) -> tuple[ActionSpaceConfig, tuple[ActionSlot, ...]]:
+    """Validate current action semantics stored with one state."""
+
     state_path = Path(state_path)
+    metadata = _load_state_metadata(state_path)
+    observed_config = _action_config_from_value(
+        metadata.get("topology_action_config"),
+        source=str(state_path),
+    )
+    observed_layout = _action_layout_from_value(
+        metadata.get("action_layout"),
+        source=str(state_path),
+    )
+    if not _same_action_config(
+        observed_config,
+        expected_action_space_config,
+    ):
+        raise ValueError(
+            f"Topology action config mismatch for {state_path}."
+        )
+    if observed_layout != expected_action_layout:
+        raise ValueError(
+            f"Action layout mismatch for {state_path}."
+        )
+
     try:
         with np.load(state_path, allow_pickle=False) as data:
-            if "metadata_json" not in data.files:
-                raise ValueError(
-                    "State NPZ is missing required "
-                    f"metadata_json: {state_path}"
-                )
             if "branch_ids" not in data.files:
                 raise ValueError(
-                    "State NPZ is missing required "
-                    f"branch_ids: {state_path}"
+                    f"State NPZ is missing branch_ids: {state_path}"
                 )
-            raw_metadata = np.asarray(data["metadata_json"])
             branch_ids = np.asarray(data["branch_ids"])
     except (OSError, EOFError) as exc:
-        raise ValueError(f"Could not read NPZ state: {state_path}") from exc
-
-    if raw_metadata.size != 1:
         raise ValueError(
-            "State metadata_json must contain one "
-            f"JSON object: {state_path}"
-        )
-    try:
-        metadata = json.loads(str(raw_metadata.item()))
-    except (json.JSONDecodeError, ValueError) as exc:
-        raise ValueError(f"Invalid state metadata_json: {state_path}") from exc
-    if not isinstance(metadata, Mapping):
-        raise ValueError(
-            "State metadata_json must be an object: "
-            f"{state_path}"
-        )
-
-    observed_config, observed_layout = require_topology_action_provenance(
-        metadata,
-        source=str(state_path),
-        expected_action_space_config=expected_action_space_config,
-        expected_action_layout=expected_action_layout,
-    )
+            f"Could not read NPZ state: {state_path}"
+        ) from exc
 
     if branch_ids.ndim != 1 or branch_ids.size == 0:
         raise ValueError(
@@ -906,33 +964,31 @@ def validate_state_topology_action_provenance(
             f"got {branch_ids.shape}"
         )
     try:
-        branch_id_values = np.asarray(branch_ids, dtype=np.float64)
+        branch_values = np.asarray(branch_ids, dtype=np.float64)
     except (TypeError, ValueError) as exc:
         raise ValueError(
             f"{state_path}: branch_ids must be numeric"
         ) from exc
-    if not np.isfinite(branch_id_values).all():
-        raise ValueError(f"{state_path}: branch_ids must be finite")
-    if not np.equal(branch_id_values, np.rint(branch_id_values)).all():
+    if not np.isfinite(branch_values).all():
+        raise ValueError(
+            f"{state_path}: branch_ids must be finite"
+        )
+    if not np.equal(branch_values, np.rint(branch_values)).all():
         raise ValueError(
             f"{state_path}: branch_ids must be integer-valued"
         )
-    if bool((branch_id_values < 0).any()):
+    if bool((branch_values < 0).any()):
         raise ValueError(
             f"{state_path}: branch_ids must be non-negative"
         )
 
     branch_layout = build_branch_action_slots(
         int(branch_id)
-        for branch_id in branch_id_values.tolist()
+        for branch_id in branch_values.tolist()
     )
-    if (
-        action_layout_fingerprint(branch_layout)
-        != action_layout_fingerprint(observed_layout)
-    ):
+    if branch_layout != observed_layout:
         raise ValueError(
-            f"{state_path}: branch_ids do not match "
-            "the action_layout metadata"
+            f"{state_path}: branch_ids do not match action_layout metadata"
         )
     return observed_config, observed_layout
 
@@ -959,11 +1015,19 @@ def _validate_npz_state(
             bus_features = np.asarray(data["bus_features"])
             branch_features = np.asarray(data["branch_features"])
             edge_index = np.asarray(data["edge_index"])
-            action_mask = np.asarray(data["action_mask"], dtype=bool)
+            action_mask = np.asarray(
+                data["action_mask"],
+                dtype=bool,
+            )
     except (OSError, ValueError, EOFError) as exc:
-        if isinstance(exc, ValueError) and "missing required arrays" in str(exc):
+        if (
+            isinstance(exc, ValueError)
+            and "missing required arrays" in str(exc)
+        ):
             raise
-        raise ValueError(f"Could not read NPZ state: {state_path}") from exc
+        raise ValueError(
+            f"Could not read NPZ state: {state_path}"
+        ) from exc
 
     validate_state_physics_provenance(
         state_path,
@@ -1015,12 +1079,16 @@ def _validate_npz_state(
             f"{state_path}: graph arrays must contain only finite values"
         )
     if not np.equal(edge_index, np.rint(edge_index)).all():
-        raise ValueError(f"{state_path}: edge_index must be integer-valued")
+        raise ValueError(
+            f"{state_path}: edge_index must be integer-valued"
+        )
     if (
         int(edge_index.min()) < 0
         or int(edge_index.max()) >= int(bus_features.shape[0])
     ):
-        raise ValueError(f"{state_path}: edge_index values out of bounds")
+        raise ValueError(
+            f"{state_path}: edge_index values out of bounds"
+        )
 
     return (
         _GraphDimensions(
@@ -1051,18 +1119,6 @@ def _validate_state_terminal_evidence(
                 f"{index}. File: {source}. State: {state_path}"
             )
 
-    version = metadata.get("terminal_outcome_evidence_schema_version")
-    if (
-        isinstance(version, (bool, np.bool_))
-        or not isinstance(version, (int, np.integer))
-        or int(version) != TERMINAL_OUTCOME_EVIDENCE_SCHEMA_VERSION
-    ):
-        raise ValueError(
-            "State terminal outcome evidence schema version mismatch "
-            f"at row {index}: {version!r}. File: {source}. "
-            f"State: {state_path}"
-        )
-
     raw_evidence = metadata.get("terminal_outcome_evidence")
     if not isinstance(raw_evidence, Mapping):
         raise ValueError(
@@ -1071,7 +1127,9 @@ def _validate_state_terminal_evidence(
         )
 
     try:
-        observed_evidence = TerminalOutcomeEvidence.from_mapping(raw_evidence)
+        observed_evidence = TerminalOutcomeEvidence.from_mapping(
+            raw_evidence
+        )
     except (TypeError, ValueError) as exc:
         raise ValueError(
             "Invalid terminal_outcome_evidence in state metadata "
@@ -1085,35 +1143,3 @@ def _validate_state_terminal_evidence(
             f"metadata at row {index}. File: {source}. "
             f"State: {state_path}"
         )
-
-
-def _load_state_metadata(state_path: Path) -> Mapping[str, object]:
-    try:
-        with np.load(state_path, allow_pickle=False) as data:
-            if "metadata_json" not in data.files:
-                raise ValueError(
-                    "State NPZ is missing required metadata_json: "
-                    f"{state_path}"
-                )
-            raw_metadata = np.asarray(data["metadata_json"])
-    except (OSError, EOFError) as exc:
-        raise ValueError(
-            f"Could not read NPZ state: {state_path}"
-        ) from exc
-
-    if raw_metadata.size != 1:
-        raise ValueError(
-            "State metadata_json must contain one JSON object: "
-            f"{state_path}"
-        )
-    try:
-        metadata = json.loads(str(raw_metadata.item()))
-    except (json.JSONDecodeError, ValueError) as exc:
-        raise ValueError(
-            f"Invalid state metadata_json: {state_path}"
-        ) from exc
-    if not isinstance(metadata, Mapping):
-        raise ValueError(
-            f"State metadata_json must be an object: {state_path}"
-        )
-    return metadata

@@ -7,8 +7,6 @@ from typing import Any
 import numpy as np
 
 from grid_topology_ai.data_adapter import GridFMState
-from grid_topology_ai.physics.objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
-from grid_topology_ai.state.schema import state_feature_schema_provenance
 
 
 class GridFMStateStore:
@@ -41,10 +39,6 @@ class GridFMStateStore:
                 "outaged_branch_ids": [
                     int(value) for value in state.outaged_branch_ids
                 ],
-                "physical_objective_schema_version": (
-                    PHYSICAL_OBJECTIVE_SCHEMA_VERSION
-                ),
-                **state_feature_schema_provenance(),
             }
         )
 
@@ -67,8 +61,7 @@ class GridFMStateStore:
     def _validated_bus_ids(state: GridFMState) -> np.ndarray:
         if state.bus_ids is None:
             raise ValueError(
-                "GridFMState.bus_ids is required when saving "
-                "versioned graph states."
+                "GridFMState.bus_ids is required when saving graph states."
             )
 
         try:
@@ -83,7 +76,9 @@ class GridFMStateStore:
                 f"{expected_shape}, observed {values.shape}."
             )
         if not np.isfinite(values).all():
-            raise ValueError("GridFMState.bus_ids must contain finite values.")
+            raise ValueError(
+                "GridFMState.bus_ids must contain finite values."
+            )
         if not np.equal(values, np.rint(values)).all():
             raise ValueError(
                 "GridFMState.bus_ids must contain integer-valued IDs."
