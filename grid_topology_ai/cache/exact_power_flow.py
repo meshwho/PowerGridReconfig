@@ -8,11 +8,6 @@ import numpy as np
 from pypower.idx_bus import BUS_TYPE, PQ, PV, REF, VA, VM
 
 from grid_topology_ai.cache.byte_lru import ByteLRUCache
-from grid_topology_ai.cache.persistent_exact import (
-    PersistentExactPowerFlowCache,
-    PersistentPowerFlowFailure,
-    PersistentPowerFlowSuccess,
-)
 from grid_topology_ai.power_flow.errors import PowerFlowFailureKind
 from grid_topology_ai.power_flow.problem import CanonicalPowerFlowProblem
 
@@ -139,13 +134,6 @@ class CachedPowerFlowSuccess:
             gen=_readonly_float64_copy(np.asarray(result_ppc["gen"])),
         )
 
-    @classmethod
-    def from_persistent(
-        cls,
-        record: PersistentPowerFlowSuccess,
-    ) -> "CachedPowerFlowSuccess":
-        return cls(bus=record.bus, branch=record.branch, gen=record.gen)
-
     @property
     def owned_bytes(self) -> int:
         return int(self.bus.nbytes + self.branch.nbytes + self.gen.nbytes)
@@ -201,7 +189,6 @@ class ExactPowerFlowCache:
         max_bytes: int = DEFAULT_EXACT_POWER_FLOW_CACHE_BYTES,
         *,
         negative_max_bytes: int | None = None,
-        persistent_cache: PersistentExactPowerFlowCache | None = None,
     ) -> None:
         positive_max_bytes = int(max_bytes)
         if negative_max_bytes is None:
@@ -213,19 +200,10 @@ class ExactPowerFlowCache:
         self._failure_cache: ByteLRUCache[bytes, CachedPowerFlowFailure] = (
             ByteLRUCache(max_bytes=int(negative_max_bytes))
         )
-        self._persistent = (
-            persistent_cache
-            if persistent_cache is not None
-            else PersistentExactPowerFlowCache.from_environment()
-        )
         self.hits = 0
         self.misses = 0
         self.positive_hits = 0
         self.negative_hits = 0
-        self.l1_hits = 0
-        self.l1_misses = 0
-        self.l2_hits = 0
-        self.l2_misses = 0
 
     @property
     def max_bytes(self) -> int:
@@ -277,48 +255,13 @@ class ExactPowerFlowCache:
         if success is not None:
             self.hits += 1
             self.positive_hits += 1
-            self.l1_hits += 1
             return key, success
-
-        self.l1_misses += 1
-        if self._persistent is not None:
-            persistent = self._persistent.lookup(positive_key)
-            if isinstance(persistent, PersistentPowerFlowSuccess):
-                success = CachedPowerFlowSuccess.from_persistent(persistent)
-                self._put_success(positive_key, success)
-                self.hits += 1
-                self.positive_hits += 1
-                self.l2_hits += 1
-                return key, success
-            if isinstance(persistent, PersistentPowerFlowFailure):
-                # Old persistent negative records were keyed by the physical
-                # problem and are unsafe under the split-key contract.
-                self._persistent.discard(positive_key)
 
         failure = self._failure_cache.get(negative_key)
         if failure is not None:
             self.hits += 1
             self.negative_hits += 1
-            self.l1_hits += 1
             return key, failure
-
-        if self._persistent is not None:
-            persistent = self._persistent.lookup(negative_key)
-            if isinstance(persistent, PersistentPowerFlowFailure):
-                failure = CachedPowerFlowFailure(
-                    failure_kind=PowerFlowFailureKind.NOT_CONVERGED,
-                    message=persistent.message,
-                )
-                self._put_failure(negative_key, failure)
-                self.hits += 1
-                self.negative_hits += 1
-                self.l2_hits += 1
-                return key, failure
-            if isinstance(persistent, PersistentPowerFlowSuccess):
-                # A success under the invocation key belongs to an obsolete
-                # key contract and must not be reused as a physical result.
-                self._persistent.discard(negative_key)
-            self.l2_misses += 1
 
         self.misses += 1
         return key, None
@@ -333,14 +276,6 @@ class ExactPowerFlowCache:
         outcome = CachedPowerFlowSuccess.from_result_ppc(result_ppc)
         stored = self._put_success(positive_key, outcome)
         self._failure_cache.discard(negative_key)
-        if self._persistent is not None:
-            self._persistent.store_success(
-                positive_key,
-                bus=outcome.bus,
-                branch=outcome.branch,
-                gen=outcome.gen,
-            )
-            self._persistent.discard(negative_key)
         return stored
 
     def store_not_converged(
@@ -354,8 +289,6 @@ class ExactPowerFlowCache:
             message=str(message),
         )
         stored = self._put_failure(negative_key, outcome)
-        if self._persistent is not None:
-            self._persistent.store_not_converged(negative_key, outcome.message)
         return stored
 
     def discard(self, key: PowerFlowCacheKey | bytes) -> None:
@@ -363,12 +296,9 @@ class ExactPowerFlowCache:
         negative_key = self._negative_key(key)
         self._success_cache.discard(positive_key)
         self._failure_cache.discard(negative_key)
-        if self._persistent is not None:
-            self._persistent.discard(positive_key)
-            self._persistent.discard(negative_key)
 
     def clear(self, *, reset_counters: bool = True) -> None:
-        """Clear worker-local caches; persistent successes survive recycling."""
+        """Clear worker-local caches."""
 
         self._success_cache.clear(reset_evictions=reset_counters)
         self._failure_cache.clear(reset_evictions=reset_counters)
@@ -383,10 +313,6 @@ class ExactPowerFlowCache:
         self.misses = 0
         self.positive_hits = 0
         self.negative_hits = 0
-        self.l1_hits = 0
-        self.l1_misses = 0
-        self.l2_hits = 0
-        self.l2_misses = 0
 
     def info(self) -> dict[str, object]:
         positive = self._success_cache.info()
@@ -407,12 +333,5 @@ class ExactPowerFlowCache:
             "negative_entries": int(negative.entries),
             "positive_bytes": int(positive.bytes),
             "negative_bytes": int(negative.bytes),
-            "l1_hits": int(self.l1_hits),
-            "l1_misses": int(self.l1_misses),
-            "l2_hits": int(self.l2_hits),
-            "l2_misses": int(self.l2_misses),
-            "l2_enabled": self._persistent is not None,
         }
-        if self._persistent is not None:
-            result["persistent"] = self._persistent.info()
         return result
