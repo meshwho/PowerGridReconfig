@@ -31,10 +31,10 @@ from grid_topology_ai.self_play.physical_lineage import (
     PHYSICAL_LINEAGE_FINGERPRINT_FIELD,
     PhysicalLineage,
 )
-from grid_topology_ai.self_play.replay import RollingReplayBuffer
-from grid_topology_ai.self_play.split_integrity import (
+from grid_topology_ai.self_play.physical_split import (
     physical_split_source_hashes,
 )
+from grid_topology_ai.self_play.replay import RollingReplayBuffer
 
 
 def _lineage(index: int) -> PhysicalLineage:
