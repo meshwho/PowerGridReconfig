@@ -19,13 +19,13 @@ from grid_topology_ai.physical_objective import (
     PhysicalStateAssessment,
     assess_physical_state,
 )
-from grid_topology_ai.power_flow_errors import (
+from grid_topology_ai.power_flow.errors import (
     InvalidPhysicalState,
     PowerFlowNotConverged,
 )
 
 if TYPE_CHECKING:
-    from grid_topology_ai.pypower_backend import GridFMPowerFlowBackend
+    from grid_topology_ai.power_flow.backend import GridFMPowerFlowBackend
 
 
 @dataclass(frozen=True, slots=True)

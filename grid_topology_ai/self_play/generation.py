@@ -123,7 +123,7 @@ def _ensure_runtime_dependencies() -> None:
     from grid_topology_ai.models.neural_evaluator import (
         NeuralPolicyValueEvaluator as _Evaluator,
     )
-    from grid_topology_ai.pypower_backend import (
+    from grid_topology_ai.power_flow.backend import (
         GridFMPowerFlowBackend as _Backend,
     )
     from grid_topology_ai.reward import GridFMReward as _Reward

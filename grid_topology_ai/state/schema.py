@@ -7,7 +7,7 @@ from collections.abc import Sequence
 import numpy as np
 import pandas as pd
 
-from grid_topology_ai.power_flow_errors import InvalidPhysicalState
+from grid_topology_ai.power_flow.errors import InvalidPhysicalState
 
 
 STATE_FEATURE_SCHEMA_VERSION = 3

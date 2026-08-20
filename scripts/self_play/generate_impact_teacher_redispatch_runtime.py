@@ -145,7 +145,7 @@ from grid_topology_ai.physical_objective import (
     PHYSICAL_OBJECTIVE_SCHEMA_VERSION,
     assess_physical_state,
 )
-from grid_topology_ai.pypower_backend import GridFMPowerFlowBackend
+from grid_topology_ai.power_flow.backend import GridFMPowerFlowBackend
 from grid_topology_ai.redispatch import (
     MinimalRedispatchResult,
     empty_redispatch_diagnostics,

@@ -25,7 +25,7 @@ except ImportError:  # pragma: no cover
 
 from grid_topology_ai.config.physics import DEFAULT_PHYSICS_CONFIG
 from grid_topology_ai.data_adapter import GridFMAdapter
-from grid_topology_ai.pypower_backend import GridFMPowerFlowBackend
+from grid_topology_ai.power_flow.backend import GridFMPowerFlowBackend
 
 
 _GRIDFM_CHUNK_CONTRACT_VERSION = 1

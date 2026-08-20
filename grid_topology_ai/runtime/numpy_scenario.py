@@ -14,8 +14,8 @@ from grid_topology_ai.physical_constraints import (
     PhysicalNetworkArrays,
     calculate_physical_metrics,
 )
-from grid_topology_ai.power_flow_errors import InvalidPhysicalState
-from grid_topology_ai.power_flow_problem import (
+from grid_topology_ai.power_flow.errors import InvalidPhysicalState
+from grid_topology_ai.power_flow.problem import (
     ScenarioPowerFlowTemplate,
     _build_branch_matrix,
     _build_bus_matrix,
