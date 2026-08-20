@@ -7,7 +7,7 @@ import pytest
 from pypower.idx_cost import COST
 from pypower.idx_gen import GEN_STATUS, PG, QG
 
-from grid_topology_ai import redispatch
+from grid_topology_ai.physics import redispatch
 from grid_topology_ai.termination import TerminationReason
 from tests.outcome_evidence_helpers import terminal_evidence
 

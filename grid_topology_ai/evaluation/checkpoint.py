@@ -43,7 +43,7 @@ from grid_topology_ai.evaluation.policy_comparison import (
     print_policy_comparison_summary,
     select_evaluation_root_policy,
 )
-from grid_topology_ai.physical_objective import STOP_POLICIES
+from grid_topology_ai.physics.objective import STOP_POLICIES
 from grid_topology_ai.self_play.artifacts import (
     read_git_state,
     save_json,

@@ -18,7 +18,7 @@ from grid_topology_ai.outcome_contract import (
     TERMINAL_OUTCOME_EVIDENCE_SCHEMA_VERSION,
     TerminalOutcomeEvidence,
 )
-from grid_topology_ai.redispatch import MinimalRedispatchResult
+from grid_topology_ai.physics.redispatch import MinimalRedispatchResult
 from grid_topology_ai.return_contract import terminal_utility_from_outcome
 from grid_topology_ai.termination import TerminationReason
 from grid_topology_ai.topology_actions import (

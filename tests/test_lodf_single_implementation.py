@@ -11,7 +11,7 @@ TEACHER_RUNTIME = (
     / "self_play"
     / "generate_impact_teacher_redispatch_runtime.py"
 )
-LODF_MODULE = ROOT / "grid_topology_ai" / "lodf.py"
+LODF_MODULE = ROOT / "grid_topology_ai" / "physics" / "lodf.py"
 
 
 def _source(path: Path) -> str:
@@ -35,7 +35,7 @@ def test_teacher_runtime_delegates_lodf_math_to_shared_module() -> None:
     # teacher entrypoint without importing its heavy runtime dependencies.
     ast.parse(source)
 
-    assert "from grid_topology_ai.lodf import (" in source
+    assert "from grid_topology_ai.physics.lodf import (" in source
     assert "np.linalg.pinv" not in source
     assert "BRANCH_FEATURE_COLUMNS" not in source
 

@@ -507,7 +507,7 @@ def require_checkpoint_contracts(
     source: str,
     expected_physics_config: "PhysicsConfig | None" = None,
 ) -> "PhysicsConfig":
-    from grid_topology_ai.physical_objective import (
+    from grid_topology_ai.physics.objective import (
         PHYSICAL_OBJECTIVE_SCHEMA_VERSION,
     )
 

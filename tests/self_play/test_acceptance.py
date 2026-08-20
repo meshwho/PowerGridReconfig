@@ -15,7 +15,7 @@ from grid_topology_ai.evaluation.paired_results import (
     PAIRED_COMPARISON_VERSION,
     PAIRED_OUTCOME_FIELDS,
 )
-from grid_topology_ai.physical_objective import physical_objective_contract
+from grid_topology_ai.physics.objective import physical_objective_contract
 from grid_topology_ai.self_play.acceptance import (
     accept_candidate,
     passes_confidence_gates,

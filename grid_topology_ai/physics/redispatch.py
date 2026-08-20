@@ -10,12 +10,12 @@ from pypower.idx_cost import COST, MODEL, NCOST, SHUTDOWN, STARTUP
 from pypower.idx_gen import GEN_STATUS, PG, QG
 
 from grid_topology_ai.data_adapter import GridFMState
-from grid_topology_ai.physical_constraints import (
+from grid_topology_ai.physics.constraints import (
     calculate_physical_metrics_from_result,
     validate_ppc_input,
     validate_pypower_result,
 )
-from grid_topology_ai.physical_objective import (
+from grid_topology_ai.physics.objective import (
     PhysicalStateAssessment,
     assess_physical_state,
 )

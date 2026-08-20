@@ -11,7 +11,7 @@ from grid_topology_ai.contracts import (
     physics_provenance,
     require_physics_provenance,
 )
-from grid_topology_ai.physical_objective import physical_objective_contract
+from grid_topology_ai.physics.objective import physical_objective_contract
 from grid_topology_ai.termination import (
     TerminationReason,
     parse_termination_reason,

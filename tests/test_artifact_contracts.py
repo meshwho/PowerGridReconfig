@@ -14,7 +14,7 @@ from grid_topology_ai.contracts import (
     require_exact_contract_version,
     require_physics_provenance,
 )
-from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
+from grid_topology_ai.physics.objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
 
 
 def _checkpoint() -> dict[str, object]:

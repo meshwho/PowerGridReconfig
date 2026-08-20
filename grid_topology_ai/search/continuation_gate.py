@@ -6,7 +6,7 @@ from typing import Any
 from grid_topology_ai.action_space import GridFMAction
 from grid_topology_ai.config.physics import DEFAULT_PHYSICS_CONFIG, PhysicsConfig
 from grid_topology_ai.data_adapter import GridFMState
-from grid_topology_ai.grid_utility import (
+from grid_topology_ai.physics.utility import (
     CONTINUATION_GRID_UTILITY_WEIGHTS,
     CONTINUATION_SWITCH_PENALTY,
     state_security_penalty,

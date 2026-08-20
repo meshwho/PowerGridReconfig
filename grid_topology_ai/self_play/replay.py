@@ -35,7 +35,7 @@ from grid_topology_ai.models.graph_self_play_dataset import (
     GraphSelfPlayDataset,
     collate_graph_samples,
 )
-from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
+from grid_topology_ai.physics.objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
 from grid_topology_ai.self_play.artifacts import sha256_file, sha256_json
 from grid_topology_ai.self_play.example_validation import (
     load_and_validate_examples_csv,

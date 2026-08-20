@@ -7,8 +7,8 @@ from typing import Any
 
 from grid_topology_ai.config.physics import PhysicsConfig
 from grid_topology_ai.evaluation.metrics import compute_safety_score
-from grid_topology_ai.grid_utility import state_security_penalty, state_utility
-from grid_topology_ai.physical_objective import assess_physical_state
+from grid_topology_ai.physics.utility import state_security_penalty, state_utility
+from grid_topology_ai.physics.objective import assess_physical_state
 from grid_topology_ai.termination import (
     TerminationReason,
     termination_reason_value,

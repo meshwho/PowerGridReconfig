@@ -13,7 +13,7 @@ from grid_topology_ai.evaluation.episode_result import (
     build_evaluation_episode_row,
 )
 from grid_topology_ai.evaluation.metrics import build_evaluation_metrics
-from grid_topology_ai.grid_utility import state_security_penalty, state_utility
+from grid_topology_ai.physics.utility import state_security_penalty, state_utility
 from grid_topology_ai.termination import TerminationReason
 
 

@@ -73,12 +73,12 @@ from grid_topology_ai.data_adapter import (
     GridFMAdapter,
     GridFMState,
 )
-from grid_topology_ai.physical_constraints import (
+from grid_topology_ai.physics.constraints import (
     calculate_physical_metrics_from_result,
     validate_ppc_input,
     validate_pypower_result,
 )
-from grid_topology_ai.physical_objective import assess_physical_state
+from grid_topology_ai.physics.objective import assess_physical_state
 from grid_topology_ai.power_flow.errors import (
     InvalidPhysicalState,
     PowerFlowFailureKind,

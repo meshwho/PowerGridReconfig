@@ -8,7 +8,7 @@ from grid_topology_ai.action_space import GridFMAction
 from grid_topology_ai.config.physics import DEFAULT_PHYSICS_CONFIG, PhysicsConfig
 from grid_topology_ai.data_adapter import BRANCH_FEATURE_COLUMNS, GridFMState
 from grid_topology_ai.environment import TopologyStepResult, TopologySwitchingEnv
-from grid_topology_ai.grid_utility import state_security_penalty
+from grid_topology_ai.physics.utility import state_security_penalty
 from grid_topology_ai.search.trajectory_selection import (
     select_epsilon_optimal_trajectory,
     update_pareto_archive,

@@ -9,7 +9,7 @@ from enum import StrEnum
 from numbers import Integral, Real
 from typing import Mapping
 
-from grid_topology_ai.physical_objective import PhysicalStateAssessment
+from grid_topology_ai.physics.objective import PhysicalStateAssessment
 from grid_topology_ai.termination import (
     TerminationReason,
     parse_termination_reason,

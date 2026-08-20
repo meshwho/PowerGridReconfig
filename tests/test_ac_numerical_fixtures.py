@@ -11,7 +11,7 @@ from pypower.idx_brch import F_BUS, PF, PT, QF, QT, T_BUS
 from pypower.idx_bus import BUS_I, VA, VM
 from pypower.idx_gen import GEN_BUS, PG, QG
 
-from grid_topology_ai.physical_constraints import (
+from grid_topology_ai.physics.constraints import (
     calculate_physical_metrics_from_result,
 )
 

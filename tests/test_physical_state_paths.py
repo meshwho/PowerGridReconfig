@@ -19,7 +19,7 @@ from grid_topology_ai.data_adapter import (
     BUS_FEATURE_COLUMNS,
     GridFMAdapter,
 )
-from grid_topology_ai.physical_objective import assess_physical_state
+from grid_topology_ai.physics.objective import assess_physical_state
 from grid_topology_ai.power_flow.errors import InvalidPhysicalState
 from grid_topology_ai.power_flow.backend import GridFMPowerFlowBackend
 from grid_topology_ai.state.builder import GridFMStateBuilder
