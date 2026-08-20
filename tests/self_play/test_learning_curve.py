@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from grid_topology_ai.self_play.learning_curve import (
+from grid_topology_ai.self_play.pipeline import (
     LearningCurveRow,
     load_learning_curve,
     save_learning_curve,
