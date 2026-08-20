@@ -370,25 +370,22 @@ def test_graph_v2_checkpoint_compatibility_ignores_reference_cardinality() -> No
     )
 
 
-def test_graph_v2_checkpoint_requires_variable_graph_contract() -> None:
-    legacy_checkpoint = {
+def test_graph_v2_checkpoint_requires_topology_cardinality_independence() -> None:
+    incomplete_checkpoint = {
         "model_type": "graph_policy_value_net_v2",
     }
 
     with pytest.raises(
         ValueError,
-        match="graph-batching contract",
+        match="topology_cardinality_independent",
     ):
         require_graph_batching_checkpoint_contract(
-            legacy_checkpoint,
-            source="legacy.pt",
+            incomplete_checkpoint,
+            source="incomplete.pt",
         )
 
     current_checkpoint = {
         "model_type": "graph_policy_value_net_v2",
-        "graph_batching_contract_version": (
-            GRAPH_BATCHING_CONTRACT_VERSION
-        ),
         "topology_cardinality_independent": True,
     }
 
