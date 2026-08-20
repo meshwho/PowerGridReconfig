@@ -16,8 +16,8 @@ from grid_topology_ai.physical_constraints import (
     calculate_physical_metrics_from_frames,
 )
 from grid_topology_ai.power_flow_errors import InvalidPhysicalState
-from grid_topology_ai.state_builder import GridFMState, GridFMStateBuilder
-from grid_topology_ai.state_schema import (
+from grid_topology_ai.state.builder import GridFMState, GridFMStateBuilder
+from grid_topology_ai.state.schema import (
     BRANCH_FEATURE_COLUMNS,
     BUS_FEATURE_COLUMNS,
     STATE_FEATURE_SCHEMA_VERSION,

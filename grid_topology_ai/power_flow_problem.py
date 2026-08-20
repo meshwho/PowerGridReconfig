@@ -53,7 +53,7 @@ from pypower.idx_gen import (
 
 from grid_topology_ai.data_adapter import GridFMState
 from grid_topology_ai.power_flow_errors import InvalidPhysicalState
-from grid_topology_ai.state_schema import (
+from grid_topology_ai.state.schema import (
     BRANCH_FEATURE_COLUMNS,
     BUS_FEATURE_COLUMNS,
 )
