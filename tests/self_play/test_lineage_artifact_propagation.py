@@ -8,9 +8,9 @@ import pandas as pd
 import pytest
 
 from grid_topology_ai.config import GenerationConfig
-from grid_topology_ai.self_play import lineage_artifacts
+from grid_topology_ai.self_play import provenance
 from grid_topology_ai.self_play import replay as replay_module
-from grid_topology_ai.self_play.lineage_artifacts import (
+from grid_topology_ai.self_play.provenance import (
     LINEAGE_COLUMNS,
     annotate_examples_csv,
     annotate_transitions_csv,
@@ -101,7 +101,7 @@ def _install_raw_data(
         return frame[columns].copy()
 
     monkeypatch.setattr(
-        lineage_artifacts.pd,
+        provenance.pd,
         "read_parquet",
         fake_read_parquet,
     )

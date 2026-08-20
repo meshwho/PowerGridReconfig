@@ -8,6 +8,7 @@ from grid_topology_ai.training.graph_policy_value import TrainingRequest
 def test_validation_protocol_static_boundaries() -> None:
     stages = Path("grid_topology_ai/self_play/stages.py").read_text()
     iteration = Path("grid_topology_ai/self_play/iteration.py").read_text()
+    provenance = Path("grid_topology_ai/self_play/provenance.py").read_text()
     training = Path(
         "grid_topology_ai/training/graph_policy_value.py"
     ).read_text()
@@ -19,6 +20,13 @@ def test_validation_protocol_static_boundaries() -> None:
     assert "physical_split_manifest" in iteration
     assert "update_validation_snapshot" in iteration
     assert "physical_validation_snapshot" in iteration
+    assert "PHYSICAL_LINEAGE_CONTRACT_VERSION" in provenance
+    assert "VALIDATION_SNAPSHOT_SCHEMA_VERSION" in provenance
+    assert "build_scenario_lineages" in provenance
+    assert "validate_lineage_columns" in provenance
+    assert not Path("grid_topology_ai/self_play/physical_lineage.py").exists()
+    assert not Path("grid_topology_ai/self_play/lineage_artifacts.py").exists()
+    assert not Path("grid_topology_ai/self_play/validation_snapshot.py").exists()
     assert hasattr(TrainingRequest, "seed") or "seed: int = 42" in training
     assert "generator=train_generator" in training
     assert "checkpoint_selection_metric" in checkpoints

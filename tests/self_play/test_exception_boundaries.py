@@ -29,7 +29,7 @@ def test_self_play_broad_exception_boundaries_are_documented() -> None:
 
     assert matches == [
         "grid_topology_ai/self_play/examples.py",
-        "grid_topology_ai/self_play/lineage_artifacts.py",
+        "grid_topology_ai/self_play/provenance.py",
         "grid_topology_ai/self_play/stages.py",
     ]
 
@@ -40,12 +40,12 @@ def test_self_play_broad_exception_boundaries_are_documented() -> None:
     assert "del self.examples[original_count:]" in examples_source
     assert "path.unlink(missing_ok=True)" in examples_source
 
-    lineage_source = Path(
-        "grid_topology_ai/self_play/lineage_artifacts.py"
+    provenance_source = Path(
+        "grid_topology_ai/self_play/provenance.py"
     ).read_text(encoding="utf-8")
-    assert lineage_source.count("except Exception") == 1
-    assert "pd.read_parquet(path, columns=requested)" in lineage_source
-    assert "frame = pd.read_parquet(path)" in lineage_source
+    assert provenance_source.count("except Exception") == 1
+    assert "pd.read_parquet(path, columns=requested)" in provenance_source
+    assert "frame = pd.read_parquet(path)" in provenance_source
 
     stages_source = Path(
         "grid_topology_ai/self_play/stages.py"
