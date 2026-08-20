@@ -25,16 +25,14 @@ from grid_topology_ai.self_play.physical_split import (
     VALIDATION_SPLIT,
     assign_physical_split,
     load_physical_split_manifest,
-)
-from grid_topology_ai.self_play.replay import (
-    EpisodeSamplingMixin,
-    _save_manifest,
-)
-from grid_topology_ai.self_play.split_integrity import (
     manifest_scenario_lineages,
     physical_split_source_hashes,
     require_current_scenario_consistency,
     require_exact_source_hashes,
+)
+from grid_topology_ai.self_play.replay import (
+    EpisodeSamplingMixin,
+    _save_manifest,
 )
 from grid_topology_ai.self_play.validation_snapshot import (
     update_validation_snapshot,
