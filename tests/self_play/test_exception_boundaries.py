@@ -7,7 +7,6 @@ SELF_PLAY_FILES_WITH_REMOVED_BROAD_CATCHES = (
     Path("grid_topology_ai/self_play/replay.py"),
     Path("grid_topology_ai/self_play/iteration.py"),
     Path("grid_topology_ai/self_play/pipeline.py"),
-    Path("grid_topology_ai/self_play/run_state.py"),
 )
 
 
