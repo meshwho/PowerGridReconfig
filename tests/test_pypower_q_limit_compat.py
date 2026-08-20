@@ -9,8 +9,8 @@ from pypower.idx_bus import BUS_I, BUS_TYPE, PD, QD, VA, PQ, REF
 from pypower.idx_gen import GEN_BUS, GEN_STATUS, QG, QMAX, QMIN
 
 from grid_topology_ai.config.physics import PhysicsConfig
-from grid_topology_ai.pypower_backend import GridFMPowerFlowBackend
-from grid_topology_ai.pypower_compat import (
+from grid_topology_ai.power_flow.backend import GridFMPowerFlowBackend
+from grid_topology_ai.power_flow.solver import (
     _largest_violation_only,
     runpf,
 )

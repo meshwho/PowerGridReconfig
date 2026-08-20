@@ -18,7 +18,7 @@ from grid_topology_ai.data_adapter import (
     GridFMAdapter,
 )
 from grid_topology_ai.physical_objective import assess_physical_state
-from grid_topology_ai.pypower_backend import GridFMPowerFlowBackend
+from grid_topology_ai.power_flow.backend import GridFMPowerFlowBackend
 
 
 def _adapter() -> SimpleNamespace:

@@ -9,7 +9,7 @@ from grid_topology_ai.cache import (
     ExactPowerFlowCache,
     exact_power_flow_fingerprint,
 )
-from grid_topology_ai.power_flow_problem import CanonicalPowerFlowProblem
+from grid_topology_ai.power_flow.problem import CanonicalPowerFlowProblem
 
 
 def _problem(*, marker: float = 0.0) -> CanonicalPowerFlowProblem:

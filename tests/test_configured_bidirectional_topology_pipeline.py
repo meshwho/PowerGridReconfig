@@ -11,7 +11,7 @@ from grid_topology_ai.action_space import GridFMActionSpace
 from grid_topology_ai.config import GenerationConfig
 from grid_topology_ai.data_adapter import BRANCH_FEATURE_COLUMNS
 from grid_topology_ai.environment import TopologySwitchingEnv
-from grid_topology_ai.pypower_backend import GridFMPowerFlowBackend
+from grid_topology_ai.power_flow.backend import GridFMPowerFlowBackend
 from grid_topology_ai.self_play import generation
 from grid_topology_ai.self_play.generation import GenerationRequest
 from scripts.self_play import generate as generation_cli

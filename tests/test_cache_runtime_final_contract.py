@@ -88,7 +88,7 @@ def test_persistent_l2_is_separate_from_physics_and_exact_l1() -> None:
     )
     exact = _source("grid_topology_ai/cache/exact_power_flow.py")
     persistent = _source("grid_topology_ai/cache/persistent_exact.py")
-    physics = _source("grid_topology_ai/power_flow_problem.py")
+    physics = _source("grid_topology_ai/power_flow/problem.py")
 
     assert "PERSISTENT_EXACT_CACHE_DIR_ENV" in runtime
     assert "PersistentExactPowerFlowCache.from_environment()" in exact
@@ -119,7 +119,7 @@ def test_persistent_cache_root_is_portable() -> None:
 
 def test_removed_legacy_private_cache_apis_do_not_return() -> None:
     action_space = _source("grid_topology_ai/action_space.py")
-    backend = _source("grid_topology_ai/pypower_backend.py")
+    backend = _source("grid_topology_ai/power_flow/backend.py")
     dc_screener = _source("grid_topology_ai/search/dc_action_screener.py")
 
     assert "def _make_cache_key(" not in action_space

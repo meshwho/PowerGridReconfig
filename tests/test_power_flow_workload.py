@@ -7,9 +7,9 @@ from pypower.api import case9, ppoption, runpf as stock_runpf
 from pypower.idx_gen import QG, QMAX, QMIN
 
 from grid_topology_ai.config.physics import PhysicsConfig
-from grid_topology_ai.pypower_backend import GridFMPowerFlowBackend
-from grid_topology_ai import pypower_compat as compat
-from grid_topology_ai.pypower_compat import (
+from grid_topology_ai.power_flow.backend import GridFMPowerFlowBackend
+from grid_topology_ai.power_flow import solver as compat
+from grid_topology_ai.power_flow.solver import (
     get_power_flow_workload_counters,
     reset_power_flow_workload_counters,
     runpf,

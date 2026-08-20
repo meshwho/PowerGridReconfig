@@ -14,12 +14,12 @@ from grid_topology_ai.data_adapter import (
     BUS_FEATURE_COLUMNS,
     GridFMState,
 )
-from grid_topology_ai.power_flow_problem import (
+from grid_topology_ai.power_flow.problem import (
     GeneratorOperatingPoint,
     build_power_flow_problem_from_state,
     build_scenario_power_flow_template,
 )
-from grid_topology_ai.pypower_backend import GridFMPowerFlowBackend
+from grid_topology_ai.power_flow.backend import GridFMPowerFlowBackend
 
 
 def _adapter() -> SimpleNamespace:

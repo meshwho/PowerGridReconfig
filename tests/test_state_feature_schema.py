@@ -5,7 +5,7 @@ import pandas as pd
 import pytest
 
 from grid_topology_ai.data_adapter import GridFMAdapter
-from grid_topology_ai.power_flow_errors import InvalidPhysicalState
+from grid_topology_ai.power_flow.errors import InvalidPhysicalState
 from grid_topology_ai.state.schema import (
     BRANCH_FEATURE_COLUMNS,
     BUS_FEATURE_COLUMNS,

@@ -8,7 +8,7 @@ import pandas as pd
 
 from grid_topology_ai.config.physics import PhysicsConfig
 from grid_topology_ai.data_adapter import GridFMAdapter
-from grid_topology_ai.power_flow_problem import build_scenario_power_flow_template
+from grid_topology_ai.power_flow.problem import build_scenario_power_flow_template
 from grid_topology_ai.runtime import (
     MemoryMappedGridFMAdapter,
     MemoryMappedScenarioStore,
