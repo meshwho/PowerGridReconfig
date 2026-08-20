@@ -19,18 +19,6 @@ _TEACHER_RAW_SOURCE_FILES = (
 RUNTIME_TASK_CONFIG_FIELDS = frozenset(
     {
         "disable_cache",
-        "clear_caches_every",
-        "max_worker_memory_mb",
-        "print_memory_events",
-        "max_tasks_per_child",
-        "min_free_system_memory_mb",
-        "memory_registry_max_age_sec",
-        "auto_worker_memory_mb",
-        "auto_worker_memory_reserve_mb",
-        "auto_worker_cpu_util_target",
-        "auto_worker_cpu_mode",
-        "auto_worker_cpu_fraction",
-        "auto_worker_max",
     }
 )
 
