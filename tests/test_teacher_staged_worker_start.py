@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -11,6 +12,33 @@ def test_production_entrypoint_uses_runtime_teacher_module() -> None:
     assert entrypoint.REDISPATCH_TEACHER_MODULE == (
         "scripts.self_play.generate_impact_teacher_redispatch_runtime"
     )
+
+
+def test_native_thread_defaults_are_applied_before_project_imports() -> None:
+    root = Path(__file__).resolve().parents[1]
+    source = (
+        root
+        / "scripts"
+        / "self_play"
+        / "generate_impact_teacher_redispatch_runtime.py"
+    ).read_text(encoding="utf-8")
+    ast.parse(source)
+
+    configure_call = source.index("_configure_native_math_threads()")
+    first_project_import = source.index("from grid_topology_ai")
+    assert configure_call < first_project_import
+
+    for name in (
+        "OMP_NUM_THREADS",
+        "MKL_NUM_THREADS",
+        "OPENBLAS_NUM_THREADS",
+        "NUMEXPR_NUM_THREADS",
+        "BLIS_NUM_THREADS",
+        "VECLIB_MAXIMUM_THREADS",
+    ):
+        assert f'"{name}"' in source
+
+    assert 'os.environ.setdefault(name, "1")' in source
 
 
 def test_worker_init_installs_bounded_runtime_policy(monkeypatch) -> None:
@@ -28,11 +56,6 @@ def test_worker_init_installs_bounded_runtime_policy(monkeypatch) -> None:
         teacher,
         "ensure_runtime_scenario_store",
         lambda raw_dir: Path("runtime-store"),
-    )
-    monkeypatch.setattr(
-        teacher,
-        "_configure_persistent_exact_cache",
-        lambda store_dir: None,
     )
     monkeypatch.setattr(
         teacher,
@@ -83,11 +106,6 @@ def test_parallel_workers_are_not_recycled_by_default(monkeypatch, tmp_path: Pat
         teacher,
         "ensure_runtime_scenario_store",
         lambda raw_dir: tmp_path / "runtime-store",
-    )
-    monkeypatch.setattr(
-        teacher,
-        "_configure_persistent_exact_cache",
-        lambda store_dir: None,
     )
     monkeypatch.setattr(teacher, "_worker_init_concurrency", lambda: 2)
     monkeypatch.setattr(teacher, "ProcessPoolExecutor", FakeExecutor)

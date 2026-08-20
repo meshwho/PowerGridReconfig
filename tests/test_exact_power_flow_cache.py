@@ -148,3 +148,41 @@ def test_exact_cache_negative_entry_requires_identical_problem() -> None:
     )
     assert other is None
     assert cache.info()["negative_hits"] == 1
+
+
+def test_positive_result_replaces_negative_for_same_invocation() -> None:
+    cache = ExactPowerFlowCache(max_bytes=4096)
+    problem = _problem()
+    key, outcome = cache.lookup(problem, physics_fingerprint="physics-a")
+    assert outcome is None
+    assert cache.store_not_converged(key, "cold solve failed")
+    assert isinstance(
+        cache.lookup(problem, physics_fingerprint="physics-a")[1],
+        CachedPowerFlowFailure,
+    )
+
+    assert cache.store_success(key, problem.to_ppc(copy=True))
+    assert isinstance(
+        cache.lookup(problem, physics_fingerprint="physics-a")[1],
+        CachedPowerFlowSuccess,
+    )
+    assert cache.info()["negative_entries"] == 0
+
+
+def test_reset_counters_preserves_entries_but_clear_removes_them() -> None:
+    cache = ExactPowerFlowCache(max_bytes=4096)
+    problem = _problem()
+    key, _ = cache.lookup(problem, physics_fingerprint="physics-a")
+    assert cache.store_success(key, problem.to_ppc(copy=True))
+
+    cache.reset_counters()
+    assert cache.info()["size"] == 1
+    assert isinstance(
+        cache.lookup(problem, physics_fingerprint="physics-a")[1],
+        CachedPowerFlowSuccess,
+    )
+    assert cache.info()["hits"] == 1
+
+    cache.clear()
+    assert cache.info()["size"] == 0
+    assert cache.lookup(problem, physics_fingerprint="physics-a")[1] is None

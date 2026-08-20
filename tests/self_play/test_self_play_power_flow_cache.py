@@ -16,11 +16,6 @@ from grid_topology_ai.environment import TopologySwitchingEnv
 from grid_topology_ai.power_flow.backend import GridFMPowerFlowResult
 from grid_topology_ai.search.continuation_gate import make_do_nothing_action
 from grid_topology_ai.search.mcts import MCTSConfig, MCTSPlanner
-from grid_topology_ai.self_play.generation import (
-    _finalize_power_flow_performance_summary,
-    _new_power_flow_performance_summary,
-    _record_power_flow_scenario,
-)
 
 
 def _metrics(max_loading: float = 110.0) -> dict[str, object]:
@@ -170,76 +165,6 @@ class _CachedBackend:
             switched_branch_id=10,
             target_status=0,
         )
-
-
-def test_power_flow_summary_aggregates_reset_and_cumulative_counters() -> None:
-    summary = _new_power_flow_performance_summary(True)
-
-    _record_power_flow_scenario(
-        summary,
-        {
-            "hits": 0,
-            "misses": 0,
-            "stock_runpf_calls": 0,
-            "q_limit_resolves": 0,
-        },
-        {
-            "hits": 3,
-            "misses": 7,
-            "exact_cache_hits": 2,
-            "tolerant_cache_hits": 1,
-            "warm_start_hits": 4,
-            "cold_start_misses": 3,
-            "stock_runpf_calls": 10,
-            "q_limit_resolves": 6,
-            "size": 8,
-            "topology_cache_buckets": 5,
-            "topology_cache_entries": 7,
-        },
-    )
-
-    # hits/misses were reset by clear_cache(), while PYPOWER workload counters
-    # stayed cumulative. Per-scenario deltas must handle both at once.
-    _record_power_flow_scenario(
-        summary,
-        {
-            "hits": 0,
-            "misses": 0,
-            "stock_runpf_calls": 10,
-            "q_limit_resolves": 6,
-        },
-        {
-            "hits": 4,
-            "misses": 6,
-            "exact_cache_hits": 3,
-            "tolerant_cache_hits": 1,
-            "warm_start_hits": 5,
-            "cold_start_misses": 1,
-            "stock_runpf_calls": 22,
-            "q_limit_resolves": 13,
-            "size": 9,
-            "topology_cache_buckets": 6,
-            "topology_cache_entries": 8,
-        },
-    )
-
-    result = _finalize_power_flow_performance_summary(summary)
-
-    assert result["scenarios"] == 2
-    assert result["hits"] == 7
-    assert result["misses"] == 13
-    assert result["exact_cache_hits"] == 5
-    assert result["tolerant_cache_hits"] == 2
-    assert result["warm_start_hits"] == 9
-    assert result["cold_start_misses"] == 4
-    assert result["stock_runpf_calls"] == 22
-    assert result["q_limit_resolves"] == 13
-    assert result["hit_rate"] == 7 / 20
-    assert result["warm_start_rate"] == 9 / 13
-    assert result["cold_start_rate"] == 4 / 13
-    assert result["peak_cache_size"] == 9
-    assert result["peak_topology_cache_buckets"] == 6
-    assert result["peak_topology_cache_entries"] == 8
 
 
 def test_mcts_and_executed_self_play_step_share_power_flow_cache() -> None:

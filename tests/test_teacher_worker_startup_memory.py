@@ -38,11 +38,6 @@ def test_worker_init_semaphore_wraps_heavy_context_initialization(monkeypatch) -
     )
     monkeypatch.setattr(
         teacher,
-        "_configure_persistent_exact_cache",
-        lambda store_dir: None,
-    )
-    monkeypatch.setattr(
-        teacher,
         "build_memory_mapped_teacher_context",
         fake_build_context,
     )
@@ -105,11 +100,6 @@ def test_parallel_runtime_adds_init_semaphore_without_changing_checkpoint_config
         teacher,
         "ensure_runtime_scenario_store",
         lambda raw_dir: tmp_path / "runtime-store",
-    )
-    monkeypatch.setattr(
-        teacher,
-        "_configure_persistent_exact_cache",
-        lambda store_dir: None,
     )
     monkeypatch.setattr(teacher, "ProcessPoolExecutor", FakeExecutor)
     monkeypatch.setattr(teacher, "as_completed", lambda futures: list(futures))

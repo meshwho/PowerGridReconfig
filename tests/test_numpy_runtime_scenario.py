@@ -6,13 +6,16 @@ import numpy as np
 import pandas as pd
 
 from grid_topology_ai.config.physics import PhysicsConfig
+from grid_topology_ai.contracts import PHYSICS_CONFIG_CONTRACT_VERSION
 from grid_topology_ai.data_adapter import GridFMAdapter
 from grid_topology_ai.power_flow.problem import build_scenario_power_flow_template
 from grid_topology_ai.runtime.numpy_scenario import (
     NumPyMemoryMappedGridFMAdapter,
     NumPyMemoryMappedGridFMPowerFlowBackend,
 )
+from grid_topology_ai.runtime import build_memory_mapped_teacher_context
 from grid_topology_ai.runtime.scenario_store import ensure_runtime_scenario_store
+from grid_topology_ai.topology_actions import GridFMAction
 
 
 def _write_dataset(raw_dir: Path) -> None:
@@ -206,3 +209,54 @@ def test_numpy_runtime_matches_canonical_state_and_pf_template(
     assert not isinstance(frames["bus"], pd.DataFrame)
     assert not isinstance(frames["branch"], pd.DataFrame)
     assert not isinstance(frames["gen"], pd.DataFrame)
+
+
+def _teacher_context(tmp_path: Path):
+    raw_dir = tmp_path / "raw"
+    _write_dataset(raw_dir)
+    physics = PhysicsConfig()
+    return build_memory_mapped_teacher_context(
+        runtime_store_dir=ensure_runtime_scenario_store(raw_dir),
+        states_dir=tmp_path / "states",
+        task_config={
+            "physics_config_contract_version": PHYSICS_CONFIG_CONTRACT_VERSION,
+            "physics_config": physics.to_dict(),
+            "physics_config_fingerprint": physics.fingerprint(),
+            "disable_cache": False,
+        },
+        scenario_ids=[1],
+    )
+
+
+def test_production_teacher_builder_selects_numpy_mmap_runtime(tmp_path: Path) -> None:
+    context = _teacher_context(tmp_path)
+
+    assert isinstance(context["adapter"], NumPyMemoryMappedGridFMAdapter)
+    assert isinstance(context["backend"], NumPyMemoryMappedGridFMPowerFlowBackend)
+
+
+def test_numpy_teacher_backend_reuses_identical_pf_from_l1(tmp_path: Path) -> None:
+    context = _teacher_context(tmp_path)
+    backend = context["backend"]
+    state = context["adapter"].build_state(1)
+    action = GridFMAction(
+        action_id=1,
+        action_type="switch_off_branch",
+        branch_id=10,
+        branch_pos=0,
+    )
+
+    first = backend.run_power_flow_from_state(state, action=action)
+    second = backend.run_power_flow_from_state(state, action=action)
+
+    assert first.success and second.success
+    assert backend.cache_info()["misses"] == 1
+    assert backend.cache_info()["hits"] == 1
+    np.testing.assert_array_equal(
+        first.next_state.bus_features,
+        second.next_state.bus_features,
+    )
+    np.testing.assert_array_equal(
+        first.next_state.branch_features,
+        second.next_state.branch_features,
+    )

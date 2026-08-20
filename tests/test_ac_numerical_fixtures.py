@@ -6,7 +6,8 @@ from typing import Callable
 
 import numpy as np
 import pytest
-from pypower.api import case14, case30, ppoption, runpf
+from pypower.api import case14, case30, ppoption
+from pypower.idx_brch import BR_STATUS
 from pypower.idx_brch import F_BUS, PF, PT, QF, QT, T_BUS
 from pypower.idx_bus import BUS_I, VA, VM
 from pypower.idx_gen import GEN_BUS, PG, QG
@@ -14,6 +15,7 @@ from pypower.idx_gen import GEN_BUS, PG, QG
 from grid_topology_ai.physics.constraints import (
     calculate_physical_metrics_from_result,
 )
+from grid_topology_ai.power_flow.solver import runpf
 
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "ac_power_flow"
@@ -86,6 +88,10 @@ def test_newton_ac_power_flow_matches_preverified_fixture(
     )
 
     assert bool(success) is True
+    np.testing.assert_array_equal(
+        result["branch"][:, BR_STATUS],
+        ppc["branch"][:, BR_STATUS],
+    )
     assert fixture["schema_version"] == 1
     assert fixture["case"] == case_name
 
