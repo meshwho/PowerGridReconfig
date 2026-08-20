@@ -8,7 +8,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from grid_topology_ai.outcome_contract import TerminalOutcomeEvidence
+from grid_topology_ai.outcome_record import TerminalOutcomeEvidence
 from grid_topology_ai.self_play.pool_sampling import (
     compute_priority,
     refresh_priorities,

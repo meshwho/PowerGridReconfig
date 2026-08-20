@@ -11,7 +11,7 @@ from grid_topology_ai.contracts import (
     OUTCOME_OBJECTIVE_VERSION,
     OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
 )
-from grid_topology_ai.outcome_contract import (
+from grid_topology_ai.outcome_record import (
     TERMINAL_OUTCOME_EVIDENCE_SCHEMA_VERSION,
     TerminalOutcomeEvidence,
 )
@@ -19,7 +19,7 @@ from grid_topology_ai.outcome_record import (
     parse_terminal_outcome_fields,
 )
 from grid_topology_ai.physics.objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
-from grid_topology_ai.return_contract import (
+from grid_topology_ai.reward import (
     TERMINAL_UTILITY_GAMMA,
     VALUE_TARGET_MODE,
     require_discount_factor,

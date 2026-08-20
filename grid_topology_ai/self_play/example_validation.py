@@ -17,12 +17,12 @@ from grid_topology_ai.contracts import (
     require_physics_provenance,
     require_topology_action_provenance,
 )
-from grid_topology_ai.outcome_contract import (
+from grid_topology_ai.outcome_record import (
     TERMINAL_OUTCOME_EVIDENCE_SCHEMA_VERSION,
     TerminalOutcomeEvidence,
 )
 from grid_topology_ai.physics.objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
-from grid_topology_ai.return_contract import (
+from grid_topology_ai.reward import (
     TERMINAL_UTILITY_GAMMA,
     VALUE_TARGET_MODE,
     terminal_utility_from_outcome,
