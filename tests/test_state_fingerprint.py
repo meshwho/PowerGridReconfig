@@ -4,9 +4,9 @@ from dataclasses import replace
 
 import numpy as np
 
-import grid_topology_ai.state_fingerprint as state_fingerprint
+import grid_topology_ai.state.fingerprint as state_fingerprint
 from grid_topology_ai.data_adapter import GridFMState
-from grid_topology_ai.state_schema import (
+from grid_topology_ai.state.schema import (
     BRANCH_FEATURE_COLUMNS,
     BUS_FEATURE_COLUMNS,
 )
@@ -87,6 +87,8 @@ def _copy_state(state: GridFMState) -> GridFMState:
 
 def test_equal_states_have_equal_fingerprints():
     state = _state()
+
+    assert state_fingerprint._FINGERPRINT_VERSION == b"physical-state-v1"
 
     fingerprint = state_fingerprint.physical_state_fingerprint(state)
 

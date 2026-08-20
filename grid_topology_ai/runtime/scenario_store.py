@@ -17,8 +17,8 @@ from grid_topology_ai.contracts import PHYSICS_CONFIG_CONTRACT_VERSION
 from grid_topology_ai.power_flow_problem import build_scenario_power_flow_template
 from grid_topology_ai.pypower_backend import GridFMPowerFlowBackend
 from grid_topology_ai.reward import GridFMReward
-from grid_topology_ai.state_builder import GridFMState, GridFMStateBuilder
-from grid_topology_ai.state_store import GridFMStateStore
+from grid_topology_ai.state.builder import GridFMState, GridFMStateBuilder
+from grid_topology_ai.state.store import GridFMStateStore
 
 
 RUNTIME_SCENARIO_STORE_SCHEMA_VERSION = 1

@@ -26,9 +26,9 @@ from grid_topology_ai.runtime.scenario_store import (
     MemoryMappedGridFMPowerFlowBackend,
     MemoryMappedScenarioStore,
 )
-from grid_topology_ai.state_builder import GridFMState
-from grid_topology_ai.state_schema import BRANCH_FEATURE_COLUMNS, BUS_FEATURE_COLUMNS
-from grid_topology_ai.state_store import GridFMStateStore
+from grid_topology_ai.state.builder import GridFMState
+from grid_topology_ai.state.schema import BRANCH_FEATURE_COLUMNS, BUS_FEATURE_COLUMNS
+from grid_topology_ai.state.store import GridFMStateStore
 
 
 _BUS_FEATURE_INDEX = {

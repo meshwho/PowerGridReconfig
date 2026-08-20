@@ -92,7 +92,7 @@ def require_state_feature_schema_provenance(
 ) -> dict[str, object]:
     """Require the exact ordered state representation used by this build."""
 
-    from grid_topology_ai.state_schema import (
+    from grid_topology_ai.state.schema import (
         BRANCH_FEATURE_COLUMNS,
         BUS_FEATURE_COLUMNS,
         BUS_ID_SEMANTICS,
@@ -174,7 +174,7 @@ def physics_provenance(
 ) -> dict[str, object]:
     """Build canonical runtime provenance stored in pipeline artifacts."""
 
-    from grid_topology_ai.state_schema import state_feature_schema_provenance
+    from grid_topology_ai.state.schema import state_feature_schema_provenance
 
     return {
         **state_feature_schema_provenance(),
@@ -452,7 +452,7 @@ def _require_graph_checkpoint_feature_dimensions(
     *,
     source: str,
 ) -> None:
-    from grid_topology_ai.state_schema import (
+    from grid_topology_ai.state.schema import (
         BRANCH_FEATURE_COLUMNS,
         BUS_FEATURE_COLUMNS,
     )

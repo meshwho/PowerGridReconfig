@@ -26,7 +26,7 @@ from grid_topology_ai.search.root_policy import (
     normalize_policy,
     require_action_in_policy_support,
 )
-from grid_topology_ai.state_store import GridFMStateStore
+from grid_topology_ai.state.store import GridFMStateStore
 from grid_topology_ai.termination import (
     TerminationReason,
     termination_reason_value,

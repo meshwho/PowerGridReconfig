@@ -95,7 +95,7 @@ from grid_topology_ai.pypower_compat import (
     get_power_flow_workload_counters,
     runpf,
 )
-from grid_topology_ai.state_builder import GridFMStateBuilder
+from grid_topology_ai.state.builder import GridFMStateBuilder
 from grid_topology_ai.topology_actions import GridFMAction
 
 

@@ -22,7 +22,7 @@ from grid_topology_ai.data_adapter import (
 from grid_topology_ai.physical_objective import assess_physical_state
 from grid_topology_ai.power_flow_errors import InvalidPhysicalState
 from grid_topology_ai.pypower_backend import GridFMPowerFlowBackend
-from grid_topology_ai.state_builder import GridFMStateBuilder
+from grid_topology_ai.state.builder import GridFMStateBuilder
 
 
 def _adapter() -> SimpleNamespace:

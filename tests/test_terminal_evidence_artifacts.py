@@ -16,7 +16,7 @@ from grid_topology_ai.self_play.example_validation import (
     load_and_validate_examples_csv,
 )
 from grid_topology_ai.self_play.examples import ExampleWriter
-from grid_topology_ai.state_schema import (
+from grid_topology_ai.state.schema import (
     BRANCH_FEATURE_COLUMNS,
     BUS_FEATURE_COLUMNS,
 )

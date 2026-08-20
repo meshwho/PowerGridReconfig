@@ -12,7 +12,7 @@ from grid_topology_ai.contracts import (
 )
 from grid_topology_ai.data_adapter import GridFMState
 from grid_topology_ai.models.graph_policy_value_net_v2 import GraphPolicyValueNetV2
-from grid_topology_ai.state_fingerprint import physical_state_fingerprint
+from grid_topology_ai.state.fingerprint import physical_state_fingerprint
 from grid_topology_ai.topology_actions import (
     STOP_PLUS_BRANCH_STATUS_POLICY_LAYOUT,
     action_layout_fingerprint,

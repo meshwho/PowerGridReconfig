@@ -8,7 +8,7 @@ import numpy as np
 
 from grid_topology_ai.data_adapter import GridFMState
 from grid_topology_ai.physical_objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
-from grid_topology_ai.state_schema import state_feature_schema_provenance
+from grid_topology_ai.state.schema import state_feature_schema_provenance
 
 
 class GridFMStateStore:

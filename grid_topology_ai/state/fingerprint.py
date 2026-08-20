@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from grid_topology_ai.state_schema import (
+from grid_topology_ai.state.schema import (
     state_feature_schema_fingerprint,
 )
 
