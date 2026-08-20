@@ -9,9 +9,6 @@ import pytest
 
 from grid_topology_ai.config.physics import DEFAULT_PHYSICS_CONFIG
 from grid_topology_ai.data_adapter import GridFMState
-from grid_topology_ai.outcome_contract import (
-    TERMINAL_OUTCOME_EVIDENCE_SCHEMA_VERSION,
-)
 from grid_topology_ai.self_play.example_validation import (
     load_and_validate_examples_csv,
 )
@@ -129,10 +126,8 @@ def test_valid_terminal_evidence_artifacts_are_accepted(
     examples = load_and_validate_examples_csv(examples_path)
 
     assert len(examples) == 1
-    assert examples.loc[
-        0,
-        "terminal_outcome_evidence_schema_version",
-    ] == TERMINAL_OUTCOME_EVIDENCE_SCHEMA_VERSION
+    assert "terminal_outcome_evidence_schema_version" not in examples.columns
+    assert examples.loc[0, "terminal_outcome_evidence_json"]
     assert examples.loc[0, "run_id"]
     assert examples.loc[0, "episode_id"]
     assert examples.loc[0, "iteration"] == 1
@@ -254,23 +249,6 @@ def test_missing_state_evidence_is_rejected(
     with pytest.raises(
         ValueError,
         match="missing terminal_outcome_evidence",
-    ):
-        load_and_validate_examples_csv(examples_path)
-
-
-def test_state_evidence_schema_mismatch_is_rejected(
-    tmp_path: Path,
-) -> None:
-    examples_path, state_path = _write_episode(tmp_path)
-
-    def change_version(metadata: dict[str, object]) -> None:
-        metadata["terminal_outcome_evidence_schema_version"] = 1
-
-    _rewrite_state_metadata(state_path, change_version)
-
-    with pytest.raises(
-        ValueError,
-        match="schema version mismatch",
     ):
         load_and_validate_examples_csv(examples_path)
 

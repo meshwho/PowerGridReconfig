@@ -4,9 +4,8 @@ from dataclasses import replace
 
 import pytest
 
-from grid_topology_ai.outcome_contract import (
+from grid_topology_ai.outcome_record import (
     RedispatchStatus,
-    TERMINAL_OUTCOME_EVIDENCE_SCHEMA_VERSION,
     TerminalOutcomeEvidence,
 )
 from grid_topology_ai.physics.objective import assess_physical_state
@@ -40,7 +39,7 @@ def _assessment(**overrides: object):
     return assess_physical_state(_metrics(**overrides))
 
 
-def test_solved_evidence_round_trips() -> None:
+def test_solved_evidence_round_trips_without_schema_metadata() -> None:
     evidence = TerminalOutcomeEvidence(
         solved=True,
         termination_reason=TerminationReason.SOLVED,
@@ -49,9 +48,7 @@ def test_solved_evidence_round_trips() -> None:
         topology_utility=1.0,
     )
     payload = evidence.to_dict()
-    assert payload["schema_version"] == (
-        TERMINAL_OUTCOME_EVIDENCE_SCHEMA_VERSION
-    )
+    assert "schema_version" not in payload
     assert TerminalOutcomeEvidence.from_mapping(payload) == evidence
 
 
@@ -119,9 +116,7 @@ def test_power_flow_failure_allows_missing_assessment() -> None:
         redispatch_status=RedispatchStatus.NOT_REQUESTED,
         topology_utility=-1.0,
     )
-    assert TerminalOutcomeEvidence.from_mapping(
-        evidence.to_dict()
-    ) == evidence
+    assert TerminalOutcomeEvidence.from_mapping(evidence.to_dict()) == evidence
 
 
 def test_unsolved_reason_rejects_secure_assessment() -> None:
@@ -155,9 +150,7 @@ def test_hard_overload_reason_rejects_safe_assessment() -> None:
     with pytest.raises(ValueError, match="hard-overloaded"):
         TerminalOutcomeEvidence(
             solved=False,
-            termination_reason=(
-                TerminationReason.UNSAFE_STOP_WITH_HARD_OVERLOAD
-            ),
+            termination_reason=TerminationReason.UNSAFE_STOP_WITH_HARD_OVERLOAD,
             assessment=_assessment(
                 max_loading_percent=110.0,
                 num_overloaded_branches=1,
@@ -220,19 +213,6 @@ def test_converged_assessment_rejected_for_power_flow_failure() -> None:
             redispatch_status=RedispatchStatus.NOT_REQUESTED,
             topology_utility=-1.0,
         )
-
-
-def test_mapping_rejects_wrong_schema_version() -> None:
-    payload = TerminalOutcomeEvidence(
-        solved=True,
-        termination_reason=TerminationReason.SOLVED,
-        assessment=_assessment(),
-        redispatch_status=RedispatchStatus.NOT_REQUESTED,
-        topology_utility=1.0,
-    ).to_dict()
-    payload["schema_version"] = 999
-    with pytest.raises(ValueError, match="schema version"):
-        TerminalOutcomeEvidence.from_mapping(payload)
 
 
 def test_mapping_rejects_unknown_fields() -> None:
