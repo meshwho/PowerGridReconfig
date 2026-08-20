@@ -6,7 +6,7 @@ import pytest
 
 from grid_topology_ai.self_play import pipeline as pipeline_module
 from grid_topology_ai.self_play.artifacts import load_json, save_json
-from grid_topology_ai.self_play.completion import write_iteration_completion_marker
+from grid_topology_ai.self_play.paths import write_iteration_completion_marker
 from grid_topology_ai.self_play.pipeline import (
     RunState,
     resolve_run_state,

@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from grid_topology_ai.self_play.artifacts import load_json, save_json, sha256_file
-from grid_topology_ai.self_play.completion import (
+from grid_topology_ai.self_play.paths import (
     COMPLETION_SCHEMA_VERSION,
     load_iteration_completion_marker,
     validate_iteration_completion,

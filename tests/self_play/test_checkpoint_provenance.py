@@ -15,7 +15,7 @@ from grid_topology_ai.self_play.artifacts import (
 from grid_topology_ai.self_play.checkpoint_provenance import (
     CHECKPOINT_SELECTION_HASH_KEY,
 )
-from grid_topology_ai.self_play.completion import (
+from grid_topology_ai.self_play.paths import (
     validate_iteration_completion,
     write_iteration_completion_marker,
 )
