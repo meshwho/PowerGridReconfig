@@ -17,7 +17,6 @@ _WORKER_INIT_CONCURRENCY_OPTION = "--worker-init-concurrency"
 _WORKER_INIT_CONCURRENCY_ENV = "POWERGRID_TEACHER_INIT_CONCURRENCY"
 _DEFAULT_WORKER_INIT_CONCURRENCY = 1
 _EXACT_L1_CACHE_MAX_MB_ENV = "POWERGRID_EXACT_L1_CACHE_MAX_MB"
-_PF_WARM_START_ENV = "POWERGRID_ENABLE_PF_WARM_START"
 
 
 def _option_value(argv: Sequence[str], name: str) -> str | None:
@@ -100,15 +99,10 @@ def _pop_worker_init_concurrency(argv: list[str]) -> int:
 
 def _pop_cache_runtime_options(
     argv: Sequence[str],
-) -> tuple[list[str], float | None, bool | None]:
+) -> tuple[list[str], float | None]:
     values = [str(value) for value in argv]
     parser = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
     parser.add_argument("--exact-cache-max-mb", type=float, default=None)
-    parser.add_argument(
-        "--pf-warm-start",
-        action=argparse.BooleanOptionalAction,
-        default=None,
-    )
     parsed, remaining = parser.parse_known_args(values[1:])
 
     exact_cache_max_mb = parsed.exact_cache_max_mb
@@ -117,7 +111,7 @@ def _pop_cache_runtime_options(
         if not math.isfinite(exact_cache_max_mb) or exact_cache_max_mb <= 0.0:
             raise ValueError("--exact-cache-max-mb must be a positive finite number.")
 
-    return [values[0], *remaining], exact_cache_max_mb, parsed.pf_warm_start
+    return [values[0], *remaining], exact_cache_max_mb
 
 
 def canonical_argv(argv: Sequence[str]) -> list[str]:
@@ -153,7 +147,7 @@ def canonical_argv(argv: Sequence[str]) -> list[str]:
 
 def main() -> None:
     try:
-        argv, exact_cache_max_mb, pf_warm_start = _pop_cache_runtime_options(
+        argv, exact_cache_max_mb = _pop_cache_runtime_options(
             sys.argv
         )
         init_concurrency = _pop_worker_init_concurrency(argv)
@@ -162,8 +156,6 @@ def main() -> None:
 
     if exact_cache_max_mb is not None:
         os.environ[_EXACT_L1_CACHE_MAX_MB_ENV] = f"{exact_cache_max_mb:.12g}"
-    if pf_warm_start is not None:
-        os.environ[_PF_WARM_START_ENV] = "1" if pf_warm_start else "0"
 
     from scripts.pipelines import run_teacher_by_difficulty as pipeline
 

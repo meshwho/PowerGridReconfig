@@ -443,7 +443,6 @@ _PF_PERFORMANCE_COUNTERS = (
     "misses",
     "exact_cache_hits",
     "tolerant_cache_hits",
-    "warm_start_hits",
     "cold_start_misses",
     "stock_runpf_calls",
     "q_limit_resolves",
@@ -507,18 +506,12 @@ def _finalize_power_flow_performance_summary(
     hits = int(result["hits"])
     misses = int(result["misses"])
     lookups = hits + misses
-    warm_starts = int(result["warm_start_hits"])
     cold_starts = int(result["cold_start_misses"])
     stock_calls = int(result["stock_runpf_calls"])
 
     result["hit_rate"] = (
         float(hits) / float(lookups)
         if lookups > 0
-        else 0.0
-    )
-    result["warm_start_rate"] = (
-        float(warm_starts) / float(misses)
-        if misses > 0
         else 0.0
     )
     result["cold_start_rate"] = (

@@ -26,7 +26,6 @@ _NATIVE_MATH_THREAD_ENV_VARS = (
     "VECLIB_MAXIMUM_THREADS",
 )
 _EXACT_L1_CACHE_MAX_MB_ENV = "POWERGRID_EXACT_L1_CACHE_MAX_MB"
-_PF_WARM_START_ENV = "POWERGRID_ENABLE_PF_WARM_START"
 _WORKER_INIT_CONCURRENCY_ENV = "POWERGRID_TEACHER_INIT_CONCURRENCY"
 
 
@@ -38,11 +37,6 @@ def _configure_cache_runtime_from_cli() -> None:
     parser.add_argument(
         "--exact-cache-max-mb",
         type=float,
-        default=None,
-    )
-    parser.add_argument(
-        "--pf-warm-start",
-        action=argparse.BooleanOptionalAction,
         default=None,
     )
 
@@ -60,11 +54,6 @@ def _configure_cache_runtime_from_cli() -> None:
 
         os.environ[_EXACT_L1_CACHE_MAX_MB_ENV] = (
             f"{max_mb:.12g}"
-        )
-
-    if parsed.pf_warm_start is not None:
-        os.environ[_PF_WARM_START_ENV] = (
-            "1" if parsed.pf_warm_start else "0"
         )
 
     sys.argv[:] = [
@@ -95,19 +84,6 @@ except ImportError:  # pragma: no cover
 from grid_topology_ai.cache import (
     DEFAULT_EXACT_POWER_FLOW_CACHE_BYTES,
     LODFStructureCache,
-)
-from grid_topology_ai.cache.persistent_exact import (
-    DEFAULT_PERSISTENT_EXACT_CACHE_BYTES,
-    PERSISTENT_EXACT_CACHE_DIR_ENV,
-    PERSISTENT_EXACT_CACHE_DISABLED_ENV,
-    PERSISTENT_EXACT_CACHE_MAX_BYTES_ENV,
-)
-from grid_topology_ai.cache.power_flow_warm_start import (
-    warm_start_enabled_from_environment,
-)
-from grid_topology_ai.cache.telemetry import (
-    exact_power_flow_workload,
-    print_exact_power_flow_workload_summary,
 )
 from grid_topology_ai.action_space import GridFMAction, GridFMActionSpace
 from grid_topology_ai.config.physics import DEFAULT_PHYSICS_CONFIG, PhysicsConfig
@@ -154,9 +130,7 @@ from grid_topology_ai.physics.redispatch import (
 from grid_topology_ai.runtime import (
     ensure_runtime_scenario_store,
 )
-from grid_topology_ai.runtime.warm_start_backend import (
-    build_memory_mapped_teacher_context,
-)
+from grid_topology_ai.runtime import build_memory_mapped_teacher_context
 from grid_topology_ai.reward import GridFMReward
 from grid_topology_ai.search.continuation_gate import make_do_nothing_action
 from grid_topology_ai.search.impact_beam_search import (
@@ -2122,9 +2096,7 @@ _REQUIRED_CHECKPOINT_ROW_FIELDS = (
     *_SELECTION_ROW_FIELDS,
 )
 
-_SEARCH_WORKLOAD_BY_SCENARIO: dict[int, dict[str, object]] = {}
 _SELECTION_PROVENANCE_BY_SCENARIO: dict[int, dict[str, object]] = {}
-_PARENT_WORKLOAD_BY_SCENARIO: dict[int, dict[str, object]] = {}
 
 
 def make_task_config(args: argparse.Namespace) -> dict[str, Any]:
@@ -2285,17 +2257,6 @@ def load_scenario_checkpoints(
         if _checkpoint_result_is_current(result)
     }
 
-def _search_workload(
-    before: dict[str, object],
-    after: dict[str, object],
-    logical_evaluations: int,
-) -> dict[str, object]:
-    return exact_power_flow_workload(
-        before=before,
-        after=after,
-        logical_evaluations=logical_evaluations,
-    )
-
 def _selection_provenance(result) -> dict[str, object]:
     return {
         "teacher_selection_mode": _TEACHER_SELECTION_MODE,
@@ -2312,26 +2273,10 @@ def _selection_provenance(result) -> dict[str, object]:
 
 def _instrumented_planner_search(self, env, scenario_id: int):
     scenario_id = int(scenario_id)
-    backend = env.backend
-    before = backend.performance_info()
-    result = None
     _SELECTION_PROVENANCE_BY_SCENARIO.pop(scenario_id, None)
-    try:
-        result = _original_planner_search(self, env=env, scenario_id=scenario_id)
-        _SELECTION_PROVENANCE_BY_SCENARIO[scenario_id] = _selection_provenance(result)
-        return result
-    finally:
-        after = backend.performance_info()
-        logical_evaluations = (
-            int(result.evaluated_actions)
-            if result is not None
-            else int(getattr(self, "evaluated_actions", 0))
-        )
-        _SEARCH_WORKLOAD_BY_SCENARIO[scenario_id] = _search_workload(
-            before=before,
-            after=after,
-            logical_evaluations=logical_evaluations,
-        )
+    result = _original_planner_search(self, env=env, scenario_id=scenario_id)
+    _SELECTION_PROVENANCE_BY_SCENARIO[scenario_id] = _selection_provenance(result)
+    return result
 
 
 def _install_worker_instrumentation() -> None:
@@ -2347,17 +2292,6 @@ def append_scenario_checkpoint(
         checkpoint_path=checkpoint_path,
         result=result,
     )
-    performance = result.get("performance")
-    if isinstance(performance, dict):
-        _PARENT_WORKLOAD_BY_SCENARIO[int(result["scenario_id"])] = dict(performance)
-
-
-def _print_power_flow_workload_summary() -> None:
-    print_exact_power_flow_workload_summary(
-        _PARENT_WORKLOAD_BY_SCENARIO.values()
-    )
-
-
 def _worker_run_id() -> str:
     ctx = _require_worker_context()
     states_dir = Path(ctx["state_store"].output_dir).resolve()
@@ -2640,9 +2574,6 @@ def process_scenario_batch(
     finalized: list[dict[str, Any]] = []
     for result in results:
         scenario_id = int(result["scenario_id"])
-        performance = _SEARCH_WORKLOAD_BY_SCENARIO.pop(scenario_id, None)
-        if performance is not None:
-            result["performance"] = performance
         if bool(result.get("ok", False)):
             result = _finalize_success_result(result)
         else:
@@ -2652,12 +2583,10 @@ def process_scenario_batch(
 
 
 def main() -> None:
-    _PARENT_WORKLOAD_BY_SCENARIO.clear()
     _SELECTION_PROVENANCE_BY_SCENARIO.clear()
     _install_worker_instrumentation()
     _install_worker_replay_contract()
     _base_main()
-    _print_power_flow_workload_summary()
 
 
 # ======================================================================================
@@ -2982,38 +2911,22 @@ def _selection_provenance(
 
 def _instrumented_planner_search(self, env, scenario_id: int):
     scenario_id = int(scenario_id)
-    backend = env.backend
-    before = backend.performance_info()
-    result = None
     _SELECTION_PROVENANCE_BY_SCENARIO.pop(scenario_id, None)
-    try:
-        result = _original_planner_search(
-            self,
-            env=env,
-            scenario_id=scenario_id,
-        )
-        task_config = _require_worker_context()["task_config"]
-        result, diagnostics = _redispatch_aware_selection(
-            result,
-            task_config=task_config,
-        )
-        _SELECTION_PROVENANCE_BY_SCENARIO[scenario_id] = _selection_provenance(
-            result,
-            diagnostics,
-        )
-        return result
-    finally:
-        after = backend.performance_info()
-        logical_evaluations = (
-            int(result.evaluated_actions)
-            if result is not None
-            else int(getattr(self, "evaluated_actions", 0))
-        )
-        _SEARCH_WORKLOAD_BY_SCENARIO[scenario_id] = _search_workload(
-            before=before,
-            after=after,
-            logical_evaluations=logical_evaluations,
-        )
+    result = _original_planner_search(
+        self,
+        env=env,
+        scenario_id=scenario_id,
+    )
+    task_config = _require_worker_context()["task_config"]
+    result, diagnostics = _redispatch_aware_selection(
+        result,
+        task_config=task_config,
+    )
+    _SELECTION_PROVENANCE_BY_SCENARIO[scenario_id] = _selection_provenance(
+        result,
+        diagnostics,
+    )
+    return result
 
 
 def _selection_provenance_is_valid(row: dict[str, Any]) -> bool:
@@ -3077,74 +2990,11 @@ _RUNTIME_SCENARIO_STORE_DIR = "_redispatch_runtime_scenario_store_dir"
 _RUNTIME_WORKER_INIT_SEMAPHORE = "_redispatch_worker_init_semaphore"
 
 _RESUME_INDEX_VERSION = 1
-
-_PERSISTENT_CACHE_DIRECTORY_NAME = "exact_pf_cache_v1"
-_PERSISTENT_CACHE_ENABLED_ENV = (
-    "POWERGRID_ENABLE_PERSISTENT_EXACT_CACHE"
-)
-_TRUE_ENV_VALUES = {"1", "true", "yes", "on"}
-
 _DEFAULT_MAX_TASKS_PER_CHILD: int | None = None
 
 _staged_process_one_scenario = process_one_scenario_fast
 _staged_load_scenario_checkpoints = load_scenario_checkpoints
 _staged_append_scenario_checkpoint = append_scenario_checkpoint
-
-def _env_flag(name: str) -> bool:
-    return (
-        os.environ.get(name, "")
-        .strip()
-        .lower()
-        in _TRUE_ENV_VALUES
-    )
-
-
-def _persistent_cache_requested() -> bool:
-    return (
-        _env_flag(_PERSISTENT_CACHE_ENABLED_ENV)
-        and not _env_flag(
-            PERSISTENT_EXACT_CACHE_DISABLED_ENV
-        )
-    )
-
-
-def _configure_persistent_exact_cache(
-    store_dir: str | Path,
-) -> Path | None:
-    if not _persistent_cache_requested():
-        # Keep synchronous SQLite L2 opt-in.
-        os.environ.pop(
-            PERSISTENT_EXACT_CACHE_DIR_ENV,
-            None,
-        )
-        return None
-
-    default_root = (
-        Path(store_dir).resolve().parent
-        / _PERSISTENT_CACHE_DIRECTORY_NAME
-    )
-
-    configured = os.environ.get(
-        PERSISTENT_EXACT_CACHE_DIR_ENV
-    )
-
-    cache_root = (
-        Path(configured).resolve()
-        if configured
-        else default_root
-    )
-
-    os.environ[
-        PERSISTENT_EXACT_CACHE_DIR_ENV
-    ] = str(cache_root)
-
-    os.environ.setdefault(
-        PERSISTENT_EXACT_CACHE_MAX_BYTES_ENV,
-        str(DEFAULT_PERSISTENT_EXACT_CACHE_BYTES),
-    )
-
-    return cache_root
-
 
 def _native_math_thread_summary() -> str:
     return ", ".join(
@@ -3659,8 +3509,6 @@ def init_worker_context(
             raw_dir_str
         )
 
-    _configure_persistent_exact_cache(store_dir)
-
     def build_context() -> dict[str, Any]:
         return build_memory_mapped_teacher_context(
             runtime_store_dir=store_dir,
@@ -3809,12 +3657,6 @@ def run_parallel(
         Path(raw_dir)
     )
 
-    persistent_root = (
-        _configure_persistent_exact_cache(
-            store_dir
-        )
-    )
-
     runtime_task_config = dict(task_config)
     runtime_task_config[
         _RUNTIME_SCENARIO_STORE_DIR
@@ -3824,34 +3666,12 @@ def run_parallel(
         f"Memory-mapped runtime store: {store_dir}"
     )
 
-    if persistent_root is None:
-        print(
-            "Persistent exact PF cache:  disabled "
-            f"(opt-in with "
-            f"{_PERSISTENT_CACHE_ENABLED_ENV}=1)"
-        )
-    else:
-        print(
-            "Persistent exact PF cache:  "
-            f"{persistent_root}"
-        )
-
     print(
         "Exact L1 PF cache:          "
         f"{DEFAULT_EXACT_POWER_FLOW_CACHE_BYTES / (1024.0 * 1024.0):.1f} "
         "MiB / worker"
     )
 
-    warm_start_text = (
-        "enabled (real PF solve is still required)"
-        if warm_start_enabled_from_environment()
-        else "disabled (opt-in with --pf-warm-start)"
-    )
-
-    print(
-        f"PF warm start:             "
-        f"{warm_start_text}"
-    )
     print(
         "Native math threads:       "
         f"{_native_math_thread_summary()}"
