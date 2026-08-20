@@ -23,7 +23,7 @@ from grid_topology_ai.self_play.final_test import (
     load_final_test_evaluation,
     run_final_test_evaluation,
 )
-from grid_topology_ai.self_play.iteration_split import (
+from grid_topology_ai.self_play.iteration import (
     prepare_physical_iteration_split,
 )
 from grid_topology_ai.self_play.paths import SelfPlayPaths
