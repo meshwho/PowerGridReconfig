@@ -15,10 +15,10 @@ from grid_topology_ai.contracts import (
 from grid_topology_ai.self_play.example_validation import (
     validate_state_physics_provenance,
 )
-from grid_topology_ai.state_artifact_schema import (
+from grid_topology_ai.state.artifacts import (
     validate_state_npz_schema_arrays,
 )
-from grid_topology_ai.state_schema import (
+from grid_topology_ai.state.schema import (
     BRANCH_FEATURE_COLUMNS,
     BUS_FEATURE_COLUMNS,
     with_bus_generator_features,
