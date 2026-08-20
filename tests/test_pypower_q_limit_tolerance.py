@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from grid_topology_ai.config.physics import PhysicsConfig
-from grid_topology_ai.pypower_backend import GridFMPowerFlowBackend
+from grid_topology_ai.power_flow.backend import GridFMPowerFlowBackend
 
 
 def test_q_limit_tolerance_comes_from_physics_config() -> None:

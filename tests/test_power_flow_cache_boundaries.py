@@ -4,7 +4,7 @@ from pathlib import Path
 
 from grid_topology_ai.cache import ExactPowerFlowCache
 from grid_topology_ai.config.physics import PhysicsConfig
-from grid_topology_ai.pypower_backend import GridFMPowerFlowBackend
+from grid_topology_ai.power_flow.backend import GridFMPowerFlowBackend
 
 
 _OLD_CACHE_SYMBOLS = (
@@ -42,7 +42,7 @@ def test_public_backend_has_only_exact_cache_component() -> None:
 
 def test_power_flow_module_does_not_reintroduce_approximate_cache_paths() -> None:
     root = Path(__file__).resolve().parents[1]
-    source_path = root / "grid_topology_ai" / "pypower_backend.py"
+    source_path = root / "grid_topology_ai" / "power_flow" / "backend.py"
     forbidden_fragments = (
         "tolerant_cache",
         "warm_start_hits",

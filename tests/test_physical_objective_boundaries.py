@@ -146,7 +146,7 @@ def test_custom_runtime_thresholds_are_used_consistently():
     ) == -423.0
 
 
-def test_pypower_backend_does_not_patch_numpy_in1d():
-    text = (ROOT / "grid_topology_ai/pypower_backend.py").read_text()
+def test_power_flow_backend_does_not_patch_numpy_in1d():
+    text = (ROOT / "grid_topology_ai/power_flow/backend.py").read_text()
     for token in ('np.in1d =', 'np.isin', 'hasattr(np, "in1d")'):
         assert token not in text

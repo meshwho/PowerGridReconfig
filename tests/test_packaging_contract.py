@@ -44,7 +44,7 @@ def test_constraints_contract() -> None:
 
 
 def test_production_backend_has_no_numpy_runtime_monkeypatch() -> None:
-    text = (ROOT / "grid_topology_ai" / "pypower_backend.py").read_text(encoding="utf-8")
+    text = (ROOT / "grid_topology_ai" / "power_flow" / "backend.py").read_text(encoding="utf-8")
 
     forbidden = ("np.in1d =", "setattr(np", "hasattr(np", "np.isin")
     assert all(pattern not in text for pattern in forbidden)

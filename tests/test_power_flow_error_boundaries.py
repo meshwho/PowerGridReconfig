@@ -12,8 +12,8 @@ from grid_topology_ai.data_adapter import (
     BRANCH_FEATURE_COLUMNS,
     BUS_FEATURE_COLUMNS,
 )
-from grid_topology_ai.power_flow_errors import PowerFlowFailureKind
-from grid_topology_ai.pypower_backend import GridFMPowerFlowBackend
+from grid_topology_ai.power_flow.errors import PowerFlowFailureKind
+from grid_topology_ai.power_flow.backend import GridFMPowerFlowBackend
 
 
 def _adapter() -> SimpleNamespace:
@@ -92,7 +92,7 @@ def test_non_convergence_is_returned_as_typed_domain_failure(
         del options
         return copy.deepcopy(ppc), False
 
-    monkeypatch.setattr("grid_topology_ai.pypower_backend.runpf", fake_runpf)
+    monkeypatch.setattr("grid_topology_ai.power_flow.backend.runpf", fake_runpf)
 
     result = _backend().run_power_flow(scenario_id=1)
 
@@ -113,7 +113,7 @@ def test_invalid_solver_output_is_returned_as_typed_physical_failure(
         result["bus"][0, VM] = np.nan
         return result, True
 
-    monkeypatch.setattr("grid_topology_ai.pypower_backend.runpf", fake_runpf)
+    monkeypatch.setattr("grid_topology_ai.power_flow.backend.runpf", fake_runpf)
 
     result = _backend().run_power_flow(scenario_id=1)
 
@@ -131,7 +131,7 @@ def test_unexpected_programming_error_is_not_converted_to_domain_failure(
         del ppc, options
         raise TypeError("unexpected programmer bug")
 
-    monkeypatch.setattr("grid_topology_ai.pypower_backend.runpf", fake_runpf)
+    monkeypatch.setattr("grid_topology_ai.power_flow.backend.runpf", fake_runpf)
 
     with pytest.raises(TypeError, match="unexpected programmer bug"):
         _backend().run_power_flow(scenario_id=1)

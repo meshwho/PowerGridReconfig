@@ -16,8 +16,8 @@ from pypower.makeYbus import makeYbus
 from pypower.newtonpf import newtonpf as stock_newtonpf
 from scipy.sparse import hstack, vstack
 
-from grid_topology_ai import pypower_compat as compat
-from grid_topology_ai.pypower_newton_workspace import (
+from grid_topology_ai.power_flow import solver as compat
+from grid_topology_ai.power_flow.newton_workspace import (
     JacobianWorkspace,
     PowerDerivativeWorkspace,
     newton_power_flow,
