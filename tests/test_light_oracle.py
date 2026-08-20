@@ -103,7 +103,7 @@ TEACHER_BENCHMARK_ARGS = (
     "--top-k",
     "10",
     "--gamma",
-    "1",
+    "1.0",
     "--pf-alg",
     "1",
     "--pf-max-iter",
@@ -112,8 +112,6 @@ TEACHER_BENCHMARK_ARGS = (
     "3",
     "--max-teacher-steps",
     "3",
-    "--clear-caches-every",
-    "1",
     "--batch-size",
     "1",
     "--max-tasks-per-child",
@@ -132,22 +130,25 @@ TEACHER_BENCHMARK_ARGS = (
 )
 
 
-def _flatten_behavior_tests() -> tuple[str, ...]:
-    missing = REQUIRED_DOMAINS - set(ORACLE_TESTS)
-    if missing:
-        raise RuntimeError(
-            "Light oracle is missing required behavior domains: "
-            + ", ".join(sorted(missing))
-        )
-
-    tests: list[str] = []
+def _oracle_paths() -> list[str]:
+    paths: list[str] = []
     seen: set[str] = set()
-    for domain in ORACLE_TESTS.values():
-        for test_path in domain:
-            if test_path not in seen:
-                tests.append(test_path)
-                seen.add(test_path)
-    return tuple(tests)
+    for group in ORACLE_TESTS.values():
+        for path in group:
+            if path not in seen:
+                seen.add(path)
+                paths.append(path)
+    return paths
+
+
+def test_light_oracle_covers_required_domains() -> None:
+    assert set(ORACLE_TESTS) == REQUIRED_DOMAINS
+    assert all(ORACLE_TESTS[name] for name in REQUIRED_DOMAINS)
+
+
+def test_light_oracle_paths_exist() -> None:
+    missing = [path for path in _oracle_paths() if not (ROOT / path).is_file()]
+    assert missing == []
 
 
 def _run_behavior_oracle(extra_pytest_args: list[str]) -> int:
@@ -156,12 +157,12 @@ def _run_behavior_oracle(extra_pytest_args: list[str]) -> int:
         "-m",
         "pytest",
         "-q",
-        *_flatten_behavior_tests(),
+        *_oracle_paths(),
         *extra_pytest_args,
     ]
     print("Behavior oracle:")
     print(" ".join(command))
-    return subprocess.call(command, cwd=ROOT)
+    return subprocess.run(command, cwd=ROOT, check=False).returncode
 
 
 def _benchmark_environment() -> dict[str, str]:
@@ -179,70 +180,9 @@ def _benchmark_environment() -> dict[str, str]:
     ):
         env[name] = "1"
 
+    env["PYTHONUNBUFFERED"] = "1"
+    env["PYTHONUTF8"] = "1"
     return env
-
-
-def _teacher_benchmark_command(
-    *,
-    raw_dir: Path,
-    transitions: Path,
-    checkpoint: Path,
-    workers: int,
-    limit: int,
-) -> list[str]:
-    return [
-        sys.executable,
-        "-m",
-        TEACHER_MODULE,
-        str(raw_dir),
-        "--transitions",
-        str(transitions),
-        "--checkpoint",
-        str(checkpoint),
-        *TEACHER_BENCHMARK_ARGS,
-        "--num-workers",
-        str(workers),
-        "--limit",
-        str(limit),
-    ]
-
-
-def _run_teacher_once(
-    *,
-    raw_dir: Path,
-    transitions: Path,
-    workers: int,
-    limit: int,
-    env: dict[str, str],
-) -> float:
-    with tempfile.TemporaryDirectory(prefix="light-oracle-") as tmp:
-        output_root = Path(tmp)
-        checkpoint = output_root / "teacher_checkpoint.jsonl"
-        command = _teacher_benchmark_command(
-            raw_dir=raw_dir,
-            transitions=transitions,
-            checkpoint=checkpoint,
-            workers=workers,
-            limit=limit,
-        )
-
-        started = time.perf_counter()
-        completed = subprocess.run(
-            command,
-            cwd=ROOT,
-            env=env,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
-        elapsed = time.perf_counter() - started
-
-        if completed.returncode != 0:
-            raise RuntimeError(
-                "Teacher performance oracle failed:\n"
-                + completed.stderr
-            )
-        return elapsed
 
 
 def _run_teacher_benchmark(
@@ -252,37 +192,86 @@ def _run_teacher_benchmark(
     workers: int,
     limit: int,
     repeat: int,
-    output: Path | None,
+    report: Path | None,
 ) -> int:
-    if repeat < 1:
-        raise ValueError("repeat must be at least 1")
-    if workers < 1:
-        raise ValueError("workers must be at least 1")
-    if limit < 1:
-        raise ValueError("limit must be at least 1")
-
     raw_dir = raw_dir.resolve()
     transitions = transitions.resolve()
+
     if not raw_dir.is_dir():
-        raise FileNotFoundError(raw_dir)
+        raise SystemExit(f"raw directory does not exist: {raw_dir}")
     if not transitions.is_file():
-        raise FileNotFoundError(transitions)
+        raise SystemExit(f"transitions file does not exist: {transitions}")
+    if workers < 1:
+        raise SystemExit("--workers must be >= 1")
+    if limit < 1:
+        raise SystemExit("--limit must be >= 1")
+    if repeat < 1:
+        raise SystemExit("--repeat must be >= 1")
 
     env = _benchmark_environment()
-    timings = [
-        _run_teacher_once(
-            raw_dir=raw_dir,
-            transitions=transitions,
-            workers=workers,
-            limit=limit,
-            env=env,
-        )
-        for _ in range(repeat)
-    ]
+    timings: list[float] = []
+    records: list[dict[str, object]] = []
 
-    payload = {
-        "raw_dir": str(raw_dir),
-        "transitions": str(transitions),
+    with tempfile.TemporaryDirectory(prefix="pgr_light_oracle_") as tmp:
+        tmp_root = Path(tmp)
+
+        for index in range(repeat):
+            output_dir = tmp_root / f"teacher_{index:02d}"
+            command = [
+                sys.executable,
+                "-u",
+                "-m",
+                TEACHER_MODULE,
+                str(raw_dir),
+                "--transitions",
+                str(transitions),
+                "--output-dir",
+                str(output_dir),
+                *TEACHER_BENCHMARK_ARGS,
+                "--num-workers",
+                str(workers),
+                "--limit",
+                str(limit),
+            ]
+
+            started = time.perf_counter()
+            completed = subprocess.run(
+                command,
+                cwd=ROOT,
+                env=env,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                check=False,
+            )
+            elapsed = time.perf_counter() - started
+
+            print(completed.stdout, end="")
+            if completed.returncode != 0:
+                print(f"teacher benchmark failed with exit code {completed.returncode}")
+                return completed.returncode
+
+            examples = output_dir / "examples.csv"
+            checkpoint = output_dir / "teacher_checkpoint.jsonl"
+            states = output_dir / "states"
+            if not examples.is_file() or not checkpoint.is_file() or not states.is_dir():
+                raise RuntimeError("teacher benchmark completed without canonical output artifacts")
+
+            timings.append(elapsed)
+            records.append(
+                {
+                    "run": index,
+                    "elapsed_seconds": elapsed,
+                    "examples_bytes": examples.stat().st_size,
+                    "checkpoint_bytes": checkpoint.stat().st_size,
+                    "state_files": len(list(states.glob("*.npz"))),
+                }
+            )
+            print(f"benchmark run {index + 1}/{repeat}: {elapsed:.3f}s")
+
+    summary = {
+        "oracle": "light-teacher-performance-v1",
+        "python": sys.version.split()[0],
         "workers": workers,
         "limit": limit,
         "repeat": repeat,
@@ -291,61 +280,78 @@ def _run_teacher_benchmark(
         "mean_seconds": statistics.fmean(timings),
         "min_seconds": min(timings),
         "max_seconds": max(timings),
-        "timings_seconds": timings,
+        "runs": records,
     }
 
-    encoded = json.dumps(payload, indent=2, sort_keys=True)
-    print(encoded)
-    if output is not None:
-        output.parent.mkdir(parents=True, exist_ok=True)
-        output.write_text(encoded + "\n", encoding="utf-8")
+    print(json.dumps(summary, indent=2, sort_keys=True))
+    if report is not None:
+        report = report.resolve()
+        report.parent.mkdir(parents=True, exist_ok=True)
+        report.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        print(f"wrote benchmark report: {report}")
+
     return 0
 
 
-def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Behavior and performance oracle for the Light migration."
+        description=(
+            "Run the canonical behavior/performance oracle used while reducing "
+            "PowerGridReconfig to the Light implementation."
+        )
     )
-    subparsers = parser.add_subparsers(dest="mode", required=True)
+    subparsers = parser.add_subparsers(dest="command")
 
-    behavior = subparsers.add_parser(
-        "behavior",
-        help="Run the deterministic behavior oracle.",
-    )
+    behavior = subparsers.add_parser("behavior", help="run the focused pytest oracle")
     behavior.add_argument(
         "pytest_args",
         nargs=argparse.REMAINDER,
-        help="Extra arguments passed to pytest.",
+        help="extra arguments passed to pytest after the oracle paths",
     )
 
-    performance = subparsers.add_parser(
-        "performance",
-        help="Benchmark the production teacher on a fixed workload.",
-    )
-    performance.add_argument("--raw-dir", type=Path, required=True)
-    performance.add_argument("--transitions", type=Path, required=True)
-    performance.add_argument("--workers", type=int, default=1)
-    performance.add_argument("--limit", type=int, default=3)
-    performance.add_argument("--repeat", type=int, default=3)
-    performance.add_argument("--output", type=Path)
+    subparsers.add_parser("list", help="print the tests in the behavior oracle")
 
-    return parser.parse_args(argv)
+    benchmark = subparsers.add_parser(
+        "teacher-benchmark",
+        help="time a deterministic teacher workload with L1 enabled and L2 disabled",
+    )
+    benchmark.add_argument("raw_dir", type=Path)
+    benchmark.add_argument("transitions", type=Path)
+    benchmark.add_argument("--workers", type=int, default=1)
+    benchmark.add_argument("--limit", type=int, default=3)
+    benchmark.add_argument("--repeat", type=int, default=3)
+    benchmark.add_argument("--report", type=Path)
+
+    return parser
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = _parse_args(argv)
-    if args.mode == "behavior":
-        return _run_behavior_oracle(list(args.pytest_args))
-    if args.mode == "performance":
+    parser = _build_parser()
+    args = parser.parse_args(argv)
+
+    if args.command in (None, "behavior"):
+        extra = [] if args.command is None else list(args.pytest_args)
+        return _run_behavior_oracle(extra)
+
+    if args.command == "list":
+        for domain, paths in ORACLE_TESTS.items():
+            print(f"[{domain}]")
+            for path in paths:
+                print(path)
+        return 0
+
+    if args.command == "teacher-benchmark":
         return _run_teacher_benchmark(
             raw_dir=args.raw_dir,
             transitions=args.transitions,
             workers=args.workers,
             limit=args.limit,
             repeat=args.repeat,
-            output=args.output,
+            report=args.report,
         )
-    raise RuntimeError(f"Unsupported oracle mode: {args.mode}")
+
+    parser.error(f"unknown command: {args.command}")
+    return 2
 
 
 if __name__ == "__main__":
