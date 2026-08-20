@@ -6,7 +6,7 @@ from typing import Any
 from grid_topology_ai.action_space import GridFMAction, GridFMActionSpace
 from grid_topology_ai.data_adapter import GridFMAdapter, GridFMState
 from grid_topology_ai.physics.utility import state_utility
-from grid_topology_ai.outcome_contract import (
+from grid_topology_ai.outcome_record import (
     TERMINAL_OUTCOME_EVIDENCE_SCHEMA_VERSION,
     TerminalOutcomeEvidence,
     redispatch_status_for_reason,

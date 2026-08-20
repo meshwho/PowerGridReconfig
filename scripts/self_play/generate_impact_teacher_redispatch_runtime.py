@@ -112,7 +112,7 @@ from grid_topology_ai.physics.lodf import (
     lodf_loading_safety_score,
     rank_actions_with_lodf_structure,
 )
-from grid_topology_ai.outcome_contract import (
+from grid_topology_ai.outcome_record import (
     TERMINAL_OUTCOME_EVIDENCE_SCHEMA_VERSION,
     TerminalOutcomeEvidence,
     redispatch_status_for_reason,

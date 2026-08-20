@@ -9,21 +9,13 @@ if TYPE_CHECKING:
     from grid_topology_ai.config.physics import PhysicsConfig
 
 
-# Version 6 trains the value head on continuous final pre-redispatch topology
-# quality. Every state in one completed episode receives the same final-state
-# utility.
+# These versions remain only for checkpoint/replay writers that are simplified
+# in later Light commits. Current example/state semantics no longer depend on
+# them being present in every artifact row.
 OUTCOME_VALUE_TARGET_CONTRACT_VERSION = 6
-# Version 2 makes final pre-redispatch physical-state quality the primary
-# topology objective. Redispatch remains separate terminal evidence/diagnostics.
 OUTCOME_OBJECTIVE_VERSION = 2
-# Version 7 adds canonical pre-redispatch topology quality (J0, Jfinal,
-# delta_J, relative improvement, and final topology utility) to evaluation
-# rows and aggregated metrics.
 EVALUATION_METRICS_CONTRACT_VERSION = 7
-# Version 7 requires exact state-feature schema provenance.
 CHECKPOINT_CONTRACT_VERSION = 7
-# Version 6 requires exact state-feature schema provenance in every row and
-# in the replay manifest.
 REPLAY_BUFFER_SCHEMA_VERSION = 6
 PHYSICS_CONFIG_CONTRACT_VERSION = 1
 TOPOLOGY_ACTION_CONTRACT_VERSION = 1
@@ -37,6 +29,12 @@ def require_exact_contract_version(
     source: str,
     regeneration_command: str,
 ) -> None:
+    """Validate an explicit legacy version without requiring it in Light."""
+
+    del regeneration_command
+    if value is None:
+        return
+
     if isinstance(value, bool):
         observed: int | None = None
     elif isinstance(value, Integral):
@@ -50,12 +48,9 @@ def require_exact_contract_version(
         observed = None
 
     if observed != int(expected):
-        rendered = "missing" if value is None else repr(value)
         raise ValueError(
-            f"Incompatible {name} for {source}: expected version {expected}, "
-            f"observed {rendered}. The artifact semantics changed and "
-            f"legacy artifacts cannot be upgraded safely. Regenerate them with: "
-            f"{regeneration_command}"
+            f"Incompatible {name} for {source}: expected version "
+            f"{expected}, observed {value!r}."
         )
 
 
@@ -69,16 +64,13 @@ def require_outcome_objective_version(
         expected=OUTCOME_OBJECTIVE_VERSION,
         name="outcome-objective contract",
         source=source,
-        regeneration_command=(
-            "regenerate self-play examples and derived artifacts"
-        ),
+        regeneration_command="",
     )
 
 
 def _json_value(value: object, *, name: str, source: str) -> object:
     if not isinstance(value, str):
         return value
-
     try:
         return json.loads(value)
     except json.JSONDecodeError as exc:
@@ -90,7 +82,7 @@ def require_state_feature_schema_provenance(
     *,
     source: str,
 ) -> dict[str, object]:
-    """Require the exact ordered state representation used by this build."""
+    """Validate explicit state-schema metadata when it is present."""
 
     from grid_topology_ai.state.schema import (
         BRANCH_FEATURE_COLUMNS,
@@ -102,68 +94,60 @@ def require_state_feature_schema_provenance(
         state_feature_schema_provenance,
     )
 
+    version = payload.get("state_feature_schema_version")
+    fingerprint = payload.get("state_feature_schema_fingerprint")
+    edge_semantics = payload.get("edge_index_semantics")
+    bus_semantics = payload.get("bus_id_semantics")
+    bus_columns = payload.get("bus_feature_columns")
+    branch_columns = payload.get("branch_feature_columns")
+
+    fields = (
+        version,
+        fingerprint,
+        edge_semantics,
+        bus_semantics,
+        bus_columns,
+        branch_columns,
+    )
+    if all(value is None for value in fields):
+        return state_feature_schema_provenance()
+    if any(value is None for value in fields):
+        raise ValueError(
+            f"Incomplete state feature metadata for {source}."
+        )
+
     require_exact_contract_version(
-        payload.get("state_feature_schema_version"),
+        version,
         expected=STATE_FEATURE_SCHEMA_VERSION,
         name="state-feature schema",
         source=source,
-        regeneration_command=(
-            "regenerate state NPZ files and self-play examples, then retrain "
-            "the policy-value checkpoint"
-        ),
+        regeneration_command="",
     )
-
-    expected_fingerprint = state_feature_schema_fingerprint()
-    observed_fingerprint = payload.get("state_feature_schema_fingerprint")
-    if observed_fingerprint != expected_fingerprint:
-        rendered = (
-            "missing"
-            if observed_fingerprint is None
-            else repr(observed_fingerprint)
-        )
+    if fingerprint != state_feature_schema_fingerprint():
         raise ValueError(
-            f"State-feature schema fingerprint mismatch for {source}: "
-            f"expected {expected_fingerprint}, observed {rendered}. Regenerate "
-            "state artifacts and retrain the checkpoint."
+            f"State-feature schema identity mismatch for {source}."
         )
-
-    if payload.get("edge_index_semantics") != EDGE_INDEX_SEMANTICS:
+    if edge_semantics != EDGE_INDEX_SEMANTICS:
         raise ValueError(
-            f"Incompatible edge_index semantics for {source}: expected "
-            f"{EDGE_INDEX_SEMANTICS!r}, observed "
-            f"{payload.get('edge_index_semantics')!r}."
+            f"Incompatible edge_index semantics for {source}."
         )
-
-    if payload.get("bus_id_semantics") != BUS_ID_SEMANTICS:
+    if bus_semantics != BUS_ID_SEMANTICS:
         raise ValueError(
-            f"Incompatible bus ID semantics for {source}: expected "
-            f"{BUS_ID_SEMANTICS!r}, observed "
-            f"{payload.get('bus_id_semantics')!r}."
+            f"Incompatible bus ID semantics for {source}."
         )
 
-    for field, expected_columns in (
-        ("bus_feature_columns", BUS_FEATURE_COLUMNS),
-        ("branch_feature_columns", BRANCH_FEATURE_COLUMNS),
+    for field, raw, expected_columns in (
+        ("bus_feature_columns", bus_columns, BUS_FEATURE_COLUMNS),
+        ("branch_feature_columns", branch_columns, BRANCH_FEATURE_COLUMNS),
     ):
-        raw_columns = payload.get(field)
-        if raw_columns is None:
-            raise ValueError(
-                f"Incomplete state-feature schema provenance for {source}: "
-                f"missing {field}."
-            )
-        parsed_columns = _json_value(
-            raw_columns,
-            name=field,
-            source=source,
-        )
+        parsed = _json_value(raw, name=field, source=source)
         if (
-            not isinstance(parsed_columns, Sequence)
-            or isinstance(parsed_columns, (str, bytes))
-            or list(parsed_columns) != list(expected_columns)
+            not isinstance(parsed, Sequence)
+            or isinstance(parsed, (str, bytes))
+            or list(parsed) != list(expected_columns)
         ):
             raise ValueError(
-                f"Ordered {field} mismatch for {source}. Regenerate state "
-                "artifacts and retrain the checkpoint."
+                f"Ordered {field} mismatch for {source}."
             )
 
     return state_feature_schema_provenance()
@@ -172,7 +156,7 @@ def require_state_feature_schema_provenance(
 def physics_provenance(
     physics_config: "PhysicsConfig",
 ) -> dict[str, object]:
-    """Build canonical runtime provenance stored in pipeline artifacts."""
+    """Legacy replay/checkpoint metadata; example rows no longer use it."""
 
     from grid_topology_ai.state.schema import state_feature_schema_provenance
 
@@ -188,6 +172,8 @@ def topology_action_provenance(
     action_space_config: object,
     action_layout: object,
 ) -> dict[str, object]:
+    """Legacy replay/checkpoint metadata; example rows store semantic data."""
+
     from grid_topology_ai.topology_actions import (
         action_layout_fingerprint,
         action_layout_to_list,
@@ -195,7 +181,6 @@ def topology_action_provenance(
 
     config_payload = action_space_config.to_contract_dict()
     layout_payload = action_layout_to_list(action_layout)
-
     return {
         "topology_action_contract_version": TOPOLOGY_ACTION_CONTRACT_VERSION,
         "topology_action_config": config_payload,
@@ -214,75 +199,78 @@ def require_topology_action_provenance(
     expected_action_space_config: object | None = None,
     expected_action_layout: object | None = None,
 ):
+    """Validate the actual action config/layout, not provenance metadata."""
+
     from grid_topology_ai.topology_actions import (
         ActionSpaceConfig,
         action_layout_fingerprint,
         action_layout_from_value,
     )
 
-    require_exact_contract_version(
-        payload.get("topology_action_contract_version"),
-        expected=TOPOLOGY_ACTION_CONTRACT_VERSION,
-        name="topology-action contract",
+    if payload.get("topology_action_config") is None:
+        raise ValueError(
+            f"Missing topology_action_config for {source}."
+        )
+    if payload.get("action_layout") is None:
+        raise ValueError(
+            f"Missing action_layout for {source}."
+        )
+
+    raw_config = _json_value(
+        payload["topology_action_config"],
+        name="topology_action_config",
         source=source,
-        regeneration_command=(
-            "regenerate the dataset and retrain the policy-value checkpoint"
-        ),
     )
-
-    required = (
-        "topology_action_config",
-        "topology_action_config_fingerprint",
-        "action_layout",
-        "action_layout_fingerprint",
-    )
-    missing = [name for name in required if payload.get(name) is None]
-    if missing:
+    if not isinstance(raw_config, Mapping):
         raise ValueError(
-            f"Incomplete topology action provenance for {source}: "
-            f"missing {missing}."
+            f"Invalid topology_action_config for {source}."
         )
-
-    raw_config = payload["topology_action_config"]
-    if isinstance(raw_config, str):
-        try:
-            raw_config = json.loads(raw_config)
-        except json.JSONDecodeError as exc:
-            raise ValueError(
-                f"Invalid topology_action_config JSON for {source}."
-            ) from exc
-
     observed_config = ActionSpaceConfig.from_contract_mapping(raw_config)
-    observed_config_fingerprint = payload[
+    observed_layout = action_layout_from_value(payload["action_layout"])
+
+    explicit_config_fingerprint = payload.get(
         "topology_action_config_fingerprint"
-    ]
-    canonical_config_fingerprint = observed_config.contract_fingerprint()
-    if observed_config_fingerprint != canonical_config_fingerprint:
+    )
+    if (
+        explicit_config_fingerprint is not None
+        and explicit_config_fingerprint
+        != observed_config.contract_fingerprint()
+    ):
         raise ValueError(
-            f"Topology action config fingerprint mismatch for {source}."
+            f"Topology action config identity mismatch for {source}."
         )
 
-    observed_layout = action_layout_from_value(payload["action_layout"])
-    canonical_layout_fingerprint = action_layout_fingerprint(observed_layout)
+    canonical_layout_fingerprint = action_layout_fingerprint(
+        observed_layout
+    )
+    explicit_layout_fingerprint = payload.get(
+        "action_layout_fingerprint"
+    )
     if (
-        payload["action_layout_fingerprint"]
+        explicit_layout_fingerprint is not None
+        and explicit_layout_fingerprint
         != canonical_layout_fingerprint
     ):
-        raise ValueError(f"Action layout fingerprint mismatch for {source}.")
+        raise ValueError(
+            f"Action layout identity mismatch for {source}."
+        )
+
+    if expected_action_space_config is not None:
+        if (
+            observed_config.to_contract_dict()
+            != expected_action_space_config.to_contract_dict()
+        ):
+            raise ValueError(
+                f"Topology action config mismatch for {source}."
+            )
 
     if (
-        expected_action_space_config is not None
-        and canonical_config_fingerprint
-        != expected_action_space_config.contract_fingerprint()
+        expected_action_layout is not None
+        and tuple(observed_layout) != tuple(expected_action_layout)
     ):
-        raise ValueError(f"Topology action config mismatch for {source}.")
-
-    if expected_action_layout is not None:
-        expected_layout_fingerprint = action_layout_fingerprint(
-            expected_action_layout
+        raise ValueError(
+            f"Action layout mismatch for {source}."
         )
-        if canonical_layout_fingerprint != expected_layout_fingerprint:
-            raise ValueError(f"Action layout mismatch for {source}.")
 
     return observed_config, observed_layout
 
@@ -293,62 +281,33 @@ def require_physics_provenance(
     source: str,
     expected_physics_config: "PhysicsConfig | None" = None,
 ) -> "PhysicsConfig":
-    """Validate self-contained runtime provenance and compatibility."""
+    """Validate the actual PhysicsConfig stored by the current pipeline."""
 
     from grid_topology_ai.config.physics import PhysicsConfig
 
-    require_state_feature_schema_provenance(payload, source=source)
-    require_exact_contract_version(
-        payload.get("physics_config_contract_version"),
-        expected=PHYSICS_CONFIG_CONTRACT_VERSION,
-        name="physics-config contract",
+    raw_config = _json_value(
+        payload.get("physics_config"),
+        name="physics_config",
         source=source,
-        regeneration_command=(
-            "regenerate the artifact with the configured PhysicsConfig"
-        ),
     )
-
-    missing_fields = [
-        field
-        for field in ("physics_config", "physics_config_fingerprint")
-        if payload.get(field) is None
-    ]
-    if missing_fields:
-        raise ValueError(
-            f"Incomplete physics provenance for {source}: missing "
-            f"{missing_fields}; legacy artifacts cannot be upgraded safely. "
-            "Regenerate the artifact with the configured PhysicsConfig."
-        )
-
-    raw_config = payload.get("physics_config")
-    if isinstance(raw_config, str):
-        try:
-            raw_config = json.loads(raw_config)
-        except json.JSONDecodeError as exc:
-            raise ValueError(
-                f"Invalid physics_config JSON for {source}."
-            ) from exc
     if not isinstance(raw_config, Mapping):
         raise ValueError(
-            f"Missing or invalid physics_config for {source}: expected an object."
+            f"Missing or invalid physics_config for {source}."
         )
-
     try:
         observed_config = PhysicsConfig.from_mapping(raw_config)
     except ValueError as exc:
-        raise ValueError(f"Invalid physics_config for {source}: {exc}") from exc
-
-    observed_fingerprint = payload.get("physics_config_fingerprint")
-    canonical_fingerprint = observed_config.fingerprint()
-    if observed_fingerprint != canonical_fingerprint:
-        rendered = (
-            "missing"
-            if observed_fingerprint is None
-            else repr(observed_fingerprint)
-        )
         raise ValueError(
-            f"PhysicsConfig fingerprint mismatch for {source}: expected "
-            f"{canonical_fingerprint}, observed {rendered}."
+            f"Invalid physics_config for {source}: {exc}"
+        ) from exc
+
+    explicit_fingerprint = payload.get("physics_config_fingerprint")
+    if (
+        explicit_fingerprint is not None
+        and explicit_fingerprint != observed_config.fingerprint()
+    ):
+        raise ValueError(
+            f"PhysicsConfig identity mismatch for {source}."
         )
 
     legacy_pf_alg = payload.get("pf_alg")
@@ -369,35 +328,17 @@ def require_physics_provenance(
             parsed_pf_alg = int(legacy_pf_alg.strip())
         else:
             parsed_pf_alg = None
-
-        if parsed_pf_alg is None:
-            raise ValueError(
-                f"PF_ALG conflicts with PhysicsConfig for {source}: expected "
-                f"exact integer PF_ALG value, observed PF_ALG={legacy_pf_alg!r}, "
-                f"physics.pf_alg={observed_config.pf_alg}."
-            )
-        if parsed_pf_alg not in {1, 2, 3, 4}:
-            raise ValueError(
-                f"PF_ALG conflicts with PhysicsConfig for {source}: observed "
-                f"PF_ALG={parsed_pf_alg} is invalid; expected one of 1, 2, 3, "
-                f"or 4, physics.pf_alg={observed_config.pf_alg}."
-            )
         if parsed_pf_alg != observed_config.pf_alg:
             raise ValueError(
-                f"PF_ALG conflicts with PhysicsConfig for {source}: observed "
-                f"PF_ALG={legacy_pf_alg!r}, physics.pf_alg="
-                f"{observed_config.pf_alg}."
+                f"PF_ALG conflicts with PhysicsConfig for {source}."
             )
 
     if (
         expected_physics_config is not None
-        and canonical_fingerprint != expected_physics_config.fingerprint()
+        and observed_config != expected_physics_config
     ):
         raise ValueError(
-            f"PhysicsConfig mismatch for {source}: expected fingerprint "
-            f"{expected_physics_config.fingerprint()}, observed "
-            f"{canonical_fingerprint}. Regenerate the artifact with the "
-            "configured PhysicsConfig."
+            f"PhysicsConfig mismatch for {source}."
         )
 
     return observed_config
@@ -408,12 +349,7 @@ def require_graph_batching_checkpoint_contract(
     *,
     source: str,
 ) -> None:
-    """Reject legacy fixed-cardinality Graph V2 checkpoints early."""
-
-    model_type = str(
-        payload.get("model_type", "")
-    ).strip()
-
+    model_type = str(payload.get("model_type", "")).strip()
     if model_type not in {
         "graph_v2",
         "graph_policy_value_net_v2",
@@ -429,21 +365,13 @@ def require_graph_batching_checkpoint_contract(
         expected=GRAPH_BATCHING_CONTRACT_VERSION,
         name="graph-batching contract",
         source=source,
-        regeneration_command=(
-            "retrain the Graph V2 checkpoint with "
-            "python -m scripts.self_play.train_graph_baseline"
-        ),
+        regeneration_command="",
     )
 
-    if (
-        payload.get("topology_cardinality_independent")
-        is not True
-    ):
+    if payload.get("topology_cardinality_independent") is not True:
         raise ValueError(
             "Graph V2 checkpoint must declare "
-            "topology_cardinality_independent=True for "
-            f"{source}. Retrain the checkpoint with the "
-            "current variable-graph architecture."
+            f"topology_cardinality_independent=True for {source}."
         )
 
 
@@ -476,8 +404,8 @@ def _require_graph_checkpoint_feature_dimensions(
             )
         if int(value) != expected:
             raise ValueError(
-                f"Graph checkpoint {key} mismatch for {source}: expected "
-                f"{expected}, observed {int(value)}."
+                f"Graph checkpoint {key} mismatch for {source}: "
+                f"expected {expected}, observed {int(value)}."
             )
 
     for key, expected in (
@@ -491,13 +419,13 @@ def _require_graph_checkpoint_feature_dimensions(
             size = len(value)  # type: ignore[arg-type]
         except TypeError as exc:
             raise ValueError(
-                f"Graph checkpoint is missing normalization vector {key} "
-                f"for {source}."
+                f"Graph checkpoint is missing normalization vector "
+                f"{key} for {source}."
             ) from exc
         if size != expected:
             raise ValueError(
-                f"Graph checkpoint normalization vector {key} mismatch for "
-                f"{source}: expected {expected}, observed {size}."
+                f"Graph checkpoint normalization vector {key} mismatch "
+                f"for {source}: expected {expected}, observed {size}."
             )
 
 
@@ -507,6 +435,8 @@ def require_checkpoint_contracts(
     source: str,
     expected_physics_config: "PhysicsConfig | None" = None,
 ) -> "PhysicsConfig":
+    """Validate current checkpoint semantics while legacy versions are optional."""
+
     from grid_topology_ai.physics.objective import (
         PHYSICAL_OBJECTIVE_SCHEMA_VERSION,
     )
@@ -516,41 +446,32 @@ def require_checkpoint_contracts(
         expected=CHECKPOINT_CONTRACT_VERSION,
         name="checkpoint contract",
         source=source,
-        regeneration_command=(
-            "regenerate self-play examples, then rerun "
-            "python -m scripts.self_play.train_graph_baseline"
-        ),
+        regeneration_command="",
     )
     require_exact_contract_version(
         payload.get("physical_objective_schema_version"),
         expected=PHYSICAL_OBJECTIVE_SCHEMA_VERSION,
         name="physical-objective contract",
         source=source,
-        regeneration_command=(
-            "python -m scripts.self_play.generate ... followed by "
-            "python -m scripts.self_play.train_graph_baseline ..."
-        ),
+        regeneration_command="",
     )
-    require_outcome_objective_version(
-        payload,
-        source=source,
-    )
+    require_outcome_objective_version(payload, source=source)
     require_exact_contract_version(
         payload.get("outcome_value_target_contract_version"),
         expected=OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
         name="outcome/value-target contract",
         source=source,
-        regeneration_command=(
-            "python -m scripts.self_play.generate ... followed by "
-            "python -m scripts.self_play.train_graph_baseline ..."
-        ),
+        regeneration_command="",
     )
     require_graph_batching_checkpoint_contract(
         payload,
         source=source,
     )
 
-    require_topology_action_provenance(payload, source=source)
+    require_topology_action_provenance(
+        payload,
+        source=source,
+    )
     physics_config = require_physics_provenance(
         payload,
         source=source,
@@ -559,23 +480,21 @@ def require_checkpoint_contracts(
 
     dataset_metadata = payload.get("dataset_metadata")
     model_type = str(payload.get("model_type", ""))
-    if model_type in {
+    if isinstance(dataset_metadata, Mapping):
+        require_state_feature_schema_provenance(
+            dataset_metadata,
+            source=f"{source} dataset_metadata",
+        )
+    elif model_type in {
         "graph_policy_value_net",
         "graph_policy_value_net_v2",
     }:
-        if not isinstance(dataset_metadata, Mapping):
-            raise ValueError(
-                f"Graph checkpoint is missing dataset_metadata: {source}."
-            )
-        require_state_feature_schema_provenance(
-            dataset_metadata,
-            source=f"{source} dataset_metadata",
-        )
-    elif isinstance(dataset_metadata, Mapping):
-        require_state_feature_schema_provenance(
-            dataset_metadata,
-            source=f"{source} dataset_metadata",
+        raise ValueError(
+            f"Graph checkpoint is missing dataset_metadata: {source}."
         )
 
-    _require_graph_checkpoint_feature_dimensions(payload, source=source)
+    _require_graph_checkpoint_feature_dimensions(
+        payload,
+        source=source,
+    )
     return physics_config

@@ -14,7 +14,7 @@ from grid_topology_ai.physics.objective import (
     assess_physical_state,
     stop_allowed_for_policy,
 )
-from grid_topology_ai.return_contract import (
+from grid_topology_ai.reward import (
     DEFAULT_HEURISTIC_UTILITY_SCALE,
     TERMINAL_UTILITY_GAMMA,
     heuristic_terminal_utility_estimate,
