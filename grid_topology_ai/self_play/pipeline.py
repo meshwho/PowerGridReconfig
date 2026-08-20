@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import csv
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+
+import pandas as pd
 
 from grid_topology_ai.config import SelfPlayConfig
 from grid_topology_ai.self_play.acceptance import (
@@ -11,7 +14,11 @@ from grid_topology_ai.self_play.acceptance import (
 )
 from grid_topology_ai.self_play.artifacts import save_yaml
 from grid_topology_ai.self_play.checkpoint_state import initialize_best_state
-from grid_topology_ai.self_play.completion import write_iteration_completion_marker
+from grid_topology_ai.self_play.completion import (
+    COMPLETION_MARKER_FILENAME,
+    validate_iteration_completion,
+    write_iteration_completion_marker,
+)
 from grid_topology_ai.self_play.curriculum_reporting import (
     persist_curriculum_pool_state,
     prepare_curriculum_sampling,
@@ -27,16 +34,195 @@ from grid_topology_ai.self_play.iteration import (
     _self_play_seeds,
     run_self_play_iteration,
 )
-from grid_topology_ai.self_play.learning_curve import (
-    load_learning_curve,
-    save_learning_curve,
-    upsert_iteration_row,
-)
 from grid_topology_ai.self_play.paths import SelfPlayPaths
 from grid_topology_ai.self_play.pool_state import initialize_pool_metadata
 from grid_topology_ai.self_play.preflight import validate_resume_artifacts
 from grid_topology_ai.self_play.replay import RollingReplayBuffer
-from grid_topology_ai.self_play.run_state import resolve_run_state
+
+
+LearningCurveRow = dict[str, object]
+
+_PREFERRED_COLUMNS = [
+    "iteration",
+    "accepted",
+    "status",
+    "candidate_metric",
+    "best_metric_after",
+    "n_sampled_scenarios",
+    "n_raw_examples",
+    "n_train_examples",
+    "n_fresh",
+    "n_old",
+    "candidate_checkpoint",
+    "best_checkpoint_after",
+]
+
+
+def _fieldnames(rows: list[LearningCurveRow]) -> list[str]:
+    fieldnames: list[str] = []
+
+    for key in _PREFERRED_COLUMNS:
+        if any(key in row for row in rows):
+            fieldnames.append(key)
+
+    for row in rows:
+        for key in row:
+            if key not in fieldnames:
+                fieldnames.append(key)
+
+    return fieldnames
+
+
+def load_learning_curve(path: Path) -> list[LearningCurveRow]:
+    if not path.exists() or path.stat().st_size == 0:
+        return []
+
+    df = pd.read_csv(path)
+
+    if df.empty:
+        return []
+
+    return df.to_dict(orient="records")
+
+
+def save_learning_curve(
+    *,
+    rows: list[LearningCurveRow],
+    path: Path,
+) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    if not rows:
+        path.write_text("", encoding="utf-8")
+        return path
+
+    with path.open("w", encoding="utf-8", newline="") as file:
+        writer = csv.DictWriter(
+            file,
+            fieldnames=_fieldnames(rows),
+            extrasaction="ignore",
+        )
+        writer.writeheader()
+        writer.writerows(rows)
+
+    return path
+
+
+def upsert_iteration_row(
+    *,
+    rows: list[LearningCurveRow],
+    row: LearningCurveRow,
+) -> list[LearningCurveRow]:
+    iteration = int(row["iteration"])
+
+    updated = [
+        item
+        for item in rows
+        if int(item.get("iteration", -1)) != iteration
+    ]
+    updated.append(row)
+
+    return updated
+
+
+@dataclass(frozen=True, slots=True)
+class RunState:
+    completed_iterations: tuple[int, ...]
+    incomplete_directories: tuple[Path, ...]
+    start_iteration: int
+
+
+def _scan_iteration_directories(
+    run_dir: Path,
+) -> tuple[tuple[int, ...], tuple[Path, ...]]:
+    completed: set[int] = set()
+    incomplete: list[Path] = []
+
+    for iteration_dir in sorted(run_dir.glob("iter_*")):
+        if not iteration_dir.is_dir():
+            continue
+
+        suffix = iteration_dir.name.removeprefix("iter_")
+
+        try:
+            iteration = int(suffix)
+        except ValueError:
+            continue
+
+        marker_path = iteration_dir / COMPLETION_MARKER_FILENAME
+        if not marker_path.exists():
+            incomplete.append(iteration_dir)
+            continue
+
+        try:
+            validate_iteration_completion(
+                iteration_dir=iteration_dir,
+                expected_iteration=iteration,
+            )
+        except (OSError, TypeError, ValueError) as exc:
+            raise RuntimeError(
+                f"Invalid iteration completion marker: {marker_path}"
+            ) from exc
+
+        completed.add(iteration)
+
+    return tuple(sorted(completed)), tuple(sorted(incomplete))
+
+
+def resolve_run_state(
+    *,
+    run_dir: Path,
+    resume: bool,
+) -> RunState:
+    completed, incomplete = _scan_iteration_directories(run_dir)
+    replay_manifest = run_dir / "replay_buffer" / "buffer_manifest.json"
+    learning_curve = run_dir / "learning_curve.csv"
+
+    has_existing_run = bool(
+        completed
+        or incomplete
+        or replay_manifest.exists()
+        or learning_curve.exists()
+    )
+
+    if not resume:
+        if has_existing_run:
+            raise RuntimeError(
+                "Existing self-play run artifacts were found in "
+                f"{run_dir}. Refusing to overwrite them. "
+                "Use --resume to continue the run, or remove the "
+                "existing runtime artifacts before starting again."
+            )
+
+        return RunState((), (), 1)
+
+    if incomplete:
+        formatted = "\n".join(f"  - {path}" for path in incomplete)
+
+        raise RuntimeError(
+            "Cannot safely resume because incomplete iteration "
+            "directories were found:\n"
+            f"{formatted}\n"
+            f"Missing required completion marker: {COMPLETION_MARKER_FILENAME}. "
+            "metadata.json is no longer proof that an iteration fully completed. "
+            "Do not blindly delete these directories because replay, pool, or best "
+            "checkpoint artifacts may already have been updated. Manual inspection "
+            "is required before running again with --resume."
+        )
+
+    if not completed:
+        return RunState((), (), 1)
+
+    expected = tuple(range(1, max(completed) + 1))
+
+    if completed != expected:
+        raise RuntimeError(
+            "Completed iterations are not contiguous. "
+            f"Found={list(completed)}, expected={list(expected)}. "
+            "Manual inspection is required before resuming."
+        )
+
+    return RunState(completed, (), max(completed) + 1)
 
 
 @dataclass(frozen=True, slots=True)
