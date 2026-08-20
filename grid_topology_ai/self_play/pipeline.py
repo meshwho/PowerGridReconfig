@@ -14,11 +14,6 @@ from grid_topology_ai.self_play.acceptance import (
 )
 from grid_topology_ai.self_play.artifacts import save_yaml
 from grid_topology_ai.self_play.checkpoint_state import initialize_best_state
-from grid_topology_ai.self_play.completion import (
-    COMPLETION_MARKER_FILENAME,
-    validate_iteration_completion,
-    write_iteration_completion_marker,
-)
 from grid_topology_ai.self_play.curriculum_reporting import (
     persist_curriculum_pool_state,
     prepare_curriculum_sampling,
@@ -34,7 +29,12 @@ from grid_topology_ai.self_play.iteration import (
     _self_play_seeds,
     run_self_play_iteration,
 )
-from grid_topology_ai.self_play.paths import SelfPlayPaths
+from grid_topology_ai.self_play.paths import (
+    COMPLETION_MARKER_FILENAME,
+    SelfPlayPaths,
+    validate_iteration_completion,
+    write_iteration_completion_marker,
+)
 from grid_topology_ai.self_play.pool_state import initialize_pool_metadata
 from grid_topology_ai.self_play.preflight import validate_resume_artifacts
 from grid_topology_ai.self_play.replay import RollingReplayBuffer
