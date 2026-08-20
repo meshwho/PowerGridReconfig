@@ -3,11 +3,8 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from grid_topology_ai.data_adapter import (
-    BRANCH_FEATURE_COLUMNS,
-    GridFMState,
-)
-from grid_topology_ai.return_contract import (
+from grid_topology_ai.data_adapter import BRANCH_FEATURE_COLUMNS, GridFMState
+from grid_topology_ai.reward import (
     TERMINAL_UTILITY_GAMMA,
     VALUE_TARGET_MODE,
     heuristic_terminal_utility_estimate,
@@ -24,10 +21,7 @@ def _state(*, loading: float, overloaded: int, hard: int) -> GridFMState:
         (1, len(BRANCH_FEATURE_COLUMNS)),
         dtype=np.float32,
     )
-    branch_features[
-        0,
-        BRANCH_FEATURE_COLUMNS.index("br_status"),
-    ] = 1.0
+    branch_features[0, BRANCH_FEATURE_COLUMNS.index("br_status")] = 1.0
     branch_features[
         0,
         BRANCH_FEATURE_COLUMNS.index("loading_percent"),
@@ -50,14 +44,11 @@ def _state(*, loading: float, overloaded: int, hard: int) -> GridFMState:
     )
 
 
-def test_terminal_utility_contract_distinguishes_safe_and_unsafe_handoffs() -> None:
+def test_terminal_utility_distinguishes_terminal_outcomes() -> None:
     assert terminal_utility_from_outcome(
         True,
         TerminationReason.SOLVED,
-    ) == (
-        1.0,
-        "solved",
-    )
+    ) == (1.0, "solved")
     assert terminal_utility_from_outcome(
         False,
         TerminationReason.HANDOFF_TO_REDISPATCH,
@@ -76,7 +67,7 @@ def test_terminal_utility_contract_distinguishes_safe_and_unsafe_handoffs() -> N
     ) == (-1.0, "power_flow_failed")
 
 
-def test_policy_value_contract_is_undiscounted() -> None:
+def test_policy_value_semantics_are_undiscounted() -> None:
     assert TERMINAL_UTILITY_GAMMA == 1.0
     assert VALUE_TARGET_MODE == "final_topology_state_utility"
     assert require_discount_factor(0.5) == 1.0

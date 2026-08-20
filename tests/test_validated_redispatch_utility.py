@@ -2,12 +2,9 @@ from __future__ import annotations
 
 import pytest
 
-from grid_topology_ai.outcome_contract import (
-    RedispatchStatus,
-    TerminalOutcomeEvidence,
-)
+from grid_topology_ai.outcome_record import RedispatchStatus, TerminalOutcomeEvidence
 from grid_topology_ai.physics.objective import assess_physical_state
-from grid_topology_ai.return_contract import terminal_utility_from_outcome
+from grid_topology_ai.reward import terminal_utility_from_outcome
 from grid_topology_ai.termination import TerminationReason
 
 
@@ -61,7 +58,9 @@ def _assessment(*, overloaded: int, hard_overloaded: int = 0):
         TerminationReason.HANDOFF_TO_REDISPATCH_WITH_HARD_OVERLOAD,
     ],
 )
-def test_evidence_free_handoff_keeps_legacy_fallback(reason: TerminationReason) -> None:
+def test_evidence_free_handoff_uses_terminal_fallback(
+    reason: TerminationReason,
+) -> None:
     assert terminal_utility_from_outcome(False, reason) == (
         -1.0,
         reason.value,

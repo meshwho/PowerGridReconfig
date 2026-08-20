@@ -6,10 +6,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from grid_topology_ai.physics.objective import (
-    PHYSICAL_OBJECTIVE_SCHEMA_VERSION,
-)
-from grid_topology_ai.return_contract import (
+from grid_topology_ai.reward import (
     TERMINAL_UTILITY_GAMMA,
     VALUE_TARGET_MODE,
     terminal_utility_from_outcome,
@@ -35,9 +32,6 @@ def valid_row(
         "solved": solved,
         "done": done,
         "termination_reason": termination_reason,
-        "physical_objective_schema_version": (
-            PHYSICAL_OBJECTIVE_SCHEMA_VERSION
-        ),
         **terminal_evidence_fields(termination_reason),
     }
 
@@ -117,7 +111,7 @@ def test_invalid_gamma_is_atomic(gamma: object) -> None:
         np.float64(1.0),
     ],
 )
-def test_valid_caller_gamma_assigns_fixed_terminal_contract(
+def test_valid_caller_gamma_assigns_fixed_terminal_semantics(
     gamma: object,
 ) -> None:
     rows = [valid_row()]
@@ -131,7 +125,7 @@ def test_valid_caller_gamma_assigns_fixed_terminal_contract(
     assert rows[0]["outcome_steps_to_terminal"] == 1
     assert rows[0]["outcome_value_target_mode"] == VALUE_TARGET_MODE
     assert VALUE_TARGET_MODE == "final_topology_state_utility"
-    assert "outcome_value_target_contract_version" in rows[0]
+    assert "outcome_value_target_contract_version" not in rows[0]
 
 
 @pytest.mark.parametrize(
@@ -280,10 +274,8 @@ def test_terminal_utility_is_constant_across_episode(
         assert row["outcome_gamma"] == pytest.approx(1.0)
         assert row["outcome_value_target_mode"] == VALUE_TARGET_MODE
         assert row["outcome_steps_to_terminal"] == 2 - position
-        assert row["outcome_value_target_contract_version"]
-        assert row["outcome_value_target"] == pytest.approx(
-            expected_utility
-        )
+        assert "outcome_value_target_contract_version" not in row
+        assert row["outcome_value_target"] == pytest.approx(expected_utility)
 
 
 @pytest.mark.parametrize(
@@ -305,10 +297,7 @@ def test_missing_and_duplicate_step_are_atomic() -> None:
         match="step",
     )
     assert_rejected_without_target_mutation(
-        [
-            valid_row(step=0),
-            valid_row(step=0),
-        ],
+        [valid_row(step=0), valid_row(step=0)],
         match="Duplicate",
     )
 
@@ -421,22 +410,13 @@ def test_custom_group_key_is_accepted() -> None:
 def _assert_second_group_atomic(
     bad_rows: list[dict[str, object]],
 ) -> None:
-    rows = [
-        valid_row(scenario_id=1, step=0),
-        *bad_rows,
-    ]
+    rows = [valid_row(scenario_id=1, step=0), *bad_rows]
     assert_rejected_without_target_mutation(rows)
 
 
 def test_atomic_when_second_group_is_unfinished() -> None:
     _assert_second_group_atomic(
-        [
-            valid_row(
-                scenario_id=2,
-                step=0,
-                done=False,
-            )
-        ]
+        [valid_row(scenario_id=2, step=0, done=False)]
     )
 
 
@@ -473,21 +453,13 @@ def test_atomic_when_second_group_has_invalid_key() -> None:
 
 def test_same_scenario_episodes_are_isolated() -> None:
     solved = valid_row(step=0)
-    solved.update(
-        run_id="run-a",
-        iteration=1,
-        episode_id="episode-a",
-    )
+    solved.update(run_id="run-a", iteration=1, episode_id="episode-a")
     failed = valid_row(
         step=0,
         solved=False,
         termination_reason="max_steps_reached",
     )
-    failed.update(
-        run_id="run-b",
-        iteration=2,
-        episode_id="episode-b",
-    )
+    failed.update(run_id="run-b", iteration=2, episode_id="episode-b")
 
     rows = [solved, failed]
     add_outcome_value_targets_to_rows(
@@ -502,16 +474,8 @@ def test_same_scenario_episodes_are_isolated() -> None:
 def test_episode_rejects_mixed_identity() -> None:
     first = valid_row(step=0)
     second = valid_row(step=1)
-    first.update(
-        run_id="run-a",
-        iteration=1,
-        episode_id="episode-a",
-    )
-    second.update(
-        run_id="run-b",
-        iteration=1,
-        episode_id="episode-a",
-    )
+    first.update(run_id="run-a", iteration=1, episode_id="episode-a")
+    second.update(run_id="run-b", iteration=1, episode_id="episode-a")
 
     assert_rejected_without_target_mutation(
         [first, second],
@@ -521,14 +485,8 @@ def test_episode_rejects_mixed_identity() -> None:
 
 
 def test_terminal_utility_from_outcome_public_helper() -> None:
-    assert terminal_utility_from_outcome(
-        True,
-        "solved",
-    ) == (1.0, "solved")
+    assert terminal_utility_from_outcome(True, "solved") == (1.0, "solved")
     assert terminal_utility_from_outcome(
         False,
         "handoff_to_redispatch",
-    ) == (
-        -1.0,
-        "handoff_to_redispatch",
-    )
+    ) == (-1.0, "handoff_to_redispatch")

@@ -1,31 +1,16 @@
 from __future__ import annotations
 
-from types import SimpleNamespace
-
 import numpy as np
 import pytest
 
 from grid_topology_ai.data_adapter import BRANCH_FEATURE_COLUMNS, GridFMState
+from grid_topology_ai.outcome_record import RedispatchStatus, TerminalOutcomeEvidence
+from grid_topology_ai.physics.objective import assess_physical_state
 from grid_topology_ai.physics.utility import state_security_penalty, state_utility
-from grid_topology_ai.outcome_contract import (
-    RedispatchStatus,
-    TERMINAL_OUTCOME_EVIDENCE_SCHEMA_VERSION,
-    TerminalOutcomeEvidence,
-)
-from grid_topology_ai.physics.objective import (
-    PHYSICAL_OBJECTIVE_SCHEMA_VERSION,
-    assess_physical_state,
-)
-from grid_topology_ai.return_contract import (
+from grid_topology_ai.reward import (
     TERMINAL_UTILITY_GAMMA,
     VALUE_TARGET_MODE,
     terminal_utility_from_outcome,
-)
-from grid_topology_ai.search.impact_beam_search import (
-    ImpactBeamSearchConfig,
-    ImpactBeamSearchNode,
-    ImpactBeamSearchPlanner,
-    safety_score,
 )
 from grid_topology_ai.termination import TerminationReason
 from grid_topology_ai.value_targets import add_outcome_value_targets_to_rows
@@ -43,10 +28,7 @@ def _state(
         (1, len(BRANCH_FEATURE_COLUMNS)),
         dtype=np.float32,
     )
-    branch_features[
-        0,
-        BRANCH_FEATURE_COLUMNS.index("br_status"),
-    ] = 1.0
+    branch_features[0, BRANCH_FEATURE_COLUMNS.index("br_status")] = 1.0
     branch_features[
         0,
         BRANCH_FEATURE_COLUMNS.index("loading_percent"),
@@ -129,7 +111,6 @@ def test_better_unsolved_topology_receives_higher_utility() -> None:
 
     better_utility = state_utility(better)
     worse_utility = state_utility(worse)
-
     assert -1.0 < worse_utility < better_utility < 1.0
 
     better_evidence = _evidence(
@@ -200,28 +181,21 @@ def test_multistep_rows_all_receive_final_topology_utility() -> None:
     )
     evidence_json = evidence.to_json()
 
-    rows = []
-    for step, step_reward in enumerate((-25.0, 60.0, 15.0)):
-        rows.append(
-            {
-                "run_id": "run-1",
-                "iteration": 1,
-                "episode_id": "episode-1",
-                "scenario_id": 1,
-                "step": step,
-                "step_reward": step_reward,
-                "solved": False,
-                "done": True,
-                "termination_reason": TerminationReason.MAX_STEPS_REACHED.value,
-                "physical_objective_schema_version": (
-                    PHYSICAL_OBJECTIVE_SCHEMA_VERSION
-                ),
-                "terminal_outcome_evidence_schema_version": (
-                    TERMINAL_OUTCOME_EVIDENCE_SCHEMA_VERSION
-                ),
-                "terminal_outcome_evidence_json": evidence_json,
-            }
-        )
+    rows = [
+        {
+            "run_id": "run-1",
+            "iteration": 1,
+            "episode_id": "episode-1",
+            "scenario_id": 1,
+            "step": step,
+            "step_reward": step_reward,
+            "solved": False,
+            "done": True,
+            "termination_reason": TerminationReason.MAX_STEPS_REACHED.value,
+            "terminal_outcome_evidence_json": evidence_json,
+        }
+        for step, step_reward in enumerate((-25.0, 60.0, 15.0))
+    ]
 
     add_outcome_value_targets_to_rows(
         rows,
@@ -236,6 +210,10 @@ def test_multistep_rows_all_receive_final_topology_utility() -> None:
     )
     assert all(
         row["outcome_value_target_mode"] == VALUE_TARGET_MODE
+        for row in rows
+    )
+    assert all(
+        "outcome_value_target_contract_version" not in row
         for row in rows
     )
     assert rows[0]["step_reward"] < 0.0
@@ -256,40 +234,3 @@ def test_any_strict_physical_violation_prevents_unit_utility(
 ) -> None:
     assert state_security_penalty(state) > 0.0
     assert state_utility(state) < 1.0
-
-
-def test_teacher_final_ordering_uses_canonical_physical_penalty() -> None:
-    better_state = _state(loading=106.0)
-    worse_state = _state(loading=116.0)
-
-    better_score = safety_score(better_state)
-    worse_score = safety_score(worse_state)
-
-    assert better_score == pytest.approx(
-        state_security_penalty(better_state)
-    )
-    assert worse_score == pytest.approx(
-        state_security_penalty(worse_state)
-    )
-    assert better_score < worse_score
-
-    better_node = ImpactBeamSearchNode(
-        env=SimpleNamespace(current_state=better_state),
-        safety_score=better_score,
-        num_hard_overloaded=0,
-        discounted_score=0.0,
-        depth=2,
-    )
-    worse_node = ImpactBeamSearchNode(
-        env=SimpleNamespace(current_state=worse_state),
-        safety_score=worse_score,
-        num_hard_overloaded=0,
-        discounted_score=0.0,
-        depth=2,
-    )
-
-    planner = ImpactBeamSearchPlanner(ImpactBeamSearchConfig())
-    planner.root_num_hard_overloaded = 0
-
-    ordered = planner._sort_nodes([worse_node, better_node])
-    assert ordered[0] is better_node

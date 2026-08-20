@@ -2,10 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from grid_topology_ai.outcome_contract import (
-    RedispatchStatus,
-    TerminalOutcomeEvidence,
-)
+from grid_topology_ai.outcome_record import RedispatchStatus, TerminalOutcomeEvidence
 from grid_topology_ai.physics.objective import (
     assess_physical_state,
     classify_stop_outcome,
@@ -55,13 +52,7 @@ def _metrics(
         "expected_status",
     ),
     [
-        (
-            0,
-            0,
-            False,
-            TerminationReason.SOLVED,
-            RedispatchStatus.NOT_REQUESTED,
-        ),
+        (0, 0, False, TerminationReason.SOLVED, RedispatchStatus.NOT_REQUESTED),
         (
             1,
             0,
@@ -117,12 +108,8 @@ def test_stop_classification_builds_consistent_terminal_evidence(
 
 def test_max_steps_accepts_an_unsecure_converged_assessment() -> None:
     assessment = assess_physical_state(
-        _metrics(
-            overloaded=1,
-            hard_overloaded=0,
-        )
+        _metrics(overloaded=1, hard_overloaded=0)
     )
-
     evidence = TerminalOutcomeEvidence(
         solved=False,
         termination_reason=TerminationReason.MAX_STEPS_REACHED,
@@ -144,10 +131,10 @@ def test_power_flow_failure_payload_is_explicitly_assessment_free() -> None:
         redispatch_status=RedispatchStatus.NOT_REQUESTED,
         topology_utility=-1.0,
     )
-
     payload = evidence.to_dict()
 
     assert payload["assessment"] is None
     assert payload["termination_reason"] == "power_flow_failed"
     assert payload["redispatch_status"] == "not_requested"
     assert payload["topology_utility"] == pytest.approx(-1.0)
+    assert "schema_version" not in payload
