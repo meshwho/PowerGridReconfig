@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-from grid_topology_ai.outcome_contract import (
-    TERMINAL_OUTCOME_EVIDENCE_SCHEMA_VERSION,
+from grid_topology_ai.outcome_record import (
     TerminalOutcomeEvidence,
     redispatch_status_for_reason,
 )
@@ -119,9 +118,6 @@ def terminal_evidence_fields(
         payload = "{}"
 
     return {
-        "terminal_outcome_evidence_schema_version": (
-            TERMINAL_OUTCOME_EVIDENCE_SCHEMA_VERSION
-        ),
         "terminal_outcome_evidence_json": payload,
     }
 
@@ -136,8 +132,5 @@ def terminal_evidence_metadata(
         topology_utility=topology_utility,
     )
     return {
-        "terminal_outcome_evidence_schema_version": (
-            TERMINAL_OUTCOME_EVIDENCE_SCHEMA_VERSION
-        ),
         "terminal_outcome_evidence": evidence.to_dict(),
     }
