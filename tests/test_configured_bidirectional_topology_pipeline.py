@@ -165,6 +165,7 @@ def test_self_play_constructs_action_space_from_typed_config(
     monkeypatch.setattr(generation, "GridFMPowerFlowBackend", _RuntimeStub)
     monkeypatch.setattr(generation, "GridFMActionSpace", CapturingActionSpace)
     monkeypatch.setattr(generation, "GridFMReward", StopReward)
+    monkeypatch.setattr(generation, "_preflight_generation_inputs", lambda request: None)
 
     request = GenerationRequest(
         raw_dir=tmp_path / "raw",

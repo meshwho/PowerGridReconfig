@@ -7,6 +7,7 @@ from typing import Any
 import pytest
 
 import grid_topology_ai.teacher_runtime as teacher
+from grid_topology_ai.termination import TerminationReason
 
 
 @dataclass
@@ -19,6 +20,7 @@ class FakeNode:
     done: bool = False
     discounted_score: float = 0.0
     num_hard_overloaded: int = 0
+    termination_reason: TerminationReason | None = None
 
 
 @dataclass(frozen=True)

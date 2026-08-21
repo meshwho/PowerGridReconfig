@@ -150,9 +150,9 @@ def test_generation_diagnostic_returns_use_transition_rewards_only() -> None:
     assert "rewards_with_terminal" not in referenced_names
     assert len(calls) == 1
     assert calls[0].args
-    assert isinstance(calls[0].args[0], ast.Name)
-    assert calls[0].args[0].id == "rewards"
-    assert "final_return = returns[0] if returns else 0.0" in source
+    assert isinstance(calls[0].args[0], ast.Attribute)
+    assert calls[0].args[0].attr == "rewards"
+    assert "final_return=returns[0] if returns else 0.0" in source
 
 
 def test_evaluation_reward_uses_run_gamma_everywhere() -> None:

@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pandas as pd
 import pytest
+from types import SimpleNamespace
 
 from grid_topology_ai.config import EvaluationConfig
 import grid_topology_ai.evaluation as evaluation
@@ -59,6 +60,13 @@ def test_evaluation_uses_explicit_scenario_ids(
         evaluation,
         "build_evaluation_metrics",
         lambda **kwargs: {"evaluated_scenarios": len(kwargs["df"])},
+    )
+    monkeypatch.setattr(evaluation, "print_summary", lambda *args: None)
+    cache = SimpleNamespace(cache_info=lambda: {})
+    monkeypatch.setattr(
+        evaluation,
+        "_require_worker_context",
+        lambda: {"backend": cache, "action_space": cache, "evaluator": cache},
     )
 
     metrics = evaluation.evaluate_checkpoint(

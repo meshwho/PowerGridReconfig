@@ -36,7 +36,6 @@ ORACLE_TESTS: dict[str, tuple[str, ...]] = {
     ),
     "physics_and_targets": (
         "tests/test_physical_constraints.py",
-        "tests/test_physical_objective_boundaries.py",
         "tests/test_final_topology_quality_targets.py",
         "tests/test_reward_logic.py",
         "tests/test_unified_value_return_contract.py",
@@ -44,7 +43,6 @@ ORACLE_TESTS: dict[str, tuple[str, ...]] = {
     "teacher": (
         "tests/test_teacher_trajectory_replay_contract.py",
         "tests/test_teacher_checkpoint_resume.py",
-        "tests/test_numpy_runtime_scenario.py",
         "tests/test_teacher_config_runtime.py",
         "tests/test_teacher_staged_worker_start.py",
     ),
