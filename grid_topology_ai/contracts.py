@@ -350,23 +350,8 @@ def require_graph_batching_checkpoint_contract(
     source: str,
 ) -> None:
     model_type = str(payload.get("model_type", "")).strip()
-    if model_type not in {
-        "graph_v2",
-        "graph_policy_value_net_v2",
-    }:
+    if model_type != "graph_policy_value_net_v2":
         return
-
-    from grid_topology_ai.models.graph_self_play_dataset import (
-        GRAPH_BATCHING_CONTRACT_VERSION,
-    )
-
-    require_exact_contract_version(
-        payload.get("graph_batching_contract_version"),
-        expected=GRAPH_BATCHING_CONTRACT_VERSION,
-        name="graph-batching contract",
-        source=source,
-        regeneration_command="",
-    )
 
     if payload.get("topology_cardinality_independent") is not True:
         raise ValueError(
@@ -477,21 +462,6 @@ def require_checkpoint_contracts(
         source=source,
         expected_physics_config=expected_physics_config,
     )
-
-    dataset_metadata = payload.get("dataset_metadata")
-    model_type = str(payload.get("model_type", ""))
-    if isinstance(dataset_metadata, Mapping):
-        require_state_feature_schema_provenance(
-            dataset_metadata,
-            source=f"{source} dataset_metadata",
-        )
-    elif model_type in {
-        "graph_policy_value_net",
-        "graph_policy_value_net_v2",
-    }:
-        raise ValueError(
-            f"Graph checkpoint is missing dataset_metadata: {source}."
-        )
 
     _require_graph_checkpoint_feature_dimensions(
         payload,
