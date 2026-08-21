@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pandas as pd
 
 from grid_topology_ai.data_adapter import GridFMAdapter
-from scripts.self_play import generate_impact_teacher_redispatch_runtime as teacher
+import grid_topology_ai.teacher_runtime as teacher
 
 
 def test_worker_init_semaphore_wraps_heavy_context_initialization(monkeypatch) -> None:
@@ -28,7 +28,6 @@ def test_worker_init_semaphore_wraps_heavy_context_initialization(monkeypatch) -
         return {
             "task_config": dict(kwargs["task_config"]),
             "state_store": SimpleNamespace(output_dir=Path("states")),
-            "memory_registry": object(),
         }
 
     monkeypatch.setattr(
@@ -41,11 +40,7 @@ def test_worker_init_semaphore_wraps_heavy_context_initialization(monkeypatch) -
         "build_memory_mapped_teacher_context",
         fake_build_context,
     )
-    monkeypatch.setattr(
-        teacher.gc,
-        "collect",
-        lambda: events.append("gc"),
-    )
+    monkeypatch.setattr(teacher.gc, "collect", lambda: events.append("gc"))
 
     try:
         teacher.init_worker_context(
@@ -64,7 +59,7 @@ def test_worker_init_semaphore_wraps_heavy_context_initialization(monkeypatch) -
     assert events == ["acquire", "init", "gc", "release"]
 
 
-def test_parallel_runtime_adds_init_semaphore_without_changing_checkpoint_config(
+def test_parallel_runtime_adds_init_semaphore_without_mutating_task_config(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
@@ -87,10 +82,7 @@ def test_parallel_runtime_adds_init_semaphore_without_changing_checkpoint_config
         def shutdown(self, *, wait, cancel_futures):
             return None
 
-    monkeypatch.setenv(
-        teacher._WORKER_INIT_CONCURRENCY_ENV,
-        "1",
-    )
+    monkeypatch.setenv(teacher._WORKER_INIT_CONCURRENCY_ENV, "1")
     monkeypatch.setattr(
         teacher.mp,
         "BoundedSemaphore",
@@ -106,7 +98,6 @@ def test_parallel_runtime_adds_init_semaphore_without_changing_checkpoint_config
     monkeypatch.setattr(teacher, "tqdm", None)
 
     task_config = {"physics_config_fingerprint": "stable"}
-
     result = teacher.run_parallel(
         scenario_batches=[[1], [2]],
         scenario_ids=[1, 2],
@@ -132,21 +123,13 @@ def test_parquet_reader_returns_loaded_frame_without_reset_copy(
 ) -> None:
     path = tmp_path / "bus_data.parquet"
     path.touch()
-
-    frame = pd.DataFrame(
-        {"scenario": [7]},
-        index=pd.Index([123]),
-    )
+    frame = pd.DataFrame({"scenario": [7]}, index=pd.Index([123]))
 
     adapter = object.__new__(GridFMAdapter)
     adapter.raw_dir = tmp_path
     adapter._scenario_filter = None
 
-    monkeypatch.setattr(
-        pd,
-        "read_parquet",
-        lambda *args, **kwargs: frame,
-    )
+    monkeypatch.setattr(pd, "read_parquet", lambda *args, **kwargs: frame)
 
     loaded = adapter._read_required_parquet("bus_data.parquet")
 

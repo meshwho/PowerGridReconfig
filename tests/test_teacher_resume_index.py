@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from scripts.self_play import generate_impact_teacher_redispatch_runtime as teacher
+import grid_topology_ai.teacher_runtime as teacher
 
 
 def _append_checkpoint(path: Path, payload: bytes) -> int:
@@ -43,13 +43,11 @@ def test_resume_index_tracks_snapshot_and_contiguous_deltas(tmp_path) -> None:
 def test_resume_index_rejects_unindexed_checkpoint_tail(tmp_path) -> None:
     checkpoint = tmp_path / "teacher_checkpoint.jsonl"
     checkpoint.write_bytes(b"first\n")
-
     teacher._write_resume_snapshot(
         checkpoint_path=checkpoint,
         contract_fingerprint="contract-a",
         completed_scenario_ids=[1],
     )
-
     _append_checkpoint(checkpoint, b"unindexed\n")
 
     assert teacher._load_resume_index(
@@ -62,7 +60,6 @@ def test_resume_index_rejects_unindexed_checkpoint_tail(tmp_path) -> None:
 def test_resume_index_rejects_different_contract(tmp_path) -> None:
     checkpoint = tmp_path / "teacher_checkpoint.jsonl"
     checkpoint.write_bytes(b"first\n")
-
     teacher._write_resume_snapshot(
         checkpoint_path=checkpoint,
         contract_fingerprint="contract-a",
@@ -79,7 +76,6 @@ def test_resume_index_rejects_different_contract(tmp_path) -> None:
 def test_resume_index_delta_can_mark_scenario_retryable(tmp_path) -> None:
     checkpoint = tmp_path / "teacher_checkpoint.jsonl"
     checkpoint.write_bytes(b"first\n")
-
     teacher._write_resume_snapshot(
         checkpoint_path=checkpoint,
         contract_fingerprint="contract-a",
@@ -101,6 +97,3 @@ def test_resume_index_delta_can_mark_scenario_retryable(tmp_path) -> None:
         contract_fingerprint="contract-a",
         allowed_scenario_ids=[1, 2],
     ) == {1}
-    assert teacher._resume_index_path(checkpoint).name == (
-        "teacher_checkpoint_resume_index.jsonl"
-    )

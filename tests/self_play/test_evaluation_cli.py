@@ -4,8 +4,9 @@ from pathlib import Path
 
 import pytest
 
-from grid_topology_ai.evaluation.checkpoint import EvaluationRequest
-from scripts.evaluation import evaluate_checkpoint as cli
+import grid_topology_ai.cli as light_cli
+import grid_topology_ai.evaluation as evaluation_runtime
+from grid_topology_ai.evaluation import EvaluationRequest
 
 
 def _run_cli(
@@ -19,8 +20,13 @@ def _run_cli(
         captured["request"] = request
         return {"solve_rate": 1.0}
 
-    monkeypatch.setattr(cli, "evaluate_checkpoint", fake_evaluate)
+    monkeypatch.setattr(
+        evaluation_runtime,
+        "evaluate_checkpoint",
+        fake_evaluate,
+    )
     args = [
+        "evaluate",
         str(tmp_path / "raw"),
         "--transitions",
         str(tmp_path / "transitions.csv"),
@@ -30,7 +36,7 @@ def _run_cli(
     if extra_args is not None:
         args.extend(extra_args)
 
-    assert cli.main(args) == 0
+    assert light_cli.main(args) == 0
     return captured["request"]
 
 
@@ -64,54 +70,45 @@ def test_cli_creates_evaluation_config(
         monkeypatch,
         tmp_path,
         [
-            "--simulations",
-            "17",
-            "--depth",
-            "2",
-            "--max-steps",
-            "3",
-            "--top-k",
-            "11",
-            "--gamma",
-            "0.91",
-            "--c-puct",
-            "1.7",
-            "--prior-exponent",
-            "0.6",
-            "--num-workers",
-            "4",
-            "--batch-size",
-            "6",
-            "--device",
-            "cpu",
+            "--simulations", "17",
+            "--depth", "2",
+            "--max-steps", "3",
+            "--top-k", "11",
+            "--gamma", "0.91",
+            "--c-puct", "1.7",
+            "--prior-exponent", "0.6",
+            "--workers", "4",
+            "--batch-size", "6",
+            "--device", "cpu",
         ],
     )
 
-    assert request.config.simulations == 17
-    assert request.config.depth == 2
-    assert request.config.max_steps == 3
-    assert request.config.top_k == 11
-    assert request.config.gamma == 0.91
-    assert request.config.c_puct == 1.7
-    assert request.config.prior_exponent == 0.6
-    assert request.config.num_workers == 4
-    assert request.config.batch_size == 6
-    assert request.config.device == "cpu"
+    config = request.config
+    assert config.simulations == 17
+    assert config.depth == 2
+    assert config.max_steps == 3
+    assert config.top_k == 11
+    assert config.gamma == 0.91
+    assert config.c_puct == 1.7
+    assert config.prior_exponent == 0.6
+    assert config.num_workers == 4
+    assert config.batch_size == 6
+    assert config.device == "cpu"
 
 
-def test_cli_passes_continuation_gate_flag(
+def test_cli_selects_one_policy_mode(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     default_request = _run_cli(monkeypatch, tmp_path / "default")
-    enabled_request = _run_cli(
+    constrained_request = _run_cli(
         monkeypatch,
-        tmp_path / "enabled",
+        tmp_path / "constrained",
         ["--use-continuation-gate"],
     )
 
-    assert default_request.config.use_continuation_gate is False
-    assert enabled_request.config.use_continuation_gate is True
+    assert default_request.config.policy_mode == "ungated"
+    assert constrained_request.config.policy_mode == "constrained"
 
 
 def test_cli_passes_request_only_settings(
@@ -123,44 +120,28 @@ def test_cli_passes_request_only_settings(
         tmp_path,
         [
             "--allow-handoff-with-hard-overloads",
-            "--pf-alg",
-            "2",
+            "--pf-alg", "2",
             "--disable-cache",
-            "--min-hard-improvement",
-            "7.0",
-            "--min-soft-improvement",
-            "3.0",
-            "--min-gate-visits",
-            "9",
-            "--min-gate-visit-fraction",
-            "0.2",
-            "--stop-policy",
-            "solved_only",
-            "--clear-caches-every",
-            "8",
+            "--min-hard-improvement", "7.0",
+            "--min-soft-improvement", "3.0",
+            "--min-gate-visits", "9",
+            "--min-gate-visit-fraction", "0.2",
+            "--stop-policy", "solved_only",
+            "--clear-caches-every", "8",
             "--use-dc-screening",
-            "--dc-top-k",
-            "13",
-            "--dc-candidate-pool",
-            "31",
-            "--dc-keep-policy-actions",
-            "4",
-            "--dc-keep-loading-actions",
-            "5",
-            "--dc-policy-weight",
-            "0.4",
-            "--dc-failure-penalty",
-            "123.0",
-            "--dc-max-depth",
-            "-1",
-            "--limit",
-            "10",
+            "--dc-top-k", "13",
+            "--dc-candidate-pool", "31",
+            "--dc-keep-policy-actions", "4",
+            "--dc-keep-loading-actions", "5",
+            "--dc-policy-weight", "0.4",
+            "--dc-failure-penalty", "123.0",
+            "--dc-max-depth", "-1",
+            "--limit", "10",
             "--quiet",
         ],
     )
 
     assert request.config.allow_handoff_with_hard_overloads is True
-    assert request.pf_alg is None
     assert request.config.pf_alg == 2
     assert request.resolved_pf_alg == 2
     assert request.disable_cache is True
@@ -182,24 +163,15 @@ def test_cli_passes_request_only_settings(
     assert request.quiet is True
 
 
-def test_cli_main_returns_zero(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _run_cli(monkeypatch, tmp_path)
-
-
 def test_cli_rejects_removed_leaf_penalty_weight() -> None:
     with pytest.raises(SystemExit) as excinfo:
-        cli.build_parser().parse_args(
+        light_cli.main(
             [
+                "evaluate",
                 "raw",
-                "--transitions",
-                "transitions.csv",
-                "--checkpoint",
-                "checkpoint.pt",
-                "--leaf-penalty-weight",
-                "0.25",
+                "--transitions", "transitions.csv",
+                "--checkpoint", "checkpoint.pt",
+                "--leaf-penalty-weight", "0.25",
             ]
         )
 
@@ -208,7 +180,7 @@ def test_cli_rejects_removed_leaf_penalty_weight() -> None:
 
 def test_cli_help_still_works(capsys: pytest.CaptureFixture[str]) -> None:
     with pytest.raises(SystemExit) as excinfo:
-        cli.build_parser().parse_args(["--help"])
+        light_cli.main(["evaluate", "--help"])
 
     assert excinfo.value.code == 0
     assert "--checkpoint" in capsys.readouterr().out

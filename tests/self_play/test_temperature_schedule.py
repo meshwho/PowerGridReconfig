@@ -6,13 +6,14 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
+import grid_topology_ai.cli as light_cli
+import grid_topology_ai.self_play.generation as generation_runtime
 from grid_topology_ai.config import GenerationConfig
 from grid_topology_ai.self_play.generation import (
     GenerationRequest,
     _select_generation_action,
     selection_temperature_for_step,
 )
-from scripts.self_play import generate as generation_cli
 
 
 @pytest.mark.parametrize(
@@ -186,17 +187,18 @@ def test_generation_cli_propagates_temperature_schedule(
         return examples_path
 
     monkeypatch.setattr(
-        generation_cli,
+        generation_runtime,
         "generate_self_play_examples",
         fake_generate,
     )
 
-    result = generation_cli.main(
+    result = light_cli.main(
         [
+            "self-play",
             str(tmp_path / "raw"),
             "--transitions",
             str(tmp_path / "transitions.csv"),
-            "--output-dir",
+            "--output",
             str(tmp_path / "out"),
             "--selection-temperature",
             "0.8",

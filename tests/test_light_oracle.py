@@ -92,7 +92,7 @@ REQUIRED_DOMAINS = frozenset(
     }
 )
 
-TEACHER_MODULE = "scripts.self_play.generate_impact_teacher_redispatch_runtime"
+TEACHER_MODULE = "grid_topology_ai.teacher_runtime"
 
 # Fixed workload for Light timing. L1 remains enabled because --disable-cache
 # is not used; removed cache layers need no compatibility configuration.
@@ -117,8 +117,6 @@ TEACHER_BENCHMARK_ARGS = (
     "3",
     "--batch-size",
     "1",
-    "--max-tasks-per-child",
-    "0",
     "--value-target-mode",
     "tanh_step_reward_discounted_average",
     "--value-reward-scale",
@@ -290,7 +288,10 @@ def _run_teacher_benchmark(
     if report is not None:
         report = report.resolve()
         report.parent.mkdir(parents=True, exist_ok=True)
-        report.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        report.write_text(
+            json.dumps(summary, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
         print(f"wrote benchmark report: {report}")
 
     return 0
@@ -305,7 +306,10 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     subparsers = parser.add_subparsers(dest="command")
 
-    behavior = subparsers.add_parser("behavior", help="run the focused pytest oracle")
+    behavior = subparsers.add_parser(
+        "behavior",
+        help="run the focused pytest oracle",
+    )
     behavior.add_argument(
         "pytest_args",
         nargs=argparse.REMAINDER,

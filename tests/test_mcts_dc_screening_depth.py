@@ -9,7 +9,7 @@ import pytest
 from grid_topology_ai.action_space import GridFMAction
 from grid_topology_ai.config import EvaluationConfig
 from grid_topology_ai.data_adapter import BRANCH_FEATURE_COLUMNS
-from grid_topology_ai.evaluation.checkpoint import EvaluationRequest
+from grid_topology_ai.evaluation import EvaluationRequest
 from grid_topology_ai.search.mcts import MCTSConfig, MCTSNode, MCTSPlanner
 
 
@@ -32,7 +32,6 @@ class _FakeEnv:
             80.0,
             len(actions),
         )
-
         self.current_state = SimpleNamespace(
             branch_features=branch_features,
             metrics={},
@@ -48,10 +47,8 @@ class _FakeEnv:
     def operational_action_mask(self) -> np.ndarray:
         size = max(action.action_id for action in self._actions) + 1
         mask = np.zeros(size, dtype=bool)
-
         for action in self._actions:
             mask[action.action_id] = True
-
         return mask
 
 
@@ -143,24 +140,15 @@ def _dc_calls(
 
 
 def test_dc_max_depth_zero_screens_only_root() -> None:
-    assert _dc_calls(
-        dc_max_depth=0,
-        node_depths=(0, 1, 2),
-    ) == [0]
+    assert _dc_calls(dc_max_depth=0, node_depths=(0, 1, 2)) == [0]
 
 
 def test_positive_dc_max_depth_is_inclusive() -> None:
-    assert _dc_calls(
-        dc_max_depth=1,
-        node_depths=(0, 1, 2),
-    ) == [0, 1]
+    assert _dc_calls(dc_max_depth=1, node_depths=(0, 1, 2)) == [0, 1]
 
 
 def test_negative_one_screens_every_expanded_depth() -> None:
-    assert _dc_calls(
-        dc_max_depth=-1,
-        node_depths=(0, 1, 4),
-    ) == [0, 1, 4]
+    assert _dc_calls(dc_max_depth=-1, node_depths=(0, 1, 4)) == [0, 1, 4]
 
 
 def test_disabled_dc_screening_never_calls_ranker() -> None:
@@ -171,31 +159,15 @@ def test_disabled_dc_screening_never_calls_ranker() -> None:
     ) == []
 
 
-@pytest.mark.parametrize(
-    "value",
-    [True, -2, 1.5, "1", None],
-)
-def test_mcts_config_rejects_invalid_dc_max_depth(
-    value: object,
-) -> None:
-    with pytest.raises(
-        ValueError,
-        match="dc_max_depth",
-    ):
+@pytest.mark.parametrize("value", [True, -2, 1.5, "1", None])
+def test_mcts_config_rejects_invalid_dc_max_depth(value: object) -> None:
+    with pytest.raises(ValueError, match="dc_max_depth"):
         MCTSConfig(dc_max_depth=value)  # type: ignore[arg-type]
 
 
-@pytest.mark.parametrize(
-    "value",
-    [True, -2, 1.5, "1", None],
-)
-def test_evaluation_request_rejects_invalid_dc_max_depth(
-    value: object,
-) -> None:
-    with pytest.raises(
-        ValueError,
-        match="dc_max_depth",
-    ):
+@pytest.mark.parametrize("value", [True, -2, 1.5, "1", None])
+def test_evaluation_request_rejects_invalid_dc_max_depth(value: object) -> None:
+    with pytest.raises(ValueError, match="dc_max_depth"):
         EvaluationRequest(
             raw_dir=Path("raw"),
             transitions_csv=Path("transitions.csv"),
@@ -206,9 +178,7 @@ def test_evaluation_request_rejects_invalid_dc_max_depth(
 
 
 def test_numpy_integer_depth_is_normalized() -> None:
-    config = MCTSConfig(
-        dc_max_depth=np.int64(2),
-    )
+    config = MCTSConfig(dc_max_depth=np.int64(2))
     request = EvaluationRequest(
         raw_dir=Path("raw"),
         transitions_csv=Path("transitions.csv"),

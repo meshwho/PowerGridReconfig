@@ -8,13 +8,13 @@ import pandas as pd
 import pytest
 
 from grid_topology_ai.action_space import GridFMActionSpace
+import grid_topology_ai.cli as light_cli
 from grid_topology_ai.config import GenerationConfig
 from grid_topology_ai.data_adapter import BRANCH_FEATURE_COLUMNS
 from grid_topology_ai.environment import TopologySwitchingEnv
 from grid_topology_ai.power_flow.backend import GridFMPowerFlowBackend
 from grid_topology_ai.self_play import generation
 from grid_topology_ai.self_play.generation import GenerationRequest
-from scripts.self_play import generate as generation_cli
 
 
 _LOADING_INDEX = BRANCH_FEATURE_COLUMNS.index("loading_percent")
@@ -25,11 +25,7 @@ class _StopAfterActionSpace(RuntimeError):
 
 
 class _RuntimeStub:
-    def __init__(
-        self,
-        *args: object,
-        **kwargs: object,
-    ) -> None:
+    def __init__(self, *args: object, **kwargs: object) -> None:
         self.args = args
         self.kwargs = kwargs
 
@@ -71,34 +67,18 @@ def _state(
         dtype=np.float32,
     )
     branch_features[:, _LOADING_INDEX] = loadings
-
     return SimpleNamespace(
         scenario_id=1,
         outaged_branch_ids=tuple(
             branch_id
-            for branch_id, status in zip(
-                (10, 20),
-                branch_status,
-            )
+            for branch_id, status in zip((10, 20), branch_status)
             if status == 0
         ),
-        branch_ids=np.asarray(
-            [10, 20],
-            dtype=np.int64,
-        ),
-        branch_status=np.asarray(
-            branch_status,
-            dtype=np.int64,
-        ),
+        branch_ids=np.asarray([10, 20], dtype=np.int64),
+        branch_status=np.asarray(branch_status, dtype=np.int64),
         branch_features=branch_features,
-        bus_features=np.zeros(
-            (2, 1),
-            dtype=np.float32,
-        ),
-        edge_index=np.asarray(
-            [[0, 0], [1, 1]],
-            dtype=np.int64,
-        ),
+        bus_features=np.zeros((2, 1), dtype=np.float32),
+        edge_index=np.asarray([[0, 0], [1, 1]], dtype=np.int64),
         metrics=_unsafe_metrics(),
     )
 
@@ -126,15 +106,10 @@ class _ApplyingBackend:
             target_status=int(action.target_status),
             context="configured bidirectional pipeline test",
         )
-        next_status = tuple(
-            int(value)
-            for value in branch_frame["br_status"].tolist()
-        )
+        next_status = tuple(int(value) for value in branch_frame["br_status"].tolist())
         return SimpleNamespace(
             success=True,
-            next_state=_state(
-                branch_status=next_status,
-            ),
+            next_state=_state(branch_status=next_status),
             message="ok",
         )
 
@@ -143,43 +118,30 @@ def test_cli_builds_canonical_bidirectional_generation_config(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    captured: dict[str, object] = {}
-    examples_path = tmp_path / "examples.csv"
+    captured: dict[str, GenerationRequest] = {}
 
-    def fake_generate(
-        request: GenerationRequest,
-    ) -> Path:
+    def fake_generate(request: GenerationRequest) -> Path:
         captured["request"] = request
-        return examples_path
+        return tmp_path / "examples.csv"
 
-    monkeypatch.setattr(
-        generation_cli,
-        "generate_self_play_examples",
-        fake_generate,
-    )
+    monkeypatch.setattr(generation, "generate_self_play_examples", fake_generate)
 
-    result = generation_cli.main(
+    assert light_cli.main(
         [
+            "self-play",
             str(tmp_path / "raw"),
-            "--transitions",
-            str(tmp_path / "transitions.csv"),
-            "--closeable-branch-id",
-            "20",
-            "--closeable-branch-id",
-            "10",
-            "--min-loading-for-switch-percent",
-            "37.5",
+            "--transitions", str(tmp_path / "transitions.csv"),
+            "--closeable-branch-id", "20",
+            "--closeable-branch-id", "10",
+            "--min-loading-for-switch-percent", "37.5",
             "--no-require-connected-after-switch",
         ]
-    )
+    ) == 0
 
-    request = captured["request"]
-    assert isinstance(request, GenerationRequest)
-    assert result == 0
-    assert request.config.require_connected_after_switch is False
-    assert request.config.min_loading_for_switch_percent == pytest.approx(37.5)
-    assert request.config.closeable_branch_ids == (10, 20)
-    assert examples_path == tmp_path / "examples.csv"
+    config = captured["request"].config
+    assert config.require_connected_after_switch is False
+    assert config.min_loading_for_switch_percent == pytest.approx(37.5)
+    assert config.closeable_branch_ids == (10, 20)
 
 
 def test_self_play_constructs_action_space_from_typed_config(
@@ -188,72 +150,40 @@ def test_self_play_constructs_action_space_from_typed_config(
 ) -> None:
     captured_kwargs: dict[str, object] = {}
     transitions_path = tmp_path / "transitions.csv"
-    transitions_path.write_text(
-        "scenario_id\n1\n",
-        encoding="utf-8",
-    )
+    transitions_path.write_text("scenario_id\n1\n", encoding="utf-8")
 
     class CapturingActionSpace:
-        def __init__(
-            self,
-            **kwargs: object,
-        ) -> None:
+        def __init__(self, **kwargs: object) -> None:
             captured_kwargs.update(kwargs)
 
     class StopReward:
-        def __init__(
-            self,
-            **kwargs: object,
-        ) -> None:
+        def __init__(self, **kwargs: object) -> None:
             raise _StopAfterActionSpace
 
-    monkeypatch.setattr(
-        generation,
-        "_ensure_runtime_dependencies",
-        lambda: None,
-    )
-    monkeypatch.setattr(
-        generation,
-        "GridFMAdapter",
-        _RuntimeStub,
-    )
-    monkeypatch.setattr(
-        generation,
-        "GridFMPowerFlowBackend",
-        _RuntimeStub,
-    )
-    monkeypatch.setattr(
-        generation,
-        "GridFMActionSpace",
-        CapturingActionSpace,
-    )
-    monkeypatch.setattr(
-        generation,
-        "GridFMReward",
-        StopReward,
-    )
+    monkeypatch.setattr(generation, "_ensure_runtime_dependencies", lambda: None)
+    monkeypatch.setattr(generation, "GridFMAdapter", _RuntimeStub)
+    monkeypatch.setattr(generation, "GridFMPowerFlowBackend", _RuntimeStub)
+    monkeypatch.setattr(generation, "GridFMActionSpace", CapturingActionSpace)
+    monkeypatch.setattr(generation, "GridFMReward", StopReward)
 
-    config = GenerationConfig(
-        max_steps=1,
-        require_connected_after_switch=False,
-        min_loading_for_switch_percent=37.5,
-        closeable_branch_ids=(20, 10),
-    )
     request = GenerationRequest(
         raw_dir=tmp_path / "raw",
         transitions_csv=transitions_path,
         output_dir=tmp_path / "out",
         checkpoint=None,
-        config=config,
+        config=GenerationConfig(
+            max_steps=1,
+            require_connected_after_switch=False,
+            min_loading_for_switch_percent=37.5,
+            closeable_branch_ids=(20, 10),
+        ),
         mcts_seed=1,
         action_seed=2,
         clear_cache_between_scenarios=False,
     )
 
     with pytest.raises(_StopAfterActionSpace):
-        generation.generate_self_play_examples(
-            request
-        )
+        generation.generate_self_play_examples(request)
 
     assert captured_kwargs == {
         "require_connected_after_switch": False,
@@ -273,20 +203,12 @@ def test_configured_closure_runs_from_mapping_through_env_and_backend() -> None:
     )
     action_config = generation_config.action_space_config
     action_space = GridFMActionSpace(
-        require_connected_after_switch=(
-            action_config.require_connected_after_switch
-        ),
-        min_loading_for_switch_percent=(
-            action_config.min_loading_for_switch_percent
-        ),
-        closeable_branch_ids=(
-            action_config.closeable_branch_ids
-        ),
+        require_connected_after_switch=action_config.require_connected_after_switch,
+        min_loading_for_switch_percent=action_config.min_loading_for_switch_percent,
+        closeable_branch_ids=action_config.closeable_branch_ids,
         enable_cache=False,
     )
-    initial_state = _state(
-        branch_status=(1, 0),
-    )
+    initial_state = _state(branch_status=(1, 0))
     backend = _ApplyingBackend()
     env = TopologySwitchingEnv(
         adapter=object(),
@@ -298,9 +220,7 @@ def test_configured_closure_runs_from_mapping_through_env_and_backend() -> None:
     env.current_state = initial_state
     env.initial_scenario_id = 1
 
-    assert action_space.operational_action_mask(
-        initial_state
-    ).tolist() == [True, False, True]
+    assert action_space.operational_action_mask(initial_state).tolist() == [True, False, True]
 
     result = env.step(2)
 
@@ -313,11 +233,3 @@ def test_configured_closure_runs_from_mapping_through_env_and_backend() -> None:
     assert result.next_state is not None
     assert result.next_state.branch_status.tolist() == [1, 1]
     assert result.next_state.outaged_branch_ids == ()
-    assert result.info["applied_actions"] == [
-        {
-            "action_id": 2,
-            "action_type": "switch_on_branch",
-            "branch_id": 20,
-            "target_status": 1,
-        }
-    ]

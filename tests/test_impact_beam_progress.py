@@ -4,9 +4,7 @@ from grid_topology_ai.search.impact_beam_search import (
     ImpactBeamSearchConfig,
     ImpactBeamSearchPlanner,
 )
-from scripts.self_play.generate_impact_teacher_redispatch_runtime import (
-    LODFScreenedImpactBeamSearchPlanner,
-)
+from grid_topology_ai.teacher_runtime import LODFScreenedImpactBeamSearchPlanner
 
 
 class _FakeProgressBar:
@@ -82,8 +80,6 @@ def test_lodf_progress_estimate_uses_screened_candidate_limit() -> None:
         lodf_screen_top_k=70,
     )
 
-    # 70 screened switch actions + one possible stop action, across one root
-    # and up to 20 beam nodes on each of the four later depths.
     assert planner._estimated_progress_total() == 71 * (1 + 20 * 4)
 
 

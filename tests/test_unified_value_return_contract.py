@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from grid_topology_ai.evaluation import checkpoint as evaluation_checkpoint
+import grid_topology_ai.evaluation as evaluation_checkpoint
 from grid_topology_ai.reward import (
     TERMINAL_UTILITY_GAMMA,
     VALUE_TARGET_MODE,

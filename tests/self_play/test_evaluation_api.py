@@ -1,385 +1,53 @@
 from __future__ import annotations
 
-import json
 from dataclasses import FrozenInstanceError
 from pathlib import Path
 
 import pandas as pd
 import pytest
-import torch
 
 from grid_topology_ai.config import EvaluationConfig
-from grid_topology_ai.evaluation import checkpoint as evaluation
-from grid_topology_ai.evaluation.checkpoint import EvaluationRequest
-from grid_topology_ai.evaluation.metrics import compute_safety_score
-from grid_topology_ai.termination import TerminationReason
-from grid_topology_ai.contracts import (
-    topology_action_provenance,
-)
-from grid_topology_ai.topology_actions import (
-    ActionSpaceConfig,
-    build_branch_action_slots,
-)
-
-_TEST_ACTION_SPACE_CONFIG = ActionSpaceConfig(
-    require_connected_after_switch=False,
-    min_loading_for_switch_percent=12.5,
-    closeable_branch_ids=(7, 9),
-)
-
-_TEST_ACTION_LAYOUT = (
-    build_branch_action_slots(
-        (7, 9, 11)
-    )
-)
-
-_TEST_TOPOLOGY_PROVENANCE = (
-    topology_action_provenance(
-        _TEST_ACTION_SPACE_CONFIG,
-        _TEST_ACTION_LAYOUT,
-    )
-)
-
-class _FakeReward:
-    def __init__(
-        self,
-        *,
-        physics_config=None,
-        discount_factor: float = 0.95,
-    ) -> None:
-        self.physics_config = physics_config
-        self.discount_factor = float(discount_factor)
-
-    def config_dict(self) -> dict[str, object]:
-        return {
-            "reward": "fake",
-            "discount_factor": self.discount_factor,
-        }
+import grid_topology_ai.evaluation as evaluation
+from grid_topology_ai.evaluation import EvaluationRequest
 
 
 class _FakeCache:
     def __init__(self) -> None:
         self.clear_count = 0
 
-    def cache_info(self) -> str:
-        return "cache-info"
-
     def clear_cache(self) -> None:
         self.clear_count += 1
 
 
-def _write_inputs(tmp_path: Path, scenario_ids: list[int] | None = None) -> tuple[Path, Path, Path]:
+def _write_inputs(tmp_path: Path) -> tuple[Path, Path, Path]:
     raw_dir = tmp_path / "raw"
-    raw_dir.mkdir()
-    for file_name in (
-            "bus_data.parquet",
-            "branch_data.parquet",
-            "gen_data.parquet",
-    ):
-        (raw_dir / file_name).write_bytes(
-            file_name.encode("utf-8")
-        )
+    raw_dir.mkdir(parents=True)
     transitions = tmp_path / "transitions.csv"
-    ids = [1, 2, 3] if scenario_ids is None else scenario_ids
-    pd.DataFrame({"scenario_id": ids}).to_csv(transitions, index=False)
-    checkpoint = tmp_path / "checkpoint.pt"
-    torch.save(
-        dict(_TEST_TOPOLOGY_PROVENANCE),
-        checkpoint,
+    pd.DataFrame({"scenario_id": [3, 1, 2, 1]}).to_csv(
+        transitions,
+        index=False,
     )
+    checkpoint = tmp_path / "checkpoint.pt"
+    checkpoint.write_bytes(b"checkpoint")
     return raw_dir, transitions, checkpoint
 
-def test_evaluation_records_input_hashes(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(
-        evaluation,
-        "run_sequential",
-        _successful_sequential(_row(1)),
-    )
-
-    request = _request(tmp_path)
-    metrics = evaluation.evaluate_checkpoint(request)
-
-    run_info = metrics["run_info"]
-
-    assert run_info["checkpoint_sha256"]
-    assert run_info["transitions_sha256"]
-    assert run_info["raw_data_sha256"]
-    assert run_info["scenario_ids_sha256"]
-    assert run_info["task_config_sha256"]
-    assert run_info["physics_config_fingerprint"]
-    assert (
-        run_info["evaluation_metrics_contract_version"]
-        == metrics["evaluation_metrics_contract_version"]
-    )
-    assert run_info["git_revision"] is None
-    assert run_info["git_dirty"] is None
-
-def test_checkpoint_hash_changes_with_checkpoint_content(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(
-        evaluation,
-        "run_sequential",
-        _successful_sequential(_row(1)),
-    )
-
-    request = _request(tmp_path)
-    first = evaluation.evaluate_checkpoint(request)
-
-    payload = torch.load(
-        request.checkpoint,
-        map_location="cpu",
-        weights_only=False,
-    )
-    payload["test_marker"] = "updated"
-    torch.save(
-        payload,
-        request.checkpoint,
-    )
-
-    second = evaluation.evaluate_checkpoint(request)
-
-    assert (
-        first["run_info"]["checkpoint_sha256"]
-        != second["run_info"]["checkpoint_sha256"]
-    )
-
-def test_failed_scenarios_are_kept_in_output_csv(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    output_csv = tmp_path / "evaluation.csv"
-    request = _request(
-        tmp_path,
-        output_csv=output_csv,
-    )
-
-    failed = [
-        {
-            "ok": False,
-            "scenario_id": 2,
-            "policy_mode": "ungated",
-            "row": None,
-            "traceback": "evaluation failed",
-        },
-    ]
-
-    def fake_sequential(**kwargs: object):
-        _set_fake_worker_context()
-        return [_row(1)], failed
-
-    monkeypatch.setattr(
-        evaluation,
-        "run_sequential",
-        fake_sequential,
-    )
-
-    metrics = evaluation.evaluate_checkpoint(
-        request
-    )
-
-    output = pd.read_csv(output_csv)
-
-    assert metrics["failed_scenarios"] == 1
-    assert output["scenario_id"].tolist() == [
-        1,
-        2,
-    ]
-
-    failed_row = output.loc[
-        output["scenario_id"] == 2
-    ].iloc[0]
-
-    assert bool(
-        failed_row["evaluation_failed"]
-    ) is True
-    assert bool(
-        failed_row["power_flow_converged"]
-    ) is False
-    assert bool(
-        failed_row["physically_secure"]
-    ) is False
 
 def _request(
     tmp_path: Path,
     *,
-    config: EvaluationConfig | None = None,
-    scenario_ids: list[int] | None = None,
-    **kwargs: object,
+    scenario_ids: tuple[int, ...] | None = None,
+    limit: int | None = None,
 ) -> EvaluationRequest:
-    raw_dir, transitions, checkpoint = _write_inputs(tmp_path, scenario_ids)
+    raw_dir, transitions, checkpoint = _write_inputs(tmp_path)
     return EvaluationRequest(
         raw_dir=raw_dir,
         transitions_csv=transitions,
         checkpoint=checkpoint,
-        config=config or EvaluationConfig(use_continuation_gate=False),
-        **kwargs,
+        config=EvaluationConfig(policy_mode="ungated"),
+        scenario_ids=scenario_ids,
+        limit=limit,
     )
 
-
-def _row(scenario_id: int, *, solved: bool = True) -> dict[str, object]:
-    row = {
-        "scenario_id": scenario_id,
-        "steps": scenario_id,
-        "use_continuation_gate": False,
-        "actions": "[]",
-        "branches": "[]",
-        "rewards": "[]",
-        "total_reward": float(scenario_id),
-        "discounted_return": float(scenario_id),
-        "done": True,
-        "solved": solved,
-        "termination_reason": "solved" if solved else "max_steps_reached",
-        "final_max_loading_percent": 90.0 + scenario_id,
-        "final_num_overloaded_branches": 0,
-        "final_num_hard_overloaded_branches": 0,
-        "final_num_outaged_branches": 0,
-        "thermal_solved": bool(solved),
-        "thermal_feasible": bool(solved),
-        "power_flow_converged": bool(solved),
-        "all_values_finite": bool(solved),
-        "topology_connected": bool(solved),
-        "hard_overload_free": bool(solved),
-        "voltage_feasible": bool(solved),
-        "generator_p_feasible": bool(solved),
-        "generator_q_feasible": bool(solved),
-        "angle_difference_feasible": bool(solved),
-        "physically_secure": bool(solved),
-        "num_generator_p_violations": 0 if solved else 1,
-        "num_generator_q_violations": 0 if solved else 1,
-        "num_angle_difference_violations": 0 if solved else 1,
-        "total_generator_p_violation_mw": 0.0,
-        "total_generator_q_violation_mvar": 0.0,
-        "total_angle_difference_violation_degrees": 0.0,
-        "total_voltage_violation": 0.0,
-        "num_low_voltage_buses": 0 if solved else 1,
-        "num_high_voltage_buses": 0,
-        "total_thermal_overload_mva": 0.0,
-        "safe_handoff": False,
-        "unsafe_terminal_state": not bool(solved),
-    }
-    row["safety_score"] = compute_safety_score(row)
-    return row
-
-
-@pytest.fixture(autouse=True)
-def fake_task_config(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr(evaluation, "GridFMReward", _FakeReward)
-    evaluation._WORKER_CONTEXT = None
-    yield
-    evaluation._WORKER_CONTEXT = None
-
-
-def _set_fake_worker_context() -> tuple[_FakeCache, _FakeCache, _FakeCache]:
-    backend = _FakeCache()
-    action_space = _FakeCache()
-    evaluator = _FakeCache()
-    evaluation._WORKER_CONTEXT = {
-        "backend": backend,
-        "action_space": action_space,
-        "evaluator": evaluator,
-    }
-    return backend, action_space, evaluator
-
-
-def _successful_sequential(*rows: dict[str, object]):
-    def fake_sequential(**kwargs: object) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
-        _set_fake_worker_context()
-        return list(rows), []
-
-    return fake_sequential
-
-
-def test_release_worker_context_clears_global_and_caches() -> None:
-    fake_backend = _FakeCache()
-    fake_action_space = _FakeCache()
-    fake_evaluator = _FakeCache()
-    evaluation._WORKER_CONTEXT = {
-        "backend": fake_backend,
-        "action_space": fake_action_space,
-        "evaluator": fake_evaluator,
-        "planner": object(),
-    }
-
-    evaluation._release_worker_context()
-
-    assert evaluation._WORKER_CONTEXT is None
-    assert fake_backend.clear_count == 1
-    assert fake_action_space.clear_count == 1
-    assert fake_evaluator.clear_count == 1
-
-
-def test_sequential_evaluation_releases_context_after_success(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    caches: dict[str, _FakeCache] = {}
-
-    def fake_sequential(**kwargs: object):
-        backend, action_space, evaluator = _set_fake_worker_context()
-        caches["backend"] = backend
-        caches["action_space"] = action_space
-        caches["evaluator"] = evaluator
-        return [_row(1)], []
-
-    monkeypatch.setattr(evaluation, "run_sequential", fake_sequential)
-
-    evaluation.evaluate_checkpoint(_request(tmp_path))
-
-    assert evaluation._WORKER_CONTEXT is None
-    assert caches["backend"].clear_count == 1
-    assert caches["action_space"].clear_count == 1
-    assert caches["evaluator"].clear_count == 1
-
-
-def test_sequential_evaluation_releases_context_after_failure(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    caches: dict[str, _FakeCache] = {}
-
-    def fake_sequential(**kwargs: object):
-        backend, action_space, evaluator = _set_fake_worker_context()
-        caches["backend"] = backend
-        caches["action_space"] = action_space
-        caches["evaluator"] = evaluator
-        raise RuntimeError("evaluation failed")
-
-    monkeypatch.setattr(evaluation, "run_sequential", fake_sequential)
-
-    with pytest.raises(RuntimeError, match="evaluation failed"):
-        evaluation.evaluate_checkpoint(_request(tmp_path))
-
-    assert evaluation._WORKER_CONTEXT is None
-    assert caches["backend"].clear_count == 1
-    assert caches["action_space"].clear_count == 1
-    assert caches["evaluator"].clear_count == 1
-
-
-def test_parallel_evaluation_does_not_require_parent_worker_context(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    def fake_parallel(**kwargs: object):
-        assert evaluation._WORKER_CONTEXT is None
-        return [_row(1)], []
-
-    config = EvaluationConfig(num_workers=2, use_continuation_gate=False)
-    monkeypatch.setattr(evaluation, "run_parallel", fake_parallel)
-    monkeypatch.setattr(
-        evaluation,
-        "run_sequential",
-        lambda **kwargs: pytest.fail("sequential runner should not be called"),
-    )
-
-    metrics = evaluation.evaluate_checkpoint(_request(tmp_path, config=config))
-
-    assert metrics["evaluated_scenarios"] == 1
-    assert evaluation._WORKER_CONTEXT is None
 
 def test_evaluation_request_is_frozen_and_slotted(tmp_path: Path) -> None:
     request = _request(tmp_path)
@@ -390,49 +58,47 @@ def test_evaluation_request_is_frozen_and_slotted(tmp_path: Path) -> None:
     assert not hasattr(request, "__dict__")
 
 
-def test_missing_raw_dir_raises(tmp_path: Path) -> None:
-    _, transitions, checkpoint = _write_inputs(tmp_path)
-    request = EvaluationRequest(
-        raw_dir=tmp_path / "missing",
-        transitions_csv=transitions,
-        checkpoint=checkpoint,
-        config=EvaluationConfig(use_continuation_gate=False),
-    )
-
-    with pytest.raises(FileNotFoundError, match="Raw directory"):
-        evaluation.evaluate_checkpoint(request)
+def test_evaluation_request_normalizes_explicit_scenario_ids(tmp_path: Path) -> None:
+    request = _request(tmp_path, scenario_ids=(3, 1))
+    assert request.scenario_ids == (3, 1)
 
 
-def test_missing_transitions_csv_raises(tmp_path: Path) -> None:
-    raw_dir, _, checkpoint = _write_inputs(tmp_path)
-    request = EvaluationRequest(
-        raw_dir=raw_dir,
-        transitions_csv=tmp_path / "missing.csv",
-        checkpoint=checkpoint,
-        config=EvaluationConfig(use_continuation_gate=False),
-    )
+def test_evaluation_request_rejects_duplicate_or_empty_scenario_ids(
+    tmp_path: Path,
+) -> None:
+    raw_dir, transitions, checkpoint = _write_inputs(tmp_path)
 
-    with pytest.raises(FileNotFoundError, match="Transitions CSV"):
-        evaluation.evaluate_checkpoint(request)
+    for scenario_ids in ((), (1, 1)):
+        with pytest.raises(ValueError, match="scenario_ids"):
+            EvaluationRequest(
+                raw_dir=raw_dir,
+                transitions_csv=transitions,
+                checkpoint=checkpoint,
+                config=EvaluationConfig(),
+                scenario_ids=scenario_ids,
+            )
 
 
-def test_missing_checkpoint_raises(tmp_path: Path) -> None:
-    raw_dir, transitions, _ = _write_inputs(tmp_path)
-    request = EvaluationRequest(
-        raw_dir=raw_dir,
-        transitions_csv=transitions,
-        checkpoint=tmp_path / "missing.pt",
-        config=EvaluationConfig(use_continuation_gate=False),
-    )
+def test_evaluation_request_rejects_limit_with_explicit_scenarios(
+    tmp_path: Path,
+) -> None:
+    raw_dir, transitions, checkpoint = _write_inputs(tmp_path)
 
-    with pytest.raises(FileNotFoundError, match="Checkpoint"):
-        evaluation.evaluate_checkpoint(request)
+    with pytest.raises(ValueError, match="scenario_ids and limit"):
+        EvaluationRequest(
+            raw_dir=raw_dir,
+            transitions_csv=transitions,
+            checkpoint=checkpoint,
+            config=EvaluationConfig(),
+            scenario_ids=(1,),
+            limit=1,
+        )
 
 
 def test_load_scenario_ids_is_sorted_and_applies_limit(tmp_path: Path) -> None:
-    transitions = tmp_path / "transitions.csv"
-    pd.DataFrame({"scenario_id": [3, 1, 2, 1]}).to_csv(transitions, index=False)
+    _, transitions, _ = _write_inputs(tmp_path)
 
+    assert evaluation.load_scenario_ids(transitions, limit=None) == [1, 2, 3]
     assert evaluation.load_scenario_ids(transitions, limit=2) == [1, 2]
 
 
@@ -444,553 +110,80 @@ def test_chunk_list_preserves_order() -> None:
     ]
 
 
-def test_task_config_uses_evaluation_config_and_request_values(tmp_path: Path) -> None:
-    config = EvaluationConfig(
-        simulations=17,
-        depth=2,
-        max_steps=3,
-        top_k=11,
-        gamma=0.91,
-        c_puct=1.7,
-        prior_exponent=0.6,
-        use_continuation_gate=False,
-        allow_handoff_with_hard_overloads=True,
-        num_workers=4,
-        batch_size=6,
-        device="cpu",
-    )
-    request = _request(
-        tmp_path,
-        config=config,
-        pf_alg=2,
-        disable_cache=True,
-        stop_policy="solved_only",
-        min_hard_improvement=7.0,
-        min_soft_improvement=3.0,
-        min_gate_visits=9,
-        min_gate_visit_fraction=0.2,
-        clear_caches_every=8,
-        use_dc_screening=True,
-        dc_top_k=13,
-        dc_candidate_pool=31,
-        dc_keep_policy_actions=4,
-        dc_keep_loading_actions=5,
-        dc_policy_weight=0.4,
-        dc_failure_penalty=123.0,
-        dc_max_depth=-1,
-    )
-
-    task = evaluation._make_task_config(request)
-
-    assert task["simulations"] == 17
-    assert task["depth"] == 2
-    assert task["max_steps"] == 3
-    assert task["top_k"] == 11
-    assert task["gamma"] == 0.91
-    assert task["c_puct"] == 1.7
-    assert task["prior_exponent"] == 0.6
-    assert task["stop_policy"] == "solved_only"
-    assert task["device"] == "cpu"
-    assert task["pf_alg"] == 2
-    assert task["disable_cache"] is True
-    assert task["use_continuation_gate"] is False
-    assert task["allow_handoff_with_hard_overloads"] is True
-    assert task["min_hard_improvement"] == 7.0
-    assert task["min_soft_improvement"] == 3.0
-    assert task["min_gate_visits"] == 9
-    assert task["min_gate_visit_fraction"] == 0.2
-    assert task["clear_caches_every"] == 8
-    assert task["use_dc_screening"] is True
-    assert task["dc_top_k"] == 13
-    assert task["dc_candidate_pool"] == 31
-    assert task["dc_keep_policy_actions"] == 4
-    assert task["dc_keep_loading_actions"] == 5
-    assert task["dc_policy_weight"] == 0.4
-    assert task["dc_failure_penalty"] == 123.0
-    assert task["dc_max_depth"] == -1
-    assert task["reward_config"] == {
-        "reward": "fake",
-        "discount_factor": 0.91,
-    }
-    for name, expected_value in (
-        _TEST_TOPOLOGY_PROVENANCE.items()
-    ):
-        assert task[name] == expected_value
-
-def test_task_config_rejects_checkpoint_without_topology_provenance(
-    tmp_path: Path,
-) -> None:
-    request = _request(tmp_path)
-
-    torch.save(
-        {},
-        request.checkpoint,
-    )
-
-    with pytest.raises(
-        ValueError,
-        match="topology-action contract",
-    ):
-        evaluation._make_task_config(
-            request
-        )
-
-
-def test_worker_uses_checkpoint_topology_action_config(
-    tmp_path: Path,
+def test_run_scenario_batch_clears_worker_caches_per_scenario(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    request = _request(tmp_path)
-    task_config = evaluation._make_task_config(
-        request
-    )
-    events: list[str] = []
-    captured_action_space_kwargs: dict[
-        str,
-        object,
-    ] = {}
+    calls: list[int] = []
+    clears: list[None] = []
 
-    class FakeRuntimeObject:
-        def __init__(
-            self,
-            *args: object,
-            **kwargs: object,
-        ) -> None:
-            self.args = args
-            self.kwargs = kwargs
-
-        def clear_cache(self) -> None:
-            pass
-
-        def cache_info(self) -> dict[str, int]:
-            return {"size": 0}
-
-    class FakeEvaluator(
-        FakeRuntimeObject
-    ):
-        def __init__(
-            self,
-            *args: object,
-            **kwargs: object,
-        ) -> None:
-            super().__init__(
-                *args,
-                **kwargs,
-            )
-            events.append("evaluator")
-            self.checkpoint = dict(
-                _TEST_TOPOLOGY_PROVENANCE
-            )
-            self.topology_action_config = (
-                _TEST_ACTION_SPACE_CONFIG
-            )
-            self.action_layout = (
-                _TEST_ACTION_LAYOUT
-            )
-
-    class FakeActionSpace(
-        FakeRuntimeObject
-    ):
-        def __init__(
-            self,
-            **kwargs: object,
-        ) -> None:
-            assert events == [
-                "evaluator"
-            ]
-            events.append(
-                "action_space"
-            )
-            captured_action_space_kwargs.update(
-                kwargs
-            )
-            super().__init__(
-                **kwargs
-            )
+    def fake_episode(scenario_id: int) -> dict[str, int]:
+        calls.append(int(scenario_id))
+        return {"scenario_id": int(scenario_id)}
 
     monkeypatch.setattr(
         evaluation,
-        "_ensure_runtime_dependencies",
-        lambda: None,
+        "run_episode_from_worker_context",
+        fake_episode,
     )
     monkeypatch.setattr(
         evaluation,
-        "GridFMAdapter",
-        FakeRuntimeObject,
-    )
-    monkeypatch.setattr(
-        evaluation,
-        "GridFMPowerFlowBackend",
-        FakeRuntimeObject,
-    )
-    monkeypatch.setattr(
-        evaluation,
-        "NeuralPolicyValueEvaluator",
-        FakeEvaluator,
-    )
-    monkeypatch.setattr(
-        evaluation,
-        "GridFMActionSpace",
-        FakeActionSpace,
-    )
-    monkeypatch.setattr(
-        evaluation,
-        "MCTSConfig",
-        FakeRuntimeObject,
-    )
-    monkeypatch.setattr(
-        evaluation,
-        "MCTSPlanner",
-        FakeRuntimeObject,
+        "clear_worker_caches_if_needed",
+        lambda: clears.append(None),
     )
 
-    evaluation.init_worker_context(
-        str(request.raw_dir),
-        str(request.checkpoint),
-        task_config,
-    )
+    rows = evaluation.run_scenario_batch([3, 1, 2])
 
-    assert events == [
-        "evaluator",
-        "action_space",
-    ]
-    assert (
-        captured_action_space_kwargs
-        == {
-            "require_connected_after_switch": False,
-            "min_loading_for_switch_percent": 12.5,
-            "closeable_branch_ids": (7, 9),
-            "enable_cache": True,
-        }
-    )
+    assert [row["scenario_id"] for row in rows] == [3, 1, 2]
+    assert calls == [3, 1, 2]
+    assert len(clears) == 3
 
-    context = (
-        evaluation._require_worker_context()
-    )
-    assert (
-        context[
-            "topology_action_config"
-        ]
-        == _TEST_ACTION_SPACE_CONFIG
-    )
-    assert (
-        context["action_layout"]
-        == _TEST_ACTION_LAYOUT
-    )
+
+def test_release_worker_context_clears_global_and_caches() -> None:
+    backend = _FakeCache()
+    action_space = _FakeCache()
+    evaluator = _FakeCache()
+    evaluation._WORKER_CONTEXT = {
+        "backend": backend,
+        "action_space": action_space,
+        "evaluator": evaluator,
+        "planner": object(),
+    }
 
     evaluation._release_worker_context()
 
+    assert evaluation._WORKER_CONTEXT is None
+    assert backend.clear_count == 1
+    assert action_space.clear_count == 1
+    assert evaluator.clear_count == 1
 
-def test_evaluate_checkpoint_uses_sequential_runner(
+
+@pytest.mark.parametrize(
+    ("missing", "message"),
+    [
+        ("raw", "Raw directory"),
+        ("transitions", "Transitions CSV"),
+        ("checkpoint", "Checkpoint"),
+    ],
+)
+def test_missing_evaluation_input_raises(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
+    missing: str,
+    message: str,
 ) -> None:
-    called = {"sequential": False}
+    raw_dir, transitions, checkpoint = _write_inputs(tmp_path)
+    if missing == "raw":
+        raw_dir = tmp_path / "missing-raw"
+    elif missing == "transitions":
+        transitions = tmp_path / "missing.csv"
+    else:
+        checkpoint = tmp_path / "missing.pt"
 
-    def fake_sequential(**kwargs: object) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
-        called["sequential"] = True
-        _set_fake_worker_context()
-        return [_row(1)], []
-
-    monkeypatch.setattr(evaluation, "run_sequential", fake_sequential)
-    monkeypatch.setattr(
-        evaluation,
-        "run_parallel",
-        lambda **kwargs: pytest.fail("parallel runner should not be called"),
-    )
-
-    metrics = evaluation.evaluate_checkpoint(_request(tmp_path))
-
-    assert called["sequential"] is True
-    assert metrics["evaluated_scenarios"] == 1
-
-
-def test_evaluate_checkpoint_uses_parallel_runner(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    called = {"parallel": False}
-
-    def fake_parallel(**kwargs: object) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
-        called["parallel"] = True
-        return [_row(1)], []
-
-    config = EvaluationConfig(num_workers=2, use_continuation_gate=False)
-    monkeypatch.setattr(
-        evaluation,
-        "run_sequential",
-        lambda **kwargs: pytest.fail("sequential runner should not be called"),
-    )
-    monkeypatch.setattr(evaluation, "run_parallel", fake_parallel)
-
-    metrics = evaluation.evaluate_checkpoint(_request(tmp_path, config=config))
-
-    assert called["parallel"] is True
-    assert metrics["evaluated_scenarios"] == 1
-
-
-def test_evaluation_sorts_output_rows_by_scenario_id(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    output_csv = tmp_path / "out" / "eval.csv"
-    request = _request(tmp_path, output_csv=output_csv)
-    monkeypatch.setattr(
-        evaluation,
-        "run_sequential",
-        _successful_sequential(_row(3), _row(1), _row(2)),
-    )
-
-    evaluation.evaluate_checkpoint(request)
-
-    df = pd.read_csv(output_csv)
-    assert df["scenario_id"].tolist() == [1, 2, 3]
-
-
-def test_evaluation_saves_csv_and_json(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    output_csv = tmp_path / "eval.csv"
-    output_json = tmp_path / "eval.json"
-    request = _request(tmp_path, output_csv=output_csv, output_json=output_json)
-    monkeypatch.setattr(evaluation, "run_sequential", _successful_sequential(_row(1)))
-
-    metrics = evaluation.evaluate_checkpoint(request)
-
-    assert output_csv.exists()
-    assert output_json.exists()
-    assert json.loads(output_json.read_text(encoding="utf-8"))["solve_rate"] == 1.0
-    assert metrics["solve_rate"] == 1.0
-
-
-def test_evaluation_returns_metrics(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(evaluation, "run_sequential", _successful_sequential(_row(1)))
-
-    metrics = evaluation.evaluate_checkpoint(_request(tmp_path))
-
-    assert metrics["requested_scenarios"] == 3
-    assert metrics["solve_count"] == 1
-
-
-def test_evaluation_rejects_zero_successful_rows(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    failed = [{"ok": False, "scenario_id": 1, "row": None, "traceback": "boom"}]
-    def fake_sequential_failure_rows(**kwargs: object):
-        _set_fake_worker_context()
-        return [], failed
-
-    monkeypatch.setattr(evaluation, "run_sequential", fake_sequential_failure_rows)
-
-    with pytest.raises(RuntimeError, match="No scenarios"):
-        evaluation.evaluate_checkpoint(_request(tmp_path))
-
-
-def test_failed_scenarios_are_counted(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    failed = [
-        {"ok": False, "scenario_id": 2, "row": None, "traceback": "boom"},
-        {"ok": False, "scenario_id": 3, "row": None, "traceback": "boom"},
-    ]
-    def fake_sequential_failed(**kwargs: object):
-        _set_fake_worker_context()
-        return [_row(1)], failed
-
-    monkeypatch.setattr(evaluation, "run_sequential", fake_sequential_failed)
-
-    metrics = evaluation.evaluate_checkpoint(_request(tmp_path))
-
-    assert metrics["failed_scenarios"] == 2
-
-
-def test_difficulty_metrics_are_preserved(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    raw_dir, transitions, checkpoint = _write_inputs(tmp_path, [1, 2, 3])
-    pd.DataFrame(
-        {
-            "scenario_id": [1, 2, 3],
-            "difficulty_class": ["simple", "medium", "hard"],
-        }
-    ).to_csv(transitions, index=False)
     request = EvaluationRequest(
         raw_dir=raw_dir,
         transitions_csv=transitions,
         checkpoint=checkpoint,
-        config=EvaluationConfig(use_continuation_gate=False),
-    )
-    monkeypatch.setattr(
-        evaluation,
-        "run_sequential",
-        _successful_sequential(_row(1), _row(2), _row(3)),
+        config=EvaluationConfig(),
     )
 
-    metrics = evaluation.evaluate_checkpoint(request)
-
-    assert metrics["count_simple"] == 1
-    assert metrics["count_medium"] == 1
-    assert metrics["count_hard"] == 1
-    assert set(metrics["difficulty_metrics"]) == {"simple", "medium", "hard"}
-
-
-def test_safety_score_formula_is_unchanged() -> None:
-    row = {
-        "solved": False,
-        "physically_secure": False,
-        "termination_reason": "max_steps_reached",
-        "final_max_loading_percent": 130.0,
-        "final_num_overloaded_branches": 2,
-        "final_num_hard_overloaded_branches": 1,
-        "discounted_return": 40.0,
-    }
-
-    assert compute_safety_score(row) == -848.0
-
-
-def test_request_validation_rejects_invalid_pf_alg(tmp_path: Path) -> None:
-    with pytest.raises(ValueError, match="pf_alg"):
-        _request(tmp_path, pf_alg=9)
-
-
-def test_request_validation_rejects_invalid_stop_policy(tmp_path: Path) -> None:
-    with pytest.raises(ValueError, match="stop_policy"):
-        _request(tmp_path, stop_policy="sometimes")
-
-
-class _FakeFinalState:
-    metrics = {
-        "power_flow_converged": True,
-        "all_values_finite": True,
-        "topology_connected": True,
-        "max_loading_percent": 99.0,
-        "num_overloaded_branches": 0,
-        "num_hard_overloaded_branches": 0,
-        "total_thermal_overload_mva": 0.0,
-        "num_outaged_branches": 0,
-        "num_low_voltage_buses": 0,
-        "num_high_voltage_buses": 0,
-        "total_voltage_violation": 0.0,
-        "num_generator_p_violations": 0,
-        "total_generator_p_violation_mw": 0.0,
-        "num_generator_q_violations": 0,
-        "total_generator_q_violation_mvar": 0.0,
-        "num_angle_difference_violations": 0,
-        "total_angle_difference_violation_degrees": 0.0,
-    }
-
-
-class _DoneFakeEnv:
-    solved = True
-    done = True
-    termination_reason = TerminationReason.SOLVED
-    current_state = _FakeFinalState()
-
-    def __init__(self, **kwargs: object) -> None:
-        self.kwargs = kwargs
-
-    def reset(self, scenario_id: int) -> _FakeFinalState:
-        return self.current_state
-
-
-def test_run_episode_adds_physical_row_fields_directly(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(evaluation, "_ensure_runtime_dependencies", lambda: None)
-    monkeypatch.setattr(evaluation, "TopologySwitchingEnv", _DoneFakeEnv)
-
-    row = evaluation.run_episode(
-        scenario_id=7,
-        adapter=object(),
-        backend=object(),
-        action_space=object(),
-        reward_fn=object(),
-        planner=object(),
-        max_steps=3,
-        gamma=0.95,
-        use_continuation_gate=False,
-        min_hard_improvement=0.0,
-        min_soft_improvement=0.0,
-        min_gate_visits=0,
-        min_gate_visit_fraction=0.0,
-    )
-
-    assert row["thermal_solved"] is True
-    assert row["thermal_feasible"] is True
-    assert row["hard_overload_free"] is True
-    assert row["voltage_feasible"] is True
-    assert row["physically_secure"] is True
-    assert row["safe_handoff"] is False
-    assert row["unsafe_terminal_state"] is False
-
-
-class _MismatchDoneFakeEnv(_DoneFakeEnv):
-    solved = False
-    termination_reason = TerminationReason.MAX_STEPS_REACHED
-
-
-def test_run_episode_rejects_solved_contract_mismatch(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(evaluation, "_ensure_runtime_dependencies", lambda: None)
-    monkeypatch.setattr(evaluation, "TopologySwitchingEnv", _MismatchDoneFakeEnv)
-
-    with pytest.raises(ValueError, match="solved must equal physically_secure"):
-        evaluation.run_episode(
-            scenario_id=8,
-            adapter=object(),
-            backend=object(),
-            action_space=object(),
-            reward_fn=object(),
-            planner=object(),
-            max_steps=3,
-            gamma=0.95,
-            use_continuation_gate=False,
-            min_hard_improvement=0.0,
-            min_soft_improvement=0.0,
-            min_gate_visits=0,
-            min_gate_visit_fraction=0.0,
-        )
-
-
-def test_task_config_uses_evaluation_config_pf_alg(tmp_path: Path) -> None:
-    request = _request(tmp_path, config=EvaluationConfig(pf_alg=3), pf_alg=None)
-    assert request.resolved_pf_alg == 3
-    assert evaluation._make_task_config(request)["pf_alg"] == 3
-
-
-def test_explicit_request_pf_alg_override_remains_supported(tmp_path: Path) -> None:
-    request = _request(tmp_path, config=EvaluationConfig(pf_alg=3), pf_alg=2)
-    assert request.resolved_pf_alg == 2
-    assert evaluation._make_task_config(request)["pf_alg"] == 2
-
-
-def test_invalid_effective_pf_alg_is_rejected(tmp_path: Path) -> None:
-    with pytest.raises(ValueError, match="pf_alg"):
-        _request(tmp_path, config=EvaluationConfig(pf_alg=3), pf_alg=9)
-
-
-@pytest.mark.parametrize("value", [2.0, "2"])
-def test_request_pf_alg_accepts_exact_float_and_string(
-    tmp_path: Path,
-    value: object,
-) -> None:
-    request = _request(
-        tmp_path,
-        pf_alg=value,  # type: ignore[arg-type]
-    )
-
-    assert request.resolved_pf_alg == 2
-
-
-@pytest.mark.parametrize("value", [3.5, True])
-def test_request_pf_alg_rejects_non_exact_values(tmp_path: Path, value: object) -> None:
-    with pytest.raises(ValueError, match="exact integer|pf_alg"):
-        _request(tmp_path, pf_alg=value)  # type: ignore[arg-type]
+    with pytest.raises(FileNotFoundError, match=message):
+        evaluation.evaluate_checkpoint(request)

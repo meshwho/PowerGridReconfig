@@ -8,11 +8,11 @@ import pytest
 
 from grid_topology_ai.data_adapter import BRANCH_FEATURE_COLUMNS, GridFMState
 from grid_topology_ai.environment import TopologySwitchingEnv
-from grid_topology_ai.evaluation.episode_result import (
+from grid_topology_ai.evaluation import (
     EvaluationEpisodeTrace,
     build_evaluation_episode_row,
+    build_evaluation_metrics,
 )
-from grid_topology_ai.evaluation.metrics import build_evaluation_metrics
 from grid_topology_ai.physics.utility import state_security_penalty, state_utility
 from grid_topology_ai.termination import TerminationReason
 
@@ -174,7 +174,6 @@ def test_evaluation_metrics_aggregate_topology_quality() -> None:
         frame,
         failed_results=[],
         requested_scenarios=3,
-        task_config={},
     )
 
     valid_delta = pd.to_numeric(frame["delta_J"], errors="coerce")

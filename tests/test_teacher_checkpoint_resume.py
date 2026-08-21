@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from scripts.self_play import generate_impact_teacher_redispatch_runtime as teacher
+import grid_topology_ai.teacher_runtime as teacher
 
 
 def test_resume_restores_committed_work_and_ignores_incomplete_work(tmp_path) -> None:

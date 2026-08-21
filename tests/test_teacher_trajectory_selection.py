@@ -4,8 +4,8 @@ from dataclasses import dataclass
 
 import pytest
 
-from grid_topology_ai.search.impact_beam_search import ImpactBeamSearchConfig
-from grid_topology_ai.search.trajectory_selection import (
+from grid_topology_ai.search.impact_beam_search import (
+    ImpactBeamSearchConfig,
     pareto_front,
     select_epsilon_optimal_trajectory,
     switch_count,
@@ -32,12 +32,10 @@ def node(
     hard: int = 0,
     history: tuple[float, ...] = (),
 ) -> FakeNode:
-    branch_ids = list(range(1, switches + 1))
-    action_ids = list(range(1, switches + 1))
     return FakeNode(
         safety_score=float(safety),
-        branch_ids=branch_ids,
-        action_ids=action_ids,
+        branch_ids=list(range(1, switches + 1)),
+        action_ids=list(range(1, switches + 1)),
         solved=solved,
         num_hard_overloaded=hard,
         history=history,
@@ -70,12 +68,7 @@ def test_scenario_61_selects_three_switch_prefix_at_one_percent_epsilon() -> Non
 
 def test_zero_epsilon_recovers_exact_physical_minimum() -> None:
     root = node(181.276, 0)
-    candidates = [
-        root,
-        node(36.511, 3),
-        node(35.796, 4),
-        node(35.563, 5),
-    ]
+    candidates = [root, node(36.511, 3), node(35.796, 4), node(35.563, 5)]
 
     result = select_epsilon_optimal_trajectory(
         root,
@@ -152,12 +145,7 @@ def test_temporary_intermediate_worsening_does_not_disqualify_final_trajectory()
         3,
         history=(300.0, 350.0, 170.0, 100.0),
     )
-    candidates = [
-        root,
-        node(190.0, 1),
-        temporary_worsening,
-        node(95.0, 5),
-    ]
+    candidates = [root, node(190.0, 1), temporary_worsening, node(95.0, 5)]
 
     result = select_epsilon_optimal_trajectory(
         root,
@@ -203,10 +191,7 @@ def test_pareto_front_removes_dominated_trajectory() -> None:
     ]
 
     front = pareto_front(candidates, max_hard_overloaded=0)
-    objective_pairs = {
-        (switch_count(item), item.safety_score)
-        for item in front
-    }
+    objective_pairs = {(switch_count(item), item.safety_score) for item in front}
 
     assert (3, 90.0) not in objective_pairs
     assert (2, 80.0) in objective_pairs
@@ -219,17 +204,12 @@ def test_stop_action_is_not_counted_as_physical_switch() -> None:
         branch_ids=[10, 20, None],
         action_ids=[11, 21, 0],
     )
-
     assert switch_count(item) == 2
 
 
 def test_final_selection_excludes_hard_overload_regression() -> None:
     root = node(100.0, 0, hard=1)
-    candidates = [
-        root,
-        node(40.0, 2, hard=1),
-        node(1.0, 3, hard=2),
-    ]
+    candidates = [root, node(40.0, 2, hard=1), node(1.0, 3, hard=2)]
 
     result = select_epsilon_optimal_trajectory(
         root,

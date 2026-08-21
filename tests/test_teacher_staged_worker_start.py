@@ -1,27 +1,24 @@
 from __future__ import annotations
 
 import ast
+import inspect
 from pathlib import Path
 from types import SimpleNamespace
 
-from scripts.pipelines import run_teacher_redispatch as entrypoint
-from scripts.self_play import generate_impact_teacher_redispatch_runtime as teacher
+import grid_topology_ai.cli as light_cli
+import grid_topology_ai.teacher_runtime as teacher
 
 
-def test_production_entrypoint_uses_runtime_teacher_module() -> None:
-    assert entrypoint.REDISPATCH_TEACHER_MODULE == (
-        "scripts.self_play.generate_impact_teacher_redispatch_runtime"
-    )
+def test_unified_cli_uses_packaged_teacher_runtime() -> None:
+    source = inspect.getsource(light_cli._teacher)
+    assert "from grid_topology_ai.teacher_runtime import main as teacher_main" in source
 
 
 def test_native_thread_defaults_are_applied_before_project_imports() -> None:
     root = Path(__file__).resolve().parents[1]
-    source = (
-        root
-        / "scripts"
-        / "self_play"
-        / "generate_impact_teacher_redispatch_runtime.py"
-    ).read_text(encoding="utf-8")
+    source = (root / "grid_topology_ai" / "teacher_runtime.py").read_text(
+        encoding="utf-8"
+    )
     ast.parse(source)
 
     configure_call = source.index("_configure_native_math_threads()")

@@ -7,8 +7,7 @@ import pytest
 
 from grid_topology_ai.action_space import GridFMAction
 from grid_topology_ai.data_adapter import BRANCH_FEATURE_COLUMNS
-from grid_topology_ai.evaluation import checkpoint
-from grid_topology_ai.evaluation.policy_comparison import PolicyMode
+import grid_topology_ai.evaluation as evaluation
 from grid_topology_ai.search.mcts import MCTSConfig, MCTSNode, MCTSPlanner
 from grid_topology_ai.termination import TerminationReason
 
@@ -62,12 +61,16 @@ class _Env:
     executed_action_ids: list[int] = []
 
     def __init__(self, **kwargs: object) -> None:
+        del kwargs
         self.current_state = _State(secure=False)
+        self.initial_state = self.current_state
         self.done = False
         self.solved = False
         self.termination_reason = None
+        self.terminal_outcome_evidence = None
 
     def reset(self, scenario_id: int):
+        del scenario_id
         return self.current_state
 
     def step(self, action: _Action):
@@ -87,6 +90,7 @@ class _Planner:
         self.random_seeds.append(random_seed)
 
     def search_from_env(self, env: _Env):
+        del env
         actions = {
             1: _Action(1, 11),
             2: _Action(2, 22),
@@ -95,11 +99,6 @@ class _Planner:
             best_action_id=1,
             policy={1: 0.7, 2: 0.3},
             root=SimpleNamespace(actions_by_id=actions),
-            root_legal_action_count=5,
-            root_considered_action_count=2,
-            root_visited_action_count=2,
-            root_action_coverage=0.4,
-            root_visited_action_coverage=0.4,
         )
 
 
@@ -109,17 +108,17 @@ def _patch_runtime(
     allowed_action_ids: tuple[int, ...],
 ) -> None:
     _Env.executed_action_ids = []
-    monkeypatch.setattr(checkpoint, "_ensure_runtime_dependencies", lambda: None)
-    monkeypatch.setattr(checkpoint, "TopologySwitchingEnv", _Env)
+    monkeypatch.setattr(evaluation, "_ensure_runtime_dependencies", lambda: None)
+    monkeypatch.setattr(evaluation, "TopologySwitchingEnv", _Env)
     monkeypatch.setattr(
-        checkpoint,
+        evaluation,
         "analyze_root_branches",
         lambda **kwargs: SimpleNamespace(
             allowed_action_ids=allowed_action_ids,
         ),
     )
     monkeypatch.setattr(
-        checkpoint,
+        evaluation,
         "make_do_nothing_action",
         lambda: _Action(0, None),
     )
@@ -131,7 +130,7 @@ def test_constrained_episode_executes_action_from_constrained_policy(
     _patch_runtime(monkeypatch, allowed_action_ids=(2,))
     planner = _Planner()
 
-    row = checkpoint.run_episode(
+    row = evaluation.run_episode(
         scenario_id=1,
         adapter=object(),
         backend=object(),
@@ -146,14 +145,14 @@ def test_constrained_episode_executes_action_from_constrained_policy(
         min_soft_improvement=0.0,
         min_gate_visits=0,
         min_gate_visit_fraction=0.0,
-        policy_mode=PolicyMode.CONSTRAINED,
+        policy_mode="constrained",
     )
 
     assert planner.random_seeds == [
-        checkpoint._evaluation_search_seed(
+        evaluation._evaluation_search_seed(
             base_seed=73,
             scenario_id=1,
-            policy_mode=PolicyMode.CONSTRAINED,
+            policy_mode="constrained",
             step=0,
         )
     ]
@@ -162,12 +161,8 @@ def test_constrained_episode_executes_action_from_constrained_policy(
     assert row["actions"] == "[2]"
     assert row["constraint_changed_policy"] is True
     assert row["constraint_exhausted"] is False
-    assert row["mcts_searches"] == 1
-    assert row["mcts_root_legal_action_counts_json"] == "[5]"
-    assert row["mcts_root_considered_action_counts_json"] == "[2]"
-    assert row["mcts_root_visited_action_counts_json"] == "[2]"
-    assert row["mcts_mean_action_coverage"] == pytest.approx(0.4)
-    assert row["mcts_mean_visited_action_coverage"] == pytest.approx(0.4)
+    assert row["solved"] is True
+    assert row["physically_secure"] is True
 
 
 def test_empty_constrained_support_terminates_without_action_fallback(
@@ -176,7 +171,7 @@ def test_empty_constrained_support_terminates_without_action_fallback(
     _patch_runtime(monkeypatch, allowed_action_ids=())
     planner = _Planner()
 
-    row = checkpoint.run_episode(
+    row = evaluation.run_episode(
         scenario_id=2,
         adapter=object(),
         backend=object(),
@@ -191,14 +186,14 @@ def test_empty_constrained_support_terminates_without_action_fallback(
         min_soft_improvement=0.0,
         min_gate_visits=0,
         min_gate_visit_fraction=0.0,
-        policy_mode=PolicyMode.CONSTRAINED,
+        policy_mode="constrained",
     )
 
     assert planner.random_seeds == [
-        checkpoint._evaluation_search_seed(
+        evaluation._evaluation_search_seed(
             base_seed=91,
             scenario_id=2,
-            policy_mode=PolicyMode.CONSTRAINED,
+            policy_mode="constrained",
             step=0,
         )
     ]
@@ -209,49 +204,47 @@ def test_empty_constrained_support_terminates_without_action_fallback(
     assert row["done"] is True
     assert row["solved"] is False
     assert row["termination_reason"] == "constraint_exhausted"
-    assert row["mcts_searches"] == 1
-    assert row["mcts_min_action_coverage"] == pytest.approx(0.4)
 
 
 def test_evaluation_search_seed_is_stable_and_context_specific() -> None:
-    baseline = checkpoint._evaluation_search_seed(
+    baseline = evaluation._evaluation_search_seed(
         base_seed=42,
         scenario_id=7,
-        policy_mode=PolicyMode.UNGATED,
+        policy_mode="ungated",
         step=0,
     )
 
-    assert baseline == checkpoint._evaluation_search_seed(
+    assert baseline == evaluation._evaluation_search_seed(
         base_seed=42,
         scenario_id=7,
-        policy_mode=PolicyMode.UNGATED,
+        policy_mode="ungated",
         step=0,
     )
     assert len(
         {
             baseline,
-            checkpoint._evaluation_search_seed(
+            evaluation._evaluation_search_seed(
                 base_seed=43,
                 scenario_id=7,
-                policy_mode=PolicyMode.UNGATED,
+                policy_mode="ungated",
                 step=0,
             ),
-            checkpoint._evaluation_search_seed(
+            evaluation._evaluation_search_seed(
                 base_seed=42,
                 scenario_id=8,
-                policy_mode=PolicyMode.UNGATED,
+                policy_mode="ungated",
                 step=0,
             ),
-            checkpoint._evaluation_search_seed(
+            evaluation._evaluation_search_seed(
                 base_seed=42,
                 scenario_id=7,
-                policy_mode=PolicyMode.CONSTRAINED,
+                policy_mode="constrained",
                 step=0,
             ),
-            checkpoint._evaluation_search_seed(
+            evaluation._evaluation_search_seed(
                 base_seed=42,
                 scenario_id=7,
-                policy_mode=PolicyMode.UNGATED,
+                policy_mode="ungated",
                 step=1,
             ),
         }

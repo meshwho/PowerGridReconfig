@@ -4,8 +4,9 @@ from pathlib import Path
 
 import pytest
 
+import grid_topology_ai.cli as light_cli
+import grid_topology_ai.training as training_runtime
 from grid_topology_ai.training.graph_policy_value import TrainingRequest
-from scripts.self_play import train_graph_baseline as train_cli
 
 
 def _capture_request(
@@ -17,7 +18,11 @@ def _capture_request(
         captured.append(request)
         return checkpoint_path
 
-    monkeypatch.setattr(train_cli, "train_graph_policy_value_model", fake_train)
+    monkeypatch.setattr(
+        training_runtime,
+        "train_graph_policy_value_model",
+        fake_train,
+    )
 
 
 def test_cli_builds_graph_v2_training_request(
@@ -33,12 +38,13 @@ def test_cli_builds_graph_v2_training_request(
     init = tmp_path / "init.pt"
     metrics = tmp_path / "metrics.csv"
 
-    assert train_cli.main(
+    assert light_cli.main(
         [
+            "train",
             str(examples),
             "--output", str(checkpoint),
             "--init-checkpoint", str(init),
-            "--val-examples-csv", str(val),
+            "--validation", str(val),
             "--metrics-csv", str(metrics),
             "--epochs", "7",
             "--lr", "0.02",
@@ -49,7 +55,7 @@ def test_cli_builds_graph_v2_training_request(
             "--value-loss-weight", "1.5",
             "--value-huber-delta", "0.25",
             "--device", "cpu",
-            "--num-workers", "2",
+            "--workers", "2",
             "--amp",
             "--save-best",
             "--save-multiple-best",
@@ -93,8 +99,9 @@ def test_cli_wires_resume_checkpoint(
     examples = tmp_path / "examples.csv"
     _capture_request(monkeypatch, checkpoint, captured)
 
-    assert train_cli.main(
+    assert light_cli.main(
         [
+            "train",
             str(examples),
             "--output", str(checkpoint),
             "--resume-checkpoint", str(resume),
@@ -110,8 +117,13 @@ def test_cli_wires_resume_checkpoint(
     assert request.config.epochs == 9
 
 
-def test_cli_no_longer_exposes_model_selection() -> None:
-    parser = train_cli.build_parser()
-    help_text = parser.format_help()
+def test_cli_no_longer_exposes_model_selection(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit) as exc:
+        light_cli.main(["train", "--help"])
+    assert exc.value.code == 0
+
+    help_text = capsys.readouterr().out
     assert "--model-type" not in help_text
     assert "--resume-checkpoint" in help_text
