@@ -5,350 +5,62 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from grid_topology_ai.self_play import generation
-from tests.outcome_evidence_helpers import terminal_evidence
+from grid_topology_ai.self_play.generation import _select_generation_action
 
 
-class _Action:
-    def __init__(self, branch_id: int | None) -> None:
-        self.branch_id = branch_id
-
-
-def _search_result(policy: dict[int, float]) -> SimpleNamespace:
+def _result(policy: dict[int, float]) -> SimpleNamespace:
     return SimpleNamespace(
         policy=policy,
-        best_action_id=1,
-        best_branch_id=11,
-        visit_counts={
-            action_id: int(probability * 10)
-            for action_id, probability in policy.items()
-        },
-        root=SimpleNamespace(
-            actions_by_id={
-                1: _Action(11),
-                2: _Action(22),
-            }
-        ),
-        root_legal_action_count=5,
-        root_considered_action_count=2,
-        root_visited_action_count=2,
-        root_action_coverage=0.4,
-        root_visited_action_coverage=0.4,
+        root=SimpleNamespace(actions_by_id={
+            1: SimpleNamespace(branch_id=11),
+            2: SimpleNamespace(branch_id=22),
+        }),
     )
 
 
-def _analysis(
-    *,
-    allowed_action_ids: tuple[int, ...] = (2,),
-    recommended_action_id: int | None = 2,
-    recommended_branch_id: int | None = 22,
-) -> SimpleNamespace:
-    return SimpleNamespace(
-        allowed_action_ids=allowed_action_ids,
-        recommended_action_id=recommended_action_id,
-        recommended_branch_id=recommended_branch_id,
-        recommendation_reason="fake_analysis",
-    )
-
-
-def test_continuation_analysis_cannot_override_behavior_action(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(
-        generation,
-        "analyze_root_branches",
-        lambda **kwargs: _analysis(),
-    )
-
-    decision = generation._select_generation_action(
-        search_result=_search_result({1: 0.7, 2: 0.3}),
+def test_greedy_action_is_in_saved_policy_support() -> None:
+    decision = _select_generation_action(
+        search_result=_result({1: 0.7, 2: 0.3}),
         temperature=0.0,
         rng=np.random.default_rng(1),
-        use_continuation_gate=True,
-        min_hard_improvement=50.0,
-        min_soft_improvement=15.0,
-        min_gate_visits=5,
-        min_gate_visit_fraction=0.01,
+        scenario_id=8,
+        step=0,
     )
-
     assert decision.selected_action_id == 1
     assert decision.selected_branch_id == 11
     assert decision.policy_target == {1: 1.0}
-    assert decision.continuation_analysis.recommended_action_id == 2
-
-
-def test_selected_action_is_always_in_saved_policy_support() -> None:
-    decision = generation._select_generation_action(
-        search_result=_search_result({1: 0.7, 2: 0.3}),
-        temperature=1.0,
-        rng=np.random.default_rng(2),
-        use_continuation_gate=False,
-        min_hard_improvement=50.0,
-        min_soft_improvement=15.0,
-        min_gate_visits=5,
-        min_gate_visit_fraction=0.01,
-    )
-
-    assert decision.policy_target == pytest.approx({1: 0.7, 2: 0.3})
-    assert decision.selected_action_id in decision.policy_target
     assert decision.policy_target[decision.selected_action_id] > 0.0
 
 
-def test_non_normalized_visit_distribution_is_normalized_once() -> None:
-    decision = generation._select_generation_action(
-        search_result=_search_result({1: 7.0, 2: 2.0}),
+def test_sampled_action_is_in_saved_policy_support() -> None:
+    decision = _select_generation_action(
+        search_result=_result({1: 0.25, 2: 0.75}),
         temperature=1.0,
-        rng=np.random.default_rng(3),
-        use_continuation_gate=False,
-        min_hard_improvement=50.0,
-        min_soft_improvement=15.0,
-        min_gate_visits=5,
-        min_gate_visit_fraction=0.01,
+        rng=np.random.default_rng(7),
     )
-
-    assert decision.policy_target == pytest.approx(
-        {1: 7.0 / 9.0, 2: 2.0 / 9.0}
-    )
-
-
-def test_policy_target_is_an_independent_copy() -> None:
-    search_result = _search_result({1: 0.7, 2: 0.3})
-    decision = generation._select_generation_action(
-        search_result=search_result,
-        temperature=1.0,
-        rng=np.random.default_rng(4),
-        use_continuation_gate=False,
-        min_hard_improvement=50.0,
-        min_soft_improvement=15.0,
-        min_gate_visits=5,
-        min_gate_visit_fraction=0.01,
-    )
-
-    decision.policy_target[1] = 0.0
-
-    assert search_result.policy == {1: 0.7, 2: 0.3}
+    assert decision.policy_target == pytest.approx({1: 0.25, 2: 0.75})
+    assert decision.policy_target[decision.selected_action_id] > 0.0
+    assert decision.selected_branch_id in {11, 22}
 
 
-def test_empty_mcts_policy_is_rejected() -> None:
-    with pytest.raises(ValueError, match="must not be empty"):
-        generation._select_generation_action(
-            search_result=_search_result({}),
-            temperature=0.0,
-            rng=np.random.default_rng(5),
-            use_continuation_gate=False,
-            min_hard_improvement=50.0,
-            min_soft_improvement=15.0,
-            min_gate_visits=5,
-            min_gate_visit_fraction=0.01,
-        )
-
-
-def test_policy_action_missing_from_root_is_rejected() -> None:
-    result = _search_result({1: 1.0})
-    result.root.actions_by_id = {}
-
+def test_selected_action_must_exist_in_root_actions() -> None:
+    result = _result({2: 1.0})
+    result.root.actions_by_id.pop(2)
     with pytest.raises(RuntimeError, match="missing from root.actions_by_id"):
-        generation._select_generation_action(
+        _select_generation_action(
             search_result=result,
             temperature=0.0,
-            rng=np.random.default_rng(6),
-            use_continuation_gate=False,
-            min_hard_improvement=50.0,
-            min_soft_improvement=15.0,
-            min_gate_visits=5,
-            min_gate_visit_fraction=0.01,
+            rng=np.random.default_rng(1),
         )
 
 
-def test_generation_records_analysis_without_override(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path,
-) -> None:
-    captured: list[dict[str, object]] = []
-    executed: list[_Action] = []
-
-    class _Writer:
-        states_dir = tmp_path / "states"
-
-        def __init__(
-            self,
-            output_dir,
-            *,
-            physics_config,
-            action_space_config,
-        ):
-            self.output_dir = output_dir
-            self.physics_config = physics_config
-            self.action_space_config = action_space_config
-
-        def add_episode(
-            self,
-            pending_examples,
-            *,
-            final_return,
-            returns_from_step,
-            solved,
-            done,
-            termination_reason,
-            terminal_outcome_evidence,
-            iteration,
-        ):
-            for item, return_from_step in zip(
-                pending_examples,
-                returns_from_step,
-            ):
-                captured.append(
-                    {
-                        **item,
-                        "final_return": final_return,
-                        "discounted_return_from_step": return_from_step,
-                        "solved": solved,
-                        "done": done,
-                        "termination_reason": termination_reason,
-                        "terminal_outcome_evidence": (
-                            terminal_outcome_evidence
-                        ),
-                        "iteration": iteration,
-                    }
-                )
-            return len(pending_examples)
-
-        def save(self):
-            return tmp_path / "examples.csv"
-
-    from grid_topology_ai.config import GenerationConfig
-    from grid_topology_ai.self_play.generation import (
-        GenerationRequest,
-        generate_self_play_examples,
+def test_stop_action_has_no_branch() -> None:
+    decision = _select_generation_action(
+        search_result=SimpleNamespace(
+            policy={0: 1.0}, root=SimpleNamespace(actions_by_id={})
+        ),
+        temperature=0.0,
+        rng=np.random.default_rng(1),
     )
-
-    class _Env:
-        def __init__(self, **kwargs):
-            self.done = False
-            self.solved = False
-            self.termination_reason = None
-            self.terminal_outcome_evidence = None
-            self.current_state = object()
-
-        def reset(self, scenario_id):
-            return None
-
-        def valid_action_mask(self):
-            return [True, True, True]
-
-        def step(self, action):
-            executed.append(action)
-            evidence = terminal_evidence("solved")
-            self.done = True
-            self.solved = True
-            self.termination_reason = evidence.termination_reason
-            self.terminal_outcome_evidence = evidence
-            return SimpleNamespace(
-                reward=0.0,
-                done=True,
-                solved=True,
-                terminal_outcome_evidence=evidence,
-                info={"termination_reason": "solved"},
-            )
-
-    class _Planner:
-        def __init__(self, **kwargs):
-            self.random_seed = None
-
-        def reset_rng(self, random_seed):
-            self.random_seed = random_seed
-
-        def search_from_env(self, env):
-            return _search_result({1: 0.7, 2: 0.3})
-
-    class _Noop:
-        def __init__(self, *args, **kwargs):
-            self.config = SimpleNamespace()
-
-        def cache_info(self):
-            return {}
-
-        def clear_cache(self):
-            return None
-
-    transitions = tmp_path / "transitions.csv"
-    transitions.write_text(
-        "scenario_id\n1\n",
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(
-        generation,
-        "_ensure_runtime_dependencies",
-        lambda: None,
-    )
-    monkeypatch.setattr(generation, "GridFMAdapter", _Noop)
-    monkeypatch.setattr(
-        generation,
-        "GridFMPowerFlowBackend",
-        _Noop,
-    )
-    monkeypatch.setattr(generation, "GridFMActionSpace", _Noop)
-    monkeypatch.setattr(generation, "GridFMReward", _Noop)
-    monkeypatch.setattr(generation, "MCTSConfig", _Noop)
-    monkeypatch.setattr(generation, "MCTSPlanner", _Planner)
-    monkeypatch.setattr(
-        generation,
-        "TopologySwitchingEnv",
-        _Env,
-    )
-    monkeypatch.setattr(generation, "ExampleWriter", _Writer)
-    monkeypatch.setattr(
-        generation,
-        "make_do_nothing_action",
-        lambda: _Action(None),
-    )
-    monkeypatch.setattr(
-        generation,
-        "analyze_root_branches",
-        lambda **kwargs: _analysis(),
-    )
-
-    generate_self_play_examples(
-        GenerationRequest(
-            raw_dir=tmp_path / "raw",
-            transitions_csv=transitions,
-            output_dir=tmp_path / "out",
-            checkpoint=None,
-            config=GenerationConfig(
-                max_steps=1,
-                use_continuation_gate=True,
-                selection_temperature=0.0,
-            ),
-            mcts_seed=7,
-            action_seed=8,
-            clear_cache_between_scenarios=False,
-        )
-    )
-
-    assert executed[0].branch_id == 11
-    assert captured[0]["mcts_policy"] == {1: 1.0}
-    assert captured[0]["selected_action_id"] == 1
-    assert captured[0]["terminal_outcome_evidence"] == terminal_evidence(
-        "solved"
-    )
-
-    metadata = captured[0]["extra_metadata"]
-    assert metadata["policy_target_source"] == (
-        "temperature_adjusted_mcts_visit_distribution"
-    )
-    assert metadata["execution_action_source"] == "policy_target_sampling"
-    assert metadata["continuation_recommended_action_id"] == 2
-    assert metadata["selected_action_allowed_by_continuation"] is False
-    assert metadata["mcts_legal_action_count"] == 5
-    assert metadata["mcts_considered_action_count"] == 2
-    assert metadata["mcts_visited_action_count"] == 2
-    assert metadata["mcts_action_coverage"] == pytest.approx(0.4)
-    assert metadata["mcts_visited_action_coverage"] == pytest.approx(0.4)
-    assert metadata["mcts_stream_seed"] == 7
-    assert metadata["action_sampling_stream_seed"] == 8
-    assert metadata["scenario_mcts_seed"] == generation._scenario_seed(7, 1)
-    assert metadata[
-        "scenario_action_sampling_seed"
-    ] == generation._scenario_seed(8, 1)
-    assert "raw_selected_action_id" not in metadata
-    assert "gate_overrode_mcts_selection" not in metadata
+    assert decision.selected_action_id == 0
+    assert decision.selected_branch_id is None

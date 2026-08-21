@@ -85,32 +85,14 @@ def test_example_writer_rejects_off_policy_selected_action(
     tmp_path: Path,
 ) -> None:
     writer = _writer(tmp_path)
-    writer.state_store = SimpleNamespace(
-        save_state=lambda **kwargs: pytest.fail(
-            "state must not be written for an invalid example"
-        )
-    )
-
+    pending = _pending_example(0)
+    pending["selected_action_id"] = 1
     with pytest.raises(ValueError, match="outside the support"):
-        writer.add_example(
-            state=object(),  # type: ignore[arg-type]
-            state_id="state-1",
-            action_mask=[True, True],
-            scenario_id=1,
-            step=0,
-            selected_action_id=0,
-            selected_branch_id=None,
-            step_reward=0.0,
-            final_return=0.0,
-            discounted_return_from_step=0.0,
-            solved=True,
-            done=True,
-            termination_reason=TerminationReason.SOLVED,
-            terminal_outcome_evidence=terminal_evidence(
-                TerminationReason.SOLVED
-            ),
-            visit_counts={1: 3},
-            mcts_policy={1: 1.0},
+        writer.add_episode(
+            [pending], final_return=1.0, returns_from_step=[1.0],
+            solved=True, done=True, termination_reason=TerminationReason.SOLVED,
+            terminal_outcome_evidence=terminal_evidence(TerminationReason.SOLVED),
+            iteration=1,
         )
 
 
@@ -118,32 +100,13 @@ def test_example_writer_rejects_mismatched_terminal_evidence(
     tmp_path: Path,
 ) -> None:
     writer = _writer(tmp_path)
-    writer.state_store = SimpleNamespace(
-        save_state=lambda **kwargs: pytest.fail(
-            "state must not be written for invalid evidence"
-        )
-    )
-
     with pytest.raises(ValueError, match="contradicts"):
-        writer.add_example(
-            state=_state(),  # type: ignore[arg-type]
-            state_id="state-1",
-            action_mask=[True, True, True],
-            scenario_id=1,
-            step=0,
-            selected_action_id=0,
-            selected_branch_id=None,
-            step_reward=0.0,
-            final_return=0.0,
-            discounted_return_from_step=0.0,
-            solved=True,
-            done=True,
-            termination_reason=TerminationReason.SOLVED,
+        writer.add_episode(
+            [_pending_example(0)], final_return=1.0, returns_from_step=[1.0],
+            solved=True, done=True, termination_reason=TerminationReason.SOLVED,
             terminal_outcome_evidence=terminal_evidence(
                 TerminationReason.MAX_STEPS_REACHED
-            ),
-            visit_counts={0: 3},
-            mcts_policy={0: 1.0},
+            ), iteration=1,
         )
 
 

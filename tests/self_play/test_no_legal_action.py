@@ -340,8 +340,12 @@ def _install_generation_runtime(
 def _request(tmp_path: Path, *, max_steps: int) -> GenerationRequest:
     transitions = tmp_path / "transitions.csv"
     transitions.write_text("scenario_id\n1\n", encoding="utf-8")
+    raw_dir = tmp_path / "raw"
+    raw_dir.mkdir()
+    for name in ("bus_data.parquet", "branch_data.parquet", "gen_data.parquet"):
+        (raw_dir / name).touch()
     return GenerationRequest(
-        raw_dir=tmp_path / "raw",
+        raw_dir=raw_dir,
         transitions_csv=transitions,
         output_dir=tmp_path / "out",
         checkpoint=None,

@@ -67,7 +67,10 @@ ORACLE_TESTS: dict[str, tuple[str, ...]] = {
         "tests/self_play/test_generation_api.py",
         "tests/self_play/test_generation_policy_target.py",
         "tests/self_play/test_no_legal_action.py",
-        "tests/self_play/test_stages.py",
+        "tests/self_play/test_generation_cli.py",
+        "tests/self_play/test_random_stream_isolation.py",
+        "tests/self_play/test_temperature_schedule.py",
+        "tests/self_play/test_generation_resume_parity.py",
     ),
     "evaluation": (
         "tests/evaluation/test_canonical_topology_quality.py",
