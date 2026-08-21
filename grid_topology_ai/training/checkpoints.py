@@ -337,6 +337,13 @@ def load_initial_checkpoint_into_model(
                 f"Initial checkpoint is missing required key {key!r}: "
                 f"{checkpoint_path}"
             )
+        actual_value = int(checkpoint[key])
+        if actual_value != expected_value:
+            raise ValueError(
+                f"Initial checkpoint {key} mismatch. "
+                f"Expected {expected_value}, got {actual_value}. "
+                f"Checkpoint: {checkpoint_path}"
+            )
 
     expected_dropout = float(dropout)
     if float(checkpoint.get("dropout", -1.0)) != expected_dropout:
@@ -345,13 +352,6 @@ def load_initial_checkpoint_into_model(
             f"Expected {expected_dropout}, got {checkpoint.get('dropout')}. "
             f"Checkpoint: {checkpoint_path}"
         )
-        actual_value = int(checkpoint[key])
-        if actual_value != expected_value:
-            raise ValueError(
-                f"Initial checkpoint {key} mismatch. "
-                f"Expected {expected_value}, got {actual_value}. "
-                f"Checkpoint: {checkpoint_path}"
-            )
 
     if "model_state_dict" not in checkpoint:
         raise KeyError(

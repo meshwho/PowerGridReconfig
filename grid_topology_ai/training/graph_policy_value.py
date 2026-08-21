@@ -93,6 +93,7 @@ class _CandidateTrackingState:
     request: TrainingRequest
     training_dataset: GraphSelfPlayDataset | None = None
     epoch: int = 0
+    normalization_metadata: dict[str, object] | None = None
     best_values: dict[str, float] = field(
         default_factory=lambda: {
             metric_name: float("inf")
@@ -131,6 +132,9 @@ def register_training_dataset(
 def _candidate_normalization_metadata(
     request: TrainingRequest,
 ) -> dict[str, object]:
+    state = _TRACKING_STATE.get()
+    if state is not None and state.normalization_metadata is not None:
+        return dict(state.normalization_metadata)
     from_init = request.init_checkpoint is not None
     return {
         "normalization_source": (
@@ -573,6 +577,36 @@ def _normalization_provenance(
     }
 
 
+def _training_source_identity(request: TrainingRequest) -> dict[str, object]:
+    def identity(path: Path | None) -> dict[str, object] | None:
+        if path is None:
+            return None
+        resolved = path.resolve()
+        stat = resolved.stat()
+        return {
+            "path": str(resolved),
+            "size": int(stat.st_size),
+            "mtime_ns": int(stat.st_mtime_ns),
+        }
+
+    return {
+        "examples_csv": identity(request.examples_csv),
+        "validation_examples_csv": identity(request.validation_examples_csv),
+    }
+
+
+def _checkpoint_normalization_provenance(
+    payload: Mapping[str, object],
+) -> dict[str, object]:
+    return {
+        "normalization_source": payload.get("normalization_source", "training_dataset"),
+        "normalization_frozen_from_init_checkpoint": bool(
+            payload.get("normalization_frozen_from_init_checkpoint", False)
+        ),
+        "normalization_source_checkpoint": payload.get("normalization_source_checkpoint"),
+    }
+
+
 def _assert_same_normalization_stats(
     *,
     actual: dict[str, np.ndarray],
@@ -683,7 +717,7 @@ def train_graph_policy_value_model(request: TrainingRequest) -> Path:
         if init_checkpoint_payload is not None:
             require_physics_provenance(
                 init_checkpoint_payload,
-                source=str(request.init_checkpoint),
+                source=str(source_checkpoint),
                 expected_physics_config=dataset.physics_config,
             )
         effective_normalization_stats = dataset.normalization_state_dict()
@@ -692,13 +726,22 @@ def train_graph_policy_value_model(request: TrainingRequest) -> Path:
             _assert_same_normalization_stats(
                 actual=effective_normalization_stats,
                 expected=checkpoint_normalization_stats,
-                checkpoint_path=request.init_checkpoint,
+                checkpoint_path=source_checkpoint,
             )
             _validate_normalization_feature_dimensions(
                 normalization_stats=effective_normalization_stats,
                 dataset=dataset,
-                checkpoint_path=request.init_checkpoint,
+                checkpoint_path=source_checkpoint,
             )
+
+        normalization_metadata = (
+            _checkpoint_normalization_provenance(init_checkpoint_payload)
+            if request.resume_checkpoint is not None and init_checkpoint_payload is not None
+            else _normalization_provenance(init_checkpoint=request.init_checkpoint)
+        )
+        tracking_state = _TRACKING_STATE.get()
+        if tracking_state is not None:
+            tracking_state.normalization_metadata = normalization_metadata
 
         val_dataset = None
         if request.validation_examples_csv is not None:
@@ -808,6 +851,7 @@ def train_graph_policy_value_model(request: TrainingRequest) -> Path:
         best_metric = float("inf")
         best_epoch = 0
         best_checkpoint = None
+        best_model_state_dict = None
         best_top1 = -float("inf")
         best_top1_epoch = 0
         best_top5 = -float("inf")
@@ -835,6 +879,11 @@ def train_graph_policy_value_model(request: TrainingRequest) -> Path:
                 "amp": bool(request.use_amp),
                 "num_workers": int(request.config.num_workers),
                 "no_normalize_features": bool(not request.normalize_features),
+                "hidden_dim": int(request.config.hidden_dim),
+                "num_layers": int(request.config.num_layers),
+                "dropout": float(request.config.dropout),
+                "save_best": bool(request.save_best),
+                "save_multiple_best": bool(request.config.save_multiple_best),
             }
             for key, expected in current_config.items():
                 if saved_config.get(key) != expected:
@@ -842,6 +891,13 @@ def train_graph_policy_value_model(request: TrainingRequest) -> Path:
                         f"Resume training configuration mismatch for {key}: "
                         f"expected {expected!r}, checkpoint has {saved_config.get(key)!r}."
                     )
+            saved_identity = resume.get("training_source_identity")
+            current_identity = _training_source_identity(request)
+            if saved_identity != current_identity:
+                raise ValueError(
+                    "Resume training source identity mismatch: "
+                    f"expected {current_identity!r}, checkpoint has {saved_identity!r}."
+                )
             for key in ("optimizer_state_dict", "scaler_state_dict", "completed_epoch", "rng_state", "train_generator_state"):
                 if key not in resume:
                     raise ValueError(f"Resume checkpoint is missing {key!r}: {request.resume_checkpoint}")
@@ -857,6 +913,28 @@ def train_graph_policy_value_model(request: TrainingRequest) -> Path:
             start_epoch = int(resume["completed_epoch"]) + 1
             best_metric = float(resume.get("best_metric", best_metric))
             best_epoch = int(resume.get("best_epoch", best_epoch))
+            if request.save_best:
+                saved_best_state = resume.get("best_model_state_dict")
+                if not isinstance(saved_best_state, Mapping):
+                    raise ValueError("Resume checkpoint is missing 'best_model_state_dict'.")
+                best_model_state_dict = dict(saved_best_state)
+            best_top1 = float(resume.get("best_top1", best_top1))
+            best_top1_epoch = int(resume.get("best_top1_epoch", best_top1_epoch))
+            best_top5 = float(resume.get("best_top5", best_top5))
+            best_top5_epoch = int(resume.get("best_top5_epoch", best_top5_epoch))
+            best_switch = float(resume.get("best_switch", best_switch))
+            best_switch_epoch = int(resume.get("best_switch_epoch", best_switch_epoch))
+            best_policy_score = float(resume.get("best_policy_score", best_policy_score))
+            best_policy_score_epoch = int(
+                resume.get("best_policy_score_epoch", best_policy_score_epoch)
+            )
+            if tracking_state is not None:
+                tracking_state.epoch = int(resume["completed_epoch"])
+                saved_candidates = resume.get("candidate_best_values", {})
+                if isinstance(saved_candidates, Mapping):
+                    for key in tracking_state.best_values:
+                        if key in saved_candidates:
+                            tracking_state.best_values[key] = float(saved_candidates[key])
 
         for epoch in range(start_epoch, request.config.epochs + 1):
             total_loss, policy_loss, value_loss = train_one_epoch(
@@ -891,11 +969,10 @@ def train_graph_policy_value_model(request: TrainingRequest) -> Path:
                         request=request,
                         device=device,
                         use_amp=use_amp,
-                        normalization_metadata=_normalization_provenance(
-                            init_checkpoint=request.init_checkpoint
-                        ),
+                        normalization_metadata=normalization_metadata,
                         validation_dataset=val_dataset,
                     )
+                    best_model_state_dict = best_checkpoint["model_state_dict"]
 
                 if request.config.save_multiple_best:
                     current_top1 = float(val_metrics["top1"])
@@ -919,9 +996,7 @@ def train_graph_policy_value_model(request: TrainingRequest) -> Path:
                             selector_name="val_loss",
                             selector_value=current_metric,
                             val_metrics=val_metrics,
-                            normalization_metadata=_normalization_provenance(
-                                init_checkpoint=request.init_checkpoint
-                            ),
+                            normalization_metadata=normalization_metadata,
                             validation_dataset=val_dataset,
                         )
 
@@ -941,9 +1016,7 @@ def train_graph_policy_value_model(request: TrainingRequest) -> Path:
                             selector_name="val_top1",
                             selector_value=current_top1,
                             val_metrics=val_metrics,
-                            normalization_metadata=_normalization_provenance(
-                                init_checkpoint=request.init_checkpoint
-                            ),
+                            normalization_metadata=normalization_metadata,
                             validation_dataset=val_dataset,
                         )
 
@@ -963,9 +1036,7 @@ def train_graph_policy_value_model(request: TrainingRequest) -> Path:
                             selector_name="val_top5",
                             selector_value=current_top5,
                             val_metrics=val_metrics,
-                            normalization_metadata=_normalization_provenance(
-                                init_checkpoint=request.init_checkpoint
-                            ),
+                            normalization_metadata=normalization_metadata,
                             validation_dataset=val_dataset,
                         )
 
@@ -985,9 +1056,7 @@ def train_graph_policy_value_model(request: TrainingRequest) -> Path:
                             selector_name="val_switch",
                             selector_value=current_switch,
                             val_metrics=val_metrics,
-                            normalization_metadata=_normalization_provenance(
-                                init_checkpoint=request.init_checkpoint
-                            ),
+                            normalization_metadata=normalization_metadata,
                             validation_dataset=val_dataset,
                         )
 
@@ -1007,9 +1076,7 @@ def train_graph_policy_value_model(request: TrainingRequest) -> Path:
                             selector_name="policy_selection_score",
                             selector_value=current_policy_score,
                             val_metrics=val_metrics,
-                            normalization_metadata=_normalization_provenance(
-                                init_checkpoint=request.init_checkpoint
-                            ),
+                            normalization_metadata=normalization_metadata,
                             validation_dataset=val_dataset,
                         )
 
@@ -1038,11 +1105,10 @@ def train_graph_policy_value_model(request: TrainingRequest) -> Path:
                         request=request,
                         device=device,
                         use_amp=use_amp,
-                        normalization_metadata=_normalization_provenance(
-                            init_checkpoint=request.init_checkpoint
-                        ),
+                        normalization_metadata=normalization_metadata,
                         validation_dataset=val_dataset,
                     )
+                    best_model_state_dict = best_checkpoint["model_state_dict"]
 
                 if (
                     epoch == 1
@@ -1083,9 +1149,7 @@ def train_graph_policy_value_model(request: TrainingRequest) -> Path:
                 request=request,
                 device=device,
                 use_amp=use_amp,
-                normalization_metadata=_normalization_provenance(
-                    init_checkpoint=request.init_checkpoint
-                ),
+                normalization_metadata=normalization_metadata,
                 validation_dataset=val_dataset,
             )
             resume_payload.update({
@@ -1094,6 +1158,18 @@ def train_graph_policy_value_model(request: TrainingRequest) -> Path:
                 "completed_epoch": int(epoch),
                 "best_metric": float(best_metric),
                 "best_epoch": int(best_epoch),
+                "training_source_identity": _training_source_identity(request),
+                "best_top1": float(best_top1),
+                "best_top1_epoch": int(best_top1_epoch),
+                "best_top5": float(best_top5),
+                "best_top5_epoch": int(best_top5_epoch),
+                "best_switch": float(best_switch),
+                "best_switch_epoch": int(best_switch_epoch),
+                "best_policy_score": float(best_policy_score),
+                "best_policy_score_epoch": int(best_policy_score_epoch),
+                "candidate_best_values": (
+                    dict(tracking_state.best_values) if tracking_state is not None else {}
+                ),
                 "train_generator_state": train_generator.get_state(),
                 "rng_state": {
                     "python": random.getstate(),
@@ -1102,10 +1178,17 @@ def train_graph_policy_value_model(request: TrainingRequest) -> Path:
                     **({"cuda": torch.cuda.get_rng_state_all()} if device.type == "cuda" else {}),
                 },
             })
+            if request.save_best:
+                resume_payload["best_model_state_dict"] = best_model_state_dict
             atomic_save_checkpoint(resume_payload, progress_checkpoint)
 
-        if request.save_best and best_checkpoint is not None:
-            checkpoint = best_checkpoint
+        if request.save_best and best_model_state_dict is not None:
+            checkpoint = best_checkpoint or make_checkpoint(
+                model=model, dataset=dataset, request=request, device=device,
+                use_amp=use_amp, normalization_metadata=normalization_metadata,
+                validation_dataset=val_dataset,
+            )
+            checkpoint["model_state_dict"] = best_model_state_dict
             checkpoint["best_epoch"] = int(best_epoch)
             checkpoint["best_metric"] = float(best_metric)
         else:
@@ -1115,9 +1198,7 @@ def train_graph_policy_value_model(request: TrainingRequest) -> Path:
                 request=request,
                 device=device,
                 use_amp=use_amp,
-                normalization_metadata=_normalization_provenance(
-                    init_checkpoint=request.init_checkpoint
-                ),
+                normalization_metadata=normalization_metadata,
                 validation_dataset=val_dataset,
             )
             checkpoint["best_epoch"] = int(best_epoch)
@@ -1125,7 +1206,7 @@ def train_graph_policy_value_model(request: TrainingRequest) -> Path:
 
         atomic_save_checkpoint(checkpoint, output_path)
 
-        if request.save_best and checkpoint is best_checkpoint:
+        if request.save_best and best_model_state_dict is not None:
             model.load_state_dict(checkpoint["model_state_dict"])
 
         if request.config.save_multiple_best:
@@ -1136,9 +1217,7 @@ def train_graph_policy_value_model(request: TrainingRequest) -> Path:
                 request=request,
                 device=device,
                 use_amp=use_amp,
-                normalization_metadata=_normalization_provenance(
-                    init_checkpoint=request.init_checkpoint
-                ),
+                normalization_metadata=normalization_metadata,
                 validation_dataset=val_dataset,
             )
             last_checkpoint["saved_epoch"] = int(request.config.epochs)
