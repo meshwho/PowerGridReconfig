@@ -6,10 +6,13 @@ import numpy as np
 import pytest
 from pypower.idx_brch import BR_STATUS, PF, PT, RATE_A
 
-import grid_topology_ai.search.dc_action_screener as dc_module
-from grid_topology_ai.cache import DCScreeningCache, dc_screening_fingerprint
+import grid_topology_ai.search.screening as dc_module
 from grid_topology_ai.power_flow.problem import CanonicalPowerFlowProblem
-from grid_topology_ai.search.dc_action_screener import DCActionScreener
+from grid_topology_ai.search.screening import (
+    DCActionScreener,
+    DCScreeningCache,
+    dc_screening_fingerprint,
+)
 from grid_topology_ai.topology_actions import GridFMAction
 
 

@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 import torch
 
@@ -14,14 +12,7 @@ from grid_topology_ai.models.graph_policy_value_net_v2 import (
 from grid_topology_ai.models.graph_self_play_dataset import (
     collate_graph_samples,
 )
-from scripts.evaluation.evaluate_examples_with_checkpoint import (
-    validate_checkpoint_dataset_compatibility,
-)
-from tests.topology_contract_helpers import (
-    TEST_ACTION_SPACE_CONFIG,
-    checkpoint_topology_fields,
-    test_action_layout,
-)
+from tests.topology_contract_helpers import checkpoint_topology_fields
 
 
 def _sample(
@@ -337,31 +328,18 @@ def test_packed_graph_context_is_isolated_between_graphs() -> None:
     )
 
 
-def test_graph_v2_checkpoint_compatibility_ignores_reference_cardinality() -> None:
-    class Dataset:
-        num_bus_features = 4
-        num_branch_features = 6
-        topology_action_config = (
-            TEST_ACTION_SPACE_CONFIG
-        )
-        action_layout = test_action_layout(
-            (10, 11, 12, 13)
-        )
-        policy_layout = (
-            "stop_plus_branch_status_v1"
-        )
-        action_layout_count = 1
-
+def test_graph_v2_checkpoint_contract_ignores_reference_cardinality() -> None:
     checkpoint = {
         **checkpoint_topology_fields((0, 1)),
+        "model_type": "graph_policy_value_net_v2",
+        "topology_cardinality_independent": True,
         "num_bus_features": 4,
         "num_branch_features": 6,
     }
 
-    validate_checkpoint_dataset_compatibility(
-        checkpoint=checkpoint,
-        checkpoint_path=Path("checkpoint.pt"),
-        dataset=Dataset(),
+    require_graph_batching_checkpoint_contract(
+        checkpoint,
+        source="checkpoint.pt",
     )
 
 
@@ -404,7 +382,7 @@ def test_graph_v2_checkpoint_requires_topology_cardinality_independence() -> Non
 
 
 def test_graph_v2_checkpoint_weights_cross_topology_cardinality(
-    tmp_path: Path,
+    tmp_path,
 ) -> None:
     _, large = _variable_samples()
 

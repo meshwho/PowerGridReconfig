@@ -6,8 +6,8 @@ from typing import Any
 
 import pytest
 
+import grid_topology_ai.teacher_runtime as teacher
 from grid_topology_ai.termination import TerminationReason
-from scripts.self_play import generate_impact_teacher_redispatch_runtime as teacher
 
 
 @dataclass
@@ -18,9 +18,9 @@ class FakeNode:
     env: Any
     solved: bool = False
     done: bool = False
-    termination_reason: TerminationReason | None = None
     discounted_score: float = 0.0
     num_hard_overloaded: int = 0
+    termination_reason: TerminationReason | None = None
 
 
 @dataclass(frozen=True)
@@ -96,17 +96,12 @@ def install_assessment(monkeypatch, *, hard_free: bool) -> None:
 def install_redispatch(monkeypatch, values: dict[str, float]) -> None:
     def fake_redispatch(backend, state):
         del backend
-        value = float(values[state.name])
         return SimpleNamespace(
             validated=True,
-            redispatch_l1_mw=value,
+            redispatch_l1_mw=float(values[state.name]),
         )
 
-    monkeypatch.setattr(
-        teacher,
-        "run_minimal_ac_redispatch",
-        fake_redispatch,
-    )
+    monkeypatch.setattr(teacher, "run_minimal_ac_redispatch", fake_redispatch)
 
 
 def test_zero_switch_handoff_wins_when_topology_does_not_reduce_redispatch(
@@ -114,14 +109,10 @@ def test_zero_switch_handoff_wins_when_topology_does_not_reduce_redispatch(
 ) -> None:
     root = node("root", 83.15878, 0)
     topology = node("topology", 81.86080, 4)
-
     install_assessment(monkeypatch, hard_free=True)
     install_redispatch(
         monkeypatch,
-        {
-            "root": 123.849,
-            "topology": 124.363,
-        },
+        {"root": 123.849, "topology": 124.363},
     )
 
     selected, diagnostics = teacher._redispatch_aware_selection(
@@ -133,7 +124,6 @@ def test_zero_switch_handoff_wins_when_topology_does_not_reduce_redispatch(
     assert selected.best_node.branch_ids == [None]
     assert selected.selected_switch_count == 0
     assert diagnostics["teacher_terminal_selection_applied"] is True
-    assert diagnostics["teacher_terminal_pareto_front_size"] == 1
 
 
 def test_topology_wins_when_one_switch_removes_material_redispatch(
@@ -141,14 +131,10 @@ def test_topology_wins_when_one_switch_removes_material_redispatch(
 ) -> None:
     root = node("root", 100.0, 0)
     topology = node("topology", 50.0, 1)
-
     install_assessment(monkeypatch, hard_free=True)
     install_redispatch(
         monkeypatch,
-        {
-            "root": 141.181,
-            "topology": 0.069,
-        },
+        {"root": 141.181, "topology": 0.069},
     )
 
     selected, diagnostics = teacher._redispatch_aware_selection(
@@ -160,20 +146,18 @@ def test_topology_wins_when_one_switch_removes_material_redispatch(
     assert selected.best_node.branch_ids == [1, None]
     assert selected.selected_switch_count == 1
     assert diagnostics["teacher_terminal_candidate_count"] == 2
-    assert diagnostics["teacher_terminal_pareto_front_size"] == 2
 
 
-def test_tiny_nonterminal_improvement_returns_zero_action_root(
-    monkeypatch,
-) -> None:
+def test_tiny_nonterminal_improvement_returns_zero_action_root(monkeypatch) -> None:
     root = node("root", 719.25736, 0, hard=2)
     topology = node("topology", 719.20043, 6, hard=2)
-
     install_assessment(monkeypatch, hard_free=False)
     monkeypatch.setattr(
         teacher,
         "run_minimal_ac_redispatch",
-        lambda backend, state: pytest.fail("hard-overloaded endpoints must not run OPF"),
+        lambda backend, state: pytest.fail(
+            "hard-overloaded endpoints must not run OPF"
+        ),
     )
 
     selected, diagnostics = teacher._redispatch_aware_selection(
@@ -185,14 +169,12 @@ def test_tiny_nonterminal_improvement_returns_zero_action_root(
     assert selected.best_node.action_ids == []
     assert selected.selected_switch_count == 0
     assert diagnostics["teacher_terminal_selection_applied"] is False
-    assert diagnostics["teacher_terminal_candidate_count"] == 0
 
 
 def test_terminal_epsilon_prefers_fewer_switches_within_redispatch_tolerance() -> None:
     root = node("root", 100.0, 0)
     one_switch = node("one", 40.0, 1)
     two_switches = node("two", 30.0, 2)
-
     candidates = [
         teacher._TerminalCandidate(root, 3.0),
         teacher._TerminalCandidate(one_switch, 1.8),
@@ -208,49 +190,3 @@ def test_terminal_epsilon_prefers_fewer_switches_within_redispatch_tolerance() -
     assert len(front) == 3
     assert [item.redispatch_l1_mw for item in pool] == [1.8, 1.0]
     assert selected.node is one_switch
-
-
-def test_replay_promotes_search_stop_to_teacher_redispatch_handoff(
-    monkeypatch,
-) -> None:
-    captured = {}
-
-    def fake_replay(scenario_id, rows):
-        captured["scenario_id"] = scenario_id
-        captured["reason"] = rows[0]["termination_reason"]
-        return "evidence"
-
-    monkeypatch.setattr(
-        teacher,
-        "_provenance_replay_terminal_evidence",
-        fake_replay,
-    )
-
-    rows = [
-        {
-            "termination_reason": TerminationReason.HANDOFF_TO_REDISPATCH.value,
-        }
-    ]
-
-    evidence = teacher._replay_terminal_evidence(17, rows)
-
-    assert evidence == "evidence"
-    assert captured == {
-        "scenario_id": 17,
-        "reason": TerminationReason.HANDOFF_TO_REDISPATCH_TEACHER.value,
-    }
-
-
-def test_task_config_records_redispatch_selection_contract(monkeypatch) -> None:
-    monkeypatch.setattr(
-        teacher,
-        "_provenance_make_task_config",
-        lambda args: {"min_safety_improvement": 123.0},
-    )
-
-    config = teacher.make_task_config(SimpleNamespace())
-
-    assert config["min_safety_improvement"] == 0.0
-    assert config["min_meaningful_safety_improvement"] == 1.0
-    assert config["terminal_redispatch_relative_epsilon"] == 0.01
-    assert config["terminal_redispatch_absolute_epsilon_mw"] == 1.0

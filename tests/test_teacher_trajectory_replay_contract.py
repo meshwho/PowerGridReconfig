@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from scripts.self_play import generate_impact_teacher_redispatch_runtime as teacher
+import grid_topology_ai.teacher_runtime as teacher
 
 
 def _teacher_args(**overrides):

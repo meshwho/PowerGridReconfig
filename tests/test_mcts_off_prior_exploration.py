@@ -5,15 +5,16 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
-from tests.topology_contract_helpers import topology_metadata
+
 from grid_topology_ai.action_space import GridFMAction
 from grid_topology_ai.config.evaluation import EvaluationConfig
 from grid_topology_ai.config.generation import GenerationConfig
 from grid_topology_ai.config.physics import DEFAULT_PHYSICS_CONFIG
 from grid_topology_ai.data_adapter import BRANCH_FEATURE_COLUMNS
-from grid_topology_ai.evaluation import checkpoint as evaluation
-from grid_topology_ai.evaluation.checkpoint import EvaluationRequest
+import grid_topology_ai.evaluation as evaluation
+from grid_topology_ai.evaluation import EvaluationRequest
 from grid_topology_ai.search.mcts import MCTSConfig, MCTSNode, MCTSPlanner
+from tests.topology_contract_helpers import topology_metadata
 
 
 _LOADING_INDEX = BRANCH_FEATURE_COLUMNS.index("loading_percent")
@@ -358,7 +359,7 @@ def test_evaluation_task_config_records_exploration_quota(
         checkpoint=tmp_path / "checkpoint.pt",
         config=EvaluationConfig(
             exploration_quota=4,
-            use_continuation_gate=False,
+            policy_mode="ungated",
         ),
         physics_config=DEFAULT_PHYSICS_CONFIG,
     )

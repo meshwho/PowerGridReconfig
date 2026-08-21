@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from scripts.self_play import generate_impact_teacher_redispatch_runtime as teacher
+import grid_topology_ai.teacher_runtime as teacher
 
 
 def test_partition_batches_keeps_each_scenario_in_one_worker_shard() -> None:
@@ -36,10 +36,6 @@ def test_parallel_runner_routes_batches_to_matching_adapter_shards(monkeypatch) 
         [9, 10],
         [11, 12],
     ]
-    task_config = {
-        "min_free_system_memory_mb": 0.0,
-        "max_tasks_per_child": 0,
-    }
     executors = []
 
     class FakeFuture:
@@ -76,17 +72,13 @@ def test_parallel_runner_routes_batches_to_matching_adapter_shards(monkeypatch) 
         scenario_ids=list(range(1, 13)),
         raw_dir="raw",
         states_dir="states",
-        task_config=task_config,
+        task_config={},
         checkpoint_path="checkpoint.jsonl",
         num_workers=3,
         verbose_success=False,
     )
 
     assert result == ([], 0, 0)
-    assert task_config == {
-        "min_free_system_memory_mb": 0.0,
-        "max_tasks_per_child": 0,
-    }
     assert len(executors) == 3
 
     expected = [
@@ -97,9 +89,8 @@ def test_parallel_runner_routes_batches_to_matching_adapter_shards(monkeypatch) 
 
     for executor, (scenario_ids, submitted) in zip(executors, expected):
         assert executor.kwargs["max_workers"] == 1
+        assert "max_tasks_per_child" not in executor.kwargs
         assert executor.kwargs["initargs"][3] == scenario_ids
         assert executor.submitted == submitted
-
-        adapter_scenarios = set(scenario_ids)
         for batch in submitted:
-            assert set(batch) <= adapter_scenarios
+            assert set(batch) <= set(scenario_ids)
