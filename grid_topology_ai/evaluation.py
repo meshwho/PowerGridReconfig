@@ -1256,11 +1256,10 @@ def run_episode_from_worker_context(
 
 
 def run_scenario_batch(scenario_ids: list[int]) -> list[dict[str, Any]]:
-    results = [
-        run_episode_from_worker_context(int(scenario_id))
-        for scenario_id in scenario_ids
-    ]
-    clear_worker_caches_if_needed()
+    results: list[dict[str, Any]] = []
+    for scenario_id in scenario_ids:
+        results.append(run_episode_from_worker_context(int(scenario_id)))
+        clear_worker_caches_if_needed()
     return results
 
 

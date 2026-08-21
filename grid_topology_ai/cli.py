@@ -185,7 +185,7 @@ def _add_teacher(parser: argparse.ArgumentParser) -> None:
 
 
 def _teacher(args: argparse.Namespace) -> int:
-    from scripts.self_play.generate_impact_teacher_redispatch_runtime import main as teacher_main
+    from grid_topology_ai.teacher_runtime import main as teacher_main
 
     argv = [args.raw_dir, "--transitions", args.transitions, "--output-dir", args.output]
     values = {"depth": args.depth, "beam-width": args.beam_width, "candidate-pool": args.candidate_pool, "top-k": args.top_k, "gamma": args.gamma, "pf-alg": args.pf_alg, "pf-max-iter": args.pf_max_iter, "max-steps": args.max_steps, "max-teacher-steps": args.max_teacher_steps, "soft-policy-temperature": args.soft_policy_temperature, "power-flow-failure-penalty": args.power_flow_failure_penalty, "min-continue-improvement-with-hard": args.min_continue_improvement_with_hard, "min-continue-improvement-without-hard": args.min_continue_improvement_without_hard, "max-loading-increase-limit": args.max_loading_increase_limit, "num-workers": args.workers, "batch-size": args.batch_size, "lodf-screen-top-k": args.lodf_screen_top_k, "lodf-min-candidate-count": args.lodf_min_candidate_count, "value-target-mode": args.value_target_mode, "value-reward-scale": args.value_reward_scale, "value-reward-scale-quantile": args.value_reward_scale_quantile}
