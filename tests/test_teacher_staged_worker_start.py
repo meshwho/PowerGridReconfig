@@ -83,7 +83,10 @@ def test_worker_init_installs_bounded_runtime_policy(monkeypatch) -> None:
         teacher._WORKER_CONTEXT = previous_context
 
 
-def test_parallel_workers_are_not_recycled_by_default(monkeypatch, tmp_path: Path) -> None:
+def test_parallel_workers_use_persistent_shards_without_recycling(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
     executors = []
 
     class FakeFuture:
@@ -112,34 +115,19 @@ def test_parallel_workers_are_not_recycled_by_default(monkeypatch, tmp_path: Pat
     monkeypatch.setattr(teacher, "as_completed", lambda futures: list(futures))
     monkeypatch.setattr(teacher, "tqdm", None)
 
-    task_config = {
-        "physics_config_fingerprint": "stable",
-        "max_tasks_per_child": 0,
-    }
     result = teacher.run_parallel(
         scenario_batches=[[1], [2]],
         scenario_ids=[1, 2],
         raw_dir=tmp_path,
         states_dir=tmp_path / "states",
-        task_config=task_config,
+        task_config={"disable_cache": False},
         checkpoint_path=tmp_path / "teacher_checkpoint.jsonl",
         num_workers=10,
         verbose_success=False,
     )
 
     assert result == ([], 0, 0)
-    assert task_config["max_tasks_per_child"] == 0
     assert len(executors) == 2
-    assert all(
-        executor.kwargs["max_tasks_per_child"] is None
-        for executor in executors
-    )
+    assert all(executor.kwargs["max_workers"] == 1 for executor in executors)
+    assert all("max_tasks_per_child" not in executor.kwargs for executor in executors)
     assert all(executor.kwargs["initargs"][-1] is None for executor in executors)
-
-
-def test_explicit_worker_recycle_interval_is_respected() -> None:
-    assert teacher._effective_max_tasks_per_child({"max_tasks_per_child": 7}) == 7
-    assert (
-        teacher._effective_max_tasks_per_child({"max_tasks_per_child": 0})
-        == teacher._DEFAULT_MAX_TASKS_PER_CHILD
-    )
