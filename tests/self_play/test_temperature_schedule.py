@@ -154,11 +154,6 @@ def test_effective_temperature_controls_behavior_policy() -> None:
             step=0,
         ),
         rng=np.random.default_rng(7),
-        use_continuation_gate=False,
-        min_hard_improvement=0.0,
-        min_soft_improvement=0.0,
-        min_gate_visits=0,
-        min_gate_visit_fraction=0.0,
         scenario_id=1,
         step=0,
     )
@@ -170,11 +165,6 @@ def test_effective_temperature_controls_behavior_policy() -> None:
             step=1,
         ),
         rng=np.random.default_rng(7),
-        use_continuation_gate=False,
-        min_hard_improvement=0.0,
-        min_soft_improvement=0.0,
-        min_gate_visits=0,
-        min_gate_visit_fraction=0.0,
         scenario_id=1,
         step=1,
     )

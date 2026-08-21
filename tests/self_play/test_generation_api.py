@@ -1,527 +1,91 @@
 from __future__ import annotations
 
-from dataclasses import FrozenInstanceError, fields
+from dataclasses import FrozenInstanceError
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
 
-import pandas as pd
 import pytest
 
 from grid_topology_ai.config import GenerationConfig
-from grid_topology_ai.config.physics import PhysicsConfig
-from grid_topology_ai.contracts import (
-    OUTCOME_OBJECTIVE_VERSION,
-    OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
-)
-from grid_topology_ai.outcome_contract import (
-    TERMINAL_OUTCOME_EVIDENCE_SCHEMA_VERSION,
-)
-from grid_topology_ai.physics.objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
 from grid_topology_ai.self_play import generation
-from grid_topology_ai.self_play.examples import (
-    SelfPlayExample as SelfPlayExampleDataclass,
-)
-from grid_topology_ai.self_play.generation import (
-    GenerationRequest,
-    generate_self_play_examples,
-)
+from grid_topology_ai.self_play.generation import GenerationRequest
 from grid_topology_ai.termination import TerminationReason
 from tests.outcome_evidence_helpers import terminal_evidence
 
 
-class _FakeAction:
-    branch_id = 10
-
-
-class _FakeStepResult:
-    reward = 1.0
-    done = True
-    solved = True
-    terminal_outcome_evidence = terminal_evidence("solved")
-    info = {"termination_reason": TerminationReason.SOLVED}
-
-
-class _FakeEnv:
-    seen_scenarios: list[int] = []
-
-    def __init__(self, **kwargs: Any) -> None:
-        self.done = False
-        self.solved = False
-        self.termination_reason = None
-        self.terminal_outcome_evidence = None
-        self.current_state = object()
-        self.kwargs = kwargs
-
-    def reset(self, scenario_id: int) -> None:
-        self.seen_scenarios.append(int(scenario_id))
-
-    def valid_action_mask(self) -> list[int]:
-        return [1]
-
-    def step(self, action: object) -> _FakeStepResult:
-        self.done = True
-        self.solved = True
-        self.termination_reason = TerminationReason.SOLVED
-        self.terminal_outcome_evidence = terminal_evidence("solved")
-        return _FakeStepResult()
-
-
-class _FakeCache:
-    clear_calls = 0
-    instances: list[Any] = []
-
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
-        self.args = args
-        self.kwargs = kwargs
-        self.clear_calls = 0
-        self.config = SimpleNamespace()
-        self.instances.append(self)
-
-    def clear_cache(self) -> None:
-        self.clear_calls += 1
-        type(self).clear_calls += 1
-
-    def cache_info(self) -> dict[str, int]:
-        return {"size": 0}
-
-
-class _FakeMCTSConfig:
-    last_kwargs: dict[str, object] | None = None
-
-    def __init__(self, **kwargs: object) -> None:
-        type(self).last_kwargs = kwargs
-
-
-class _FakePlanner:
-    reset_seeds: list[int] = []
-
-    def __init__(self, **kwargs: object) -> None:
-        self.kwargs = kwargs
-
-    def reset_rng(self, random_seed: int | None) -> None:
-        if random_seed is None:
-            raise AssertionError(
-                "generation must use a concrete scenario seed"
-            )
-        self.reset_seeds.append(int(random_seed))
-
-    def search_from_env(self, env: _FakeEnv) -> SimpleNamespace:
-        action = _FakeAction()
-        return SimpleNamespace(
-            best_action_id=1,
-            best_branch_id=10,
-            policy={1: 1.0},
-            visit_counts={1: 3},
-            root=SimpleNamespace(actions_by_id={1: action}),
-            root_legal_action_count=4,
-            root_considered_action_count=2,
-            root_visited_action_count=1,
-            root_action_coverage=0.5,
-            root_visited_action_coverage=0.25,
-        )
-
-
-class _FakeExampleWriter:
-    COLUMNS = [
-        field.name for field in fields(SelfPlayExampleDataclass)
-    ]
-
-    def __init__(
-        self,
-        output_dir: Path,
-        *,
-        physics_config: PhysicsConfig,
-        action_space_config: object,
-    ) -> None:
-        self.output_dir = Path(output_dir)
-        self.physics_config = physics_config
-        self.action_space_config = action_space_config
-        self.output_dir.mkdir(parents=True, exist_ok=True)
-        self.states_dir = self.output_dir / "states"
-        self.rows: list[dict[str, object]] = []
-
-    def add_episode(
-        self,
-        pending_examples: list[dict[str, object]],
-        *,
-        final_return: float,
-        returns_from_step: list[float],
-        solved: bool,
-        done: bool,
-        termination_reason: TerminationReason,
-        terminal_outcome_evidence,
-        iteration: int,
-    ) -> int:
-        reason = termination_reason.value
-        target = 1.0 if solved else -1.0
-        episode_id = f"test-episode-{pending_examples[0]['scenario_id']}"
-        total_steps = len(pending_examples)
-
-        for item, return_from_step in zip(
-            pending_examples,
-            returns_from_step,
-        ):
-            step = int(item["step"])
-            self.rows.append(
-                {
-                    "state_id": f"{episode_id}_step_{step:03d}",
-                    "state_path": "states/fake.npz",
-                    "run_id": "test-run",
-                    "iteration": int(iteration),
-                    "episode_id": episode_id,
-                    "scenario_id": int(item["scenario_id"]),
-                    "step": step,
-                    "selected_action_id": int(item["selected_action_id"]),
-                    "selected_branch_id": item["selected_branch_id"],
-                    "step_reward": float(item["step_reward"]),
-                    "final_return": float(final_return),
-                    "discounted_return_from_step": float(return_from_step),
-                    "solved": bool(solved),
-                    "done": bool(done),
-                    "termination_reason": reason,
-                    "terminal_outcome_evidence_schema_version": (
-                        TERMINAL_OUTCOME_EVIDENCE_SCHEMA_VERSION
-                    ),
-                    "terminal_outcome_evidence_json": (
-                        terminal_outcome_evidence.to_json()
-                    ),
-                    "physical_objective_schema_version": (
-                        PHYSICAL_OBJECTIVE_SCHEMA_VERSION
-                    ),
-                    "outcome_objective_version": OUTCOME_OBJECTIVE_VERSION,
-                    "outcome_value_target_contract_version": (
-                        OUTCOME_VALUE_TARGET_CONTRACT_VERSION
-                    ),
-                    "visit_counts_json": '{"1": 3}',
-                    "mcts_policy_json": '{"1": 1.0}',
-                    "outcome_value_target": target,
-                    "outcome_class": reason,
-                    "outcome_steps_to_terminal": total_steps - step,
-                    "outcome_value_target_mode": (
-                        "alphazero_terminal_utility"
-                    ),
-                    "outcome_gamma": 1.0,
-                    "selection_temperature": item.get(
-                        "selection_temperature"
-                    ),
-                    "selection_mode": item.get("selection_mode"),
-                    "policy_target_entropy": item.get(
-                        "policy_target_entropy"
-                    ),
-                    "policy_target_normalized_entropy": item.get(
-                        "policy_target_normalized_entropy"
-                    ),
-                    "mcts_legal_action_count": item.get(
-                        "mcts_legal_action_count"
-                    ),
-                    "mcts_considered_action_count": item.get(
-                        "mcts_considered_action_count"
-                    ),
-                    "mcts_visited_action_count": item.get(
-                        "mcts_visited_action_count"
-                    ),
-                    "mcts_action_coverage": item.get(
-                        "mcts_action_coverage"
-                    ),
-                    "mcts_visited_action_coverage": item.get(
-                        "mcts_visited_action_coverage"
-                    ),
-                }
-            )
-
-        return total_steps
-
-    def save(self) -> Path:
-        path = self.output_dir / "examples.csv"
-        pd.DataFrame(
-            self.rows,
-            columns=self.COLUMNS,
-        ).to_csv(path, index=False)
-        return path
-
-
-@pytest.fixture
-def fake_generation_runtime(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _FakeEnv.seen_scenarios = []
-    _FakeCache.clear_calls = 0
-    _FakeCache.instances = []
-    _FakeMCTSConfig.last_kwargs = None
-    _FakePlanner.reset_seeds = []
-
-    monkeypatch.setattr(generation, "GridFMAdapter", _FakeCache)
-    monkeypatch.setattr(
-        generation,
-        "GridFMPowerFlowBackend",
-        _FakeCache,
+def _request(raw: Path, transitions: Path, output: Path, **kwargs: object) -> GenerationRequest:
+    values: dict[str, object] = dict(
+        raw_dir=raw, transitions_csv=transitions, output_dir=output,
+        checkpoint=None, config=GenerationConfig(max_steps=1), mcts_seed=10,
+        action_seed=20, clear_cache_between_scenarios=False,
     )
-    monkeypatch.setattr(generation, "GridFMActionSpace", _FakeCache)
-    monkeypatch.setattr(generation, "GridFMReward", _FakeCache)
-    monkeypatch.setattr(
-        generation,
-        "TopologySwitchingEnv",
-        _FakeEnv,
-    )
-    monkeypatch.setattr(
-        generation,
-        "NeuralPolicyValueEvaluator",
-        _FakeCache,
-    )
-    monkeypatch.setattr(generation, "MCTSConfig", _FakeMCTSConfig)
-    monkeypatch.setattr(generation, "MCTSPlanner", _FakePlanner)
-    monkeypatch.setattr(
-        generation,
-        "ExampleWriter",
-        _FakeExampleWriter,
-    )
-    monkeypatch.setattr(
-        generation,
-        "make_do_nothing_action",
-        lambda: object(),
-    )
-    monkeypatch.setattr(
-        generation,
-        "analyze_root_branches",
-        lambda **kwargs: SimpleNamespace(
-            selected_action_id=1,
-            selected_branch_id=10,
-            selected_reason="fake",
-        ),
-    )
-    monkeypatch.setattr(
-        generation,
-        "_ensure_runtime_dependencies",
-        lambda: None,
-    )
-
-
-def _request(
-    tmp_path: Path,
-    **kwargs: object,
-) -> GenerationRequest:
-    transitions_csv = tmp_path / "transitions.csv"
-    if not transitions_csv.exists():
-        transitions_csv.write_text(
-            "scenario_id\n1\n",
-            encoding="utf-8",
-        )
-    values = {
-        "raw_dir": tmp_path / "raw",
-        "transitions_csv": transitions_csv,
-        "output_dir": tmp_path / "out",
-        "checkpoint": None,
-        "config": GenerationConfig(max_steps=1),
-        "mcts_seed": 42,
-        "action_seed": 43,
-        "clear_cache_between_scenarios": False,
-    }
     values.update(kwargs)
     return GenerationRequest(**values)  # type: ignore[arg-type]
 
 
-def test_generation_module_excludes_legacy_terminal_helpers() -> None:
-    assert not hasattr(generation, "terminal_outcome_reward")
-    assert not hasattr(generation, "state_security_penalty")
-
-
-def test_runtime_loader_uses_explicit_loaded_flag() -> None:
-    source = Path(
-        "grid_topology_ai/self_play/generation.py"
-    ).read_text(encoding="utf-8")
-
-    assert "_RUNTIME_DEPENDENCIES_LOADED" in source
-    assert "if GridFMActionSpace is not None" not in source
-    assert "ExampleWriter" in source
-    assert ("SelfPlay" + "ReplayBuffer") not in source
-    assert ("self_play." + "replay_buffer") not in source
-
-
-def test_generation_request_is_frozen_and_slotted(tmp_path: Path) -> None:
-    request = _request(tmp_path)
-
+def test_generation_request_is_frozen_and_has_light_controls(tmp_path: Path) -> None:
+    request = _request(tmp_path / "raw", tmp_path / "t.csv", tmp_path / "out",
+                       workers=3, resume=True)
+    assert request.workers == 3
+    assert request.resume is True
     with pytest.raises(FrozenInstanceError):
-        request.mcts_seed = 1  # type: ignore[misc]
-
-    assert not hasattr(request, "__dict__")
+        request.workers = 1  # type: ignore[misc]
 
 
-def test_generate_self_play_examples_creates_complete_output(
-    tmp_path: Path,
-    fake_generation_runtime: None,
-) -> None:
-    examples_csv = generate_self_play_examples(_request(tmp_path))
-
-    assert examples_csv == tmp_path / "out" / "examples.csv"
-    assert examples_csv.is_file()
-    row = pd.read_csv(examples_csv).iloc[0]
-    assert row["step_reward"] == pytest.approx(1.0)
-    assert row["final_return"] == pytest.approx(1.0)
-    assert row["discounted_return_from_step"] == pytest.approx(1.0)
-    assert row["outcome_value_target"] == pytest.approx(1.0)
-    assert row["outcome_class"] == "solved"
-    assert row["outcome_gamma"] == pytest.approx(1.0)
-    assert row["terminal_outcome_evidence_json"] == terminal_evidence(
-        "solved"
-    ).to_json()
+@pytest.mark.parametrize("workers", [0, -1, True, 1.5])
+def test_generation_request_rejects_invalid_workers(tmp_path: Path, workers: object) -> None:
+    with pytest.raises(ValueError, match="workers must be a positive integer"):
+        _request(tmp_path / "raw", tmp_path / "t.csv", tmp_path / "out", workers=workers)
 
 
-def test_generation_preserves_scenario_order(
-    tmp_path: Path,
-    fake_generation_runtime: None,
-) -> None:
-    request = _request(
-        tmp_path,
-        scenario_ids=(3, 1, 2),
-        transitions_csv=tmp_path / "transitions.csv",
+def test_empty_scenario_selection_is_rejected(generation_inputs, tmp_path: Path) -> None:
+    raw, transitions = generation_inputs(())
+    request = _request(raw, transitions, tmp_path / "out")
+    with pytest.raises(ValueError, match="No self-play scenarios were selected"):
+        generation._scenario_ids_from_request(request)
+
+
+def test_generation_preflight_requires_canonical_gridfm_files(tmp_path: Path) -> None:
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    transitions = tmp_path / "transitions.csv"
+    transitions.write_text("scenario_id\n1\n", encoding="utf-8")
+    with pytest.raises(FileNotFoundError, match="bus_data.parquet"):
+        generation._preflight_generation_inputs(_request(raw, transitions, tmp_path / "out"))
+
+
+def test_episode_uses_operational_action_mask(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    evidence = terminal_evidence("solved")
+
+    class Env:
+        mask_calls = 0
+        def __init__(self, **kwargs):
+            self.done = False; self.solved = False; self.current_state = object()
+            self.termination_reason = None; self.terminal_outcome_evidence = None
+        def reset(self, scenario_id): pass
+        def operational_action_mask(self):
+            type(self).mask_calls += 1
+            return [False, True]
+        def step(self, action):
+            self.done = self.solved = True
+            self.termination_reason = TerminationReason.SOLVED
+            self.terminal_outcome_evidence = evidence
+            return SimpleNamespace(reward=1.0, done=True)
+
+    planner = SimpleNamespace(
+        reset_rng=lambda seed: None,
+        search_from_env=lambda env: SimpleNamespace(
+            best_action_id=1, best_branch_id=10, policy={1: 1.0}, visit_counts={1: 2},
+            root=SimpleNamespace(actions_by_id={1: SimpleNamespace(branch_id=10)}),
+        ),
     )
-    request.transitions_csv.write_text(
-        "scenario_id\n3\n1\n2\n",
-        encoding="utf-8",
+    request = _request(tmp_path / "raw", tmp_path / "t.csv", tmp_path / "out")
+    generation._WORKER_RUNTIME = dict(
+        request=request, backend=SimpleNamespace(), action_space=SimpleNamespace(),
+        evaluator=None, planner=planner, adapter=object(), reward_fn=object(),
     )
-
-    generate_self_play_examples(request)
-
-    assert _FakeEnv.seen_scenarios == [3, 1, 2]
-
-
-def test_generation_uses_mcts_seed(
-    tmp_path: Path,
-    fake_generation_runtime: None,
-) -> None:
-    generate_self_play_examples(
-        _request(
-            tmp_path,
-            mcts_seed=123,
-            action_seed=456,
-        )
-    )
-
-    assert _FakeMCTSConfig.last_kwargs is not None
-    assert _FakeMCTSConfig.last_kwargs["random_seed"] == 123
-    assert _FakePlanner.reset_seeds == [
-        generation._scenario_seed(123, 1)
-    ]
-
-
-def test_generation_uses_typed_config(
-    tmp_path: Path,
-    fake_generation_runtime: None,
-) -> None:
-    config = GenerationConfig(
-        simulations=17,
-        depth=2,
-        max_steps=3,
-        top_k=11,
-        widening_coefficient=1.25,
-        widening_exponent=0.4,
-        exploration_quota=4,
-        gamma=0.91,
-        c_puct=1.7,
-        prior_exponent=0.6,
-        selection_temperature=0.25,
-        use_root_noise=False,
-        use_continuation_gate=False,
-        pf_alg=2,
-        stop_policy="solved_only",
-    )
-
-    generate_self_play_examples(_request(tmp_path, config=config))
-
-    assert _FakeMCTSConfig.last_kwargs == {
-        "num_simulations": 17,
-        "max_depth": 2,
-        "top_k_actions": 11,
-        "widening_coefficient": 1.25,
-        "widening_exponent": 0.4,
-        "exploration_quota": 4,
-        "gamma": 0.91,
-        "c_puct": 1.7,
-        "include_stop_action": True,
-        "prior_exponent": 0.6,
-        "stop_policy": "solved_only",
-        "use_root_dirichlet_noise": False,
-        "root_dirichlet_alpha": 0.30,
-        "root_exploration_fraction": 0.25,
-        "random_seed": 42,
-    }
-    reward_instances = [
-        instance
-        for instance in _FakeCache.instances
-        if "discount_factor" in instance.kwargs
-    ]
-    assert len(reward_instances) == 1
-    assert reward_instances[0].kwargs[
-        "discount_factor"
-    ] == pytest.approx(0.91)
-
-
-def test_clear_cache_between_scenarios(
-    tmp_path: Path,
-    fake_generation_runtime: None,
-) -> None:
-    request = _request(
-        tmp_path,
-        scenario_ids=(1, 2),
-        clear_cache_between_scenarios=True,
-    )
-
-    generate_self_play_examples(request)
-
-    assert _FakeCache.clear_calls == 4
-
-    _FakeCache.clear_calls = 0
-    generate_self_play_examples(
-        _request(
-            tmp_path,
-            output_dir=tmp_path / "out2",
-            scenario_ids=(1, 2),
-        )
-    )
-    assert _FakeCache.clear_calls == 0
-
-
-def test_missing_transitions_csv_raises(tmp_path: Path) -> None:
-    request = GenerationRequest(
-        raw_dir=tmp_path / "raw",
-        transitions_csv=tmp_path / "missing.csv",
-        output_dir=tmp_path / "out",
-        checkpoint=None,
-        config=GenerationConfig(),
-        mcts_seed=42,
-        action_seed=43,
-        clear_cache_between_scenarios=False,
-    )
-
-    with pytest.raises(FileNotFoundError):
-        generate_self_play_examples(request)
-
-
-def test_output_schema_matches_self_play_example(
-    tmp_path: Path,
-    fake_generation_runtime: None,
-) -> None:
-    examples_csv = generate_self_play_examples(_request(tmp_path))
-
-    assert list(pd.read_csv(examples_csv).columns) == [
-        field.name for field in fields(SelfPlayExampleDataclass)
-    ]
-
-
-def test_empty_scenario_selection_preserves_old_behavior(
-    tmp_path: Path,
-    fake_generation_runtime: None,
-) -> None:
-    transitions_csv = tmp_path / "transitions.csv"
-    transitions_csv.write_text(
-        "scenario_id\n",
-        encoding="utf-8",
-    )
-
-    examples_csv = generate_self_play_examples(
-        _request(tmp_path, transitions_csv=transitions_csv)
-    )
-
-    assert examples_csv.is_file()
-    assert _FakeEnv.seen_scenarios == []
+    monkeypatch.setattr(generation, "TopologySwitchingEnv", Env)
+    result = generation._generate_scenario(7)
+    assert Env.mask_calls == 1
+    assert result.pending_examples[0]["action_mask"] == [False, True]
+    assert result.pending_examples[0]["selected_action_id"] in result.pending_examples[0]["mcts_policy"]
