@@ -23,10 +23,10 @@ Each stage is invoked directly. The Light runtime does not contain a checkpoint 
 
 ## Evaluation contract
 
-Evaluation runs exactly one policy mode per invocation:
+Evaluation runs exactly one policy mode per invocation. `EvaluationConfig.policy_mode` is the canonical runtime selector:
 
 - `ungated` is the default learned-controller behavior: neural policy plus MCTS without continuation-gate filtering;
-- `constrained` is selected explicitly with `--use-continuation-gate` and applies continuation filtering to the root policy before action selection.
+- `constrained` applies continuation filtering to the root policy before action selection and is selected by CLI with `--use-continuation-gate`.
 
 Evaluation produces canonical per-scenario physical outcome fields and aggregate metrics for that single run. It does not automatically run paired ungated/constrained comparisons, bootstrap confidence intervals, checkpoint ranking, promotion, or acceptance gates.
 
