@@ -18,7 +18,7 @@ The checkpoint weights themselves do not need to be retrained solely for this mi
 Evaluate the bootstrap checkpoint with the current evaluation implementation:
 
 ```bash
-python -m scripts.evaluation.evaluate_checkpoint \
+python -m grid_topology_ai.cli evaluate \
   <EVAL_RAW_DIR> \
   --transitions <EVAL_TRANSITIONS.csv> \
   --checkpoint <BOOTSTRAP_CHECKPOINT.pt> \

@@ -2,9 +2,9 @@
 
 ## Project overview
 
-PowerGridReconfig is a Python 3.11 research framework for emergency topology control in power-system simulations. The current system implements a pool-guided AlphaZero-like self-play loop for the case118 research setup: a fixed physical scenario pool is sampled, a model-guided neural MCTS planner generates replay, a graph policy-value checkpoint is fine-tuned, a fixed evaluation set is evaluated, and the candidate checkpoint is accepted or rejected.
+PowerGridReconfig is a Python 3.11 research framework for emergency topology control in power-system simulations. The Light runtime exposes explicit teacher, self-play, training, and checkpoint-evaluation workflows instead of an integrated acceptance/promotion loop.
 
-This is not a full classical AlphaZero system. The scenario pool is fixed, generation is model-guided, the continuation gate is diagnostic only, replay accumulates across iterations, candidates are fine-tuned from checkpoints, evaluation is fixed, and acceptance/rejection is based on configured metrics.
+The main learned-control path uses model-guided neural MCTS over a fixed physical scenario pool. Teacher generation remains available as an optional deterministic bootstrap path. Training and evaluation are separate explicit operations, and evaluation runs one selected policy behavior per invocation.
 
 For implementation details, see [docs/self_play.md](docs/self_play.md). The stable bidirectional branch-status policy and artifact compatibility rules are specified in [docs/topology_action_contract.md](docs/research/topology_action_contract.md).
 
@@ -12,43 +12,23 @@ For implementation details, see [docs/self_play.md](docs/self_play.md). The stab
 
 ```text
 fixed physical scenario pool
-  -> prioritized scenario sampling
-  -> neural MCTS generation
-  -> replay update
+  -> optional deterministic teacher bootstrap
+  -> neural MCTS self-play generation
   -> scenario-level train/validation split
-  -> checkpoint fine-tuning
-  -> fixed evaluation
-  -> acceptance or rejection
-  -> next iteration
+  -> policy-value checkpoint training
+  -> explicit checkpoint evaluation
 ```
 
-## Evaluation and checkpoint selection contract
+Each stage is invoked directly. The Light runtime does not contain a checkpoint arena, automatic promotion/acceptance loop, curriculum controller, or sealed final-test orchestrator.
 
-The learned controller is evaluated in the `ungated` policy mode: neural policy
-plus MCTS, without continuation-gate filtering. When continuation analysis is
-enabled, `constrained` is evaluated as a secondary hybrid-controller diagnostic.
-It does not replace the learned controller's result.
+## Evaluation contract
 
-Checkpoint-arena ranking, regular promotion, paired confidence checks, aggregate
-acceptance gates, learning-curve headline values, and final-test headline values
-all use `ungated`. A checkpoint cannot be selected or promoted only because the
-continuation gate repairs a weaker learned policy.
+Evaluation runs exactly one policy mode per invocation. `EvaluationConfig.policy_mode` is the canonical selector:
 
-Evaluation artifacts expose the contract explicitly:
+- `ungated` is the default learned-controller behavior: neural policy plus MCTS without continuation-gate filtering;
+- `constrained` applies continuation filtering to the root policy before action selection and is selected by CLI with `--use-continuation-gate`.
 
-- `primary_policy_mode` is `ungated`;
-- top-level metrics are copies of the primary ungated metrics;
-- complete groups are stored under `mode_metrics.ungated` and, when enabled,
-  `mode_metrics.constrained`;
-- `continuation_gate_gain` is constrained minus ungated physical-security rate
-  and measures the external gate's contribution, not learned-policy quality;
-- `checkpoint_selection.json` records `policy_mode: ungated`;
-- the sealed final-test report records the primary mode and both mode-specific
-  physical-security rates.
-
-Selection paths fail closed. Missing ungated metrics, a non-ungated primary mode,
-an inconsistent top-level headline, or a missing required policy-mode group is a
-contract error rather than a fallback to constrained results.
+Evaluation produces canonical per-scenario physical outcome fields and aggregate metrics for that single run. It does not automatically run paired ungated/constrained comparisons, bootstrap confidence intervals, checkpoint ranking, promotion, or acceptance gates.
 
 ## Scientific invariants
 
@@ -56,18 +36,14 @@ contract error rather than a fallback to constrained results.
   feasibility alone is never a solved episode.
 - Generation `PF_ALG` must equal evaluation `PF_ALG`.
 - The current canonical `PF_ALG` is `3`.
-- The MCTS visit distribution is the policy target.
-- The continuation gate records diagnostics but never rewrites the executed action or the MCTS visit policy target.
+- The MCTS visit distribution is the self-play policy target.
 - Every branch has one stable policy slot. Its executable direction is state-dependent: active means open, inactive and explicitly allowed means close.
-- Self-play, replay, checkpoints, and evaluation require exact topology-action configuration and ordered action-layout provenance.
+- Self-play examples, checkpoints, and evaluation require exact topology-action configuration and ordered action-layout provenance.
 - `outcome_value_target` is required for graph training examples.
 - Feature normalization is part of the checkpoint contract.
 - Fine-tuning preserves normalization statistics from the parent checkpoint.
 - The train/validation split is performed by `scenario_id`, not by individual rows.
-- Validation objectives retain candidate epoch checkpoints; the optional closed-loop tuning arena selects the canonical candidate using ungated metrics.
-- The evaluation set is fixed across candidates.
-- The acceptance metric is normally `solve_rate`.
-- Bootstrap metrics must include compatible `pf_alg` provenance.
+- Evaluation scenario selection is explicit and deterministic for a fixed input set and seed.
 
 ## Physical success contract
 
@@ -225,23 +201,21 @@ self-play examples, replay, and checkpoints in this order:
 ```bash
 # 1. Fresh episodes and outcome targets.
 # Repeat --closeable-branch-id for each verified normally-open/tie branch.
-python -m scripts.self_play.generate <POOL_RAW_DIR> \
+python -m grid_topology_ai.cli self-play <POOL_RAW_DIR> \
   --transitions <POOL_TRANSITIONS.csv> \
-  --output-dir <NEW_SELF_PLAY_DIR> \
+  --output <NEW_SELF_PLAY_DIR> \
   --pf-alg 3 \
   --require-connected-after-switch \
   --min-loading-for-switch-percent 0.0
 
 # 2. Fresh checkpoint; do not initialize from a legacy checkpoint.
-python -m scripts.self_play.train_graph_baseline <NEW_EXAMPLES_CSV> --output <NEW_CHECKPOINT.pt> --device cpu
+python -m grid_topology_ai.cli train <NEW_EXAMPLES_CSV> --output <NEW_CHECKPOINT.pt> --device cpu
 
 # 3. Fresh fixed-evaluation rows and metrics.
-python -m scripts.evaluation.evaluate_checkpoint <EVAL_RAW_DIR> --transitions <EVAL_TRANSITIONS.csv> --checkpoint <NEW_CHECKPOINT.pt> --pf-alg 3 --output-csv <NEW_EVAL_RESULTS.csv> --output-json <NEW_EVAL_METRICS.json>
+python -m grid_topology_ai.cli evaluate <EVAL_RAW_DIR> --transitions <EVAL_TRANSITIONS.csv> --checkpoint <NEW_CHECKPOINT.pt> --pf-alg 3 --output-csv <NEW_EVAL_RESULTS.csv> --output-json <NEW_EVAL_METRICS.json>
 ```
 
-Archive the old replay/run directory, point the self-play YAML bootstrap paths
-at the new checkpoint and metrics, then start a new run. Do not mix old and new
-examples, replay chunks, checkpoints, or evaluation metrics.
+Archive incompatible old artifacts and do not mix them with regenerated examples, checkpoints, or evaluation outputs.
 
 ## Action space
 
@@ -295,7 +269,7 @@ Dependency files:
 ```bash
 python -m compileall -q grid_topology_ai scripts tests
 python -m pytest -q
-python -m scripts.self_play.generate --help
+python -m grid_topology_ai.cli --help
 ```
 
 ## Running self-play
@@ -304,9 +278,9 @@ Generate examples directly with the canonical CLI. The caller selects the input
 checkpoint explicitly; omit `--checkpoint` to use the heuristic evaluator.
 
 ```bash
-python -m scripts.self_play.generate RAW_DIR \
+python -m grid_topology_ai.cli self-play RAW_DIR \
   --transitions TRANSITIONS.csv \
-  --output-dir data/self_play/mcts_v0 \
+  --output data/self_play/mcts_v0 \
   --checkpoint CHECKPOINT.pt
 ```
 
@@ -318,19 +292,26 @@ explicit operations; generation does not promote checkpoints or run a final test
 - `grid_topology_ai/config`: typed configuration and validation.
 - `grid_topology_ai/self_play`: direct example generation, example contracts, and small artifact helpers.
 - `grid_topology_ai/training`: graph policy-value training, checkpoints, metrics, and splits.
-- `grid_topology_ai/evaluation`: checkpoint evaluation and metrics.
+- `grid_topology_ai/evaluation.py`: checkpoint evaluation and metrics.
+- `grid_topology_ai/teacher_runtime.py`: deterministic teacher generation runtime.
 - `grid_topology_ai/search`: MCTS planning components.
 - `grid_topology_ai/models`: graph datasets and neural models.
-- `scripts/self_play`: direct self-play generation and training CLIs.
-- `scripts/evaluation`: evaluation CLIs including `python -m scripts.evaluation.evaluate_checkpoint`.
+- `grid_topology_ai/cli.py`: the unified teacher, training, self-play, and evaluation CLI.
 - `tests`: unit, contract, and smoke tests.
 
-Public entry points kept stable:
+Unified Light commands:
 
 ```bash
-python -m scripts.self_play.generate --help
-python -m scripts.self_play.train_graph_baseline
-python -m scripts.evaluation.evaluate_checkpoint
+python -m grid_topology_ai.cli teacher --help
+python -m grid_topology_ai.cli self-play --help
+python -m grid_topology_ai.cli train --help
+python -m grid_topology_ai.cli evaluate --help
+```
+
+The installed console script exposes the same command surface:
+
+```bash
+power-grid-reconfig --help
 ```
 
 ## Self-play inputs
@@ -355,18 +336,16 @@ Local graph dataset integration tests are opt-in because they need prepared loca
 - The main research setup is one case118 configuration.
 - Scenarios come from a fixed pool rather than unrestricted environment generation.
 - There is no production redispatch optimizer.
-- No iteration is guaranteed to improve `solve_rate`.
 - Real self-play is expensive and requires prepared data and checkpoint artifacts.
 - This is research code, not operational grid control software.
 
-## Legacy teacher pipeline
+## Teacher bootstrap
 
-Teacher generators remain useful for bootstrap datasets, baseline comparison, and debugging. They are no longer the only documented training route; the implemented self-play loop is the current integrated pipeline.
+Teacher generation remains available for bootstrap datasets, baseline comparison, and debugging through the unified `teacher` subcommand. Its runtime owner is packaged in `grid_topology_ai.teacher_runtime` so the installed CLI does not depend on repository-only `scripts` modules.
 
 ## Reproducibility
 
 Reproducibility relies on Python 3.11, pinned constraints, explicit seeds,
-artifact hashes, fixed evaluation data, checkpoint provenance, and CI checks.
-Checkpoints store selection metadata, normalization metadata, dataset metadata,
-physics configuration, topology-action configuration, the ordered action layout,
-and training configuration.
+artifact contracts, fixed input data, checkpoint provenance, and CI checks.
+Checkpoints store normalization metadata, dataset metadata, physics configuration,
+topology-action configuration, the ordered action layout, and training configuration.

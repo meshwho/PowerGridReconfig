@@ -139,7 +139,7 @@ def recover_examples(states_dir: Path, gamma: float) -> pd.DataFrame:
             name="physical-objective contract",
             source=str(path),
             regeneration_command=(
-                "python -m scripts.self_play.generate ..."
+                "python -m grid_topology_ai.cli self-play ..."
             ),
         )
         require_outcome_objective_version(

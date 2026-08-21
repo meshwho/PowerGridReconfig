@@ -404,18 +404,18 @@ Create a clean artifact chain in this order (replace angle-bracket paths):
 ```bash
 # Fresh physical episodes, topology provenance, and versioned outcome targets.
 # Repeat --closeable-branch-id for each verified normally-open/tie branch.
-python -m scripts.self_play.generate <POOL_RAW_DIR> \
+python -m grid_topology_ai.cli self-play <POOL_RAW_DIR> \
   --transitions <POOL_TRANSITIONS.csv> \
-  --output-dir <NEW_SELF_PLAY_DIR> \
+  --output <NEW_SELF_PLAY_DIR> \
   --pf-alg 3 \
   --require-connected-after-switch \
   --min-loading-for-switch-percent 0.0
 
 # Fresh checkpoint, without a legacy --init-checkpoint.
-python -m scripts.self_play.train_graph_baseline <NEW_SELF_PLAY_DIR>/examples.csv --output <NEW_CHECKPOINT.pt> --device cpu
+python -m grid_topology_ai.cli train <NEW_SELF_PLAY_DIR>/examples.csv --output <NEW_CHECKPOINT.pt> --device cpu
 
 # Fresh fixed evaluation and summary metrics. Evaluation uses checkpoint topology provenance.
-python -m scripts.evaluation.evaluate_checkpoint <EVAL_RAW_DIR> --transitions <EVAL_TRANSITIONS.csv> --checkpoint <NEW_CHECKPOINT.pt> --pf-alg 3 --output-csv <NEW_EVAL_RESULTS.csv> --output-json <NEW_EVAL_METRICS.json>
+python -m grid_topology_ai.cli evaluate <EVAL_RAW_DIR> --transitions <EVAL_TRANSITIONS.csv> --checkpoint <NEW_CHECKPOINT.pt> --pf-alg 3 --output-csv <NEW_EVAL_RESULTS.csv> --output-json <NEW_EVAL_METRICS.json>
 ```
 
 Archive the old replay/run directory, update `bootstrap_checkpoint` and

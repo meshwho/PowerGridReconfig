@@ -1211,7 +1211,7 @@ def run_sequential(
     return rows, total_saved, total_skipped
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=(
             "Fast multi-step teacher generation using persistent worker contexts."
@@ -1326,7 +1326,7 @@ def main() -> None:
         help="Quantile of abs(step_reward) used when --value-reward-scale auto.",
     )
 
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     raw_dir = Path(args.raw_dir)
     transitions_path = Path(args.transitions)
     output_dir = Path(args.output_dir)
@@ -1521,6 +1521,7 @@ def main() -> None:
     print("\nTermination reasons:")
     print(examples_df["termination_reason"].value_counts(dropna=False).to_string())
     print("\nDone.")
+    return 0
 
 
 _REDISPATCH_ROW_FIELDS = (
@@ -2537,7 +2538,6 @@ def run_parallel(
                 pass
 
     return rows, total_saved, total_skipped
-
 
 
 if __name__ == "__main__":
