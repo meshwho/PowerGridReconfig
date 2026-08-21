@@ -746,8 +746,18 @@ def _load_generation_progress(
 def generate_self_play_examples(request: GenerationRequest) -> Path:
     _preflight_generation_inputs(request)
     scenario_ids = _scenario_ids_from_request(request)
-    request.output_dir.mkdir(parents=True, exist_ok=True)
     identity = _resume_identity(request, scenario_ids)
+
+    # A fresh run must prove that the complete runtime is constructible before
+    # committing progress.  In particular, an existing but invalid checkpoint
+    # or an incompatible topology contract must not poison an otherwise reusable
+    # output directory with a progress.json file.
+    runtime_prepared = False
+    if not request.resume:
+        _initialize_generation_worker(request)
+        runtime_prepared = True
+
+    request.output_dir.mkdir(parents=True, exist_ok=True)
     run_id, completed = _load_generation_progress(request, identity)
     remaining = [sid for sid in scenario_ids if sid not in completed]
 
@@ -761,7 +771,8 @@ def generate_self_play_examples(request: GenerationRequest) -> Path:
     writer = ExampleWriter(request.output_dir, **writer_kwargs)
 
     if request.workers == 1:
-        _initialize_generation_worker(request)
+        if not runtime_prepared:
+            _initialize_generation_worker(request)
         results = map(_generate_scenario, remaining)
         executor = None
     else:
