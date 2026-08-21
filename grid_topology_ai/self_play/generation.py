@@ -434,6 +434,27 @@ def _initialize_generation_worker(request: GenerationRequest) -> None:
     _WORKER_RUNTIME = _build_runtime(request)
 
 
+def _release_generation_worker_runtime() -> None:
+    """Drop a parent-side preflight runtime before spawning real workers."""
+    global _WORKER_RUNTIME
+    runtime = _WORKER_RUNTIME
+    if runtime is None:
+        return
+    evaluator = runtime.get("evaluator")
+    uses_cuda = (
+        evaluator is not None
+        and getattr(evaluator, "device", None) is not None
+        and evaluator.device.type == "cuda"
+    )
+    _WORKER_RUNTIME = None
+    del evaluator
+    del runtime
+    if uses_cuda:
+        import torch
+
+        torch.cuda.empty_cache()
+
+
 def _generate_scenario(scenario_id: int) -> _ScenarioResult:
     """Generate one episode using only scenario-derived random streams."""
     if _WORKER_RUNTIME is None:
@@ -755,7 +776,9 @@ def generate_self_play_examples(request: GenerationRequest) -> Path:
     runtime_prepared = False
     if not request.resume:
         _initialize_generation_worker(request)
-        runtime_prepared = True
+        runtime_prepared = request.workers == 1
+        if not runtime_prepared:
+            _release_generation_worker_runtime()
 
     request.output_dir.mkdir(parents=True, exist_ok=True)
     run_id, completed = _load_generation_progress(request, identity)
