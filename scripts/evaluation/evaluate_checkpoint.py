@@ -4,7 +4,7 @@ import argparse
 from pathlib import Path
 
 from grid_topology_ai.config import EvaluationConfig
-from grid_topology_ai.evaluation.checkpoint import (
+from grid_topology_ai.evaluation import (
     EvaluationRequest,
     evaluate_checkpoint,
 )
@@ -13,8 +13,7 @@ from grid_topology_ai.evaluation.checkpoint import (
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Evaluate a neural policy-value checkpoint with deterministic MCTS, "
-            "optionally comparing ungated and constrained root policies."
+            "Evaluate a neural policy-value checkpoint with deterministic MCTS."
         )
     )
     parser.add_argument(
@@ -37,10 +36,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--use-continuation-gate",
         action="store_true",
-        help=(
-            "Evaluate both ungated MCTS and a constrained MCTS policy formed by "
-            "filtering root visits with continuation analysis."
-        ),
+        help=("Constrain the MCTS root policy with continuation analysis."),
     )
     parser.add_argument(
         "--min-hard-improvement",
@@ -268,6 +264,9 @@ def main(argv: list[str] | None = None) -> int:
         gamma=args.gamma,
         c_puct=args.c_puct,
         prior_exponent=args.prior_exponent,
+        primary_policy_mode=(
+            "constrained" if args.use_continuation_gate else "ungated"
+        ),
         use_continuation_gate=args.use_continuation_gate,
         allow_handoff_with_hard_overloads=args.allow_handoff_with_hard_overloads,
         num_workers=args.num_workers,
