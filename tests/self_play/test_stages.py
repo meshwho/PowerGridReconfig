@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import numpy as np
 import pytest
 import torch
 
@@ -11,25 +12,41 @@ from grid_topology_ai.config import (
     TrainingConfig,
 )
 from grid_topology_ai.config.physics import DEFAULT_PHYSICS_CONFIG
-from grid_topology_ai.contracts import (
-    CHECKPOINT_CONTRACT_VERSION,
-    OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
-    physics_provenance,
-)
 from grid_topology_ai.physics.objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
 from grid_topology_ai.self_play import stages
 from grid_topology_ai.self_play.artifacts import save_json
+from grid_topology_ai.state.schema import BRANCH_FEATURE_COLUMNS, BUS_FEATURE_COLUMNS
+from grid_topology_ai.topology_actions import (
+    STOP_PLUS_BRANCH_STATUS_POLICY_LAYOUT,
+    action_layout_to_list,
+)
+from tests.topology_contract_helpers import (
+    TEST_ACTION_SPACE_CONFIG,
+    test_action_layout,
+)
 
 
 def _checkpoint_metadata(selector: str) -> dict[str, object]:
+    num_bus_features = len(BUS_FEATURE_COLUMNS)
+    num_branch_features = len(BRANCH_FEATURE_COLUMNS)
     return {
         "checkpoint_selection_metric": selector,
-        "checkpoint_contract_version": CHECKPOINT_CONTRACT_VERSION,
-        "physical_objective_schema_version": PHYSICAL_OBJECTIVE_SCHEMA_VERSION,
-        "outcome_value_target_contract_version": (
-            OUTCOME_VALUE_TARGET_CONTRACT_VERSION
-        ),
-        **physics_provenance(DEFAULT_PHYSICS_CONFIG),
+        "physics_config": DEFAULT_PHYSICS_CONFIG.to_dict(),
+        "topology_action_config": TEST_ACTION_SPACE_CONFIG.to_contract_dict(),
+        "action_layout": action_layout_to_list(test_action_layout((0,))),
+        "policy_layout": STOP_PLUS_BRANCH_STATUS_POLICY_LAYOUT,
+        "model_type": "graph_policy_value_net_v2",
+        "topology_cardinality_independent": True,
+        "model_state_dict": {},
+        "num_bus_features": num_bus_features,
+        "num_branch_features": num_branch_features,
+        "hidden_dim": 8,
+        "num_layers": 1,
+        "dropout": 0.0,
+        "bus_feature_mean": np.zeros(num_bus_features, dtype=np.float32),
+        "bus_feature_std": np.ones(num_bus_features, dtype=np.float32),
+        "branch_feature_mean": np.zeros(num_branch_features, dtype=np.float32),
+        "branch_feature_std": np.ones(num_branch_features, dtype=np.float32),
     }
 
 
