@@ -187,200 +187,6 @@ def _require_worker_context() -> dict[str, Any]:
     return _WORKER_CONTEXT
 
 
-# ======================================================================================
-# Memory helpers
-# ======================================================================================
-
-
-def get_process_memory_mb() -> float | None:
-    """
-    Return current process RSS memory in MB.
-
-    psutil is optional. If it is not installed, return None.
-    """
-
-    try:
-        import psutil
-    except Exception:
-        return None
-
-    try:
-        process = psutil.Process(os.getpid())
-        return float(process.memory_info().rss) / (1024.0 * 1024.0)
-    except Exception:
-        return None
-
-
-def get_system_available_memory_mb() -> float | None:
-    """
-    Return available system RAM in MB.
-
-    psutil is optional. If unavailable, return None.
-    """
-
-    try:
-        import psutil
-    except Exception:
-        return None
-
-    try:
-        return float(psutil.virtual_memory().available) / (1024.0 * 1024.0)
-    except Exception:
-        return None
-
-
-def get_cpu_load_percent() -> float | None:
-    """
-    Return current total CPU load percent.
-
-    psutil is optional. If unavailable, return None.
-    """
-
-    try:
-        import psutil
-    except Exception:
-        return None
-
-    try:
-        return float(psutil.cpu_percent(interval=0.2))
-    except Exception:
-        return None
-
-
-def update_worker_memory_registry() -> None:
-    """
-    Update shared memory registry for the current worker.
-    """
-
-    ctx = _require_worker_context()
-    registry = ctx.get("memory_registry")
-
-    if registry is None:
-        return
-
-    memory_mb = get_process_memory_mb()
-
-    if memory_mb is None:
-        return
-
-    pid = int(os.getpid())
-
-    try:
-        registry[pid] = {
-            "rss_mb": float(memory_mb),
-            "timestamp": float(time.time()),
-        }
-    except Exception:
-        return
-
-
-def clear_worker_caches(reason: str = "manual") -> None:
-    """
-    Clear worker-local caches and force Python garbage collection.
-    """
-
-    ctx = _require_worker_context()
-
-    backend = ctx.get("backend")
-    action_space = ctx.get("action_space")
-
-    memory_before = get_process_memory_mb()
-
-    if hasattr(backend, "clear_cache"):
-        backend.clear_cache()
-
-    if hasattr(action_space, "clear_cache"):
-        action_space.clear_cache()
-
-    gc.collect()
-
-    memory_after = get_process_memory_mb()
-
-    if bool(ctx["task_config"].get("print_memory_events", False)):
-        before_text = "unknown" if memory_before is None else f"{memory_before:.1f} MB"
-        after_text = "unknown" if memory_after is None else f"{memory_after:.1f} MB"
-
-        print(
-            f"[worker {os.getpid()}] cache clear ({reason}) | "
-            f"memory {before_text} -> {after_text}",
-            flush=True,
-        )
-
-
-def maybe_clear_heaviest_worker_for_global_memory() -> None:
-    """
-    Cooperative global memory guard.
-
-    If system free memory is below a configured threshold, the currently running
-    worker checks whether it is the heaviest registered worker. If yes, it clears
-    its own local caches.
-
-    ProcessPoolExecutor does not provide a reliable way to directly command a
-    different running child process to clean its memory. This cooperative guard is
-    therefore checked after every processed scenario.
-    """
-
-    ctx = _require_worker_context()
-    cfg = ctx["task_config"]
-
-    min_free_mb = float(cfg.get("min_free_system_memory_mb", 0.0))
-
-    if min_free_mb <= 0.0:
-        return
-
-    available_mb = get_system_available_memory_mb()
-
-    if available_mb is None:
-        return
-
-    update_worker_memory_registry()
-
-    if available_mb >= min_free_mb:
-        return
-
-    registry = ctx.get("memory_registry")
-
-    if registry is None:
-        return
-
-    now = time.time()
-    max_age_sec = float(cfg.get("memory_registry_max_age_sec", 120.0))
-
-    heaviest_pid: int | None = None
-    heaviest_mb = -1.0
-
-    try:
-        for pid_raw, info in list(registry.items()):
-            pid = int(pid_raw)
-            rss_mb = float(info.get("rss_mb", 0.0))
-            timestamp = float(info.get("timestamp", 0.0))
-
-            if now - timestamp > max_age_sec:
-                continue
-
-            if rss_mb > heaviest_mb:
-                heaviest_mb = rss_mb
-                heaviest_pid = pid
-    except Exception:
-        return
-
-    current_pid = int(os.getpid())
-
-    if heaviest_pid == current_pid:
-        clear_worker_caches(
-            reason=(
-                f"global_memory_low_available_{available_mb:.1f}_mb_"
-                f"lt_{min_free_mb:.1f}_mb_heaviest_{heaviest_mb:.1f}_mb"
-            )
-        )
-        update_worker_memory_registry()
-
-
-# ======================================================================================
-# Worker initialization
-# ======================================================================================
-
-
 def clear_worker_caches_if_needed() -> None:
     """Bounded caches and process lifetime replace global cache clearing."""
 
@@ -1365,9 +1171,6 @@ def make_task_config(args: argparse.Namespace) -> dict[str, Any]:
         "min_safety_improvement": float(args.min_safety_improvement),
         "allow_hard_count_increase": bool(args.allow_hard_count_increase),
         "disable_cache": bool(args.disable_cache),
-        "clear_caches_every": int(args.clear_caches_every),
-        "max_worker_memory_mb": float(args.max_worker_memory_mb),
-        "print_memory_events": bool(args.print_memory_events),
         "power_flow_failure_penalty": float(args.power_flow_failure_penalty),
         "min_continue_improvement_with_hard": float(
             args.min_continue_improvement_with_hard
@@ -1377,85 +1180,19 @@ def make_task_config(args: argparse.Namespace) -> dict[str, Any]:
         ),
         "max_loading_increase_limit": float(args.max_loading_increase_limit),
         "add_handoff_example": bool(args.add_handoff_example),
-        "max_tasks_per_child": int(args.max_tasks_per_child),
-        "min_free_system_memory_mb": float(args.min_free_system_memory_mb),
-        "memory_registry_max_age_sec": float(args.memory_registry_max_age_sec),
-        "auto_worker_memory_mb": float(args.auto_worker_memory_mb),
-        "auto_worker_memory_reserve_mb": float(args.auto_worker_memory_reserve_mb),
-        "auto_worker_cpu_util_target": float(args.auto_worker_cpu_util_target),
         "use_lodf_screening": bool(args.use_lodf_screening),
         "lodf_screen_top_k": int(args.lodf_screen_top_k),
         "lodf_min_candidate_count": int(args.lodf_min_candidate_count),
-        "auto_worker_cpu_mode": str(args.auto_worker_cpu_mode),
-        "auto_worker_cpu_fraction": float(args.auto_worker_cpu_fraction),
-        "auto_worker_max": int(args.auto_worker_max),
     }
 
 
 def resolve_num_workers(
-    num_workers_arg: str,
+    num_workers_arg: int,
     num_batches: int,
     task_config: dict[str, Any],
 ) -> int:
-    value = str(num_workers_arg).strip().lower()
-    if value != "auto":
-        return max(int(value), 1)
-
-    try:
-        import psutil
-    except Exception:
-        fallback = max((os.cpu_count() or 2) - 1, 1)
-        return min(fallback, int(num_batches))
-
-    logical_cpu = psutil.cpu_count(logical=True) or (os.cpu_count() or 2)
-    physical_cpu = psutil.cpu_count(logical=False) or logical_cpu
-    cpu_mode = str(task_config.get("auto_worker_cpu_mode", "logical")).lower()
-    cpu_fraction = float(task_config.get("auto_worker_cpu_fraction", 0.85))
-    cpu_fraction = min(max(cpu_fraction, 0.1), 1.0)
-    base_cpu_count = int(physical_cpu if cpu_mode == "physical" else logical_cpu)
-    cpu_cap = max(int(base_cpu_count * cpu_fraction), 1)
-
-    cpu_load = get_cpu_load_percent()
-    target_cpu = float(task_config.get("auto_worker_cpu_util_target", 85.0))
-    if cpu_load is not None and cpu_load > target_cpu:
-        cpu_cap = max(int(cpu_cap * 0.75), 1)
-
-    available_mb = get_system_available_memory_mb()
-    estimated_worker_mb = float(task_config.get("auto_worker_memory_mb", 1000.0))
-    reserve_mb = float(task_config.get("auto_worker_memory_reserve_mb", 2048.0))
-    if available_mb is None:
-        memory_cap = cpu_cap
-    else:
-        usable_mb = max(float(available_mb) - reserve_mb, 0.0)
-        memory_cap = max(int(usable_mb // max(estimated_worker_mb, 1.0)), 1)
-
-    auto_worker_max = int(task_config.get("auto_worker_max", 0))
-    workers = max(
-        1,
-        min(int(num_batches), int(cpu_cap), int(memory_cap)),
-    )
-    if auto_worker_max > 0:
-        workers = min(workers, int(auto_worker_max))
-
-    print("")
-    print("Auto worker selection:")
-    print(f"  logical CPU:        {logical_cpu}")
-    print(f"  physical CPU:       {physical_cpu}")
-    print(f"  CPU mode:           {cpu_mode}")
-    print(f"  CPU fraction:       {cpu_fraction}")
-    print(f"  current CPU load:   {cpu_load}")
-    print(f"  available RAM MB:   {available_mb}")
-    print(f"  reserve RAM MB:     {reserve_mb}")
-    print(f"  worker RAM MB est:  {estimated_worker_mb}")
-    print(f"  CPU cap:            {cpu_cap}")
-    print(f"  memory cap:         {memory_cap}")
-    print(f"  auto worker max:    {auto_worker_max}")
-    print(f"  selected workers:   {workers}")
-    print("")
-    return workers
-
-
-CHECKPOINT_VERSION = 2
+    del num_batches, task_config
+    return max(int(num_workers_arg), 1)
 
 
 def append_scenario_checkpoint(
@@ -1465,7 +1202,6 @@ def append_scenario_checkpoint(
     checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
     ok = bool(result.get("ok", False))
     payload = {
-        "version": CHECKPOINT_VERSION,
         "scenario_id": int(result["scenario_id"]),
         "ok": ok,
         "reason": result.get("reason"),
@@ -1521,11 +1257,6 @@ def load_scenario_checkpoints(
                 continue
             if scenario_id not in allowed:
                 continue
-            if int(payload.get("version", -1)) != CHECKPOINT_VERSION:
-                raise RuntimeError(
-                    "Unsupported teacher checkpoint version "
-                    f"for scenario {scenario_id}: {payload.get('version')}"
-                )
             ok = bool(payload.get("ok", False))
             rows = payload.get("rows", [])
             if ok and (not isinstance(rows, list) or not rows):
@@ -1536,7 +1267,6 @@ def load_scenario_checkpoints(
                 )
                 continue
             results[scenario_id] = {
-                "version": CHECKPOINT_VERSION,
                 "scenario_id": scenario_id,
                 "ok": ok,
                 "reason": payload.get("reason"),
@@ -1670,15 +1400,6 @@ def main() -> None:
     parser.add_argument("--min-safety-improvement", type=float, default=0.0)
     parser.add_argument("--allow-hard-count-increase", action="store_true")
     parser.add_argument("--disable-cache", action="store_true")
-    parser.add_argument(
-        "--clear-caches-every",
-        type=int,
-        default=50,
-        help=(
-            "Clear backend/action-space caches after this many scenarios per worker. "
-            "Use 0 to never clear caches."
-        ),
-    )
     parser.add_argument("--power-flow-failure-penalty", type=float, default=1_000_000.0)
     parser.add_argument("--min-continue-improvement-with-hard", type=float, default=100.0)
     parser.add_argument("--min-continue-improvement-without-hard", type=float, default=150.0)
@@ -1686,9 +1407,9 @@ def main() -> None:
     parser.add_argument("--add-handoff-example", action="store_true")
     parser.add_argument(
         "--num-workers",
-        type=str,
-        default="2",
-        help="Number of workers or 'auto'.",
+        type=int,
+        default=2,
+        help="Explicit number of multiprocessing workers.",
     )
     parser.add_argument(
         "--batch-size",
@@ -1701,63 +1422,6 @@ def main() -> None:
         "--quiet-success",
         action="store_true",
         help="Do not print one line for every successful scenario.",
-    )
-    parser.add_argument(
-        "--max-worker-memory-mb",
-        type=float,
-        default=0.0,
-        help=(
-            "If > 0, worker clears backend/action-space caches when its RSS memory "
-            "reaches this value in MB."
-        ),
-    )
-    parser.add_argument(
-        "--print-memory-events",
-        action="store_true",
-        help="Print memory before/after cache clearing events.",
-    )
-    parser.add_argument(
-        "--max-tasks-per-child",
-        type=int,
-        default=0,
-        help=(
-            "Restart each worker process after this many submitted batches. "
-            "Use 0 to disable. On Windows this may interact badly with long queues; "
-            "prefer 0 plus memory guards for long production runs."
-        ),
-    )
-    parser.add_argument(
-        "--min-free-system-memory-mb",
-        type=float,
-        default=0.0,
-        help=(
-            "If > 0, workers cooperatively clear caches when available system "
-            "RAM drops below this value."
-        ),
-    )
-    parser.add_argument(
-        "--memory-registry-max-age-sec",
-        type=float,
-        default=120.0,
-        help="Ignore stale worker memory records older than this many seconds.",
-    )
-    parser.add_argument(
-        "--auto-worker-memory-mb",
-        type=float,
-        default=1200.0,
-        help="Estimated RAM usage per worker for --num-workers auto.",
-    )
-    parser.add_argument(
-        "--auto-worker-memory-reserve-mb",
-        type=float,
-        default=2048.0,
-        help="RAM reserve kept free when using --num-workers auto.",
-    )
-    parser.add_argument(
-        "--auto-worker-cpu-util-target",
-        type=float,
-        default=85.0,
-        help="If current CPU load is above this percent, auto workers are reduced.",
     )
     parser.add_argument(
         "--use-lodf-screening",
@@ -1781,28 +1445,6 @@ def main() -> None:
         type=int,
         default=8,
         help="Apply LODF screening only if there are at least this many switch candidates.",
-    )
-    parser.add_argument(
-        "--auto-worker-cpu-mode",
-        type=str,
-        default="logical",
-        choices=["physical", "logical"],
-        help="CPU cap mode for --num-workers auto.",
-    )
-    parser.add_argument(
-        "--auto-worker-cpu-fraction",
-        type=float,
-        default=0.85,
-        help=(
-            "Fraction of selected CPU count allowed for --num-workers auto. "
-            "Example: 0.85 of 8 logical CPUs -> 6 workers."
-        ),
-    )
-    parser.add_argument(
-        "--auto-worker-max",
-        type=int,
-        default=0,
-        help="Optional hard upper limit for --num-workers auto. Use 0 for no explicit limit.",
     )
     parser.add_argument(
         "--value-target-mode",
@@ -1856,7 +1498,6 @@ def main() -> None:
     checkpoint_path = output_dir / "teacher_checkpoint.jsonl"
     checkpoint_config_path = output_dir / "teacher_checkpoint_config.json"
     checkpoint_config = {
-        "checkpoint_version": CHECKPOINT_VERSION,
         "raw_dir": str(raw_dir.resolve()),
         "transitions_path": str(transitions_path.resolve()),
         "scenario_ids": [int(scenario_id) for scenario_id in scenario_ids],
@@ -1882,7 +1523,7 @@ def main() -> None:
     )
     if scenario_batches:
         resolved_num_workers = resolve_num_workers(
-            num_workers_arg=str(args.num_workers),
+            num_workers_arg=int(args.num_workers),
             num_batches=len(scenario_batches),
             task_config=task_config,
         )
@@ -1919,11 +1560,6 @@ def main() -> None:
     print(f"Max loading increase: {args.max_loading_increase_limit}")
     print(f"Allow hard increase:  {args.allow_hard_count_increase}")
     print(f"Cache enabled:        {not args.disable_cache}")
-    print(f"Clear caches every:   {args.clear_caches_every}")
-    print(f"Max worker memory MB: {args.max_worker_memory_mb}")
-    print(f"Min free RAM MB:      {args.min_free_system_memory_mb}")
-    print(f"Print memory events:  {args.print_memory_events}")
-    print(f"Max tasks per child:  {args.max_tasks_per_child}")
     print(f"Num workers arg:      {args.num_workers}")
     print(f"Resolved workers:     {resolved_num_workers}")
     print(f"Use LODF screening:   {args.use_lodf_screening}")
@@ -2029,7 +1665,9 @@ def main() -> None:
         examples_df,
         source_path=examples_path,
     )
-    examples_df.to_csv(examples_path, index=False)
+    examples_temp_path = examples_path.with_suffix(".csv.tmp")
+    examples_df.to_csv(examples_temp_path, index=False)
+    examples_temp_path.replace(examples_path)
 
     print("\n" + "=" * 100)
     print("Fast multi-step impact teacher generation summary")
@@ -2989,12 +2627,16 @@ _RUNTIME_LODF_STRUCTURE_CACHE = "_redispatch_lodf_structure_cache"
 _RUNTIME_SCENARIO_STORE_DIR = "_redispatch_runtime_scenario_store_dir"
 _RUNTIME_WORKER_INIT_SEMAPHORE = "_redispatch_worker_init_semaphore"
 
-_RESUME_INDEX_VERSION = 1
 _DEFAULT_MAX_TASKS_PER_CHILD: int | None = None
 
 _staged_process_one_scenario = process_one_scenario_fast
 _staged_load_scenario_checkpoints = load_scenario_checkpoints
 _staged_append_scenario_checkpoint = append_scenario_checkpoint
+
+# The canonical JSONL checkpoint is the complete resume state; a truncated final
+# line is ignored and unfinished scenarios are safely repeated.
+load_scenario_checkpoints = _staged_load_scenario_checkpoints
+append_scenario_checkpoint = _staged_append_scenario_checkpoint
 
 def _native_math_thread_summary() -> str:
     return ", ".join(
@@ -3049,388 +2691,18 @@ def ensure_checkpoint_config(
     )
     ensure_teacher_checkpoint_config(config_path, bound_config)
 
-def _resume_index_path(
-    checkpoint_path: Path,
-) -> Path:
-    checkpoint = Path(checkpoint_path)
-    return checkpoint.with_name(
-        f"{checkpoint.stem}_resume_index.jsonl"
-    )
-
-def _resume_checkpoint_size(
-    checkpoint_path: Path,
-) -> int:
-    try:
-        return int(
-            Path(checkpoint_path).stat().st_size
-        )
-    except FileNotFoundError:
-        return 0
-
-def _encode_resume_index_record(
-    record: dict[str, object],
-) -> str:
-    return json.dumps(
-        record,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    ) + "\n"
-
-def _write_resume_snapshot(
-    checkpoint_path: Path,
-    contract_fingerprint: str,
-    completed_scenario_ids: Sequence[int],
-) -> None:
-    index_path = _resume_index_path(
-        checkpoint_path
-    )
-    index_path.parent.mkdir(
-        parents=True,
-        exist_ok=True,
-    )
-
-    payload = {
-        "version": _RESUME_INDEX_VERSION,
-        "kind": "snapshot",
-        "contract_fingerprint": str(
-            contract_fingerprint
-        ),
-        "checkpoint_size": (
-            _resume_checkpoint_size(
-                checkpoint_path
-            )
-        ),
-        "completed_scenario_ids": sorted(
-            {
-                int(value)
-                for value in completed_scenario_ids
-            }
-        ),
-    }
-
-    temp_path = index_path.with_suffix(
-        index_path.suffix + ".tmp"
-    )
-    temp_path.write_text(
-        _encode_resume_index_record(payload),
-        encoding="utf-8",
-    )
-    temp_path.replace(index_path)
-
-def _append_resume_delta(
-    checkpoint_path: Path,
-    contract_fingerprint: str,
-    scenario_id: int,
-    complete: bool,
-    checkpoint_start: int,
-) -> None:
-    checkpoint_end = (
-        _resume_checkpoint_size(
-            checkpoint_path
-        )
-    )
-    start = int(checkpoint_start)
-
-    if start < 0 or checkpoint_end <= start:
-        raise ValueError(
-            "Resume index delta requires "
-            "checkpoint growth."
-        )
-
-    index_path = _resume_index_path(
-        checkpoint_path
-    )
-    index_path.parent.mkdir(
-        parents=True,
-        exist_ok=True,
-    )
-
-    payload = {
-        "version": _RESUME_INDEX_VERSION,
-        "kind": "delta",
-        "contract_fingerprint": str(
-            contract_fingerprint
-        ),
-        "checkpoint_start": start,
-        "checkpoint_size": checkpoint_end,
-        "scenario_id": int(scenario_id),
-        "complete": bool(complete),
-    }
-
-    with index_path.open(
-        "a",
-        encoding="utf-8",
-    ) as handle:
-        handle.write(
-            _encode_resume_index_record(payload)
-        )
-        handle.flush()
-
-def _load_resume_index(
-    checkpoint_path: Path,
-    contract_fingerprint: str,
-    allowed_scenario_ids: Sequence[int],
-) -> set[int] | None:
-    index_path = _resume_index_path(
-        checkpoint_path
-    )
-
-    if not index_path.exists():
-        return None
-
-    actual_size = _resume_checkpoint_size(
-        checkpoint_path
-    )
-    expected_contract = str(
-        contract_fingerprint
-    )
-    allowed = {
-        int(value)
-        for value in allowed_scenario_ids
-    }
-
-    completed: set[int] | None = None
-    covered_size: int | None = None
-
-    try:
-        with index_path.open(
-            "r",
-            encoding="utf-8",
-            errors="strict",
-        ) as handle:
-            for raw_line in handle:
-                line = raw_line.strip()
-
-                if not line:
-                    continue
-
-                record = json.loads(line)
-
-                if not isinstance(record, dict):
-                    return None
-
-                if (
-                    int(record.get("version", -1))
-                    != _RESUME_INDEX_VERSION
-                ):
-                    return None
-
-                if (
-                    record.get(
-                        "contract_fingerprint"
-                    )
-                    != expected_contract
-                ):
-                    return None
-
-                kind = record.get("kind")
-
-                if completed is None:
-                    if kind != "snapshot":
-                        return None
-
-                    snapshot_size = int(
-                        record.get(
-                            "checkpoint_size",
-                            -1,
-                        )
-                    )
-
-                    if (
-                        snapshot_size < 0
-                        or snapshot_size
-                        > actual_size
-                    ):
-                        return None
-
-                    scenario_ids = record.get(
-                        "completed_scenario_ids"
-                    )
-
-                    if not isinstance(
-                        scenario_ids,
-                        list,
-                    ):
-                        return None
-
-                    completed = {
-                        int(value)
-                        for value in scenario_ids
-                    }
-                    covered_size = snapshot_size
-                    continue
-
-                if (
-                    kind != "delta"
-                    or covered_size is None
-                ):
-                    return None
-
-                start = int(
-                    record.get(
-                        "checkpoint_start",
-                        -1,
-                    )
-                )
-                end = int(
-                    record.get(
-                        "checkpoint_size",
-                        -1,
-                    )
-                )
-
-                if (
-                    start != covered_size
-                    or end <= start
-                    or end > actual_size
-                ):
-                    return None
-
-                scenario_id = int(
-                    record["scenario_id"]
-                )
-                complete = record.get("complete")
-
-                if not isinstance(
-                    complete,
-                    bool,
-                ):
-                    return None
-
-                if complete:
-                    completed.add(
-                        scenario_id
-                    )
-                else:
-                    completed.discard(
-                        scenario_id
-                    )
-
-                covered_size = end
-
-    except (
-        OSError,
-        UnicodeError,
-        ValueError,
-        TypeError,
-        KeyError,
-        json.JSONDecodeError,
-    ):
-        return None
-
-    if (
-        completed is None
-        or covered_size != actual_size
-    ):
-        return None
-
-    return completed & allowed
-
-def _resume_contract_fingerprint() -> str:
-    payload = {
-        "checkpoint_version": int(CHECKPOINT_VERSION),
-        "physics_config_contract_version": PHYSICS_CONFIG_CONTRACT_VERSION,
-        "topology_action_contract_version": TOPOLOGY_ACTION_CONTRACT_VERSION,
-        "outcome_objective_version": OUTCOME_OBJECTIVE_VERSION,
-        "outcome_value_target_contract_version": (
-            OUTCOME_VALUE_TARGET_CONTRACT_VERSION
-        ),
-        "terminal_outcome_evidence_schema_version": (
-            TERMINAL_OUTCOME_EVIDENCE_SCHEMA_VERSION
-        ),
-        "teacher_selection_mode": str(_TEACHER_SELECTION_MODE),
-        "required_checkpoint_row_fields": list(
-            _REQUIRED_CHECKPOINT_ROW_FIELDS
-        ),
-    }
-
-    encoded = json.dumps(
-        payload,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
-
-    return hashlib.sha256(encoded).hexdigest()
 
 
-def _resume_placeholder(scenario_id: int) -> dict[str, Any]:
-    return {
-        "version": CHECKPOINT_VERSION,
-        "scenario_id": int(scenario_id),
-        "ok": False,
-        "reason": "resume_index",
-        "rows": [],
-    }
 
 
-def load_scenario_checkpoints(
-    checkpoint_path: Path,
-    allowed_scenario_ids: Sequence[int],
-) -> dict[int, dict[str, Any]]:
-    allowed = {int(value) for value in allowed_scenario_ids}
-    contract_fingerprint = _resume_contract_fingerprint()
-
-    indexed = _load_resume_index(
-        checkpoint_path=checkpoint_path,
-        contract_fingerprint=contract_fingerprint,
-        allowed_scenario_ids=allowed_scenario_ids,
-    )
-
-    # During an incomplete run the caller only needs the completed IDs to build
-    # the pending list. Keep the expensive checkpoint rows on disk until final
-    # assembly, when every requested scenario is already checkpointed.
-    if indexed is not None and indexed != allowed:
-        return {
-            scenario_id: _resume_placeholder(scenario_id)
-            for scenario_id in sorted(indexed)
-        }
-
-    results = _staged_load_scenario_checkpoints(
-        checkpoint_path=checkpoint_path,
-        allowed_scenario_ids=allowed_scenario_ids,
-    )
-
-    try:
-        _write_resume_snapshot(
-            checkpoint_path=checkpoint_path,
-            contract_fingerprint=contract_fingerprint,
-            completed_scenario_ids=results,
-        )
-    except OSError:
-        pass
-
-    return results
 
 
-def append_scenario_checkpoint(
-    checkpoint_path: Path,
-    result: dict[str, Any],
-) -> None:
-    checkpoint_path = Path(checkpoint_path)
 
-    try:
-        checkpoint_start = int(checkpoint_path.stat().st_size)
-    except FileNotFoundError:
-        checkpoint_start = 0
 
-    _staged_append_scenario_checkpoint(
-        checkpoint_path=checkpoint_path,
-        result=result,
-    )
 
-    try:
-        _append_resume_delta(
-            checkpoint_path=checkpoint_path,
-            contract_fingerprint=_resume_contract_fingerprint(),
-            scenario_id=int(result["scenario_id"]),
-            complete=bool(_checkpoint_result_is_current(result)),
-            checkpoint_start=checkpoint_start,
-        )
-    except (OSError, ValueError):
-        # The sidecar is only an accelerator. A stale or missing index falls
-        # back to the canonical checkpoint scan on the next resume.
-        pass
+
+
+
 
 
 def rank_actions_by_lodf_screening(
@@ -3614,11 +2886,6 @@ def _run_timed_batch(
     return results, time.perf_counter() - started
 
 
-def _effective_max_tasks_per_child(
-    task_config: dict[str, Any],
-) -> int | None:
-    configured = int(task_config.get("max_tasks_per_child", 0))
-    return configured if configured > 0 else _DEFAULT_MAX_TASKS_PER_CHILD
 
 
 def _scenario_runtime_line(
@@ -3710,28 +2977,6 @@ def run_parallel(
         for shard in shards
     ]
 
-    max_tasks_per_child = _effective_max_tasks_per_child(
-        runtime_task_config
-    )
-
-    counts = [len(values) for values in shard_sizes]
-
-    print(
-        f"Partitioned adapters: {workers} workers, "
-        f"{min(counts)}-{max(counts)} scenarios per worker"
-    )
-
-    recycle_text = (
-        "disabled"
-        if max_tasks_per_child is None
-        else f"{max_tasks_per_child} batches"
-    )
-
-    print(f"Worker recycle interval: {recycle_text}")
-    print(
-        "Worker cache policy: byte-bounded caches; "
-        "no global cache clearing"
-    )
     print(f"\nParallel sharded mode: {workers} workers")
     print(f"Batches:                {len(scenario_batches)}")
 
@@ -3757,7 +3002,6 @@ def run_parallel(
                     shard_scenarios,
                     None,
                 ),
-                max_tasks_per_child=max_tasks_per_child,
             )
 
             executors.append(executor)
