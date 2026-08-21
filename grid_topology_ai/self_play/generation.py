@@ -208,12 +208,6 @@ def _select_generation_action(
     search_result: Any,
     temperature: float,
     rng: np.random.Generator,
-    use_continuation_gate: bool,
-    min_hard_improvement: float,
-    min_soft_improvement: float,
-    min_gate_visits: int,
-    min_gate_visit_fraction: float,
-    physics_config: PhysicsConfig | None = None,
     scenario_id: int | None = None,
     step: int | None = None,
 ) -> _GenerationActionDecision:
@@ -263,12 +257,30 @@ def _scenario_ids_from_request(
             f"Transitions file not found: {request.transitions_csv}"
         )
     transitions = pd.read_csv(request.transitions_csv)
-    if request.scenario_ids is not None:
-        return [int(value) for value in request.scenario_ids]
-    return sorted(
-        int(value)
-        for value in transitions["scenario_id"].unique()
-    )
+    if "scenario_id" not in transitions.columns:
+        raise ValueError(
+            f"Transitions CSV is missing scenario_id: {request.transitions_csv}"
+        )
+
+    available = {
+        int(value) for value in transitions["scenario_id"].unique()
+    }
+    if request.scenario_ids is None:
+        scenario_ids = sorted(available)
+    else:
+        scenario_ids = [int(value) for value in request.scenario_ids]
+        if len(set(scenario_ids)) != len(scenario_ids):
+            raise ValueError("scenario_ids must not contain duplicates.")
+        missing = [value for value in scenario_ids if value not in available]
+        if missing:
+            raise ValueError(
+                "scenario_ids contains values missing from transitions: "
+                f"{missing[:20]}."
+            )
+
+    if not scenario_ids:
+        raise ValueError("No self-play scenarios were selected.")
+    return scenario_ids
 
 
 def _step_metadata(
@@ -310,9 +322,6 @@ def _step_metadata(
             request.config.exploration_quota
         ),
         "pf_alg": request.resolved_physics_config.pf_alg,
-        "use_continuation_gate": bool(
-            request.config.use_continuation_gate
-        ),
         "policy_target_source": (
             "temperature_adjusted_mcts_visit_distribution"
         ),
@@ -476,14 +485,8 @@ def _generate_scenario(scenario_id: int) -> _ScenarioResult:
             search_result=search_result,
             temperature=temperature,
             rng=action_rng,
-            use_continuation_gate=request.config.use_continuation_gate,
-            min_hard_improvement=request.min_hard_improvement,
-            min_soft_improvement=request.min_soft_improvement,
-            min_gate_visits=request.min_gate_visits,
-            min_gate_visit_fraction=request.min_gate_visit_fraction,
             scenario_id=scenario_id,
             step=step,
-            physics_config=request.resolved_physics_config,
         )
         require_action_in_policy_support(
             decision.selected_action_id,
@@ -599,6 +602,7 @@ def _resume_identity(
 ) -> dict[str, object]:
     config = asdict(request.config)
     config["closeable_branch_ids"] = list(config["closeable_branch_ids"])
+    config.pop("use_continuation_gate", None)
     return {
         "raw_source": _raw_source_identity(request.raw_dir),
         "transitions": _source_identity(request.transitions_csv),
@@ -613,12 +617,6 @@ def _resume_identity(
         "generation_config": config,
         "root_dirichlet_alpha": request.root_dirichlet_alpha,
         "root_exploration_fraction": request.root_exploration_fraction,
-        "continuation_thresholds": {
-            "min_hard_improvement": request.min_hard_improvement,
-            "min_soft_improvement": request.min_soft_improvement,
-            "min_gate_visits": request.min_gate_visits,
-            "min_gate_visit_fraction": request.min_gate_visit_fraction,
-        },
     }
 
 
@@ -647,7 +645,10 @@ def _load_generation_progress(
         progress = json.loads(progress_path.read_text(encoding="utf-8"))
         if progress.get("identity") != identity:
             raise ValueError("Self-play resume identity does not match this request.")
-        run_id = str(progress["run_id"])
+        raw_run_id = progress.get("run_id")
+        if not isinstance(raw_run_id, str) or not raw_run_id.strip():
+            raise ValueError("progress.json run_id must be a non-empty string.")
+        run_id = raw_run_id
         requested = set(identity["scenario_ids"])
         completed = {
             int(value) for value in progress.get("completed_scenario_ids", [])
@@ -668,6 +669,8 @@ def _load_generation_progress(
                     "examples.csv is missing required columns: "
                     + ", ".join(sorted(missing))
                 )
+            if frame.empty:
+                return run_id, completed
             if frame[list(required)].isna().any().any():
                 raise ValueError("examples.csv required columns contain null values.")
             run_ids = frame["run_id"].astype(str).unique()
