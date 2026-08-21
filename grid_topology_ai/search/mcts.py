@@ -22,7 +22,7 @@ from grid_topology_ai.reward import (
     require_discount_factor,
     terminal_utility_from_outcome,
 )
-from grid_topology_ai.search.dc_action_screener import DCActionScreener
+from grid_topology_ai.search.screening import DCActionScreener
 
 if TYPE_CHECKING:
     from grid_topology_ai.models.neural_evaluator import NeuralPolicyValueEvaluator

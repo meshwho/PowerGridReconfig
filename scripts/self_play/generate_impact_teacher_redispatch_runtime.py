@@ -94,11 +94,7 @@ from grid_topology_ai.teacher_config import (
 from grid_topology_ai.data_adapter import GridFMAdapter
 from grid_topology_ai.environment import TopologySwitchingEnv
 from grid_topology_ai.physics.utility import state_utility
-from grid_topology_ai.physics.lodf import (
-    build_lodf_structure,
-    lodf_loading_safety_score,
-    rank_actions_with_lodf_structure,
-)
+from grid_topology_ai.physics.lodf import lodf_loading_safety_score
 from grid_topology_ai.outcome_record import (
     TerminalOutcomeEvidence,
     redispatch_status_for_reason,
@@ -119,10 +115,11 @@ from grid_topology_ai.search.continuation_gate import make_do_nothing_action
 from grid_topology_ai.search.impact_beam_search import (
     ImpactBeamSearchConfig,
     ImpactBeamSearchPlanner,
+    LODFScreenedImpactBeamSearchPlanner,
     ImpactBeamSearchResult,
     safety_score,
 )
-from grid_topology_ai.search.trajectory_selection import switch_count
+from grid_topology_ai.search.impact_beam_search import switch_count
 from grid_topology_ai.state.store import GridFMStateStore
 from grid_topology_ai.termination import (
     TerminationReason,
@@ -494,73 +491,6 @@ def _safe_short_sequence(best_node) -> str:
 # ======================================================================================
 
 
-class LODFScreenedImpactBeamSearchPlanner(ImpactBeamSearchPlanner):
-    """
-    ImpactBeamSearchPlanner with optional LODF-based candidate screening.
-
-    Important:
-        LODF is used only before expensive AC PF.
-        Final children are still evaluated through env.step(), so teacher examples
-        remain AC-validated.
-    """
-
-    def __init__(
-        self,
-        config: ImpactBeamSearchConfig,
-        lodf_screen_top_k: int,
-        lodf_min_candidate_count: int = 1,
-        physics_config: PhysicsConfig | None = None,
-    ):
-        super().__init__(config, physics_config=physics_config)
-
-        self.lodf_screen_top_k = int(lodf_screen_top_k)
-        self.lodf_min_candidate_count = int(lodf_min_candidate_count)
-
-    def _candidate_actions(
-        self,
-        env: TopologySwitchingEnv,
-    ) -> list[GridFMAction]:
-        base_actions = super()._candidate_actions(env)
-
-        if self.lodf_screen_top_k <= 0:
-            return base_actions
-
-        state = env.current_state
-
-        if state is None:
-            return base_actions
-
-        stop_actions = [
-            action
-            for action in base_actions
-            if action.action_type == "do_nothing"
-        ]
-
-        switch_actions = [
-            action
-            for action in base_actions
-            if action.action_type == "switch_off_branch"
-        ]
-
-        if len(switch_actions) < self.lodf_min_candidate_count:
-            return base_actions
-
-        if len(switch_actions) <= self.lodf_screen_top_k:
-            return base_actions
-
-        try:
-            ranked_switch_actions = rank_actions_by_lodf_screening(
-                state=state,
-                actions=switch_actions,
-                physics_config=self.physics_config,
-            )
-        except Exception:
-            ranked_switch_actions = switch_actions
-
-        selected_switch_actions = ranked_switch_actions[: self.lodf_screen_top_k]
-
-        return [*stop_actions, *selected_switch_actions]
-
 
 
 
@@ -612,6 +542,7 @@ def _generate_scenario(scenario_id: int) -> dict[str, Any]:
                 lodf_screen_top_k=int(task["lodf_screen_top_k"]),
                 lodf_min_candidate_count=int(task["lodf_min_candidate_count"]),
                 physics_config=physics_config,
+                lodf_structure_cache=ctx.get(_RUNTIME_LODF_STRUCTURE_CACHE),
             )
         else:
             planner = ImpactBeamSearchPlanner(
@@ -2272,40 +2203,6 @@ def ensure_checkpoint_config(
 
 
 
-
-
-def rank_actions_by_lodf_screening(
-    state,
-    actions,
-    physics_config=None,
-):
-    """Rank with topology-only LODF reuse and current dynamic branch values."""
-
-    if not actions:
-        return actions
-
-    ctx = _WORKER_CONTEXT
-    cache = (
-        ctx.get(_RUNTIME_LODF_STRUCTURE_CACHE)
-        if isinstance(ctx, dict)
-        else None
-    )
-
-    structure = (
-        cache.get_or_build(state)
-        if isinstance(cache, LODFStructureCache)
-        else build_lodf_structure(state)
-    )
-
-    if structure is None:
-        return actions
-
-    return rank_actions_with_lodf_structure(
-        state=state,
-        actions=actions,
-        structure=structure,
-        physics_config=physics_config,
-    )
 
 
 def clear_worker_caches_if_needed() -> None:
