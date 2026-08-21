@@ -295,117 +295,48 @@ Dependency files:
 ```bash
 python -m compileall -q grid_topology_ai scripts tests
 python -m pytest -q
-python -m scripts.self_play.loop --help
-python -m scripts.self_play.loop configs/self_play_loop_pilot.yaml --plan-only
+python -m scripts.self_play.generate --help
 ```
 
 ## Running self-play
 
-Run the pilot loop with:
+Generate examples directly with the canonical CLI. The caller selects the input
+checkpoint explicitly; omit `--checkpoint` to use the heuristic evaluator.
 
 ```bash
-python -m scripts.self_play.loop configs/self_play_loop_pilot.yaml
+python -m scripts.self_play.generate RAW_DIR \
+  --transitions TRANSITIONS.csv \
+  --output-dir data/self_play/mcts_v0 \
+  --checkpoint CHECKPOINT.pt
 ```
 
-Useful modes:
-
-- `--plan-only` prints and validates the execution plan without running generation, training, or evaluation.
-- `--validate-only` validates configuration and required artifact references.
-- `--resume` continues only after the latest iteration that has a valid `iteration_complete.json` marker. Incomplete iteration directories cause refusal instead of silent reuse.
-
-## Configuration
-
-The self-play YAML is organized into these sections:
-
-- `pool`: fixed scenario pool transitions and raw state directory.
-- `replay_buffer`: accumulated replay storage and sampling limits.
-- `generation`: neural MCTS generation settings, including `PF_ALG` and the semantic topology-action settings.
-- `training`: graph policy-value fine-tuning settings.
-- `evaluation`: fixed evaluation transitions, raw states, checkpoint evaluation, and `PF_ALG`.
-- `acceptance`: candidate acceptance metric and thresholds.
-- `metadata`: run naming and reproducibility metadata.
-
-A generation block exposes the bidirectional action settings explicitly:
-
-```yaml
-generation:
-  require_connected_after_switch: true
-  min_loading_for_switch_percent: 0.0
-  # Populate only with verified normally-open/tie branch IDs.
-  closeable_branch_ids: []
-```
-
-`closeable_branch_ids: []` preserves opening-only behavior. Evaluation does not
-have an independent override: it loads the exact topology-action configuration
-and ordered layout from the checkpoint and rejects incompatible artifacts.
-
-## Iteration artifacts
-
-A typical run directory contains:
-
-```text
-runs/<run_name>/
-  run_state.json
-  learning_curve.csv
-  replay/
-  checkpoints/
-    best.pt
-    best_metrics.json
-  iter_001/
-    selected_scenario_ids.txt
-    raw/
-      selected_transitions.csv
-      examples.csv
-      generate.log
-    train_batch.csv
-    train_examples.csv
-    validation_examples.csv
-    train_validation_split.json
-    candidate_checkpoint.pt
-    train_metrics.csv
-    eval_results.csv
-    eval_metrics.json
-    metadata.json
-    iteration_complete.json
-```
-
-The atomic completion marker is `iteration_complete.json`.
+Generation writes self-play examples only. Training and evaluation are separate,
+explicit operations; generation does not promote checkpoints or run a final test.
 
 ## Package structure
 
 - `grid_topology_ai/config`: typed configuration and validation.
-- `grid_topology_ai/self_play`: pool state, sampling, replay, acceptance, artifacts, and loop support.
+- `grid_topology_ai/self_play`: direct example generation, example contracts, and small artifact helpers.
 - `grid_topology_ai/training`: graph policy-value training, checkpoints, metrics, and splits.
 - `grid_topology_ai/evaluation`: checkpoint evaluation and metrics.
 - `grid_topology_ai/search`: MCTS planning components.
 - `grid_topology_ai/models`: graph datasets and neural models.
-- `scripts/self_play`: self-play loop and training CLIs.
+- `scripts/self_play`: direct self-play generation and training CLIs.
 - `scripts/evaluation`: evaluation CLIs including `python -m scripts.evaluation.evaluate_checkpoint`.
 - `tests`: unit, contract, and smoke tests.
 
 Public entry points kept stable:
 
 ```bash
-python -m scripts.self_play.loop
+python -m scripts.self_play.generate --help
 python -m scripts.self_play.train_graph_baseline
 python -m scripts.evaluation.evaluate_checkpoint
 ```
 
-## Bootstrap preparation
+## Self-play inputs
 
-Before the first real run, prepare:
-
-- scenario pool transitions CSV;
-- raw state directory for the pool;
-- bootstrap checkpoint;
-- fixed evaluation transitions CSV;
-- fixed evaluation raw state directory;
-- bootstrap evaluation metrics.
-
-Bootstrap evaluation metrics must be computed with the same `PF_ALG` configured
-for generation and evaluation. The bootstrap checkpoint must also match the
-current state-feature schema, configured topology-action fingerprint, and
-ordered action layout.
+Prepare a transitions CSV, its raw state directory, and—when neural-guided MCTS
+is desired—the exact checkpoint to pass via `--checkpoint`.
 
 ## Testing and CI
 
