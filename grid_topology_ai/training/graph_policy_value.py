@@ -25,6 +25,7 @@ from grid_topology_ai.models.graph_self_play_dataset import (
 )
 from grid_topology_ai.training.checkpoints import (
     NORMALIZATION_STAT_KEYS,
+    atomic_save_checkpoint,
     checkpoint_variant_path,
     extract_normalization_stats,
     load_checkpoint_payload,
@@ -246,7 +247,7 @@ def _save_candidate(
         parents=True,
         exist_ok=True,
     )
-    torch.save(checkpoint, path)
+    atomic_save_checkpoint(checkpoint, path)
 
 def record_validation_candidates(
     *,
@@ -1091,7 +1092,7 @@ def train_graph_policy_value_model(request: TrainingRequest) -> Path:
             checkpoint["best_epoch"] = int(best_epoch)
             checkpoint["best_metric"] = float(best_metric)
 
-        torch.save(checkpoint, output_path)
+        atomic_save_checkpoint(checkpoint, output_path)
 
         if request.save_best and checkpoint is best_checkpoint:
             model.load_state_dict(checkpoint["model_state_dict"])
@@ -1113,7 +1114,7 @@ def train_graph_policy_value_model(request: TrainingRequest) -> Path:
             last_checkpoint["selector_name"] = "last_epoch"
             last_checkpoint["selector_value"] = float(request.config.epochs)
             last_checkpoint["checkpoint_selection_metric"] = "last_epoch"
-            torch.save(last_checkpoint, last_checkpoint_path)
+            atomic_save_checkpoint(last_checkpoint, last_checkpoint_path)
 
             print("\nSaved additional checkpoint variants:")
             print(checkpoint_variant_path(output_path, "best_loss"))

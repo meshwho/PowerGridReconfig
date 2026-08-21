@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-import hashlib
+import os
 import subprocess
+import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Mapping
@@ -20,11 +21,9 @@ from grid_topology_ai.contracts import (
     OUTCOME_OBJECTIVE_VERSION,
 )
 from grid_topology_ai.models.graph_self_play_dataset import (
-    GRAPH_BATCHING_CONTRACT_VERSION,
     GraphSelfPlayDataset,
 )
 from grid_topology_ai.physics.objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
-from grid_topology_ai.self_play.artifacts import sha256_file
 from grid_topology_ai.training.metrics import build_value_target_diagnostics
 
 _SELECTOR_METRIC_NAMES = {
@@ -124,10 +123,6 @@ if TYPE_CHECKING:
     from grid_topology_ai.training.graph_policy_value import TrainingRequest
 
 
-def sha256_text(text: str) -> str:
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
-
-
 def get_git_commit(repo_root: Path) -> str | None:
     try:
         commit = subprocess.check_output(
@@ -182,60 +177,6 @@ def build_training_config_payload(request: "TrainingRequest") -> dict[str, Any]:
     }
 
 
-def build_dataset_metadata(
-    dataset: GraphSelfPlayDataset,
-    repo_root: Path,
-) -> dict[str, Any]:
-    examples_csv = Path(dataset.examples_csv)
-    examples_csv_abs = examples_csv.resolve()
-    state_paths = [
-        str(p).replace("\\", "/")
-        for p in dataset.examples["state_path"].astype(str).tolist()
-    ]
-    unique_state_paths = sorted(set(state_paths))
-
-    existing_state_count = 0
-    missing_state_count = 0
-    state_total_bytes = 0
-
-    for state_path_str in unique_state_paths:
-        state_path = Path(state_path_str)
-        if not state_path.is_absolute():
-            state_path = repo_root / state_path
-        if state_path.exists():
-            existing_state_count += 1
-            state_total_bytes += int(state_path.stat().st_size)
-        else:
-            missing_state_count += 1
-
-    return {
-        **physics_provenance(dataset.physics_config),
-        **topology_action_provenance(
-            dataset.topology_action_config,
-            dataset.action_layout,
-        ),
-        "examples_csv": str(examples_csv),
-        "examples_csv_abs": str(examples_csv_abs),
-        "examples_csv_sha256": sha256_file(examples_csv_abs),
-        "examples_count": int(len(dataset.examples)),
-        "action_layout_count": int(dataset.action_layout_count),
-        "scenario_count": int(dataset.examples["scenario_id"].nunique())
-        if "scenario_id" in dataset.examples.columns
-        else None,
-        "state_reference_count": int(len(state_paths)),
-        "unique_state_count": int(len(unique_state_paths)),
-        "existing_state_count": int(existing_state_count),
-        "missing_state_count": int(missing_state_count),
-        "state_total_bytes": int(state_total_bytes),
-        "state_paths_sha256": sha256_text("\n".join(unique_state_paths)),
-        "physical_objective_schema_version": PHYSICAL_OBJECTIVE_SCHEMA_VERSION,
-        "outcome_objective_version": OUTCOME_OBJECTIVE_VERSION,
-        "outcome_value_target_contract_version": (
-            OUTCOME_VALUE_TARGET_CONTRACT_VERSION
-        ),
-    }
-
-
 def make_checkpoint(
     *,
     model: torch.nn.Module,
@@ -252,7 +193,6 @@ def make_checkpoint(
     }
     normalization = dataset.normalization_state_dict()
     repo_root = request.project_root.resolve()
-    dataset_metadata = build_dataset_metadata(dataset=dataset, repo_root=repo_root)
     validation_examples_count = (
         0 if validation_dataset is None else int(len(validation_dataset))
     )
@@ -272,7 +212,6 @@ def make_checkpoint(
 
     checkpoint = {
         "checkpoint_contract_version": CHECKPOINT_CONTRACT_VERSION,
-        "graph_batching_contract_version": GRAPH_BATCHING_CONTRACT_VERSION,
         "physical_objective_schema_version": PHYSICAL_OBJECTIVE_SCHEMA_VERSION,
         "outcome_objective_version": OUTCOME_OBJECTIVE_VERSION,
         "outcome_value_target_contract_version": (
@@ -289,9 +228,6 @@ def make_checkpoint(
         "model_state_dict": model_state_dict_cpu,
         "num_bus_features": int(dataset.num_bus_features),
         "num_branch_features": int(dataset.num_branch_features),
-        "num_buses": int(dataset.reference_num_buses),
-        "num_branches": int(dataset.reference_num_branches),
-        "num_actions": int(dataset.reference_num_actions),
         "hidden_dim": int(request.config.hidden_dim),
         "num_layers": int(request.config.num_layers),
         "dropout": float(request.config.dropout),
@@ -320,13 +256,11 @@ def make_checkpoint(
         "git_commit": get_git_commit(repo_root),
         "repo_root": str(repo_root),
         "training_config": build_training_config_payload(request),
-        "dataset_metadata": dataset_metadata,
         "value_target_diagnostics": value_target_diagnostics,
         "bus_feature_mean": normalization["bus_feature_mean"],
         "bus_feature_std": normalization["bus_feature_std"],
         "branch_feature_mean": normalization["branch_feature_mean"],
         "branch_feature_std": normalization["branch_feature_std"],
-        "normalization_contract_version": 1,
         "normalization_source": "training_dataset",
         "normalization_frozen_from_init_checkpoint": False,
         "normalization_source_checkpoint": None,
@@ -336,6 +270,22 @@ def make_checkpoint(
         checkpoint.update(make_json_safe(dict(normalization_metadata)))
 
     return checkpoint
+
+
+def atomic_save_checkpoint(payload: Mapping[str, object], path: Path) -> None:
+    """Write a checkpoint without exposing a partially-written final file."""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    )
+    os.close(descriptor)
+    temporary_path = Path(temporary_name)
+    try:
+        torch.save(dict(payload), temporary_path)
+        os.replace(temporary_path, path)
+    finally:
+        temporary_path.unlink(missing_ok=True)
 
 
 def load_initial_checkpoint_into_model(
@@ -472,5 +422,4 @@ def save_checkpoint_now(
             if isinstance(value, (int, float))
         }
 
-    path.parent.mkdir(parents=True, exist_ok=True)
-    torch.save(checkpoint, path)
+    atomic_save_checkpoint(checkpoint, path)
