@@ -12,7 +12,6 @@ from grid_topology_ai.models.graph_policy_value_net_v2 import (
     GraphPolicyValueNetV2,
 )
 from grid_topology_ai.models.graph_self_play_dataset import (
-    GRAPH_BATCHING_CONTRACT_VERSION,
     collate_graph_samples,
 )
 from scripts.evaluation.evaluate_examples_with_checkpoint import (
@@ -342,7 +341,6 @@ def test_graph_v2_checkpoint_compatibility_ignores_reference_cardinality() -> No
     class Dataset:
         num_bus_features = 4
         num_branch_features = 6
-        num_actions = 5
         topology_action_config = (
             TEST_ACTION_SPACE_CONFIG
         )
@@ -358,9 +356,6 @@ def test_graph_v2_checkpoint_compatibility_ignores_reference_cardinality() -> No
         **checkpoint_topology_fields((0, 1)),
         "num_bus_features": 4,
         "num_branch_features": 6,
-        # The checkpoint was trained on a smaller
-        # representative graph.
-        "num_actions": 3,
     }
 
     validate_checkpoint_dataset_compatibility(
@@ -411,7 +406,7 @@ def test_graph_v2_checkpoint_requires_topology_cardinality_independence() -> Non
 def test_graph_v2_checkpoint_weights_cross_topology_cardinality(
     tmp_path: Path,
 ) -> None:
-    small, large = _variable_samples()
+    _, large = _variable_samples()
 
     torch.manual_seed(29)
     source_model = GraphPolicyValueNetV2(
@@ -429,20 +424,12 @@ def test_graph_v2_checkpoint_weights_cross_topology_cardinality(
             "model_type": (
                 "graph_policy_value_net_v2"
             ),
-            "graph_batching_contract_version": (
-                GRAPH_BATCHING_CONTRACT_VERSION
-            ),
             "topology_cardinality_independent": True,
             "num_bus_features": 4,
             "num_branch_features": 6,
             "hidden_dim": 16,
             "num_layers": 2,
             "dropout": 0.0,
-            # Reference cardinality from the small graph
-            # remains metadata only.
-            "num_actions": int(
-                small["action_mask"].numel()
-            ),
             "model_state_dict": (
                 source_model.state_dict()
             ),

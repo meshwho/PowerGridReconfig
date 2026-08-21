@@ -61,6 +61,7 @@ def test_cli_builds_graph_v2_training_request(
     assert request.examples_csv == examples
     assert request.output_path == checkpoint
     assert request.init_checkpoint == init
+    assert request.resume_checkpoint is None
     assert request.validation_examples_csv == val
     assert request.metrics_csv == metrics
     assert request.use_amp is True
@@ -82,6 +83,35 @@ def test_cli_builds_graph_v2_training_request(
     assert config.no_tensorboard is True
 
 
+def test_cli_wires_resume_checkpoint(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: list[TrainingRequest] = []
+    checkpoint = tmp_path / "model.pt"
+    resume = tmp_path / "model_resume.pt"
+    examples = tmp_path / "examples.csv"
+    _capture_request(monkeypatch, checkpoint, captured)
+
+    assert train_cli.main(
+        [
+            str(examples),
+            "--output", str(checkpoint),
+            "--resume-checkpoint", str(resume),
+            "--epochs", "9",
+            "--device", "cpu",
+            "--no-tensorboard",
+        ]
+    ) == 0
+
+    request = captured[0]
+    assert request.init_checkpoint is None
+    assert request.resume_checkpoint == resume
+    assert request.config.epochs == 9
+
+
 def test_cli_no_longer_exposes_model_selection() -> None:
     parser = train_cli.build_parser()
-    assert "--model-type" not in parser.format_help()
+    help_text = parser.format_help()
+    assert "--model-type" not in help_text
+    assert "--resume-checkpoint" in help_text

@@ -4,20 +4,17 @@ import numpy as np
 import torch
 
 from grid_topology_ai.config.physics import DEFAULT_PHYSICS_CONFIG
-from grid_topology_ai.contracts import (
-    CHECKPOINT_CONTRACT_VERSION,
-    OUTCOME_OBJECTIVE_VERSION,
-    OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
-    physics_provenance,
-)
-from grid_topology_ai.models.graph_self_play_dataset import (
-    GRAPH_BATCHING_CONTRACT_VERSION,
-)
 from grid_topology_ai.models.graph_policy_value_net_v2 import GraphPolicyValueNetV2
 from grid_topology_ai.models.neural_evaluator import NeuralPolicyValueEvaluator
-from grid_topology_ai.physics.objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
 from grid_topology_ai.state.schema import BRANCH_FEATURE_COLUMNS, BUS_FEATURE_COLUMNS
-from tests.topology_contract_helpers import checkpoint_topology_fields
+from grid_topology_ai.topology_actions import (
+    STOP_PLUS_BRANCH_STATUS_POLICY_LAYOUT,
+    action_layout_to_list,
+)
+from tests.topology_contract_helpers import (
+    TEST_ACTION_SPACE_CONFIG,
+    test_action_layout,
+)
 
 
 def test_graph_v2_evaluator_loads_checkpoint_normalization_arrays(tmp_path) -> None:
@@ -38,15 +35,16 @@ def test_graph_v2_evaluator_loads_checkpoint_normalization_arrays(tmp_path) -> N
     checkpoint_path = tmp_path / "candidate.pt"
     torch.save(
         {
-            "checkpoint_contract_version": CHECKPOINT_CONTRACT_VERSION,
-            "graph_batching_contract_version": GRAPH_BATCHING_CONTRACT_VERSION,
-            "topology_cardinality_independent": True,
-            "physical_objective_schema_version": PHYSICAL_OBJECTIVE_SCHEMA_VERSION,
-            "outcome_objective_version": OUTCOME_OBJECTIVE_VERSION,
-            "outcome_value_target_contract_version": OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
-            **physics_provenance(DEFAULT_PHYSICS_CONFIG),
-            **checkpoint_topology_fields((10, 20)),
+            "physics_config": DEFAULT_PHYSICS_CONFIG.to_dict(),
+            "topology_action_config": (
+                TEST_ACTION_SPACE_CONFIG.to_contract_dict()
+            ),
+            "action_layout": action_layout_to_list(
+                test_action_layout((10, 20))
+            ),
+            "policy_layout": STOP_PLUS_BRANCH_STATUS_POLICY_LAYOUT,
             "model_type": "graph_policy_value_net_v2",
+            "topology_cardinality_independent": True,
             "model_state_dict": model.state_dict(),
             "num_bus_features": num_bus_features,
             "num_branch_features": num_branch_features,
