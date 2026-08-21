@@ -156,31 +156,13 @@ class GraphSelfPlayDataset(Dataset):
         self.num_branch_features = int(
             first_data["branch_features"].shape[1]
         )
-        self.reference_num_buses = int(
-            first_data["bus_features"].shape[0]
-        )
-        self.reference_num_branches = int(
-            first_data["branch_features"].shape[0]
-        )
-        self.reference_num_actions = int(
-            first_data["action_mask"].shape[0]
-        )
-
-        # Temporary compatibility aliases for legacy Graph V1 and existing
-        # metadata consumers. Graph V2 must not use these as constraints.
-        self.num_buses = self.reference_num_buses
-        self.num_branches = self.reference_num_branches
-        self.num_actions = self.reference_num_actions
-
-        if (
-                self.reference_num_actions
-                != len(self.action_layout)
-        ):
+        first_num_actions = int(first_data["action_mask"].shape[0])
+        if first_num_actions != len(self.action_layout):
             raise ValueError(
                 "The first state action mask does not "
                 "match its action layout. "
                 f"Expected {len(self.action_layout)}, "
-                f"got {self.reference_num_actions}."
+                f"got {first_num_actions}."
             )
 
         if normalization_stats is not None:
@@ -559,8 +541,6 @@ class GraphSelfPlayDataset(Dataset):
             ),
         }
 
-
-GRAPH_BATCHING_CONTRACT_VERSION = 1
 
 _REQUIRED_TENSOR_FIELDS = (
     "bus_features",

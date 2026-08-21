@@ -42,6 +42,7 @@ def build_parser() -> argparse.ArgumentParser:
         default="data/self_play/graph_v2/graph_policy_value_net.pt",
     )
     parser.add_argument("--init-checkpoint", type=str, default=None)
+    parser.add_argument("--resume-checkpoint", type=str, default=None)
     parser.add_argument("--val-examples-csv", type=str, default=None)
     parser.add_argument("--save-best", action="store_true")
     parser.add_argument("--tensorboard-log-dir", type=str, default=None)
@@ -76,6 +77,9 @@ def main(argv: list[str] | None = None) -> int:
         config=config,
         init_checkpoint=(
             None if args.init_checkpoint is None else Path(args.init_checkpoint)
+        ),
+        resume_checkpoint=(
+            None if args.resume_checkpoint is None else Path(args.resume_checkpoint)
         ),
         validation_examples_csv=(
             None
