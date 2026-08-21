@@ -30,8 +30,7 @@ class EvaluationConfig:
     c_puct: float = 2.0
     prior_exponent: float = 0.5
 
-    primary_policy_mode: str = "ungated"
-    use_continuation_gate: bool = True
+    policy_mode: str = "ungated"
     allow_handoff_with_hard_overloads: bool = False
 
     num_workers: int = 1
@@ -117,24 +116,16 @@ class EvaluationConfig:
             {"auto", "cpu", "cuda"},
         )
 
-        primary_policy_mode = str(self.primary_policy_mode).strip().lower()
+        policy_mode = str(self.policy_mode).strip().lower()
         require_choice(
-            "evaluation.primary_policy_mode",
-            primary_policy_mode,
+            "evaluation.policy_mode",
+            policy_mode,
             _POLICY_MODES,
         )
-        if (
-            primary_policy_mode == "constrained"
-            and not self.use_continuation_gate
-        ):
-            raise ValueError(
-                "evaluation.primary_policy_mode='constrained' requires "
-                "evaluation.use_continuation_gate=true."
-            )
         object.__setattr__(
             self,
-            "primary_policy_mode",
-            primary_policy_mode,
+            "policy_mode",
+            policy_mode,
         )
 
         if not self.output_csv_name:
@@ -192,6 +183,14 @@ class EvaluationConfig:
             widening_exponent,
         )
 
+    @property
+    def primary_policy_mode(self) -> str:
+        return self.policy_mode
+
+    @property
+    def use_continuation_gate(self) -> bool:
+        return self.policy_mode == "constrained"
+
     @classmethod
     def from_mapping(
         cls,
@@ -231,12 +230,7 @@ class EvaluationConfig:
             prior_exponent=float(
                 data.get("prior_exponent", 0.5)
             ),
-            primary_policy_mode=str(
-                data.get("primary_policy_mode", "ungated")
-            ),
-            use_continuation_gate=bool(
-                data.get("use_continuation_gate", True)
-            ),
+            policy_mode=str(data.get("policy_mode", "ungated")),
             allow_handoff_with_hard_overloads=bool(
                 data.get(
                     "allow_handoff_with_hard_overloads",
