@@ -225,18 +225,18 @@ self-play examples, replay, and checkpoints in this order:
 ```bash
 # 1. Fresh episodes and outcome targets.
 # Repeat --closeable-branch-id for each verified normally-open/tie branch.
-python -m scripts.self_play.generate <POOL_RAW_DIR> \
+python -m grid_topology_ai.cli self-play <POOL_RAW_DIR> \
   --transitions <POOL_TRANSITIONS.csv> \
-  --output-dir <NEW_SELF_PLAY_DIR> \
+  --output <NEW_SELF_PLAY_DIR> \
   --pf-alg 3 \
   --require-connected-after-switch \
   --min-loading-for-switch-percent 0.0
 
 # 2. Fresh checkpoint; do not initialize from a legacy checkpoint.
-python -m scripts.self_play.train_graph_baseline <NEW_EXAMPLES_CSV> --output <NEW_CHECKPOINT.pt> --device cpu
+python -m grid_topology_ai.cli train <NEW_EXAMPLES_CSV> --output <NEW_CHECKPOINT.pt> --device cpu
 
 # 3. Fresh fixed-evaluation rows and metrics.
-python -m scripts.evaluation.evaluate_checkpoint <EVAL_RAW_DIR> --transitions <EVAL_TRANSITIONS.csv> --checkpoint <NEW_CHECKPOINT.pt> --pf-alg 3 --output-csv <NEW_EVAL_RESULTS.csv> --output-json <NEW_EVAL_METRICS.json>
+python -m grid_topology_ai.cli evaluate <EVAL_RAW_DIR> --transitions <EVAL_TRANSITIONS.csv> --checkpoint <NEW_CHECKPOINT.pt> --pf-alg 3 --output-csv <NEW_EVAL_RESULTS.csv> --output-json <NEW_EVAL_METRICS.json>
 ```
 
 Archive the old replay/run directory, point the self-play YAML bootstrap paths
@@ -295,7 +295,7 @@ Dependency files:
 ```bash
 python -m compileall -q grid_topology_ai scripts tests
 python -m pytest -q
-python -m scripts.self_play.generate --help
+python -m grid_topology_ai.cli self-play --help
 ```
 
 ## Running self-play
@@ -304,9 +304,9 @@ Generate examples directly with the canonical CLI. The caller selects the input
 checkpoint explicitly; omit `--checkpoint` to use the heuristic evaluator.
 
 ```bash
-python -m scripts.self_play.generate RAW_DIR \
+python -m grid_topology_ai.cli self-play RAW_DIR \
   --transitions TRANSITIONS.csv \
-  --output-dir data/self_play/mcts_v0 \
+  --output data/self_play/mcts_v0 \
   --checkpoint CHECKPOINT.pt
 ```
 
@@ -318,19 +318,18 @@ explicit operations; generation does not promote checkpoints or run a final test
 - `grid_topology_ai/config`: typed configuration and validation.
 - `grid_topology_ai/self_play`: direct example generation, example contracts, and small artifact helpers.
 - `grid_topology_ai/training`: graph policy-value training, checkpoints, metrics, and splits.
-- `grid_topology_ai/evaluation`: checkpoint evaluation and metrics.
+- `grid_topology_ai/evaluation.py`: checkpoint evaluation and metrics.
 - `grid_topology_ai/search`: MCTS planning components.
 - `grid_topology_ai/models`: graph datasets and neural models.
-- `scripts/self_play`: direct self-play generation and training CLIs.
-- `scripts/evaluation`: evaluation CLIs including `python -m scripts.evaluation.evaluate_checkpoint`.
+- `grid_topology_ai/cli.py`: the unified teacher, training, self-play, and evaluation CLI.
 - `tests`: unit, contract, and smoke tests.
 
-Public entry points kept stable:
+Unified Light commands:
 
 ```bash
-python -m scripts.self_play.generate --help
-python -m scripts.self_play.train_graph_baseline
-python -m scripts.evaluation.evaluate_checkpoint
+python -m grid_topology_ai.cli self-play --help
+python -m grid_topology_ai.cli train
+python -m grid_topology_ai.cli evaluate
 ```
 
 ## Self-play inputs

@@ -64,7 +64,7 @@ jobs:
 
       - name: Self-play CLI help
         if: runner.os == 'Linux'
-        run: python -m scripts.self_play.generate --help
+        run: python -m grid_topology_ai.cli self-play --help
 
   package-build:
     name: Package build

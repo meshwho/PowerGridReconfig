@@ -1,0 +1,19 @@
+# Useful starting points for a small, reproducible Light experiment.
+physics:
+  pf_alg: 3
+self_play:
+  simulations: 300
+  depth: 4
+  max_steps: 5
+  top_k: 40
+  workers: 1
+training:
+  epochs: 500
+  batch_size: 16
+  learning_rate: 0.001
+evaluation:
+  simulations: 150
+  depth: 4
+  max_steps: 5
+  top_k: 30
+  workers: 1

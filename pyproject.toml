@@ -19,6 +19,9 @@ dependencies = [
     "PYPOWER==5.1.19",
 ]
 
+[project.scripts]
+power-grid-reconfig = "grid_topology_ai.cli:main"
+
 [project.optional-dependencies]
 train = [
     "tensorboard>=2.18,<3",
