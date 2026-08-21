@@ -64,13 +64,6 @@ class SelfPlayExample:
     outcome_gamma: float | None = None
     selection_temperature: float | None = None
     selection_mode: str | None = None
-    policy_target_entropy: float | None = None
-    policy_target_normalized_entropy: float | None = None
-    mcts_legal_action_count: int | None = None
-    mcts_considered_action_count: int | None = None
-    mcts_visited_action_count: int | None = None
-    mcts_action_coverage: float | None = None
-    mcts_visited_action_coverage: float | None = None
 
 
 class ExampleWriter:
@@ -209,23 +202,6 @@ class ExampleWriter:
                     episode_id=episode_id,
                     selection_temperature=item.get("selection_temperature"),
                     selection_mode=item.get("selection_mode"),
-                    policy_target_entropy=item.get("policy_target_entropy"),
-                    policy_target_normalized_entropy=item.get(
-                        "policy_target_normalized_entropy"
-                    ),
-                    mcts_legal_action_count=item.get(
-                        "mcts_legal_action_count"
-                    ),
-                    mcts_considered_action_count=item.get(
-                        "mcts_considered_action_count"
-                    ),
-                    mcts_visited_action_count=item.get(
-                        "mcts_visited_action_count"
-                    ),
-                    mcts_action_coverage=item.get("mcts_action_coverage"),
-                    mcts_visited_action_coverage=item.get(
-                        "mcts_visited_action_coverage"
-                    ),
                     extra_metadata=item.get("extra_metadata"),
                     outcome_fields=target,
                 )
@@ -308,13 +284,6 @@ class ExampleWriter:
         episode_id: str,
         selection_temperature: float | None,
         selection_mode: str | None,
-        policy_target_entropy: float | None,
-        policy_target_normalized_entropy: float | None,
-        mcts_legal_action_count: int | None,
-        mcts_considered_action_count: int | None,
-        mcts_visited_action_count: int | None,
-        mcts_action_coverage: float | None,
-        mcts_visited_action_coverage: float | None,
         extra_metadata: dict[str, Any] | None,
         outcome_fields: dict[str, object] | None,
     ) -> SelfPlayExample:
@@ -453,41 +422,6 @@ class ExampleWriter:
             ),
             selection_mode=(
                 None if selection_mode is None else str(selection_mode)
-            ),
-            policy_target_entropy=(
-                None
-                if policy_target_entropy is None
-                else float(policy_target_entropy)
-            ),
-            policy_target_normalized_entropy=(
-                None
-                if policy_target_normalized_entropy is None
-                else float(policy_target_normalized_entropy)
-            ),
-            mcts_legal_action_count=(
-                None
-                if mcts_legal_action_count is None
-                else int(mcts_legal_action_count)
-            ),
-            mcts_considered_action_count=(
-                None
-                if mcts_considered_action_count is None
-                else int(mcts_considered_action_count)
-            ),
-            mcts_visited_action_count=(
-                None
-                if mcts_visited_action_count is None
-                else int(mcts_visited_action_count)
-            ),
-            mcts_action_coverage=(
-                None
-                if mcts_action_coverage is None
-                else float(mcts_action_coverage)
-            ),
-            mcts_visited_action_coverage=(
-                None
-                if mcts_visited_action_coverage is None
-                else float(mcts_visited_action_coverage)
             ),
         )
         self.examples.append(example)

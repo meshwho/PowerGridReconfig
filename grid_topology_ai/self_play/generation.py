@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import inspect
-import math
 import multiprocessing
 import os
 import uuid
@@ -37,7 +36,6 @@ NeuralPolicyValueEvaluator = None
 MCTSConfig = None
 MCTSPlanner = None
 ExampleWriter = None
-analyze_root_branches = None
 make_do_nothing_action = None
 
 
@@ -111,7 +109,6 @@ class _GenerationActionDecision:
     selected_action_id: int
     selected_branch_id: int | None
     policy_target: dict[int, float]
-    continuation_analysis: Any | None
 
 
 def _ensure_runtime_dependencies() -> None:
@@ -125,7 +122,6 @@ def _ensure_runtime_dependencies() -> None:
     global MCTSConfig
     global MCTSPlanner
     global ExampleWriter
-    global analyze_root_branches
     global make_do_nothing_action
 
     if _RUNTIME_DEPENDENCIES_LOADED:
@@ -141,9 +137,6 @@ def _ensure_runtime_dependencies() -> None:
         GridFMPowerFlowBackend as _Backend,
     )
     from grid_topology_ai.reward import GridFMReward as _Reward
-    from grid_topology_ai.search.continuation_gate import (
-        analyze_root_branches as _analyze_root_branches,
-    )
     from grid_topology_ai.search.continuation_gate import (
         make_do_nothing_action as _make_do_nothing_action,
     )
@@ -162,7 +155,6 @@ def _ensure_runtime_dependencies() -> None:
     MCTSConfig = _MCTSConfig
     MCTSPlanner = _MCTSPlanner
     ExampleWriter = _ExampleWriter
-    analyze_root_branches = _analyze_root_branches
     make_do_nothing_action = _make_do_nothing_action
     _RUNTIME_DEPENDENCIES_LOADED = True
 
@@ -185,34 +177,6 @@ def _scenario_seed(stream_seed: int, scenario_id: int) -> int:
     )
     state = sequence.generate_state(1, dtype=np.uint64)
     return int(state[0])
-
-
-def _policy_entropy(
-    policy: dict[int, float],
-) -> tuple[float, float]:
-    probabilities = np.asarray(
-        [
-            float(probability)
-            for probability in policy.values()
-            if float(probability) > 0.0
-        ],
-        dtype=np.float64,
-    )
-    if probabilities.size == 0:
-        return 0.0, 0.0
-
-    total = float(probabilities.sum())
-    if not np.isfinite(total) or total <= 0.0:
-        raise ValueError(
-            "Policy probabilities must have a positive finite sum."
-        )
-    probabilities = probabilities / total
-    entropy = float(-np.sum(probabilities * np.log(probabilities)))
-    if probabilities.size <= 1:
-        return entropy, 0.0
-
-    normalized = entropy / math.log(int(probabilities.size))
-    return entropy, min(1.0, max(0.0, float(normalized)))
 
 
 def selection_temperature_for_step(
@@ -284,29 +248,17 @@ def _select_generation_action(
             )
         selected_branch_id = selected_action.branch_id
 
-    continuation_analysis = None
-    if use_continuation_gate:
-        continuation_analysis = analyze_root_branches(
-            result=search_result,
-            min_hard_improvement=min_hard_improvement,
-            min_soft_improvement=min_soft_improvement,
-            min_visits=min_gate_visits,
-            min_visit_fraction=min_gate_visit_fraction,
-            physics_config=physics_config,
-        )
-
     return _GenerationActionDecision(
         selected_action_id=selected_action_id,
         selected_branch_id=selected_branch_id,
         policy_target=policy_target,
-        continuation_analysis=continuation_analysis,
     )
 
 
 def _scenario_ids_from_request(
     request: GenerationRequest,
 ) -> list[int]:
-    if not request.transitions_csv.exists():
+    if not request.transitions_csv.is_file():
         raise FileNotFoundError(
             f"Transitions file not found: {request.transitions_csv}"
         )
@@ -319,57 +271,6 @@ def _scenario_ids_from_request(
     )
 
 
-def _continuation_metadata(
-    analysis: Any | None,
-    selected_action_id: int,
-) -> dict[str, Any]:
-    if analysis is None:
-        return {
-            "continuation_allowed_action_ids": None,
-            "continuation_recommended_action_id": None,
-            "continuation_recommended_branch_id": None,
-            "continuation_recommendation_reason": None,
-            "selected_action_allowed_by_continuation": None,
-        }
-
-    allowed_action_ids = tuple(
-        int(action_id)
-        for action_id in getattr(analysis, "allowed_action_ids", ())
-    )
-    recommended_action_id = getattr(
-        analysis,
-        "recommended_action_id",
-        getattr(analysis, "selected_action_id", None),
-    )
-    recommended_branch_id = getattr(
-        analysis,
-        "recommended_branch_id",
-        getattr(analysis, "selected_branch_id", None),
-    )
-    recommendation_reason = getattr(
-        analysis,
-        "recommendation_reason",
-        getattr(analysis, "selected_reason", None),
-    )
-    return {
-        "continuation_allowed_action_ids": list(allowed_action_ids),
-        "continuation_recommended_action_id": (
-            None
-            if recommended_action_id is None
-            else int(recommended_action_id)
-        ),
-        "continuation_recommended_branch_id": (
-            None
-            if recommended_branch_id is None
-            else int(recommended_branch_id)
-        ),
-        "continuation_recommendation_reason": recommendation_reason,
-        "selected_action_allowed_by_continuation": (
-            int(selected_action_id) in set(allowed_action_ids)
-        ),
-    }
-
-
 def _step_metadata(
     *,
     request: GenerationRequest,
@@ -379,10 +280,7 @@ def _step_metadata(
     scenario_action_seed: int,
     selection_temperature: float,
     selection_mode: str,
-    policy_target_entropy: float,
-    policy_target_normalized_entropy: float,
     search_result: Any,
-    continuation_metadata: dict[str, Any],
 ) -> dict[str, Any]:
     return {
         "source": "mcts_self_play",
@@ -394,10 +292,6 @@ def _step_metadata(
         "scenario_action_sampling_seed": int(scenario_action_seed),
         "self_play_iteration": int(request.iteration),
         "selection_temperature": float(selection_temperature),
-        "policy_target_entropy": float(policy_target_entropy),
-        "policy_target_normalized_entropy": float(
-            policy_target_normalized_entropy
-        ),
         "selection_mode": selection_mode,
         "temperature_steps": int(request.config.temperature_steps),
         "temperature_iterations": int(
@@ -414,21 +308,6 @@ def _step_metadata(
         ),
         "mcts_exploration_quota": int(
             request.config.exploration_quota
-        ),
-        "mcts_legal_action_count": int(
-            search_result.root_legal_action_count
-        ),
-        "mcts_considered_action_count": int(
-            search_result.root_considered_action_count
-        ),
-        "mcts_visited_action_count": int(
-            search_result.root_visited_action_count
-        ),
-        "mcts_action_coverage": float(
-            search_result.root_action_coverage
-        ),
-        "mcts_visited_action_coverage": float(
-            search_result.root_visited_action_coverage
         ),
         "pf_alg": request.resolved_physics_config.pf_alg,
         "use_continuation_gate": bool(
@@ -448,7 +327,6 @@ def _step_metadata(
             if getattr(search_result, "best_branch_id", None) is None
             else int(search_result.best_branch_id)
         ),
-        **continuation_metadata,
     }
 
 
@@ -607,9 +485,6 @@ def _generate_scenario(scenario_id: int) -> _ScenarioResult:
             step=step,
             physics_config=request.resolved_physics_config,
         )
-        policy_entropy, normalized_entropy = _policy_entropy(
-            decision.policy_target
-        )
         require_action_in_policy_support(
             decision.selected_action_id,
             decision.policy_target,
@@ -625,9 +500,6 @@ def _generate_scenario(scenario_id: int) -> _ScenarioResult:
         )
         step_result = env.step(selected_action)
         rewards.append(float(step_result.reward))
-        continuation = _continuation_metadata(
-            decision.continuation_analysis, decision.selected_action_id
-        )
         pending_examples.append({
             "state": state_before,
             "action_mask": action_mask,
@@ -640,13 +512,6 @@ def _generate_scenario(scenario_id: int) -> _ScenarioResult:
             "mcts_policy": decision.policy_target,
             "selection_temperature": float(temperature),
             "selection_mode": selection_mode,
-            "policy_target_entropy": float(policy_entropy),
-            "policy_target_normalized_entropy": float(normalized_entropy),
-            "mcts_legal_action_count": int(search_result.root_legal_action_count),
-            "mcts_considered_action_count": int(search_result.root_considered_action_count),
-            "mcts_visited_action_count": int(search_result.root_visited_action_count),
-            "mcts_action_coverage": float(search_result.root_action_coverage),
-            "mcts_visited_action_coverage": float(search_result.root_visited_action_coverage),
             "extra_metadata": _step_metadata(
                 request=request,
                 scenario_id=scenario_id,
@@ -655,10 +520,7 @@ def _generate_scenario(scenario_id: int) -> _ScenarioResult:
                 scenario_action_seed=scenario_action_seed,
                 selection_temperature=temperature,
                 selection_mode=selection_mode,
-                policy_target_entropy=policy_entropy,
-                policy_target_normalized_entropy=normalized_entropy,
                 search_result=search_result,
-                continuation_metadata=continuation,
             ),
         })
         if step_result.done:
@@ -699,19 +561,53 @@ def _source_identity(path: Path | None) -> dict[str, object] | None:
     }
 
 
+_RAW_SOURCE_FILES = (
+    "bus_data.parquet",
+    "branch_data.parquet",
+    "gen_data.parquet",
+)
+
+
+def _preflight_generation_inputs(request: GenerationRequest) -> None:
+    if not request.raw_dir.is_dir():
+        raise FileNotFoundError(
+            f"GridFM raw directory not found: {request.raw_dir}"
+        )
+    for name in _RAW_SOURCE_FILES:
+        path = request.raw_dir / name
+        if not path.is_file():
+            raise FileNotFoundError(f"Required GridFM parquet not found: {path}")
+    if not request.transitions_csv.is_file():
+        raise FileNotFoundError(
+            f"Transitions file not found: {request.transitions_csv}"
+        )
+    if request.checkpoint is not None and not request.checkpoint.is_file():
+        raise FileNotFoundError(
+            f"Checkpoint file not found: {request.checkpoint}"
+        )
+
+
+def _raw_source_identity(raw_dir: Path) -> dict[str, object]:
+    return {
+        name: _source_identity(raw_dir / name)
+        for name in _RAW_SOURCE_FILES
+    }
+
+
 def _resume_identity(
     request: GenerationRequest, scenario_ids: list[int]
 ) -> dict[str, object]:
     config = asdict(request.config)
     config["closeable_branch_ids"] = list(config["closeable_branch_ids"])
     return {
-        "raw_source": _source_identity(request.raw_dir),
+        "raw_source": _raw_source_identity(request.raw_dir),
         "transitions": _source_identity(request.transitions_csv),
         "checkpoint": _source_identity(request.checkpoint),
         "scenario_ids": list(scenario_ids),
         "iteration": request.iteration,
         "mcts_seed": request.mcts_seed,
         "action_seed": request.action_seed,
+        "device": str(request.device),
         "physics_config": request.resolved_physics_config.to_dict(),
         "action_space_config": request.config.action_space_config.to_contract_dict(),
         "generation_config": config,
@@ -751,14 +647,85 @@ def _load_generation_progress(
         progress = json.loads(progress_path.read_text(encoding="utf-8"))
         if progress.get("identity") != identity:
             raise ValueError("Self-play resume identity does not match this request.")
-        completed = {int(value) for value in progress.get("completed_scenario_ids", [])}
+        run_id = str(progress["run_id"])
+        requested = set(identity["scenario_ids"])
+        completed = {
+            int(value) for value in progress.get("completed_scenario_ids", [])
+        }
+        if not completed <= requested:
+            raise ValueError(
+                "progress.json contains scenario IDs outside this request."
+            )
         if examples_path.exists():
-            frame = pd.read_csv(examples_path, usecols=["scenario_id", "run_id"])
-            completed.update(int(value) for value in frame["scenario_id"].unique())
-            run_ids = frame["run_id"].dropna().astype(str).unique()
-            if len(run_ids) == 1 and str(run_ids[0]) != str(progress["run_id"]):
+            frame = pd.read_csv(examples_path)
+            required = {
+                "run_id", "iteration", "episode_id", "scenario_id",
+                "step", "state_id",
+            }
+            missing = required - set(frame.columns)
+            if missing:
+                raise ValueError(
+                    "examples.csv is missing required columns: "
+                    + ", ".join(sorted(missing))
+                )
+            if frame[list(required)].isna().any().any():
+                raise ValueError("examples.csv required columns contain null values.")
+            run_ids = frame["run_id"].astype(str).unique()
+            if len(run_ids) != 1:
+                raise ValueError("examples.csv must contain exactly one run ID.")
+            if str(run_ids[0]) != run_id:
                 raise ValueError("examples.csv run ID does not match progress.json.")
-        return str(progress["run_id"]), completed
+            try:
+                numeric_columns = {
+                    name: pd.to_numeric(frame[name], errors="raise")
+                    for name in ("iteration", "scenario_id", "step")
+                }
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    "examples.csv iteration, scenario_id, and step must be integers."
+                ) from exc
+            if any(
+                not np.isfinite(values).all()
+                or not (values == values.astype(np.int64)).all()
+                for values in numeric_columns.values()
+            ):
+                raise ValueError(
+                    "examples.csv iteration, scenario_id, and step must be integers."
+                )
+            iterations = numeric_columns["iteration"].astype(np.int64)
+            scenarios = numeric_columns["scenario_id"].astype(np.int64)
+            steps = numeric_columns["step"].astype(np.int64)
+            if not (iterations == request.iteration).all():
+                raise ValueError("examples.csv iteration does not match request.")
+            if not set(scenarios) <= requested:
+                raise ValueError(
+                    "examples.csv contains scenario IDs outside this request."
+                )
+            validated = frame.assign(
+                iteration=iterations, scenario_id=scenarios, step=steps
+            )
+            if validated["state_id"].astype(str).duplicated().any():
+                raise ValueError("examples.csv contains duplicate state_id values.")
+            if validated.duplicated(["episode_id", "step"]).any():
+                raise ValueError(
+                    "examples.csv contains duplicate (episode_id, step) values."
+                )
+            if (validated.groupby("scenario_id")["episode_id"].nunique() != 1).any():
+                raise ValueError(
+                    "Each scenario_id must correspond to exactly one episode_id."
+                )
+            if (validated.groupby("episode_id")["scenario_id"].nunique() != 1).any():
+                raise ValueError(
+                    "Each episode_id must correspond to exactly one scenario_id."
+                )
+            for episode_id, episode in validated.groupby("episode_id"):
+                episode_steps = sorted(int(value) for value in episode["step"])
+                if episode_steps != list(range(len(episode_steps))):
+                    raise ValueError(
+                        f"examples.csv episode {episode_id!r} has non-contiguous steps."
+                    )
+            completed.update(int(value) for value in scenarios.unique())
+        return run_id, completed
 
     if progress_path.exists() or examples_path.exists():
         raise FileExistsError(
@@ -774,6 +741,7 @@ def _load_generation_progress(
 
 
 def generate_self_play_examples(request: GenerationRequest) -> Path:
+    _preflight_generation_inputs(request)
     scenario_ids = _scenario_ids_from_request(request)
     request.output_dir.mkdir(parents=True, exist_ok=True)
     identity = _resume_identity(request, scenario_ids)
