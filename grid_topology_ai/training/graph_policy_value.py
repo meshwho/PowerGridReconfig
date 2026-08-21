@@ -16,9 +16,7 @@ from torch.utils.data import DataLoader
 from grid_topology_ai.config import TrainingConfig
 from grid_topology_ai.config.physics import PhysicsConfig
 from grid_topology_ai.contracts import require_physics_provenance
-from grid_topology_ai.models.graph_policy_value_net_v2 import (
-    GraphPolicyValueNetV2 as _GraphPolicyValueNetV2,
-)
+from grid_topology_ai.models.graph_policy_value_net_v2 import GraphPolicyValueNetV2
 from grid_topology_ai.models.graph_self_play_dataset import (
     GraphSelfPlayDataset,
     collate_graph_samples,
@@ -48,46 +46,6 @@ from grid_topology_ai.training.validation_diagnostics import (
 from grid_topology_ai.topology_actions import STOP_PLUS_BRANCH_STATUS_POLICY_LAYOUT
 
 
-class GraphPolicyValueNetV2(_GraphPolicyValueNetV2):
-    @staticmethod
-    def _segment_softmax(
-        scores: torch.Tensor,
-        batch_index: torch.Tensor,
-        batch_size: int,
-    ) -> torch.Tensor:
-        if scores.ndim != 1:
-            raise ValueError("Segmented softmax expects a 1D score tensor.")
-        if batch_index.shape != scores.shape:
-            raise ValueError("batch_index must match scores.")
-        if batch_size <= 0:
-            raise ValueError("batch_size must be positive.")
-
-        work_dtype = (
-            torch.float32
-            if scores.dtype in (torch.float16, torch.bfloat16)
-            else scores.dtype
-        )
-        work_scores = scores.to(dtype=work_dtype)
-        index = batch_index.long()
-
-        maxima = work_scores.new_full(
-            (batch_size,),
-            torch.finfo(work_scores.dtype).min,
-        )
-        maxima.scatter_reduce_(
-            dim=0,
-            index=index,
-            src=work_scores,
-            reduce="amax",
-            include_self=True,
-        )
-        exponentials = torch.exp(work_scores - maxima[index])
-        denominators = exponentials.new_zeros(batch_size)
-        denominators.index_add_(0, index, exponentials)
-        weights = exponentials / denominators[index].clamp_min(1e-12)
-        return weights.to(dtype=scores.dtype)
-
-
 GraphModel = GraphPolicyValueNetV2
 
 
@@ -99,6 +57,7 @@ class TrainingRequest:
     config: TrainingConfig
 
     init_checkpoint: Path | None = None
+    resume_checkpoint: Path | None = None
     validation_examples_csv: Path | None = None
 
     use_amp: bool = False
@@ -174,7 +133,6 @@ def _candidate_normalization_metadata(
 ) -> dict[str, object]:
     from_init = request.init_checkpoint is not None
     return {
-        "normalization_contract_version": 1,
         "normalization_source": (
             "init_checkpoint"
             if from_init
@@ -607,7 +565,6 @@ def _normalization_provenance(
 ) -> dict[str, object]:
     from_init = init_checkpoint is not None
     return {
-        "normalization_contract_version": 1,
         "normalization_source": "init_checkpoint" if from_init else "training_dataset",
         "normalization_frozen_from_init_checkpoint": from_init,
         "normalization_source_checkpoint": (
@@ -662,6 +619,8 @@ def log_epoch_metrics(**kwargs: Any) -> None:
 
 def train_graph_policy_value_model(request: TrainingRequest) -> Path:
     with checkpoint_candidate_tracking(request):
+        if request.init_checkpoint is not None and request.resume_checkpoint is not None:
+            raise ValueError("init_checkpoint and resume_checkpoint are mutually exclusive.")
         if request.init_checkpoint is not None and not request.normalize_features:
             raise ValueError(
                 "Fine-tuning from an initial checkpoint requires "
@@ -699,19 +658,20 @@ def train_graph_policy_value_model(request: TrainingRequest) -> Path:
 
         init_checkpoint_payload = None
         checkpoint_normalization_stats = None
-        if request.init_checkpoint is not None:
-            if not request.init_checkpoint.exists():
+        source_checkpoint = request.resume_checkpoint or request.init_checkpoint
+        if source_checkpoint is not None:
+            if not source_checkpoint.exists():
                 raise FileNotFoundError(
-                    f"Initial checkpoint not found: {request.init_checkpoint}"
+                    f"Checkpoint not found: {source_checkpoint}"
                 )
             init_checkpoint_payload = load_checkpoint_payload(
-                request.init_checkpoint,
+                source_checkpoint,
                 map_location="cpu",
                 expected_physics_config=request.physics_config,
             )
             checkpoint_normalization_stats = extract_normalization_stats(
                 init_checkpoint_payload,
-                source=request.init_checkpoint,
+                source=source_checkpoint,
             )
 
         dataset = GraphSelfPlayDataset(
@@ -770,9 +730,6 @@ def train_graph_policy_value_model(request: TrainingRequest) -> Path:
         validate_no_scenario_overlap(train_dataset=dataset, val_dataset=val_dataset)
 
         print(f"Examples:      {len(dataset)}")
-        print(f"Reference buses:    {dataset.reference_num_buses}")
-        print(f"Reference branches: {dataset.reference_num_branches}")
-        print(f"Reference actions:  {dataset.reference_num_actions}")
         print(f"Action layouts:     {dataset.action_layout_count}")
         print(f"Bus features:  {dataset.num_bus_features}")
         print(f"Branch feats:  {dataset.num_branch_features}")
@@ -826,13 +783,14 @@ def train_graph_policy_value_model(request: TrainingRequest) -> Path:
 
         model = _build_model(request=request, dataset=dataset, device=device)
 
-        if request.init_checkpoint is not None:
+        if source_checkpoint is not None:
             load_initial_checkpoint_into_model(
                 model=model,
-                checkpoint_path=request.init_checkpoint,
+                checkpoint_path=source_checkpoint,
                 dataset=dataset,
                 hidden_dim=request.config.hidden_dim,
                 num_layers=request.config.num_layers,
+                dropout=request.config.dropout,
                 device=device,
                 checkpoint_payload=init_checkpoint_payload,
             )
@@ -859,7 +817,48 @@ def train_graph_policy_value_model(request: TrainingRequest) -> Path:
         best_policy_score = -float("inf")
         best_policy_score_epoch = 0
 
-        for epoch in range(1, request.config.epochs + 1):
+        start_epoch = 1
+        if request.resume_checkpoint is not None:
+            resume = init_checkpoint_payload
+            assert resume is not None
+            saved_config = resume.get("training_config")
+            if not isinstance(saved_config, Mapping):
+                raise ValueError(
+                    f"Resume checkpoint is missing training_config: {request.resume_checkpoint}"
+                )
+            current_config = {
+                "seed": int(request.seed),
+                "lr": float(request.config.learning_rate),
+                "batch_size": int(request.config.batch_size),
+                "value_loss_weight": float(request.config.value_loss_weight),
+                "value_huber_delta": float(request.config.value_huber_delta),
+                "amp": bool(request.use_amp),
+                "num_workers": int(request.config.num_workers),
+                "no_normalize_features": bool(not request.normalize_features),
+            }
+            for key, expected in current_config.items():
+                if saved_config.get(key) != expected:
+                    raise ValueError(
+                        f"Resume training configuration mismatch for {key}: "
+                        f"expected {expected!r}, checkpoint has {saved_config.get(key)!r}."
+                    )
+            for key in ("optimizer_state_dict", "scaler_state_dict", "completed_epoch", "rng_state", "train_generator_state"):
+                if key not in resume:
+                    raise ValueError(f"Resume checkpoint is missing {key!r}: {request.resume_checkpoint}")
+            optimizer.load_state_dict(resume["optimizer_state_dict"])
+            scaler.load_state_dict(resume["scaler_state_dict"])
+            train_generator.set_state(resume["train_generator_state"])
+            rng_state = resume["rng_state"]
+            random.setstate(rng_state["python"])
+            np.random.set_state(rng_state["numpy"])
+            torch.set_rng_state(rng_state["torch"])
+            if device.type == "cuda" and "cuda" in rng_state:
+                torch.cuda.set_rng_state_all(rng_state["cuda"])
+            start_epoch = int(resume["completed_epoch"]) + 1
+            best_metric = float(resume.get("best_metric", best_metric))
+            best_epoch = int(resume.get("best_epoch", best_epoch))
+
+        for epoch in range(start_epoch, request.config.epochs + 1):
             total_loss, policy_loss, value_loss = train_one_epoch(
                 model=model,
                 loader=loader,
@@ -1072,6 +1071,38 @@ def train_graph_policy_value_model(request: TrainingRequest) -> Path:
                 best_metric=best_metric,
                 learning_rate=learning_rate,
             )
+
+            progress_checkpoint = (
+                request.resume_checkpoint
+                if request.resume_checkpoint is not None
+                else checkpoint_variant_path(output_path, "resume")
+            )
+            resume_payload = make_checkpoint(
+                model=model,
+                dataset=dataset,
+                request=request,
+                device=device,
+                use_amp=use_amp,
+                normalization_metadata=_normalization_provenance(
+                    init_checkpoint=request.init_checkpoint
+                ),
+                validation_dataset=val_dataset,
+            )
+            resume_payload.update({
+                "optimizer_state_dict": optimizer.state_dict(),
+                "scaler_state_dict": scaler.state_dict(),
+                "completed_epoch": int(epoch),
+                "best_metric": float(best_metric),
+                "best_epoch": int(best_epoch),
+                "train_generator_state": train_generator.get_state(),
+                "rng_state": {
+                    "python": random.getstate(),
+                    "numpy": np.random.get_state(),
+                    "torch": torch.get_rng_state(),
+                    **({"cuda": torch.cuda.get_rng_state_all()} if device.type == "cuda" else {}),
+                },
+            })
+            atomic_save_checkpoint(resume_payload, progress_checkpoint)
 
         if request.save_best and best_checkpoint is not None:
             checkpoint = best_checkpoint

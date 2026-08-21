@@ -365,6 +365,8 @@ def _require_graph_checkpoint_feature_dimensions(
     *,
     source: str,
 ) -> None:
+    import numpy as np
+
     from grid_topology_ai.state.schema import (
         BRANCH_FEATURE_COLUMNS,
         BUS_FEATURE_COLUMNS,
@@ -412,6 +414,15 @@ def _require_graph_checkpoint_feature_dimensions(
                 f"Graph checkpoint normalization vector {key} mismatch "
                 f"for {source}: expected {expected}, observed {size}."
             )
+        array = np.asarray(value, dtype=np.float32)
+        if not np.isfinite(array).all():
+            raise ValueError(
+                f"Graph checkpoint normalization vector {key} is not finite for {source}."
+            )
+        if key.endswith("_std") and not (array > 0.0).all():
+            raise ValueError(
+                f"Graph checkpoint normalization vector {key} must be positive for {source}."
+            )
 
 
 def require_checkpoint_contracts(
@@ -420,39 +431,24 @@ def require_checkpoint_contracts(
     source: str,
     expected_physics_config: "PhysicsConfig | None" = None,
 ) -> "PhysicsConfig":
-    """Validate current checkpoint semantics while legacy versions are optional."""
+    """Validate the semantic facts needed to reconstruct a current Graph V2."""
 
-    from grid_topology_ai.physics.objective import (
-        PHYSICAL_OBJECTIVE_SCHEMA_VERSION,
-    )
-
-    require_exact_contract_version(
-        payload.get("checkpoint_contract_version"),
-        expected=CHECKPOINT_CONTRACT_VERSION,
-        name="checkpoint contract",
-        source=source,
-        regeneration_command="",
-    )
-    require_exact_contract_version(
-        payload.get("physical_objective_schema_version"),
-        expected=PHYSICAL_OBJECTIVE_SCHEMA_VERSION,
-        name="physical-objective contract",
-        source=source,
-        regeneration_command="",
-    )
-    require_outcome_objective_version(payload, source=source)
-    require_exact_contract_version(
-        payload.get("outcome_value_target_contract_version"),
-        expected=OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
-        name="outcome/value-target contract",
-        source=source,
-        regeneration_command="",
-    )
-    require_graph_batching_checkpoint_contract(
-        payload,
-        source=source,
-    )
-
+    if payload.get("model_type") != "graph_policy_value_net_v2":
+        raise ValueError(f"Unsupported graph checkpoint model_type for {source}.")
+    if payload.get("topology_cardinality_independent") is not True:
+        raise ValueError(
+            f"Graph checkpoint must be topology-cardinality independent for {source}."
+        )
+    if payload.get("policy_layout") != "stop_plus_branch_status_v1":
+        raise ValueError(f"Unsupported graph checkpoint policy_layout for {source}.")
+    if "model_state_dict" not in payload:
+        raise ValueError(f"Graph checkpoint is missing model_state_dict for {source}.")
+    for key in ("hidden_dim", "num_layers"):
+        if int(payload.get(key, 0)) <= 0:
+            raise ValueError(f"Graph checkpoint has invalid {key} for {source}.")
+    dropout = float(payload.get("dropout", -1.0))
+    if not 0.0 <= dropout < 1.0:
+        raise ValueError(f"Graph checkpoint has invalid dropout for {source}.")
     require_topology_action_provenance(
         payload,
         source=source,

@@ -1506,44 +1506,52 @@ class GraphPolicyValueNetV2(nn.Module):
                 "batch_size must be positive."
             )
 
-        maxima = scores.new_full(
+        work_dtype = (
+            torch.float32
+            if scores.dtype in (torch.float16, torch.bfloat16)
+            else scores.dtype
+        )
+        work_scores = scores.to(dtype=work_dtype)
+        index = batch_index.long()
+
+        maxima = work_scores.new_full(
             (batch_size,),
-            torch.finfo(scores.dtype).min,
+            torch.finfo(work_scores.dtype).min,
         )
 
         maxima.scatter_reduce_(
             dim=0,
-            index=batch_index.long(),
-            src=scores,
+            index=index,
+            src=work_scores,
             reduce="amax",
             include_self=True,
         )
 
         shifted_scores = (
-                scores
-                - maxima[batch_index.long()]
+                work_scores
+                - maxima[index]
         )
 
         exponentials = torch.exp(
             shifted_scores
         )
 
-        denominators = scores.new_zeros(
+        denominators = exponentials.new_zeros(
             batch_size
         )
 
         denominators.index_add_(
             0,
-            batch_index.long(),
+            index,
             exponentials,
         )
 
         return (
                 exponentials
                 / denominators[
-                    batch_index.long()
+                    index
                 ].clamp_min(1e-12)
-        )
+        ).to(dtype=scores.dtype)
 
     @classmethod
     def _segment_active_mean(

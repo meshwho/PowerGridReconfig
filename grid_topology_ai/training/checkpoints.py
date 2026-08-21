@@ -12,19 +12,14 @@ import torch
 
 from grid_topology_ai.config.physics import PhysicsConfig
 from grid_topology_ai.contracts import (
-    CHECKPOINT_CONTRACT_VERSION,
-    OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
-    physics_provenance,
     require_checkpoint_contracts,
     require_topology_action_provenance,
-    topology_action_provenance,
-    OUTCOME_OBJECTIVE_VERSION,
 )
 from grid_topology_ai.models.graph_self_play_dataset import (
     GraphSelfPlayDataset,
 )
-from grid_topology_ai.physics.objective import PHYSICAL_OBJECTIVE_SCHEMA_VERSION
 from grid_topology_ai.training.metrics import build_value_target_diagnostics
+from grid_topology_ai.topology_actions import action_layout_to_list
 
 _SELECTOR_METRIC_NAMES = {
     "val_loss": "validation_loss",
@@ -167,6 +162,7 @@ def build_training_config_payload(request: "TrainingRequest") -> dict[str, Any]:
         "no_normalize_features": bool(not request.normalize_features),
         "output": make_json_safe(request.output_path),
         "init_checkpoint": make_json_safe(request.init_checkpoint),
+        "resume_checkpoint": make_json_safe(request.resume_checkpoint),
         "val_examples_csv": make_json_safe(request.validation_examples_csv),
         "save_best": bool(request.save_best),
         "tensorboard_log_dir": make_json_safe(request.tensorboard_log_dir),
@@ -211,17 +207,9 @@ def make_checkpoint(
     value_target_diagnostics = build_value_target_diagnostics(dataset=dataset)
 
     checkpoint = {
-        "checkpoint_contract_version": CHECKPOINT_CONTRACT_VERSION,
-        "physical_objective_schema_version": PHYSICAL_OBJECTIVE_SCHEMA_VERSION,
-        "outcome_objective_version": OUTCOME_OBJECTIVE_VERSION,
-        "outcome_value_target_contract_version": (
-            OUTCOME_VALUE_TARGET_CONTRACT_VERSION
-        ),
-        **physics_provenance(dataset.physics_config),
-        **topology_action_provenance(
-            dataset.topology_action_config,
-            dataset.action_layout,
-        ),
+        "physics_config": dataset.physics_config.to_dict(),
+        "topology_action_config": dataset.topology_action_config.to_contract_dict(),
+        "action_layout": action_layout_to_list(dataset.action_layout),
         "policy_layout": str(dataset.policy_layout),
         "model_type": "graph_policy_value_net_v2",
         "topology_cardinality_independent": True,
@@ -295,6 +283,7 @@ def load_initial_checkpoint_into_model(
     dataset: GraphSelfPlayDataset,
     hidden_dim: int,
     num_layers: int,
+    dropout: float,
     device: torch.device,
     checkpoint_payload: Mapping[str, object] | None = None,
 ) -> None:
@@ -348,6 +337,14 @@ def load_initial_checkpoint_into_model(
                 f"Initial checkpoint is missing required key {key!r}: "
                 f"{checkpoint_path}"
             )
+
+    expected_dropout = float(dropout)
+    if float(checkpoint.get("dropout", -1.0)) != expected_dropout:
+        raise ValueError(
+            "Initial checkpoint dropout mismatch. "
+            f"Expected {expected_dropout}, got {checkpoint.get('dropout')}. "
+            f"Checkpoint: {checkpoint_path}"
+        )
         actual_value = int(checkpoint[key])
         if actual_value != expected_value:
             raise ValueError(
