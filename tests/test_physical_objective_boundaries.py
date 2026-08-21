@@ -26,7 +26,7 @@ def test_objective_consumers_import_physical_objective_contract():
 def test_runtime_threshold_consumers_import_physics_config():
     files = [
         "data_adapter.py",
-        "search/dc_action_screener.py",
+        "search/screening.py",
         "search/impact_beam_search.py",
         "search/mcts.py",
         "search/continuation_gate.py",
@@ -42,7 +42,7 @@ def test_runtime_threshold_consumers_import_physics_config():
 def test_selected_literal_threshold_comparisons_were_removed():
     targets = [
         "search/continuation_gate.py",
-        "search/dc_action_screener.py",
+        "search/screening.py",
         "search/impact_beam_search.py",
         "search/mcts.py",
         "self_play/generation.py",
@@ -68,7 +68,7 @@ def test_custom_runtime_thresholds_are_used_consistently():
     from grid_topology_ai.evaluation.metrics import compute_safety_score
     from grid_topology_ai.physics.utility import state_security_penalty
     from grid_topology_ai.search.continuation_gate import topology_penalty
-    from grid_topology_ai.search.dc_action_screener import DCActionScreener
+    from grid_topology_ai.search.screening import DCActionScreener
     from grid_topology_ai.search.impact_beam_search import safety_score
     from pypower.idx_brch import BR_STATUS, PF, PT, RATE_A
 
