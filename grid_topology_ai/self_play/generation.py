@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import inspect
 import math
+import multiprocessing
 import os
 import uuid
 from concurrent.futures import ProcessPoolExecutor
@@ -795,6 +796,7 @@ def generate_self_play_examples(request: GenerationRequest) -> Path:
     else:
         executor = ProcessPoolExecutor(
             max_workers=request.workers,
+            mp_context=multiprocessing.get_context("spawn"),
             initializer=_initialize_generation_worker,
             initargs=(request,),
         )
