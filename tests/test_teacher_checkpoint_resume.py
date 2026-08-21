@@ -5,7 +5,7 @@ import json
 from scripts.self_play import generate_impact_teacher_redispatch_runtime as teacher
 
 
-def test_resume_restores_completed_work_and_retries_incomplete_work(tmp_path) -> None:
+def test_resume_restores_committed_work_and_ignores_incomplete_work(tmp_path) -> None:
     checkpoint_path = tmp_path / "teacher_checkpoint.jsonl"
     records = [
         {
@@ -44,7 +44,7 @@ def test_resume_restores_completed_work_and_retries_incomplete_work(tmp_path) ->
         allowed_scenario_ids=[1, 2, 3, 4, 5],
     )
 
-    assert 1 not in restored
+    assert restored[1]["reason"] == "exception"
     assert restored[2]["reason"] == "no_teacher_action_found"
     assert 3 not in restored
     assert restored[4]["ok"] is True
