@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import gc
-import hashlib
 import json
 import math
 import multiprocessing as mp
@@ -87,18 +86,6 @@ from grid_topology_ai.cache import (
 )
 from grid_topology_ai.action_space import GridFMAction, GridFMActionSpace
 from grid_topology_ai.config.physics import DEFAULT_PHYSICS_CONFIG, PhysicsConfig
-from grid_topology_ai.contracts import (
-    OUTCOME_OBJECTIVE_VERSION,
-    OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
-    PHYSICS_CONFIG_CONTRACT_VERSION,
-    physics_provenance,
-    require_exact_contract_version,
-    require_outcome_objective_version,
-    require_physics_provenance,
-    require_topology_action_provenance,
-    topology_action_provenance,
-    TOPOLOGY_ACTION_CONTRACT_VERSION,
-)
 from grid_topology_ai.teacher_config import (
     ensure_teacher_checkpoint_config,
     teacher_run_id,
@@ -113,14 +100,10 @@ from grid_topology_ai.physics.lodf import (
     rank_actions_with_lodf_structure,
 )
 from grid_topology_ai.outcome_record import (
-    TERMINAL_OUTCOME_EVIDENCE_SCHEMA_VERSION,
     TerminalOutcomeEvidence,
     redispatch_status_for_reason,
 )
-from grid_topology_ai.physics.objective import (
-    PHYSICAL_OBJECTIVE_SCHEMA_VERSION,
-    assess_physical_state,
-)
+from grid_topology_ai.physics.objective import assess_physical_state
 from grid_topology_ai.power_flow.backend import GridFMPowerFlowBackend
 from grid_topology_ai.physics.redispatch import (
     MinimalRedispatchResult,
@@ -140,10 +123,6 @@ from grid_topology_ai.search.impact_beam_search import (
     safety_score,
 )
 from grid_topology_ai.search.trajectory_selection import switch_count
-from grid_topology_ai.self_play.example_validation import (
-    validate_example_contract_versions,
-    validate_example_outcome_contracts,
-)
 from grid_topology_ai.state.store import GridFMStateStore
 from grid_topology_ai.termination import (
     TerminationReason,
@@ -151,7 +130,11 @@ from grid_topology_ai.termination import (
     termination_reason_value,
     validate_outcome_invariants,
 )
-from grid_topology_ai.topology_actions import build_branch_action_slots
+from grid_topology_ai.topology_actions import (
+    action_layout_fingerprint,
+    action_layout_to_list,
+    build_branch_action_slots,
+)
 from grid_topology_ai.value_targets import add_outcome_value_targets_to_rows
 
 # ======================================================================================
@@ -159,20 +142,6 @@ from grid_topology_ai.value_targets import add_outcome_value_targets_to_rows
 # ======================================================================================
 
 _WORKER_CONTEXT: dict[str, Any] | None = None
-
-
-def _csv_physics_provenance(
-    physics_config: PhysicsConfig,
-) -> dict[str, object]:
-    provenance = physics_provenance(physics_config)
-    return {
-        **provenance,
-        "physics_config": json.dumps(
-            provenance["physics_config"],
-            sort_keys=True,
-            separators=(",", ":"),
-        ),
-    }
 
 
 def _require_worker_context() -> dict[str, Any]:
@@ -187,10 +156,6 @@ def _require_worker_context() -> dict[str, Any]:
     return _WORKER_CONTEXT
 
 
-def clear_worker_caches_if_needed() -> None:
-    """Bounded caches and process lifetime replace global cache clearing."""
-
-    return None
 
 
 # ======================================================================================
@@ -597,24 +562,6 @@ class LODFScreenedImpactBeamSearchPlanner(ImpactBeamSearchPlanner):
         return [*stop_actions, *selected_switch_actions]
 
 
-def rank_actions_by_lodf_screening(
-    state,
-    actions: list[GridFMAction],
-    physics_config: PhysicsConfig | None = None,
-) -> list[GridFMAction]:
-    if not actions:
-        return actions
-
-    structure = build_lodf_structure(state)
-    if structure is None:
-        return actions
-
-    return rank_actions_with_lodf_structure(
-        state=state,
-        actions=actions,
-        structure=structure,
-        physics_config=physics_config,
-    )
 
 
 # ======================================================================================
@@ -622,7 +569,7 @@ def rank_actions_by_lodf_screening(
 # ======================================================================================
 
 
-def process_one_scenario_fast(scenario_id: int) -> dict[str, Any]:
+def _generate_scenario(scenario_id: int) -> dict[str, Any]:
     ctx = _require_worker_context()
 
     adapter = ctx["adapter"]
@@ -679,6 +626,14 @@ def process_one_scenario_fast(scenario_id: int) -> dict[str, Any]:
 
         search_started = time.perf_counter()
         result = planner.search(env=search_env, scenario_id=scenario_id)
+        result, selection_diagnostics = _redispatch_aware_selection(
+            result,
+            task_config=task,
+        )
+        _SELECTION_PROVENANCE_BY_SCENARIO[scenario_id] = _selection_provenance(
+            result,
+            selection_diagnostics,
+        )
 
         print(
             f"[worker {os.getpid()}] scenario {scenario_id}: "
@@ -757,7 +712,9 @@ def process_one_scenario_fast(scenario_id: int) -> dict[str, Any]:
             selected_action_id = int(best.action_ids[step_idx])
             selected_branch_id = best.branch_ids[step_idx]
 
-            if not _action_is_valid(action_mask, selected_action_id):
+            if not _selected_teacher_action_is_valid(
+                action_mask, selected_action_id
+            ):
                 if bool(task["add_handoff_example"]):
                     safety_before = safety_score(
                         state_before,
@@ -795,7 +752,7 @@ def process_one_scenario_fast(scenario_id: int) -> dict[str, Any]:
                 safety_after = safety_score(next_state, physics_config=physics_config)
 
             continue_action, continue_reason, step_improvement = (
-                should_continue_teacher_action(
+                _selected_teacher_replay_decision(
                     safety_before=safety_before,
                     safety_after=safety_after,
                     state_before=state_before,
@@ -946,7 +903,7 @@ def process_one_scenario_fast(scenario_id: int) -> dict[str, Any]:
                 state_id=state_id,
                 action_mask=item["action_mask"],
                 extra_metadata={
-                    **physics_provenance(physics_config),
+                    "physics_config": physics_config.to_dict(),
                     "source": "impact_beam_teacher_multistep_fast",
                     "scenario_id": int(scenario_id),
                     "step": int(step_idx),
@@ -1014,8 +971,9 @@ def process_one_scenario_fast(scenario_id: int) -> dict[str, Any]:
                     "step_termination_reason": termination_reason_value(
                         parse_termination_reason(item.get("termination_reason_after_step"))
                     ),
-                    "physical_objective_schema_version": PHYSICAL_OBJECTIVE_SCHEMA_VERSION,
-                    **_csv_physics_provenance(physics_config),
+                    "physics_config": json.dumps(
+                        physics_config.to_dict(), sort_keys=True, separators=(",", ":")
+                    ),
                     "visit_counts_json": json.dumps(
                         {str(k): int(v) for k, v in item["visit_counts"].items()}
                     ),
@@ -1059,25 +1017,6 @@ def process_one_scenario_fast(scenario_id: int) -> dict[str, Any]:
         }
 
 
-def process_scenario_batch(scenario_ids: list[int]) -> list[dict[str, Any]]:
-    results: list[dict[str, Any]] = []
-    for scenario_id in scenario_ids:
-        print(
-            f"[worker {os.getpid()}] scenario {scenario_id}: start",
-            flush=True,
-        )
-        started = time.perf_counter()
-        result = process_one_scenario_fast(int(scenario_id))
-        elapsed = time.perf_counter() - started
-        print(
-            f"[worker {os.getpid()}] scenario {scenario_id}: "
-            f"done in {elapsed:.1f}s | "
-            f"ok={result.get('ok')} | "
-            f"reason={result.get('reason')}",
-            flush=True,
-        )
-        results.append(result)
-    return results
 
 
 # ======================================================================================
@@ -1153,22 +1092,24 @@ def make_task_config(args: argparse.Namespace) -> dict[str, Any]:
         pf_alg=int(args.pf_alg),
         max_iterations=int(args.pf_max_iter),
     )
+    depth = int(args.depth)
+    max_teacher_steps = int(args.max_teacher_steps)
+    if depth <= 0 or max_teacher_steps <= 0:
+        raise ValueError("Teacher depth and max_teacher_steps must be positive.")
     return {
-        "depth": int(args.depth),
+        "depth": min(depth, max_teacher_steps),
         "beam_width": int(args.beam_width),
         "candidate_pool": int(args.candidate_pool),
         "top_k": int(args.top_k),
         "gamma": float(args.gamma),
         "pf_alg": int(args.pf_alg),
         "pf_max_iter": physics_config.max_iterations,
-        "physics_config_contract_version": PHYSICS_CONFIG_CONTRACT_VERSION,
         "physics_config": physics_config.to_dict(),
-        "physics_config_fingerprint": physics_config.fingerprint(),
         "max_steps": int(args.max_steps),
-        "max_teacher_steps": int(args.max_teacher_steps),
+        "max_teacher_steps": max_teacher_steps,
         "soft_policy_temperature": float(args.soft_policy_temperature),
         "use_soft_root_policy": bool(args.use_soft_root_policy),
-        "min_safety_improvement": float(args.min_safety_improvement),
+        "min_safety_improvement": 0.0,
         "allow_hard_count_increase": bool(args.allow_hard_count_increase),
         "disable_cache": bool(args.disable_cache),
         "power_flow_failure_penalty": float(args.power_flow_failure_penalty),
@@ -1183,6 +1124,9 @@ def make_task_config(args: argparse.Namespace) -> dict[str, Any]:
         "use_lodf_screening": bool(args.use_lodf_screening),
         "lodf_screen_top_k": int(args.lodf_screen_top_k),
         "lodf_min_candidate_count": int(args.lodf_min_candidate_count),
+        "min_meaningful_safety_improvement": _MIN_MEANINGFUL_SAFETY_IMPROVEMENT,
+        "terminal_redispatch_relative_epsilon": _TERMINAL_REDISPATCH_RELATIVE_EPSILON,
+        "terminal_redispatch_absolute_epsilon_mw": _TERMINAL_REDISPATCH_ABSOLUTE_EPSILON_MW,
     }
 
 
@@ -1275,32 +1219,6 @@ def load_scenario_checkpoints(
     return results
 
 
-def ensure_checkpoint_config(config_path: Path, config: dict[str, Any]) -> None:
-    normalized = json.loads(
-        json.dumps(config, ensure_ascii=False, sort_keys=True)
-    )
-    if config_path.exists():
-        existing = json.loads(config_path.read_text(encoding="utf-8"))
-        if existing != normalized:
-            raise RuntimeError(
-                "Teacher checkpoint configuration does not match "
-                "the current command. Use the original settings, "
-                "a different --run-name, or --force."
-            )
-        return
-
-    config_path.parent.mkdir(parents=True, exist_ok=True)
-    temp_path = config_path.with_suffix(config_path.suffix + ".tmp")
-    temp_path.write_text(
-        json.dumps(
-            normalized,
-            ensure_ascii=False,
-            indent=2,
-            sort_keys=True,
-        ),
-        encoding="utf-8",
-    )
-    temp_path.replace(config_path)
 
 
 def collect_rows_from_checkpoints(
@@ -1491,10 +1409,7 @@ def main() -> None:
         limit=args.limit,
     )
     task_config = make_task_config(args)
-    physics_config = require_physics_provenance(
-        task_config,
-        source="impact-teacher task config",
-    )
+    physics_config = PhysicsConfig.from_mapping(task_config["physics_config"])
     checkpoint_path = output_dir / "teacher_checkpoint.jsonl"
     checkpoint_config_path = output_dir / "teacher_checkpoint_config.json"
     checkpoint_config = {
@@ -1656,15 +1571,6 @@ def main() -> None:
         ["scenario_id", "step"],
         ascending=[True, True],
     )
-    validate_example_contract_versions(
-        examples_df,
-        source_path=examples_path,
-        expected_physics_config=physics_config,
-    )
-    validate_example_outcome_contracts(
-        examples_df,
-        source_path=examples_path,
-    )
     examples_temp_path = examples_path.with_suffix(".csv.tmp")
     examples_df.to_csv(examples_temp_path, index=False)
     examples_temp_path.replace(examples_path)
@@ -1686,25 +1592,6 @@ def main() -> None:
     print("\nDone.")
 
 
-teacher = sys.modules[__name__]
-_original_make_task_config = make_task_config
-_original_load_scenario_checkpoints = load_scenario_checkpoints
-_original_process_scenario_batch = process_scenario_batch
-_original_append_scenario_checkpoint = append_scenario_checkpoint
-_original_planner_search = ImpactBeamSearchPlanner.search
-_original_action_is_valid = _action_is_valid
-_base_main = main
-
-_TEACHER_SELECTION_MODE = "epsilon_optimal_minimum_switch"
-_SELECTION_ROW_FIELDS = (
-    "teacher_selection_mode",
-    "relative_physical_epsilon",
-    "teacher_best_physical_safety",
-    "teacher_selected_safety",
-    "teacher_selected_switch_count",
-    "teacher_retained_improvement_fraction",
-    "teacher_pareto_front_size",
-)
 _REDISPATCH_ROW_FIELDS = (
     "redispatch_attempted",
     "redispatch_opf_success",
@@ -1715,45 +1602,16 @@ _REDISPATCH_ROW_FIELDS = (
     "redispatch_max_generator_delta_mw",
     "redispatch_message",
 )
-_REQUIRED_CHECKPOINT_ROW_FIELDS = (
-    "run_id",
-    "iteration",
-    "episode_id",
-    "terminal_outcome_evidence_schema_version",
-    "terminal_outcome_evidence_json",
-    "outcome_objective_version",
-    "outcome_value_target_contract_version",
-    "topology_action_contract_version",
-    "topology_action_config",
-    "topology_action_config_fingerprint",
-    "action_layout",
-    "action_layout_fingerprint",
-    "redispatch_attempted",
-    "redispatch_opf_success",
-    "redispatch_validated",
-    *_SELECTION_ROW_FIELDS,
-)
-
 _SELECTION_PROVENANCE_BY_SCENARIO: dict[int, dict[str, object]] = {}
 
 
-def make_task_config(args: argparse.Namespace) -> dict[str, Any]:
-    task_config = _original_make_task_config(args)
-    depth = int(task_config["depth"])
-    max_teacher_steps = int(task_config["max_teacher_steps"])
-    if depth <= 0 or max_teacher_steps <= 0:
-        raise ValueError("Teacher depth and max_teacher_steps must be positive.")
-    task_config["depth"] = min(depth, max_teacher_steps)
-    physics_config = PhysicsConfig.from_mapping(task_config["physics_config"])
-    task_config.update(physics_provenance(physics_config))
-    return task_config
 
 
 def _selected_teacher_action_is_valid(
     action_mask: np.ndarray,
     action_id: int,
 ) -> bool:
-    if not _original_action_is_valid(action_mask, action_id):
+    if not _action_is_valid(action_mask, action_id):
         raise RuntimeError(
             "Beam-selected teacher action became invalid during replay: "
             f"action_id={int(action_id)}."
@@ -1777,175 +1635,21 @@ def _selected_teacher_replay_decision(
     return True, "selected_by_beam_search", improvement
 
 
-def _install_worker_replay_contract() -> None:
-    global _action_is_valid, should_continue_teacher_action
-    _action_is_valid = _selected_teacher_action_is_valid
-    should_continue_teacher_action = _selected_teacher_replay_decision
 
 
-def _selection_provenance_is_valid(row: dict[str, Any]) -> bool:
-    if row.get("teacher_selection_mode") != _TEACHER_SELECTION_MODE:
-        return False
-    try:
-        epsilon = float(row["relative_physical_epsilon"])
-        best_safety = float(row["teacher_best_physical_safety"])
-        selected_safety = float(row["teacher_selected_safety"])
-        selected_switches = int(row["teacher_selected_switch_count"])
-        retained_fraction = float(row["teacher_retained_improvement_fraction"])
-        pareto_front_size = int(row["teacher_pareto_front_size"])
-    except (KeyError, TypeError, ValueError, OverflowError):
-        return False
-    if not 0.0 <= epsilon < 1.0:
-        return False
-    if not math.isfinite(best_safety) or not math.isfinite(selected_safety):
-        return False
-    if selected_safety + 1e-9 < best_safety:
-        return False
-    if selected_switches < 0 or pareto_front_size <= 0:
-        return False
-    if not math.isfinite(retained_fraction) or not 0.0 <= retained_fraction <= 1.0:
-        return False
-    return True
 
 
-def _checkpoint_row_contracts_are_current(row: dict[str, Any]) -> bool:
-    source = "teacher checkpoint row"
-    try:
-        require_physics_provenance(row, source=source)
-        require_outcome_objective_version(row, source=source)
-        require_exact_contract_version(
-            row.get("outcome_value_target_contract_version"),
-            expected=OUTCOME_VALUE_TARGET_CONTRACT_VERSION,
-            name="outcome-value-target contract",
-            source=source,
-            regeneration_command="rerun the teacher scenario with the current code",
-        )
-        require_exact_contract_version(
-            row.get("terminal_outcome_evidence_schema_version"),
-            expected=TERMINAL_OUTCOME_EVIDENCE_SCHEMA_VERSION,
-            name="terminal-outcome-evidence schema",
-            source=source,
-            regeneration_command="rerun the teacher scenario with the current code",
-        )
-        require_topology_action_provenance(row, source=source)
-    except (TypeError, ValueError):
-        return False
-    return True
 
 
-def _checkpoint_result_is_current(result: dict[str, Any]) -> bool:
-    if not bool(result.get("ok", False)):
-        return result.get("reason") != "exception"
-
-    rows = result.get("rows")
-    if not isinstance(rows, list) or not rows:
-        return False
-
-    for row in rows:
-        if not isinstance(row, dict):
-            return False
-        if any(row.get(field) is None for field in _REQUIRED_CHECKPOINT_ROW_FIELDS):
-            return False
-        if not _selection_provenance_is_valid(row):
-            return False
-        if not _checkpoint_row_contracts_are_current(row):
-            return False
-
-        run_id = row.get("run_id")
-        episode_id = row.get("episode_id")
-        iteration = row.get("iteration")
-        if not isinstance(run_id, str) or not run_id.strip():
-            return False
-        if not isinstance(episode_id, str) or not episode_id.strip():
-            return False
-        if isinstance(iteration, bool) or not isinstance(iteration, int):
-            return False
-        if iteration <= 0:
-            return False
-
-        try:
-            evidence = TerminalOutcomeEvidence.from_json(
-                row["terminal_outcome_evidence_json"]
-            )
-            reason = parse_termination_reason(
-                row.get("termination_reason"),
-                allow_none=False,
-            )
-        except (TypeError, ValueError):
-            return False
-        if (
-            evidence.solved is not bool(row.get("solved"))
-            or evidence.termination_reason is not reason
-        ):
-            return False
-    return True
 
 
-def load_scenario_checkpoints(
-    checkpoint_path: Path,
-    allowed_scenario_ids: Sequence[int],
-) -> dict[int, dict[str, Any]]:
-    results = _original_load_scenario_checkpoints(
-        checkpoint_path=checkpoint_path,
-        allowed_scenario_ids=allowed_scenario_ids,
-    )
-    return {
-        scenario_id: result
-        for scenario_id, result in results.items()
-        if _checkpoint_result_is_current(result)
-    }
-
-def _selection_provenance(result) -> dict[str, object]:
-    return {
-        "teacher_selection_mode": _TEACHER_SELECTION_MODE,
-        "relative_physical_epsilon": float(result.config.relative_physical_epsilon),
-        "teacher_best_physical_safety": float(result.best_physical_safety),
-        "teacher_selected_safety": float(result.selected_safety),
-        "teacher_selected_switch_count": int(result.selected_switch_count),
-        "teacher_retained_improvement_fraction": float(
-            result.retained_improvement_fraction
-        ),
-        "teacher_pareto_front_size": int(len(result.pareto_front)),
-    }
 
 
-def _instrumented_planner_search(self, env, scenario_id: int):
-    scenario_id = int(scenario_id)
-    _SELECTION_PROVENANCE_BY_SCENARIO.pop(scenario_id, None)
-    result = _original_planner_search(self, env=env, scenario_id=scenario_id)
-    _SELECTION_PROVENANCE_BY_SCENARIO[scenario_id] = _selection_provenance(result)
-    return result
 
 
-def _install_worker_instrumentation() -> None:
-    if ImpactBeamSearchPlanner.search is not _instrumented_planner_search:
-        ImpactBeamSearchPlanner.search = _instrumented_planner_search
 
 
-def append_scenario_checkpoint(
-    checkpoint_path: Path,
-    result: dict[str, Any],
-) -> None:
-    _original_append_scenario_checkpoint(
-        checkpoint_path=checkpoint_path,
-        result=result,
-    )
-def _worker_run_id() -> str:
-    ctx = _require_worker_context()
-    states_dir = Path(ctx["state_store"].output_dir).resolve()
-    payload = {
-        "states_dir": str(states_dir),
-        "task_config": ctx["task_config"],
-    }
-    encoded = json.dumps(
-        payload,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-        allow_nan=False,
-    ).encode("utf-8")
-    digest = hashlib.sha256(encoded).hexdigest()
-    return f"impact_teacher_{digest[:24]}"
+
 
 
 def _set_redispatch_diagnostics(
@@ -1961,6 +1665,15 @@ def _replay_terminal_evidence(
     scenario_id: int,
     rows: list[dict[str, Any]],
 ) -> TerminalOutcomeEvidence:
+    reasons = {
+        parse_termination_reason(row.get("termination_reason"), allow_none=False)
+        for row in rows
+    }
+    if reasons == {TerminationReason.HANDOFF_TO_REDISPATCH}:
+        for row in rows:
+            row["termination_reason"] = (
+                TerminationReason.HANDOFF_TO_REDISPATCH_TEACHER.value
+            )
     ctx = _require_worker_context()
     _set_redispatch_diagnostics(rows, None)
     ordered_rows = sorted(rows, key=lambda row: int(row["step"]))
@@ -2088,28 +1801,6 @@ def _write_state_metadata(
         temp_path.unlink(missing_ok=True)
 
 
-def _csv_topology_provenance(provenance: dict[str, object]) -> dict[str, object]:
-    return {
-        "topology_action_contract_version": provenance["topology_action_contract_version"],
-        "topology_action_config": json.dumps(
-            provenance["topology_action_config"],
-            sort_keys=True,
-            separators=(",", ":"),
-            allow_nan=False,
-        ),
-        "topology_action_config_fingerprint": provenance[
-            "topology_action_config_fingerprint"
-        ],
-        "action_layout": json.dumps(
-            provenance["action_layout"],
-            sort_keys=True,
-            separators=(",", ":"),
-            allow_nan=False,
-        ),
-        "action_layout_fingerprint": provenance["action_layout_fingerprint"],
-    }
-
-
 def _json_feature_columns(row: dict[str, Any]) -> None:
     for field in ("bus_feature_columns", "branch_feature_columns"):
         value = row.get(field)
@@ -2148,10 +1839,11 @@ def _finalize_success_result(result: dict[str, Any]) -> dict[str, Any]:
         arrays, metadata = _load_state_file(state_path)
         branch_ids = np.asarray(arrays["branch_ids"], dtype=np.int64)
         layout = build_branch_action_slots(branch_ids)
-        action_provenance = topology_action_provenance(
-            ctx["action_space"].config,
-            layout,
-        )
+        action_data = {
+            "topology_action_config": ctx["action_space"].config.to_contract_dict(),
+            "action_layout": action_layout_to_list(layout),
+            "action_layout_fingerprint": action_layout_fingerprint(layout),
+        }
         row.update(
             {
                 "run_id": run_id,
@@ -2160,16 +1852,13 @@ def _finalize_success_result(result: dict[str, Any]) -> dict[str, Any]:
                 "solved": evidence.solved,
                 "done": True,
                 "termination_reason": reason_value,
-                "terminal_outcome_evidence_schema_version": (
-                    TERMINAL_OUTCOME_EVIDENCE_SCHEMA_VERSION
-                ),
                 "terminal_outcome_evidence_json": evidence_json,
-                "outcome_objective_version": OUTCOME_OBJECTIVE_VERSION,
-                "outcome_value_target_contract_version": (
-                    OUTCOME_VALUE_TARGET_CONTRACT_VERSION
-                ),
                 **selection_provenance,
-                **_csv_topology_provenance(action_provenance),
+                **{
+                    key: json.dumps(value, sort_keys=True, separators=(",", ":"))
+                    if key != "action_layout_fingerprint" else value
+                    for key, value in action_data.items()
+                },
             }
         )
         _json_feature_columns(row)
@@ -2184,17 +1873,10 @@ def _finalize_success_result(result: dict[str, Any]) -> dict[str, Any]:
                 "episode_done": True,
                 "episode_solved": evidence.solved,
                 "episode_termination_reason": reason_value,
-                "terminal_outcome_evidence_schema_version": (
-                    TERMINAL_OUTCOME_EVIDENCE_SCHEMA_VERSION
-                ),
                 "terminal_outcome_evidence": evidence_mapping,
-                "outcome_objective_version": OUTCOME_OBJECTIVE_VERSION,
-                "outcome_value_target_contract_version": (
-                    OUTCOME_VALUE_TARGET_CONTRACT_VERSION
-                ),
                 **selection_provenance,
                 **{field: row.get(field) for field in _REDISPATCH_ROW_FIELDS},
-                **action_provenance,
+                **action_data,
             }
         )
         if int(row["selected_action_id"]) == 0:
@@ -2206,11 +1888,9 @@ def _finalize_success_result(result: dict[str, Any]) -> dict[str, Any]:
 def process_scenario_batch(
     scenario_ids: list[int],
 ) -> list[dict[str, Any]]:
-    _install_worker_instrumentation()
-    _install_worker_replay_contract()
-    results = _original_process_scenario_batch(scenario_ids)
     finalized: list[dict[str, Any]] = []
-    for result in results:
+    for scenario_id in scenario_ids:
+        result = process_one_scenario_fast(int(scenario_id))
         scenario_id = int(result["scenario_id"])
         if bool(result.get("ok", False)):
             result = _finalize_success_result(result)
@@ -2220,24 +1900,19 @@ def process_scenario_batch(
     return finalized
 
 
-def main() -> None:
-    _SELECTION_PROVENANCE_BY_SCENARIO.clear()
-    _install_worker_instrumentation()
-    _install_worker_replay_contract()
-    _base_main()
+def process_one_scenario_fast(scenario_id: int) -> dict[str, Any]:
+    started = time.perf_counter()
+    result = _generate_scenario(int(scenario_id))
+    result["runtime_seconds"] = time.perf_counter() - started
+    return result
+
+
 
 
 # ======================================================================================
 # Redispatch-aware final layer
 # ======================================================================================
 
-_provenance_make_task_config = make_task_config
-_provenance_process_scenario_batch = process_scenario_batch
-_provenance_replay_terminal_evidence = _replay_terminal_evidence
-_provenance_selection_provenance_is_valid = _selection_provenance_is_valid
-_PROVENANCE_REQUIRED_CHECKPOINT_ROW_FIELDS = _REQUIRED_CHECKPOINT_ROW_FIELDS
-_PROVENANCE_SELECTION_ROW_FIELDS = _SELECTION_ROW_FIELDS
-_provenance_main = main
 
 _TEACHER_SELECTION_MODE = "redispatch_aware_epsilon_minimum_switch"
 _TERMINAL_REDISPATCH_RELATIVE_EPSILON = 0.01
@@ -2245,43 +1920,12 @@ _TERMINAL_REDISPATCH_ABSOLUTE_EPSILON_MW = 1.0
 _MIN_MEANINGFUL_SAFETY_IMPROVEMENT = 1.0
 _TOLERANCE = 1e-9
 
-_EXTRA_SELECTION_ROW_FIELDS = (
-    "terminal_redispatch_relative_epsilon",
-    "terminal_redispatch_absolute_epsilon_mw",
-    "min_meaningful_safety_improvement",
-    "teacher_terminal_selection_applied",
-    "teacher_terminal_candidate_count",
-    "teacher_terminal_pareto_front_size",
-)
-_SELECTION_ROW_FIELDS = (
-    *_PROVENANCE_SELECTION_ROW_FIELDS,
-    *_EXTRA_SELECTION_ROW_FIELDS,
-)
-_REQUIRED_CHECKPOINT_ROW_FIELDS = (
-    *_PROVENANCE_REQUIRED_CHECKPOINT_ROW_FIELDS,
-    *_EXTRA_SELECTION_ROW_FIELDS,
-)
-
-
 @dataclass(frozen=True)
 class _TerminalCandidate:
     node: Any
     redispatch_l1_mw: float
 
 
-def make_task_config(args) -> dict[str, Any]:
-    task_config = _provenance_make_task_config(args)
-    task_config["min_safety_improvement"] = 0.0
-    task_config["min_meaningful_safety_improvement"] = (
-        _MIN_MEANINGFUL_SAFETY_IMPROVEMENT
-    )
-    task_config["terminal_redispatch_relative_epsilon"] = (
-        _TERMINAL_REDISPATCH_RELATIVE_EPSILON
-    )
-    task_config["terminal_redispatch_absolute_epsilon_mw"] = (
-        _TERMINAL_REDISPATCH_ABSOLUTE_EPSILON_MW
-    )
-    return task_config
 
 
 def _action_key(node: Any) -> tuple[int, ...]:
@@ -2547,76 +2191,10 @@ def _selection_provenance(
     }
 
 
-def _instrumented_planner_search(self, env, scenario_id: int):
-    scenario_id = int(scenario_id)
-    _SELECTION_PROVENANCE_BY_SCENARIO.pop(scenario_id, None)
-    result = _original_planner_search(
-        self,
-        env=env,
-        scenario_id=scenario_id,
-    )
-    task_config = _require_worker_context()["task_config"]
-    result, diagnostics = _redispatch_aware_selection(
-        result,
-        task_config=task_config,
-    )
-    _SELECTION_PROVENANCE_BY_SCENARIO[scenario_id] = _selection_provenance(
-        result,
-        diagnostics,
-    )
-    return result
 
 
-def _selection_provenance_is_valid(row: dict[str, Any]) -> bool:
-    if not _provenance_selection_provenance_is_valid(row):
-        return False
-    try:
-        relative_epsilon = float(row["terminal_redispatch_relative_epsilon"])
-        absolute_epsilon = float(row["terminal_redispatch_absolute_epsilon_mw"])
-        minimum_improvement = float(row["min_meaningful_safety_improvement"])
-        terminal_count = int(row["teacher_terminal_candidate_count"])
-        terminal_front_size = int(row["teacher_terminal_pareto_front_size"])
-    except (KeyError, TypeError, ValueError, OverflowError):
-        return False
-
-    applied = row.get("teacher_terminal_selection_applied")
-    if not isinstance(applied, bool):
-        return False
-    if not 0.0 <= relative_epsilon < 1.0:
-        return False
-    if not math.isfinite(absolute_epsilon) or absolute_epsilon < 0.0:
-        return False
-    if not math.isfinite(minimum_improvement) or minimum_improvement < 0.0:
-        return False
-    if terminal_count < 0 or terminal_front_size < 0:
-        return False
-    if applied and (terminal_count == 0 or terminal_front_size == 0):
-        return False
-    if not applied and terminal_front_size != 0:
-        return False
-    return True
 
 
-def _replay_terminal_evidence(
-    scenario_id: int,
-    rows: list[dict[str, Any]],
-):
-    reasons = {
-        parse_termination_reason(row.get("termination_reason"), allow_none=False)
-        for row in rows
-    }
-    if reasons == {TerminationReason.HANDOFF_TO_REDISPATCH}:
-        for row in rows:
-            row["termination_reason"] = (
-                TerminationReason.HANDOFF_TO_REDISPATCH_TEACHER.value
-            )
-    return _provenance_replay_terminal_evidence(scenario_id, rows)
-
-
-def process_scenario_batch(
-    scenario_ids: list[int],
-) -> list[dict[str, Any]]:
-    return _provenance_process_scenario_batch(scenario_ids)
 
 # ======================================================================================
 # Runtime execution
@@ -2627,16 +2205,7 @@ _RUNTIME_LODF_STRUCTURE_CACHE = "_redispatch_lodf_structure_cache"
 _RUNTIME_SCENARIO_STORE_DIR = "_redispatch_runtime_scenario_store_dir"
 _RUNTIME_WORKER_INIT_SEMAPHORE = "_redispatch_worker_init_semaphore"
 
-_DEFAULT_MAX_TASKS_PER_CHILD: int | None = None
 
-_staged_process_one_scenario = process_one_scenario_fast
-_staged_load_scenario_checkpoints = load_scenario_checkpoints
-_staged_append_scenario_checkpoint = append_scenario_checkpoint
-
-# The canonical JSONL checkpoint is the complete resume state; a truncated final
-# line is ignored and unfinished scenarios are safely repeated.
-load_scenario_checkpoints = _staged_load_scenario_checkpoints
-append_scenario_checkpoint = _staged_append_scenario_checkpoint
 
 def _native_math_thread_summary() -> str:
     return ", ".join(
@@ -2745,13 +2314,6 @@ def clear_worker_caches_if_needed() -> None:
     return None
 
 
-def process_one_scenario_fast(
-    scenario_id: int,
-) -> dict[str, Any]:
-    started = time.perf_counter()
-    result = _staged_process_one_scenario(int(scenario_id))
-    result["runtime_seconds"] = time.perf_counter() - started
-    return result
 
 
 def init_worker_context(
@@ -3079,8 +2641,6 @@ def run_parallel(
 
     return rows, total_saved, total_skipped
 
-def main() -> None:
-    _provenance_main()
 
 
 if __name__ == "__main__":
