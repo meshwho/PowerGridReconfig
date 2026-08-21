@@ -1,7 +1,12 @@
 from __future__ import annotations
 
-import math
-import time
+import json
+import inspect
+import multiprocessing
+import os
+import uuid
+from concurrent.futures import ProcessPoolExecutor
+from dataclasses import asdict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -31,7 +36,6 @@ NeuralPolicyValueEvaluator = None
 MCTSConfig = None
 MCTSPlanner = None
 ExampleWriter = None
-analyze_root_branches = None
 make_do_nothing_action = None
 
 
@@ -56,6 +60,8 @@ class GenerationRequest:
     min_soft_improvement: float = 15.0
     min_gate_visits: int = 5
     min_gate_visit_fraction: float = 0.01
+    workers: int = 1
+    resume: bool = False
 
     def __post_init__(self) -> None:
         for field_name in ("mcts_seed", "action_seed"):
@@ -84,6 +90,12 @@ class GenerationRequest:
             raise ValueError("iteration must be a positive integer.")
         object.__setattr__(self, "iteration", iteration)
 
+        if isinstance(self.workers, bool) or not isinstance(
+            self.workers, (int, np.integer)
+        ) or int(self.workers) < 1:
+            raise ValueError("workers must be a positive integer.")
+        object.__setattr__(self, "workers", int(self.workers))
+
     @property
     def resolved_physics_config(self) -> PhysicsConfig:
         return resolve_physics_config(
@@ -97,7 +109,6 @@ class _GenerationActionDecision:
     selected_action_id: int
     selected_branch_id: int | None
     policy_target: dict[int, float]
-    continuation_analysis: Any | None
 
 
 def _ensure_runtime_dependencies() -> None:
@@ -111,7 +122,6 @@ def _ensure_runtime_dependencies() -> None:
     global MCTSConfig
     global MCTSPlanner
     global ExampleWriter
-    global analyze_root_branches
     global make_do_nothing_action
 
     if _RUNTIME_DEPENDENCIES_LOADED:
@@ -127,9 +137,6 @@ def _ensure_runtime_dependencies() -> None:
         GridFMPowerFlowBackend as _Backend,
     )
     from grid_topology_ai.reward import GridFMReward as _Reward
-    from grid_topology_ai.search.continuation_gate import (
-        analyze_root_branches as _analyze_root_branches,
-    )
     from grid_topology_ai.search.continuation_gate import (
         make_do_nothing_action as _make_do_nothing_action,
     )
@@ -148,7 +155,6 @@ def _ensure_runtime_dependencies() -> None:
     MCTSConfig = _MCTSConfig
     MCTSPlanner = _MCTSPlanner
     ExampleWriter = _ExampleWriter
-    analyze_root_branches = _analyze_root_branches
     make_do_nothing_action = _make_do_nothing_action
     _RUNTIME_DEPENDENCIES_LOADED = True
 
@@ -171,34 +177,6 @@ def _scenario_seed(stream_seed: int, scenario_id: int) -> int:
     )
     state = sequence.generate_state(1, dtype=np.uint64)
     return int(state[0])
-
-
-def _policy_entropy(
-    policy: dict[int, float],
-) -> tuple[float, float]:
-    probabilities = np.asarray(
-        [
-            float(probability)
-            for probability in policy.values()
-            if float(probability) > 0.0
-        ],
-        dtype=np.float64,
-    )
-    if probabilities.size == 0:
-        return 0.0, 0.0
-
-    total = float(probabilities.sum())
-    if not np.isfinite(total) or total <= 0.0:
-        raise ValueError(
-            "Policy probabilities must have a positive finite sum."
-        )
-    probabilities = probabilities / total
-    entropy = float(-np.sum(probabilities * np.log(probabilities)))
-    if probabilities.size <= 1:
-        return entropy, 0.0
-
-    normalized = entropy / math.log(int(probabilities.size))
-    return entropy, min(1.0, max(0.0, float(normalized)))
 
 
 def selection_temperature_for_step(
@@ -230,12 +208,6 @@ def _select_generation_action(
     search_result: Any,
     temperature: float,
     rng: np.random.Generator,
-    use_continuation_gate: bool,
-    min_hard_improvement: float,
-    min_soft_improvement: float,
-    min_gate_visits: int,
-    min_gate_visit_fraction: float,
-    physics_config: PhysicsConfig | None = None,
     scenario_id: int | None = None,
     step: int | None = None,
 ) -> _GenerationActionDecision:
@@ -270,90 +242,45 @@ def _select_generation_action(
             )
         selected_branch_id = selected_action.branch_id
 
-    continuation_analysis = None
-    if use_continuation_gate:
-        continuation_analysis = analyze_root_branches(
-            result=search_result,
-            min_hard_improvement=min_hard_improvement,
-            min_soft_improvement=min_soft_improvement,
-            min_visits=min_gate_visits,
-            min_visit_fraction=min_gate_visit_fraction,
-            physics_config=physics_config,
-        )
-
     return _GenerationActionDecision(
         selected_action_id=selected_action_id,
         selected_branch_id=selected_branch_id,
         policy_target=policy_target,
-        continuation_analysis=continuation_analysis,
     )
 
 
 def _scenario_ids_from_request(
     request: GenerationRequest,
 ) -> list[int]:
-    if not request.transitions_csv.exists():
+    if not request.transitions_csv.is_file():
         raise FileNotFoundError(
             f"Transitions file not found: {request.transitions_csv}"
         )
     transitions = pd.read_csv(request.transitions_csv)
-    if request.scenario_ids is not None:
-        return [int(value) for value in request.scenario_ids]
-    return sorted(
-        int(value)
-        for value in transitions["scenario_id"].unique()
-    )
+    if "scenario_id" not in transitions.columns:
+        raise ValueError(
+            f"Transitions CSV is missing scenario_id: {request.transitions_csv}"
+        )
 
-
-def _continuation_metadata(
-    analysis: Any | None,
-    selected_action_id: int,
-) -> dict[str, Any]:
-    if analysis is None:
-        return {
-            "continuation_allowed_action_ids": None,
-            "continuation_recommended_action_id": None,
-            "continuation_recommended_branch_id": None,
-            "continuation_recommendation_reason": None,
-            "selected_action_allowed_by_continuation": None,
-        }
-
-    allowed_action_ids = tuple(
-        int(action_id)
-        for action_id in getattr(analysis, "allowed_action_ids", ())
-    )
-    recommended_action_id = getattr(
-        analysis,
-        "recommended_action_id",
-        getattr(analysis, "selected_action_id", None),
-    )
-    recommended_branch_id = getattr(
-        analysis,
-        "recommended_branch_id",
-        getattr(analysis, "selected_branch_id", None),
-    )
-    recommendation_reason = getattr(
-        analysis,
-        "recommendation_reason",
-        getattr(analysis, "selected_reason", None),
-    )
-    return {
-        "continuation_allowed_action_ids": list(allowed_action_ids),
-        "continuation_recommended_action_id": (
-            None
-            if recommended_action_id is None
-            else int(recommended_action_id)
-        ),
-        "continuation_recommended_branch_id": (
-            None
-            if recommended_branch_id is None
-            else int(recommended_branch_id)
-        ),
-        "continuation_recommendation_reason": recommendation_reason,
-        "selected_action_allowed_by_continuation": (
-            int(selected_action_id) in set(allowed_action_ids)
-        ),
+    available = {
+        int(value) for value in transitions["scenario_id"].unique()
     }
+    if request.scenario_ids is None:
+        scenario_ids = sorted(available)
+    else:
+        scenario_ids = [int(value) for value in request.scenario_ids]
+        if len(set(scenario_ids)) != len(scenario_ids):
+            raise ValueError("scenario_ids must not contain duplicates.")
+        missing = [value for value in scenario_ids if value not in available]
+        if missing:
+            raise ValueError(
+                "scenario_ids contains values missing from transitions: "
+                f"{missing[:20]}."
+            )
+
+    if not scenario_ids:
+        raise ValueError("No self-play scenarios were selected.")
+    return scenario_ids
 
 
 def _step_metadata(
@@ -365,10 +292,7 @@ def _step_metadata(
     scenario_action_seed: int,
     selection_temperature: float,
     selection_mode: str,
-    policy_target_entropy: float,
-    policy_target_normalized_entropy: float,
     search_result: Any,
-    continuation_metadata: dict[str, Any],
 ) -> dict[str, Any]:
     return {
         "source": "mcts_self_play",
@@ -380,10 +304,6 @@ def _step_metadata(
         "scenario_action_sampling_seed": int(scenario_action_seed),
         "self_play_iteration": int(request.iteration),
         "selection_temperature": float(selection_temperature),
-        "policy_target_entropy": float(policy_target_entropy),
-        "policy_target_normalized_entropy": float(
-            policy_target_normalized_entropy
-        ),
         "selection_mode": selection_mode,
         "temperature_steps": int(request.config.temperature_steps),
         "temperature_iterations": int(
@@ -401,25 +321,7 @@ def _step_metadata(
         "mcts_exploration_quota": int(
             request.config.exploration_quota
         ),
-        "mcts_legal_action_count": int(
-            search_result.root_legal_action_count
-        ),
-        "mcts_considered_action_count": int(
-            search_result.root_considered_action_count
-        ),
-        "mcts_visited_action_count": int(
-            search_result.root_visited_action_count
-        ),
-        "mcts_action_coverage": float(
-            search_result.root_action_coverage
-        ),
-        "mcts_visited_action_coverage": float(
-            search_result.root_visited_action_coverage
-        ),
         "pf_alg": request.resolved_physics_config.pf_alg,
-        "use_continuation_gate": bool(
-            request.config.use_continuation_gate
-        ),
         "policy_target_source": (
             "temperature_adjusted_mcts_visit_distribution"
         ),
@@ -434,178 +336,25 @@ def _step_metadata(
             if getattr(search_result, "best_branch_id", None) is None
             else int(search_result.best_branch_id)
         ),
-        **continuation_metadata,
     }
 
 
-_PF_PERFORMANCE_COUNTERS = (
-    "hits",
-    "misses",
-    "exact_cache_hits",
-    "tolerant_cache_hits",
-    "cold_start_misses",
-    "stock_runpf_calls",
-    "q_limit_resolves",
-)
+_WORKER_RUNTIME: dict[str, Any] | None = None
 
 
-def _power_flow_performance_snapshot(backend: Any) -> dict[str, object]:
-    performance_info = getattr(backend, "performance_info", None)
-    if callable(performance_info):
-        return dict(performance_info())
-    cache_info = getattr(backend, "cache_info", None)
-    if callable(cache_info):
-        return dict(cache_info())
-    return {}
+@dataclass(slots=True)
+class _ScenarioResult:
+    scenario_id: int
+    pending_examples: list[dict[str, Any]]
+    rewards: list[float]
+    solved: bool
+    done: bool
+    termination_reason: Any
+    terminal_outcome_evidence: Any
 
 
-def _new_power_flow_performance_summary(enabled: bool) -> dict[str, object]:
-    summary: dict[str, object] = {
-        "enabled": bool(enabled),
-        "scenarios": 0,
-        "peak_cache_size": 0,
-        "peak_topology_cache_buckets": 0,
-        "peak_topology_cache_entries": 0,
-    }
-    for key in _PF_PERFORMANCE_COUNTERS:
-        summary[key] = 0
-    return summary
-
-
-def _record_power_flow_scenario(
-    summary: dict[str, object],
-    before: dict[str, object],
-    after: dict[str, object],
-) -> None:
-    summary["scenarios"] = int(summary["scenarios"]) + 1
-    for key in _PF_PERFORMANCE_COUNTERS:
-        delta = max(
-            int(after.get(key, 0)) - int(before.get(key, 0)),
-            0,
-        )
-        summary[key] = int(summary[key]) + delta
-
-    summary["peak_cache_size"] = max(
-        int(summary["peak_cache_size"]),
-        int(after.get("size", 0)),
-    )
-    summary["peak_topology_cache_buckets"] = max(
-        int(summary["peak_topology_cache_buckets"]),
-        int(after.get("topology_cache_buckets", 0)),
-    )
-    summary["peak_topology_cache_entries"] = max(
-        int(summary["peak_topology_cache_entries"]),
-        int(after.get("topology_cache_entries", 0)),
-    )
-
-
-def _finalize_power_flow_performance_summary(
-    summary: dict[str, object],
-) -> dict[str, object]:
-    result = dict(summary)
-    hits = int(result["hits"])
-    misses = int(result["misses"])
-    lookups = hits + misses
-    cold_starts = int(result["cold_start_misses"])
-    stock_calls = int(result["stock_runpf_calls"])
-
-    result["hit_rate"] = (
-        float(hits) / float(lookups)
-        if lookups > 0
-        else 0.0
-    )
-    result["cold_start_rate"] = (
-        float(cold_starts) / float(misses)
-        if misses > 0
-        else 0.0
-    )
-    result["solves_per_cache_miss"] = (
-        float(stock_calls) / float(misses)
-        if misses > 0
-        else 0.0
-    )
-    return result
-
-
-def _print_generation_settings(
-    request: GenerationRequest,
-    scenario_ids: list[int],
-) -> None:
-    print("=" * 100)
-    print("Generating AlphaZero-like self-play data")
-    print("=" * 100)
-    print(f"Raw directory:  {request.raw_dir.resolve()}")
-    print(f"Transitions:    {request.transitions_csv.resolve()}")
-    print(f"Output dir:     {request.output_dir}")
-    print(f"Simulations:    {request.config.simulations}")
-    print(f"Search depth:   {request.config.depth}")
-    print(f"Max steps:      {request.config.max_steps}")
-    print(f"Initial action width: {request.config.top_k}")
-    print(f"Widening coefficient: {request.config.widening_coefficient}")
-    print(f"Widening exponent:    {request.config.widening_exponent}")
-    print(f"Exploration quota:    {request.config.exploration_quota}")
-    print(f"Gamma:          {request.config.gamma}")
-    print(f"C_PUCT:         {request.config.c_puct}")
-    print(f"Prior exponent: {request.config.prior_exponent}")
-    print(f"Stop policy:               {request.config.stop_policy}")
-    print(
-        "Require connected after switch: "
-        f"{request.config.require_connected_after_switch}"
-    )
-    print(
-        "Min loading for branch opening: "
-        f"{request.config.min_loading_for_switch_percent}"
-    )
-    print(f"Closeable branch IDs: {request.config.closeable_branch_ids}")
-    print(f"Checkpoint:     {request.checkpoint}")
-    print(f"Device:         {request.device}")
-    print(f"Use root noise: {request.config.use_root_noise}")
-    print(f"Root alpha:     {request.root_dirichlet_alpha}")
-    print(f"Root epsilon:   {request.root_exploration_fraction}")
-    print(f"Self-play iteration: {request.iteration}")
-    print(f"Early temperature:  {request.config.selection_temperature}")
-    print(f"Temperature steps:  {request.config.temperature_steps}")
-    print(f"Temperature iters:  {request.config.temperature_iterations}")
-    print(f"MCTS stream seed:   {request.mcts_seed}")
-    print(f"Action stream seed: {request.action_seed}")
-    print(f"PF algorithm:   {request.resolved_physics_config.pf_alg}")
-    print(f"Cache enabled:  {request.enable_cache}")
-    print(
-        "Clear cache between scenarios: "
-        f"{request.clear_cache_between_scenarios}"
-    )
-
-    temperature_enabled = (
-        request.config.selection_temperature > 1e-8
-        and request.config.temperature_steps > 0
-        and request.config.temperature_iterations > 0
-    )
-    if temperature_enabled:
-        print(
-            "Action selection: scheduled early sampling, "
-            "then deterministic argmax"
-        )
-    else:
-        print("Action selection: deterministic argmax")
-
-    print(
-        "Continuation analysis: "
-        f"{request.config.use_continuation_gate}"
-    )
-    if request.config.use_continuation_gate:
-        print(f"  min hard improvement: {request.min_hard_improvement}")
-        print(f"  min soft improvement: {request.min_soft_improvement}")
-        print(f"  min gate visits:      {request.min_gate_visits}")
-        print(f"  min gate visit frac:  {request.min_gate_visit_fraction}")
-    print(f"\nScenario IDs: {scenario_ids}")
-
-
-def generate_self_play_examples(request: GenerationRequest) -> Path:
-    scenario_ids = _scenario_ids_from_request(request)
+def _build_runtime(request: GenerationRequest) -> dict[str, Any]:
     _ensure_runtime_dependencies()
-    request.output_dir.mkdir(parents=True, exist_ok=True)
-    _print_generation_settings(request, scenario_ids)
-
     adapter = GridFMAdapter(
         request.raw_dir,
         physics_config=request.resolved_physics_config,
@@ -647,7 +396,6 @@ def generate_self_play_examples(request: GenerationRequest) -> Path:
         root_exploration_fraction=request.root_exploration_fraction,
         random_seed=request.mcts_seed,
     )
-
     evaluator = None
     if request.checkpoint is not None:
         evaluator = NeuralPolicyValueEvaluator(
@@ -664,255 +412,394 @@ def generate_self_play_examples(request: GenerationRequest) -> Path:
                 "Configured self-play topology action space does not match "
                 f"checkpoint {request.checkpoint}."
             )
-        print("\nNeural evaluator loaded.")
-
     planner = MCTSPlanner(
         config=mcts_config,
         evaluator=evaluator,
         physics_config=request.resolved_physics_config,
     )
-    example_writer = ExampleWriter(
-        request.output_dir,
-        physics_config=request.resolved_physics_config,
-        action_space_config=action_space.config,
+    return {
+        "request": request,
+        "adapter": adapter,
+        "backend": backend,
+        "action_space": action_space,
+        "reward_fn": reward_fn,
+        "evaluator": evaluator,
+        "planner": planner,
+    }
+
+
+def _initialize_generation_worker(request: GenerationRequest) -> None:
+    """Create one reusable runtime in each spawned worker process."""
+    global _WORKER_RUNTIME
+    _WORKER_RUNTIME = _build_runtime(request)
+
+
+def _generate_scenario(scenario_id: int) -> _ScenarioResult:
+    """Generate one episode using only scenario-derived random streams."""
+    if _WORKER_RUNTIME is None:
+        raise RuntimeError("Self-play worker runtime was not initialized.")
+    runtime = _WORKER_RUNTIME
+    request: GenerationRequest = runtime["request"]
+    backend = runtime["backend"]
+    action_space = runtime["action_space"]
+    evaluator = runtime["evaluator"]
+    planner = runtime["planner"]
+
+    if request.clear_cache_between_scenarios:
+        backend.clear_cache()
+        action_space.clear_cache()
+        if evaluator is not None:
+            evaluator.clear_cache()
+
+    scenario_mcts_seed = _scenario_seed(request.mcts_seed, scenario_id)
+    scenario_action_seed = _scenario_seed(request.action_seed, scenario_id)
+    planner.reset_rng(scenario_mcts_seed)
+    action_rng = np.random.default_rng(scenario_action_seed)
+    env = TopologySwitchingEnv(
+        adapter=runtime["adapter"],
+        backend=backend,
+        action_space=action_space,
+        reward_fn=runtime["reward_fn"],
+        max_steps=request.config.max_steps,
     )
+    env.reset(scenario_id)
+    pending_examples: list[dict[str, Any]] = []
+    rewards: list[float] = []
 
-    total_examples = 0
-    power_flow_summary = _new_power_flow_performance_summary(
-        request.enable_cache
-    )
-    start_time = time.perf_counter()
-
-    for scenario_id in scenario_ids:
-        print("\n" + "=" * 100)
-        print(f"Scenario {scenario_id}")
-        print("=" * 100)
-
-        if request.clear_cache_between_scenarios:
-            backend.clear_cache()
-            action_space.clear_cache()
-            if evaluator is not None:
-                evaluator.clear_cache()
-
-        power_flow_before = _power_flow_performance_snapshot(backend)
-
-        scenario_mcts_seed = _scenario_seed(
-            request.mcts_seed,
-            scenario_id,
+    for step in range(request.config.max_steps):
+        if env.done:
+            break
+        state_before = env.current_state
+        if state_before is None:
+            raise RuntimeError("Active self-play environment has no current state.")
+        action_mask = env.operational_action_mask()
+        search_result = planner.search_from_env(env)
+        if search_result.best_action_id is None:
+            env.terminate_no_legal_action()
+            break
+        temperature = selection_temperature_for_step(
+            request.config, iteration=request.iteration, step=step
         )
-        scenario_action_seed = _scenario_seed(
-            request.action_seed,
-            scenario_id,
+        selection_mode = "sample" if temperature > 1e-8 else "argmax"
+        decision = _select_generation_action(
+            search_result=search_result,
+            temperature=temperature,
+            rng=action_rng,
+            scenario_id=scenario_id,
+            step=step,
         )
-        planner.reset_rng(scenario_mcts_seed)
-        action_rng = np.random.default_rng(scenario_action_seed)
-        print(f"MCTS seed:          {scenario_mcts_seed}")
-        print(f"Action sample seed: {scenario_action_seed}")
-
-        env = TopologySwitchingEnv(
-            adapter=adapter,
-            backend=backend,
-            action_space=action_space,
-            reward_fn=reward_fn,
-            max_steps=request.config.max_steps,
+        require_action_in_policy_support(
+            decision.selected_action_id,
+            decision.policy_target,
+            context=(
+                "self-play policy target "
+                f"(scenario_id={scenario_id}, step={step})"
+            ),
         )
-        env.reset(scenario_id)
-
-        pending_examples: list[dict[str, Any]] = []
-        rewards: list[float] = []
-
-        for step in range(request.config.max_steps):
-            if env.done:
-                break
-            state_before = env.current_state
-            if state_before is None:
-                raise RuntimeError(
-                    "Active self-play environment has no current state."
-                )
-
-            action_mask = env.operational_action_mask()
-            search_result = planner.search_from_env(env)
-            if search_result.best_action_id is None:
-                env.terminate_no_legal_action()
-                print(
-                    "MCTS returned no legal action. "
-                    "Episode terminated with no_legal_action."
-                )
-                break
-
-            temperature = selection_temperature_for_step(
-                request.config,
-                iteration=request.iteration,
-                step=step,
-            )
-            selection_mode = "sample" if temperature > 1e-8 else "argmax"
-            decision = _select_generation_action(
-                search_result=search_result,
-                temperature=temperature,
-                rng=action_rng,
-                use_continuation_gate=(
-                    request.config.use_continuation_gate
-                ),
-                min_hard_improvement=request.min_hard_improvement,
-                min_soft_improvement=request.min_soft_improvement,
-                min_gate_visits=request.min_gate_visits,
-                min_gate_visit_fraction=request.min_gate_visit_fraction,
+        selected_action = (
+            make_do_nothing_action()
+            if decision.selected_action_id == 0
+            else search_result.root.actions_by_id[decision.selected_action_id]
+        )
+        step_result = env.step(selected_action)
+        rewards.append(float(step_result.reward))
+        pending_examples.append({
+            "state": state_before,
+            "action_mask": action_mask,
+            "scenario_id": scenario_id,
+            "step": step,
+            "selected_action_id": decision.selected_action_id,
+            "selected_branch_id": decision.selected_branch_id,
+            "step_reward": float(step_result.reward),
+            "visit_counts": search_result.visit_counts,
+            "mcts_policy": decision.policy_target,
+            "selection_temperature": float(temperature),
+            "selection_mode": selection_mode,
+            "extra_metadata": _step_metadata(
+                request=request,
                 scenario_id=scenario_id,
                 step=step,
-                physics_config=request.resolved_physics_config,
-            )
-            policy_entropy, normalized_entropy = _policy_entropy(
-                decision.policy_target
-            )
-            require_action_in_policy_support(
-                decision.selected_action_id,
-                decision.policy_target,
-                context=(
-                    "self-play policy target "
-                    f"(scenario_id={scenario_id}, step={step})"
-                ),
-            )
+                scenario_mcts_seed=scenario_mcts_seed,
+                scenario_action_seed=scenario_action_seed,
+                selection_temperature=temperature,
+                selection_mode=selection_mode,
+                search_result=search_result,
+            ),
+        })
+        if step_result.done:
+            break
 
-            if decision.selected_action_id == 0:
-                selected_action = make_do_nothing_action()
-            else:
-                selected_action = search_result.root.actions_by_id[
-                    decision.selected_action_id
-                ]
+    if (
+        not env.done
+        or env.termination_reason is None
+        or env.terminal_outcome_evidence is None
+    ):
+        raise RuntimeError(
+            "Self-play episode ended without validated terminal outcome "
+            f"evidence for scenario {scenario_id}."
+        )
+    return _ScenarioResult(
+        scenario_id=int(scenario_id),
+        pending_examples=pending_examples,
+        rewards=rewards,
+        solved=bool(env.solved),
+        done=bool(env.done),
+        termination_reason=env.termination_reason,
+        terminal_outcome_evidence=env.terminal_outcome_evidence,
+    )
 
-            step_result = env.step(selected_action)
-            rewards.append(float(step_result.reward))
-            continuation = _continuation_metadata(
-                decision.continuation_analysis,
-                decision.selected_action_id,
+
+def _source_identity(path: Path | None) -> dict[str, object] | None:
+    if path is None:
+        return None
+    resolved = path.resolve()
+    try:
+        stat = resolved.stat()
+    except FileNotFoundError:
+        return {"path": str(resolved), "size": None, "mtime_ns": None}
+    return {
+        "path": str(resolved),
+        "size": int(stat.st_size),
+        "mtime_ns": int(stat.st_mtime_ns),
+    }
+
+
+_RAW_SOURCE_FILES = (
+    "bus_data.parquet",
+    "branch_data.parquet",
+    "gen_data.parquet",
+)
+
+
+def _preflight_generation_inputs(request: GenerationRequest) -> None:
+    if not request.raw_dir.is_dir():
+        raise FileNotFoundError(
+            f"GridFM raw directory not found: {request.raw_dir}"
+        )
+    for name in _RAW_SOURCE_FILES:
+        path = request.raw_dir / name
+        if not path.is_file():
+            raise FileNotFoundError(f"Required GridFM parquet not found: {path}")
+    if not request.transitions_csv.is_file():
+        raise FileNotFoundError(
+            f"Transitions file not found: {request.transitions_csv}"
+        )
+    if request.checkpoint is not None and not request.checkpoint.is_file():
+        raise FileNotFoundError(
+            f"Checkpoint file not found: {request.checkpoint}"
+        )
+
+
+def _raw_source_identity(raw_dir: Path) -> dict[str, object]:
+    return {
+        name: _source_identity(raw_dir / name)
+        for name in _RAW_SOURCE_FILES
+    }
+
+
+def _resume_identity(
+    request: GenerationRequest, scenario_ids: list[int]
+) -> dict[str, object]:
+    config = asdict(request.config)
+    config["closeable_branch_ids"] = list(config["closeable_branch_ids"])
+    config.pop("use_continuation_gate", None)
+    return {
+        "raw_source": _raw_source_identity(request.raw_dir),
+        "transitions": _source_identity(request.transitions_csv),
+        "checkpoint": _source_identity(request.checkpoint),
+        "scenario_ids": list(scenario_ids),
+        "iteration": request.iteration,
+        "mcts_seed": request.mcts_seed,
+        "action_seed": request.action_seed,
+        "device": str(request.device),
+        "physics_config": request.resolved_physics_config.to_dict(),
+        "action_space_config": request.config.action_space_config.to_contract_dict(),
+        "generation_config": config,
+        "root_dirichlet_alpha": request.root_dirichlet_alpha,
+        "root_exploration_fraction": request.root_exploration_fraction,
+    }
+
+
+def _atomic_json(path: Path, value: dict[str, object]) -> None:
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        temporary.write_text(
+            json.dumps(value, sort_keys=True, indent=2, allow_nan=False) + "\n",
+            encoding="utf-8",
+        )
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _load_generation_progress(
+    request: GenerationRequest, identity: dict[str, object]
+) -> tuple[str, set[int]]:
+    progress_path = request.output_dir / "progress.json"
+    examples_path = request.output_dir / "examples.csv"
+    if request.resume:
+        if not progress_path.exists():
+            raise FileNotFoundError(
+                f"Cannot resume without progress file: {progress_path}"
             )
-            pending_examples.append(
-                {
-                    "state": state_before,
-                    "action_mask": action_mask,
-                    "scenario_id": scenario_id,
-                    "step": step,
-                    "selected_action_id": decision.selected_action_id,
-                    "selected_branch_id": decision.selected_branch_id,
-                    "step_reward": float(step_result.reward),
-                    "visit_counts": search_result.visit_counts,
-                    "mcts_policy": decision.policy_target,
-                    "selection_temperature": float(temperature),
-                    "selection_mode": selection_mode,
-                    "policy_target_entropy": float(policy_entropy),
-                    "policy_target_normalized_entropy": float(
-                        normalized_entropy
-                    ),
-                    "mcts_legal_action_count": int(
-                        search_result.root_legal_action_count
-                    ),
-                    "mcts_considered_action_count": int(
-                        search_result.root_considered_action_count
-                    ),
-                    "mcts_visited_action_count": int(
-                        search_result.root_visited_action_count
-                    ),
-                    "mcts_action_coverage": float(
-                        search_result.root_action_coverage
-                    ),
-                    "mcts_visited_action_coverage": float(
-                        search_result.root_visited_action_coverage
-                    ),
-                    "extra_metadata": _step_metadata(
-                        request=request,
-                        scenario_id=scenario_id,
-                        step=step,
-                        scenario_mcts_seed=scenario_mcts_seed,
-                        scenario_action_seed=scenario_action_seed,
-                        selection_temperature=temperature,
-                        selection_mode=selection_mode,
-                        policy_target_entropy=policy_entropy,
-                        policy_target_normalized_entropy=normalized_entropy,
-                        search_result=search_result,
-                        continuation_metadata=continuation,
-                    ),
+        progress = json.loads(progress_path.read_text(encoding="utf-8"))
+        if progress.get("identity") != identity:
+            raise ValueError("Self-play resume identity does not match this request.")
+        raw_run_id = progress.get("run_id")
+        if not isinstance(raw_run_id, str) or not raw_run_id.strip():
+            raise ValueError("progress.json run_id must be a non-empty string.")
+        run_id = raw_run_id
+        requested = set(identity["scenario_ids"])
+        completed = {
+            int(value) for value in progress.get("completed_scenario_ids", [])
+        }
+        if not completed <= requested:
+            raise ValueError(
+                "progress.json contains scenario IDs outside this request."
+            )
+        if examples_path.exists():
+            frame = pd.read_csv(examples_path)
+            required = {
+                "run_id", "iteration", "episode_id", "scenario_id",
+                "step", "state_id",
+            }
+            missing = required - set(frame.columns)
+            if missing:
+                raise ValueError(
+                    "examples.csv is missing required columns: "
+                    + ", ".join(sorted(missing))
+                )
+            if frame.empty:
+                return run_id, completed
+            if frame[list(required)].isna().any().any():
+                raise ValueError("examples.csv required columns contain null values.")
+            run_ids = frame["run_id"].astype(str).unique()
+            if len(run_ids) != 1:
+                raise ValueError("examples.csv must contain exactly one run ID.")
+            if str(run_ids[0]) != run_id:
+                raise ValueError("examples.csv run ID does not match progress.json.")
+            try:
+                numeric_columns = {
+                    name: pd.to_numeric(frame[name], errors="raise")
+                    for name in ("iteration", "scenario_id", "step")
                 }
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    "examples.csv iteration, scenario_id, and step must be integers."
+                ) from exc
+            if any(
+                not np.isfinite(values).all()
+                or not (values == values.astype(np.int64)).all()
+                for values in numeric_columns.values()
+            ):
+                raise ValueError(
+                    "examples.csv iteration, scenario_id, and step must be integers."
+                )
+            iterations = numeric_columns["iteration"].astype(np.int64)
+            scenarios = numeric_columns["scenario_id"].astype(np.int64)
+            steps = numeric_columns["step"].astype(np.int64)
+            if not (iterations == request.iteration).all():
+                raise ValueError("examples.csv iteration does not match request.")
+            if not set(scenarios) <= requested:
+                raise ValueError(
+                    "examples.csv contains scenario IDs outside this request."
+                )
+            validated = frame.assign(
+                iteration=iterations, scenario_id=scenarios, step=steps
             )
+            if validated["state_id"].astype(str).duplicated().any():
+                raise ValueError("examples.csv contains duplicate state_id values.")
+            if validated.duplicated(["episode_id", "step"]).any():
+                raise ValueError(
+                    "examples.csv contains duplicate (episode_id, step) values."
+                )
+            if (validated.groupby("scenario_id")["episode_id"].nunique() != 1).any():
+                raise ValueError(
+                    "Each scenario_id must correspond to exactly one episode_id."
+                )
+            if (validated.groupby("episode_id")["scenario_id"].nunique() != 1).any():
+                raise ValueError(
+                    "Each episode_id must correspond to exactly one scenario_id."
+                )
+            for episode_id, episode in validated.groupby("episode_id"):
+                episode_steps = sorted(int(value) for value in episode["step"])
+                if episode_steps != list(range(len(episode_steps))):
+                    raise ValueError(
+                        f"examples.csv episode {episode_id!r} has non-contiguous steps."
+                    )
+            completed.update(int(value) for value in scenarios.unique())
+        return run_id, completed
 
-            print(
-                f"Step {step:02d}: "
-                f"action={decision.selected_action_id}, "
-                f"branch={decision.selected_branch_id}, "
-                f"temperature={temperature:.4f}, "
-                f"selection={selection_mode}, "
-                "continuation_recommendation="
-                f"{continuation['continuation_recommended_action_id']}, "
-                "continuation_reason="
-                f"{continuation['continuation_recommendation_reason']}, "
-                "coverage="
-                f"{search_result.root_considered_action_count}/"
-                f"{search_result.root_legal_action_count} "
-                f"({search_result.root_action_coverage:.1%}), "
-                "visited="
-                f"{search_result.root_visited_action_count}/"
-                f"{search_result.root_legal_action_count} "
-                f"({search_result.root_visited_action_coverage:.1%}), "
-                f"reward={step_result.reward:.4f}, "
-                f"done={step_result.done}, "
-                f"solved={step_result.solved}"
-            )
-            if step_result.done:
-                break
-
-        final_done = bool(env.done)
-        final_reason = env.termination_reason
-        final_evidence = env.terminal_outcome_evidence
-        if not final_done or final_reason is None or final_evidence is None:
-            raise RuntimeError(
-                "Self-play episode ended without validated terminal "
-                f"outcome evidence for scenario {scenario_id}."
-            )
-
-        returns = discounted_returns(rewards, request.config.gamma)
-        final_return = returns[0] if returns else 0.0
-        if pending_examples:
-            total_examples += example_writer.add_episode(
-                pending_examples,
-                final_return=final_return,
-                returns_from_step=returns,
-                solved=bool(env.solved),
-                done=final_done,
-                termination_reason=final_reason,
-                terminal_outcome_evidence=final_evidence,
-                iteration=request.iteration,
-            )
-
-        print(
-            f"Scenario {scenario_id} finished: "
-            f"steps={len(rewards)}, "
-            f"final_return={final_return:.4f}, "
-            f"solved={env.solved}, "
-            f"reason={final_reason}"
+    if progress_path.exists() or examples_path.exists():
+        raise FileExistsError(
+            "Self-play output already exists; choose a new output directory or use resume."
         )
+    run_id = uuid.uuid4().hex
+    _atomic_json(progress_path, {
+        "identity": identity,
+        "completed_scenario_ids": [],
+        "run_id": run_id,
+    })
+    return run_id, set()
 
-        _record_power_flow_scenario(
-            power_flow_summary,
-            power_flow_before,
-            _power_flow_performance_snapshot(backend),
+
+def generate_self_play_examples(request: GenerationRequest) -> Path:
+    _preflight_generation_inputs(request)
+    scenario_ids = _scenario_ids_from_request(request)
+    request.output_dir.mkdir(parents=True, exist_ok=True)
+    identity = _resume_identity(request, scenario_ids)
+    run_id, completed = _load_generation_progress(request, identity)
+    remaining = [sid for sid in scenario_ids if sid not in completed]
+
+    _ensure_runtime_dependencies()
+    writer_kwargs: dict[str, object] = {
+        "physics_config": request.resolved_physics_config,
+        "action_space_config": request.config.action_space_config,
+    }
+    if "run_id" in inspect.signature(ExampleWriter.__init__).parameters:
+        writer_kwargs["run_id"] = run_id
+    writer = ExampleWriter(request.output_dir, **writer_kwargs)
+
+    if request.workers == 1:
+        _initialize_generation_worker(request)
+        results = map(_generate_scenario, remaining)
+        executor = None
+    else:
+        executor = ProcessPoolExecutor(
+            max_workers=request.workers,
+            mp_context=multiprocessing.get_context("spawn"),
+            initializer=_initialize_generation_worker,
+            initargs=(request,),
         )
+        results = executor.map(_generate_scenario, remaining)
 
-    examples_path = example_writer.save()
+    try:
+        for result in results:
+            returns = discounted_returns(result.rewards, request.config.gamma)
+            if result.pending_examples:
+                writer.add_episode(
+                    result.pending_examples,
+                    final_return=returns[0] if returns else 0.0,
+                    returns_from_step=returns,
+                    solved=result.solved,
+                    done=result.done,
+                    termination_reason=result.termination_reason,
+                    terminal_outcome_evidence=result.terminal_outcome_evidence,
+                    iteration=request.iteration,
+                )
+                writer.save()
+            completed.add(result.scenario_id)
+            ordered_completed = [sid for sid in scenario_ids if sid in completed]
+            _atomic_json(request.output_dir / "progress.json", {
+                "identity": identity,
+                "completed_scenario_ids": ordered_completed,
+                "run_id": run_id,
+            })
+    finally:
+        if executor is not None:
+            executor.shutdown(wait=True, cancel_futures=True)
 
-    print("\nPower flow cache:")
-    print(_finalize_power_flow_performance_summary(power_flow_summary))
-    print("\nAction space cache:")
-    print(action_space.cache_info())
-    if evaluator is not None:
-        print("\nNeural evaluator cache:")
-        print(evaluator.cache_info())
-
-    print("\n" + "=" * 100)
-    print("Self-play generation summary")
-    print("=" * 100)
-    print(f"Total examples: {total_examples}")
-    print(f"Saved examples: {examples_path}")
-    print(f"States dir:     {example_writer.states_dir}")
-    elapsed = time.perf_counter() - start_time
-    print(f"\nTiming:\nSelf-play generation elapsed time: {elapsed:.4f} sec")
-    print("\nDone.")
+    examples_path = request.output_dir / "examples.csv"
+    if not examples_path.exists():
+        writer.save()
     return examples_path

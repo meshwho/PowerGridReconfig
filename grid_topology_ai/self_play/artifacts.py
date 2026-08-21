@@ -8,10 +8,6 @@ from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any
 
-import yaml
-
-JsonObject = dict[str, Any]
-
 
 def _atomic_write_text(
     *,
@@ -40,30 +36,11 @@ def _atomic_write_text(
             temporary_path.unlink()
 
 
-def load_json(path: Path) -> JsonObject:
-    payload = json.loads(path.read_text(encoding="utf-8"))
-
-    if not isinstance(payload, Mapping):
-        raise ValueError(f"JSON artifact must be an object: {path}")
-
-    return dict(payload)
-
-
 def save_json(payload: Mapping[str, Any], path: Path) -> Path:
     content = json.dumps(
         dict(payload),
         indent=2,
         ensure_ascii=False,
-    )
-
-    return _atomic_write_text(path=path, content=content)
-
-
-def save_yaml(payload: Mapping[str, Any], path: Path) -> Path:
-    content = yaml.safe_dump(
-        dict(payload),
-        allow_unicode=True,
-        sort_keys=False,
     )
 
     return _atomic_write_text(path=path, content=content)

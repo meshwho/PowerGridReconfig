@@ -264,6 +264,17 @@ def build_parser() -> argparse.ArgumentParser:
             "Useful for large self-play generation to avoid unbounded memory growth."
         ),
     )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=1,
+        help="Number of persistent self-play worker processes.",
+    )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Resume the matching generation run from progress.json.",
+    )
     return parser
 
 
@@ -342,6 +353,8 @@ def main(argv: list[str] | None = None) -> int:
         min_soft_improvement=args.min_soft_improvement,
         min_gate_visits=args.min_gate_visits,
         min_gate_visit_fraction=args.min_gate_visit_fraction,
+        workers=args.workers,
+        resume=args.resume,
     )
 
     examples_csv = generate_self_play_examples(request)

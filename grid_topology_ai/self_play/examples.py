@@ -64,13 +64,6 @@ class SelfPlayExample:
     outcome_gamma: float | None = None
     selection_temperature: float | None = None
     selection_mode: str | None = None
-    policy_target_entropy: float | None = None
-    policy_target_normalized_entropy: float | None = None
-    mcts_legal_action_count: int | None = None
-    mcts_considered_action_count: int | None = None
-    mcts_visited_action_count: int | None = None
-    mcts_action_coverage: float | None = None
-    mcts_visited_action_coverage: float | None = None
 
 
 class ExampleWriter:
@@ -82,6 +75,7 @@ class ExampleWriter:
         *,
         physics_config: PhysicsConfig,
         action_space_config: ActionSpaceConfig,
+        run_id: str | None = None,
     ):
         self.output_dir = Path(output_dir)
         self.physics_config = physics_config
@@ -91,9 +85,22 @@ class ExampleWriter:
         self.states_dir.mkdir(parents=True, exist_ok=True)
         self.state_store = GridFMStateStore(self.states_dir)
         self.examples: list[SelfPlayExample] = []
+        self._existing_frame = (
+            pd.read_csv(self.examples_path)
+            if self.examples_path.exists()
+            else pd.DataFrame()
+        )
         self.action_space_config = action_space_config
-        self.run_id = uuid.uuid4().hex
+        self.run_id = str(run_id or self._existing_run_id())
         self._episode_ids: dict[int, str] = {}
+
+    def _existing_run_id(self) -> str:
+        if self._existing_frame.empty or "run_id" not in self._existing_frame:
+            return uuid.uuid4().hex
+        values = self._existing_frame["run_id"].dropna().astype(str).unique()
+        if len(values) != 1:
+            raise ValueError("Existing examples.csv has inconsistent run IDs.")
+        return str(values[0])
 
     def add_episode(
         self,
@@ -138,7 +145,7 @@ class ExampleWriter:
                 "Episode steps must be contiguous and ordered from zero."
             )
 
-        episode_id = uuid.uuid4().hex
+        episode_id = f"iteration_{iteration:06d}_scenario_{scenario_id}"
         evidence_json = terminal_outcome_evidence.to_json()
         reason_value = termination_reason_value(parsed_reason)
         target_rows = [
@@ -195,23 +202,6 @@ class ExampleWriter:
                     episode_id=episode_id,
                     selection_temperature=item.get("selection_temperature"),
                     selection_mode=item.get("selection_mode"),
-                    policy_target_entropy=item.get("policy_target_entropy"),
-                    policy_target_normalized_entropy=item.get(
-                        "policy_target_normalized_entropy"
-                    ),
-                    mcts_legal_action_count=item.get(
-                        "mcts_legal_action_count"
-                    ),
-                    mcts_considered_action_count=item.get(
-                        "mcts_considered_action_count"
-                    ),
-                    mcts_visited_action_count=item.get(
-                        "mcts_visited_action_count"
-                    ),
-                    mcts_action_coverage=item.get("mcts_action_coverage"),
-                    mcts_visited_action_coverage=item.get(
-                        "mcts_visited_action_coverage"
-                    ),
                     extra_metadata=item.get("extra_metadata"),
                     outcome_fields=target,
                 )
@@ -226,89 +216,6 @@ class ExampleWriter:
             raise
 
         return len(pending_examples)
-
-    def add_example(
-        self,
-        state: GridFMState,
-        state_id: str,
-        action_mask,
-        scenario_id: int,
-        step: int,
-        selected_action_id: int,
-        selected_branch_id: int | None,
-        step_reward: float,
-        final_return: float,
-        discounted_return_from_step: float,
-        solved: bool,
-        done: bool,
-        termination_reason: TerminationReason | str | None,
-        terminal_outcome_evidence: TerminalOutcomeEvidence,
-        visit_counts: dict[int, int],
-        mcts_policy: dict[int, float],
-        selection_temperature: float | None = None,
-        selection_mode: str | None = None,
-        policy_target_entropy: float | None = None,
-        policy_target_normalized_entropy: float | None = None,
-        mcts_legal_action_count: int | None = None,
-        mcts_considered_action_count: int | None = None,
-        mcts_visited_action_count: int | None = None,
-        mcts_action_coverage: float | None = None,
-        mcts_visited_action_coverage: float | None = None,
-        extra_metadata: dict[str, Any] | None = None,
-    ) -> None:
-        """Save one completed example from the legacy one-row API."""
-
-        del state_id
-        metadata = dict(extra_metadata or {})
-        iteration = self._require_iteration(
-            metadata.get(
-                "self_play_iteration",
-                metadata.get("iteration", 1),
-            )
-        )
-        parsed_reason = self._validate_terminal_outcome(
-            solved=solved,
-            done=done,
-            termination_reason=termination_reason,
-            evidence=terminal_outcome_evidence,
-        )
-
-        scenario_id = int(scenario_id)
-        step = int(step)
-        if step == 0 or scenario_id not in self._episode_ids:
-            self._episode_ids[scenario_id] = uuid.uuid4().hex
-
-        self._store_example(
-            state=state,
-            action_mask=action_mask,
-            scenario_id=scenario_id,
-            step=step,
-            selected_action_id=selected_action_id,
-            selected_branch_id=selected_branch_id,
-            step_reward=step_reward,
-            final_return=final_return,
-            discounted_return_from_step=discounted_return_from_step,
-            solved=solved,
-            termination_reason=parsed_reason,
-            terminal_outcome_evidence=terminal_outcome_evidence,
-            visit_counts=visit_counts,
-            mcts_policy=mcts_policy,
-            iteration=iteration,
-            episode_id=self._episode_ids[scenario_id],
-            selection_temperature=selection_temperature,
-            selection_mode=selection_mode,
-            policy_target_entropy=policy_target_entropy,
-            policy_target_normalized_entropy=(
-                policy_target_normalized_entropy
-            ),
-            mcts_legal_action_count=mcts_legal_action_count,
-            mcts_considered_action_count=mcts_considered_action_count,
-            mcts_visited_action_count=mcts_visited_action_count,
-            mcts_action_coverage=mcts_action_coverage,
-            mcts_visited_action_coverage=mcts_visited_action_coverage,
-            extra_metadata=metadata,
-            outcome_fields=None,
-        )
 
     @staticmethod
     def _require_iteration(value: object) -> int:
@@ -377,13 +284,6 @@ class ExampleWriter:
         episode_id: str,
         selection_temperature: float | None,
         selection_mode: str | None,
-        policy_target_entropy: float | None,
-        policy_target_normalized_entropy: float | None,
-        mcts_legal_action_count: int | None,
-        mcts_considered_action_count: int | None,
-        mcts_visited_action_count: int | None,
-        mcts_action_coverage: float | None,
-        mcts_visited_action_coverage: float | None,
         extra_metadata: dict[str, Any] | None,
         outcome_fields: dict[str, object] | None,
     ) -> SelfPlayExample:
@@ -523,41 +423,6 @@ class ExampleWriter:
             selection_mode=(
                 None if selection_mode is None else str(selection_mode)
             ),
-            policy_target_entropy=(
-                None
-                if policy_target_entropy is None
-                else float(policy_target_entropy)
-            ),
-            policy_target_normalized_entropy=(
-                None
-                if policy_target_normalized_entropy is None
-                else float(policy_target_normalized_entropy)
-            ),
-            mcts_legal_action_count=(
-                None
-                if mcts_legal_action_count is None
-                else int(mcts_legal_action_count)
-            ),
-            mcts_considered_action_count=(
-                None
-                if mcts_considered_action_count is None
-                else int(mcts_considered_action_count)
-            ),
-            mcts_visited_action_count=(
-                None
-                if mcts_visited_action_count is None
-                else int(mcts_visited_action_count)
-            ),
-            mcts_action_coverage=(
-                None
-                if mcts_action_coverage is None
-                else float(mcts_action_coverage)
-            ),
-            mcts_visited_action_coverage=(
-                None
-                if mcts_visited_action_coverage is None
-                else float(mcts_visited_action_coverage)
-            ),
         )
         self.examples.append(example)
         return example
@@ -589,6 +454,10 @@ class ExampleWriter:
             [asdict(example) for example in self.examples],
             columns=columns,
         )
+        if not self._existing_frame.empty:
+            frame = pd.concat(
+                [self._existing_frame, frame], ignore_index=True
+            )[columns]
 
         temporary_path = self.examples_path.with_name(
             f"{self.examples_path.name}.tmp"
@@ -596,6 +465,8 @@ class ExampleWriter:
         try:
             frame.to_csv(temporary_path, index=False)
             temporary_path.replace(self.examples_path)
+            self._existing_frame = frame
+            self.examples.clear()
         finally:
             temporary_path.unlink(missing_ok=True)
 

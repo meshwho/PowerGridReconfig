@@ -1,8 +1,7 @@
 from __future__ import annotations
 
 import csv
-from collections.abc import Iterator, Mapping
-from contextlib import contextmanager
+from collections.abc import Mapping
 from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
@@ -66,34 +65,6 @@ _LAST_VALIDATION_METRICS: ContextVar[dict[str, float] | None] = ContextVar(
     "checkpoint_last_validation_metrics",
     default=None,
 )
-
-
-def _coerce_calibration_bins(value: object) -> int:
-    if isinstance(value, bool):
-        raise ValueError("calibration_bins must be a positive integer.")
-    try:
-        number = int(value)
-    except (TypeError, ValueError, OverflowError) as exc:
-        raise ValueError("calibration_bins must be a positive integer.") from exc
-    if number <= 0 or float(value) != float(number):
-        raise ValueError("calibration_bins must be a positive integer.")
-    return number
-
-
-@contextmanager
-def validation_diagnostic_options(
-    *,
-    calibration_bins: int,
-) -> Iterator[None]:
-    token_bins = _CALIBRATION_BINS.set(
-        _coerce_calibration_bins(calibration_bins)
-    )
-    token_metrics = _LAST_VALIDATION_METRICS.set(None)
-    try:
-        yield
-    finally:
-        _LAST_VALIDATION_METRICS.reset(token_metrics)
-        _CALIBRATION_BINS.reset(token_bins)
 
 
 def current_validation_metrics() -> dict[str, float] | None:
@@ -513,62 +484,3 @@ def log_epoch_metrics(
             tag = f"validation/{name}"
         tensorboard_writer.add_scalar(tag, float(value), epoch)
     tensorboard_writer.flush()
-
-
-def annotate_example_difficulty(
-    *,
-    examples_csv: str | Path,
-    transitions_csv: str | Path,
-) -> None:
-    """Copy scenario difficulty into example rows without changing state files."""
-
-    import pandas as pd
-
-    examples_path = Path(examples_csv)
-    transitions_path = Path(transitions_csv)
-    examples = pd.read_csv(examples_path)
-    transitions = pd.read_csv(transitions_path)
-    if "scenario_id" not in examples.columns:
-        raise ValueError(f"Examples CSV is missing scenario_id: {examples_path}")
-    if "scenario_id" not in transitions.columns:
-        raise ValueError(
-            f"Transitions CSV is missing scenario_id: {transitions_path}"
-        )
-
-    if "difficulty_class" not in transitions.columns:
-        transitions = transitions.copy()
-        transitions["difficulty_class"] = "unknown"
-
-    difficulty_rows = transitions[["scenario_id", "difficulty_class"]].copy()
-    difficulty_rows["scenario_id"] = difficulty_rows["scenario_id"].astype(int)
-    difficulty_rows["difficulty_class"] = difficulty_rows[
-        "difficulty_class"
-    ].map(_difficulty_name)
-
-    conflicts = (
-        difficulty_rows.groupby("scenario_id")["difficulty_class"]
-        .nunique()
-        .loc[lambda values: values > 1]
-    )
-    if not conflicts.empty:
-        raise ValueError(
-            "Transitions map scenarios to multiple difficulty classes: "
-            f"{conflicts.index.astype(int).tolist()[:20]}."
-        )
-
-    mapping = (
-        difficulty_rows.drop_duplicates("scenario_id")
-        .set_index("scenario_id")["difficulty_class"]
-        .to_dict()
-    )
-    scenario_ids = examples["scenario_id"].astype(int)
-    missing = sorted(set(scenario_ids) - set(mapping))
-    if missing:
-        raise ValueError(
-            "Examples contain scenarios missing from selected transitions: "
-            f"{missing[:20]}."
-        )
-
-    result = examples.copy()
-    result["difficulty_class"] = scenario_ids.map(mapping)
-    result.to_csv(examples_path, index=False)
