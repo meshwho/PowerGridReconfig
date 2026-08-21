@@ -16,4 +16,5 @@ evaluation:
   depth: 4
   max_steps: 5
   top_k: 30
+  policy_mode: ungated
   workers: 1
