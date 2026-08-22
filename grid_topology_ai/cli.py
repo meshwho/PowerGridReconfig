@@ -311,8 +311,22 @@ def _train(args: argparse.Namespace) -> int:
 
 def _add_teacher(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("raw_dir")
-    parser.add_argument("--transitions", required=True)
-    parser.add_argument("--output", required=True)
+    parser.add_argument(
+        "--transitions",
+        required=True,
+        help=(
+            "Transitions CSV, or a GridFM transitions directory containing "
+            "transitions_train.csv and transitions_val.csv."
+        ),
+    )
+    parser.add_argument(
+        "--output",
+        required=True,
+        help=(
+            "Teacher output directory. Directory input writes train/ and val/ "
+            "subdirectories with independent crash-safe checkpoints."
+        ),
+    )
     parser.add_argument("--depth", type=int, default=4)
     parser.add_argument("--beam-width", type=int, default=10)
     parser.add_argument("--candidate-pool", type=int, default=80)
@@ -345,15 +359,17 @@ def _add_teacher(parser: argparse.ArgumentParser) -> None:
     parser.set_defaults(handler=_teacher)
 
 
-def _teacher(args: argparse.Namespace) -> int:
-    from grid_topology_ai.teacher_runtime import main as teacher_main
-
+def _teacher_argv(
+    args: argparse.Namespace,
+    transitions: Path,
+    output_dir: Path,
+) -> list[str]:
     argv = [
         args.raw_dir,
         "--transitions",
-        args.transitions,
+        str(transitions),
         "--output-dir",
-        args.output,
+        str(output_dir),
     ]
     values = {
         "depth": args.depth,
@@ -389,7 +405,49 @@ def _teacher(args: argparse.Namespace) -> int:
     ):
         if enabled:
             argv.append(f"--{option}")
-    return int(teacher_main(argv) or 0)
+    return argv
+
+
+def _teacher(args: argparse.Namespace) -> int:
+    from grid_topology_ai.teacher_runtime import main as teacher_main
+
+    transitions = Path(args.transitions)
+    output_dir = Path(args.output)
+
+    if not transitions.is_dir():
+        return int(teacher_main(_teacher_argv(args, transitions, output_dir)) or 0)
+
+    split_inputs = (
+        ("train", transitions / "transitions_train.csv"),
+        ("val", transitions / "transitions_val.csv"),
+    )
+    missing = [str(path) for _, path in split_inputs if not path.exists()]
+    if missing:
+        raise FileNotFoundError(
+            "Teacher transitions directory is incomplete. Missing: "
+            + ", ".join(missing)
+        )
+
+    for split_name, split_path in split_inputs:
+        split_output = output_dir / split_name
+        print(f"\nTeacher {split_name}: {split_path} -> {split_output}")
+        result = int(
+            teacher_main(
+                _teacher_argv(
+                    args,
+                    split_path,
+                    split_output,
+                )
+            )
+            or 0
+        )
+        if result:
+            return result
+
+    print("\nTeacher train/validation generation complete.")
+    print(f"Train examples:      {output_dir / 'train' / 'examples.csv'}")
+    print(f"Validation examples: {output_dir / 'val' / 'examples.csv'}")
+    return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
