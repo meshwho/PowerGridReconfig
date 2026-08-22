@@ -18,9 +18,9 @@ try:
 except ImportError:  # pragma: no cover
     tqdm = None
 
-from grid_topology_ai.config import EvaluationConfig
 from grid_topology_ai.config import (
     DEFAULT_PHYSICS_CONFIG,
+    EvaluationConfig,
     PhysicsConfig,
     physics_config_payload,
     require_physics_config_payload,
@@ -31,10 +31,6 @@ from grid_topology_ai.physics.objective import (
     assess_physical_state,
 )
 from grid_topology_ai.physics.utility import state_security_penalty, state_utility
-from grid_topology_ai.topology_actions import (
-    require_topology_action_payload,
-    topology_action_payload,
-)
 from grid_topology_ai.search.mcts import (
     constrain_policy,
     normalize_policy,
@@ -46,6 +42,10 @@ from grid_topology_ai.termination import (
     parse_termination_reason,
     termination_reason_value,
     validate_outcome_invariants,
+)
+from grid_topology_ai.topology_actions import (
+    require_topology_action_payload,
+    topology_action_payload,
 )
 
 
@@ -947,21 +947,21 @@ def _ensure_runtime_dependencies() -> None:
         return
 
     from grid_topology_ai.actions import GridFMActionSpace as ActionSpace
+    from grid_topology_ai.actions import make_do_nothing_action as stop_action
     from grid_topology_ai.data import GridFMAdapter as Adapter
     from grid_topology_ai.environment import TopologySwitchingEnv as Env
     from grid_topology_ai.models.neural_evaluator import (
         NeuralPolicyValueEvaluator as Evaluator,
     )
-    from grid_topology_ai.power_flow.backend import GridFMPowerFlowBackend as Backend
     from grid_topology_ai.physics.utility import GridFMReward as Reward
-    from grid_topology_ai.search.mcts import (
-        analyze_root_branches as analyze,
-        make_do_nothing_action as stop_action,
-    )
+    from grid_topology_ai.power_flow.backend import GridFMPowerFlowBackend as Backend
     from grid_topology_ai.search.mcts import (
         MCTSConfig as SearchConfig,
+    )
+    from grid_topology_ai.search.mcts import (
         MCTSPlanner as Planner,
     )
+    from grid_topology_ai.search.mcts import analyze_root_branches as analyze
 
     GridFMActionSpace, GridFMAdapter = ActionSpace, Adapter
     GridFMPowerFlowBackend, GridFMReward = Backend, Reward
@@ -1312,9 +1312,7 @@ def _make_task_config(request: EvaluationRequest) -> dict[str, Any]:
         _ensure_runtime_dependencies()
 
     config = request.config
-    topology_provenance = _load_checkpoint_topology_action_payload(
-        request.checkpoint
-    )
+    topology_provenance = _load_checkpoint_topology_action_payload(request.checkpoint)
 
     return {
         "simulations": int(config.simulations),
