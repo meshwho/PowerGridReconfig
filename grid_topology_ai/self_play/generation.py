@@ -19,7 +19,7 @@ from grid_topology_ai.config import (
     PhysicsConfig,
     resolve_physics_config,
 )
-from grid_topology_ai.search.root_policy import (
+from grid_topology_ai.search.mcts import (
     require_action_in_policy_support,
     select_policy_action,
 )
@@ -137,7 +137,7 @@ def _ensure_runtime_dependencies() -> None:
         GridFMPowerFlowBackend as _Backend,
     )
     from grid_topology_ai.physics.utility import GridFMReward as _Reward
-    from grid_topology_ai.search.continuation_gate import (
+    from grid_topology_ai.search.mcts import (
         make_do_nothing_action as _make_do_nothing_action,
     )
     from grid_topology_ai.search.mcts import MCTSConfig as _MCTSConfig

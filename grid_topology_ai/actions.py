@@ -434,3 +434,13 @@ class GridFMActionSpace:
             state.branch_features[branch_pos, self._loading_column_idx]
         )
         return loading >= self.min_loading_for_switch_percent
+
+
+def make_do_nothing_action() -> GridFMAction:
+    """Construct the canonical STOP/no-op topology action."""
+    return GridFMAction(
+        action_id=0,
+        action_type="do_nothing",
+        branch_id=None,
+        branch_pos=None,
+    )

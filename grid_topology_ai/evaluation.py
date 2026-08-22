@@ -35,7 +35,7 @@ from grid_topology_ai.topology_actions import (
     require_topology_action_payload,
     topology_action_payload,
 )
-from grid_topology_ai.search.root_policy import (
+from grid_topology_ai.search.mcts import (
     constrain_policy,
     normalize_policy,
     require_action_in_policy_support,
@@ -954,7 +954,7 @@ def _ensure_runtime_dependencies() -> None:
     )
     from grid_topology_ai.power_flow.backend import GridFMPowerFlowBackend as Backend
     from grid_topology_ai.physics.utility import GridFMReward as Reward
-    from grid_topology_ai.search.continuation_gate import (
+    from grid_topology_ai.search.mcts import (
         analyze_root_branches as analyze,
         make_do_nothing_action as stop_action,
     )
