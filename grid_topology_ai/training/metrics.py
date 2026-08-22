@@ -12,7 +12,7 @@ try:
 except ImportError:
     SummaryWriter = None
 
-from grid_topology_ai.models.graph_self_play_dataset import GraphSelfPlayDataset
+from grid_topology_ai.dataset import GraphSelfPlayDataset
 
 if TYPE_CHECKING:
     from grid_topology_ai.training.graph_policy_value import TrainingRequest

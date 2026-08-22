@@ -33,7 +33,7 @@ from grid_topology_ai.value_targets import (
 )
 
 if TYPE_CHECKING:
-    from grid_topology_ai.models.neural_evaluator import NeuralPolicyValueEvaluator
+    from grid_topology_ai.evaluator import NeuralPolicyValueEvaluator
 
 
 @dataclass(frozen=True)

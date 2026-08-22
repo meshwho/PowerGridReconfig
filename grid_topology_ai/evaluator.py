@@ -12,9 +12,9 @@ from grid_topology_ai.config import (
     PhysicsConfig,
     require_physics_config_payload,
 )
-from grid_topology_ai.models.graph_policy_value_net_v2 import GraphPolicyValueNetV2
+from grid_topology_ai.model import GraphPolicyValueNetV2
 from grid_topology_ai.state import GridFMState
-from grid_topology_ai.topology_actions import (
+from grid_topology_ai.actions import (
     STOP_PLUS_BRANCH_STATUS_POLICY_LAYOUT,
     action_layout_fingerprint,
     build_branch_action_slots,

@@ -22,7 +22,7 @@ from grid_topology_ai.termination import (
     termination_reason_value,
     validate_outcome_invariants,
 )
-from grid_topology_ai.topology_actions import (
+from grid_topology_ai.actions import (
     ActionSpaceConfig,
     action_layout_fingerprint,
     action_layout_to_list,

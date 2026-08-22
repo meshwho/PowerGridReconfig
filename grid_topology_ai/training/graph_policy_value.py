@@ -15,8 +15,8 @@ from torch.utils.data import DataLoader
 
 from grid_topology_ai.config import TrainingConfig
 from grid_topology_ai.config import PhysicsConfig, require_physics_config_payload
-from grid_topology_ai.models.graph_policy_value_net_v2 import GraphPolicyValueNetV2
-from grid_topology_ai.models.graph_self_play_dataset import (
+from grid_topology_ai.model import GraphPolicyValueNetV2
+from grid_topology_ai.dataset import (
     GraphSelfPlayDataset,
     collate_graph_samples,
 )
@@ -42,7 +42,7 @@ from grid_topology_ai.training.validation_diagnostics import (
     evaluate_one_epoch as _evaluate_one_epoch_diagnostics,
     log_epoch_metrics as _log_epoch_diagnostics,
 )
-from grid_topology_ai.topology_actions import STOP_PLUS_BRANCH_STATUS_POLICY_LAYOUT
+from grid_topology_ai.actions import STOP_PLUS_BRANCH_STATUS_POLICY_LAYOUT
 
 
 GraphModel = GraphPolicyValueNetV2

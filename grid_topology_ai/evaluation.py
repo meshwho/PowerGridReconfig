@@ -43,7 +43,7 @@ from grid_topology_ai.termination import (
     termination_reason_value,
     validate_outcome_invariants,
 )
-from grid_topology_ai.topology_actions import (
+from grid_topology_ai.actions import (
     require_topology_action_payload,
     topology_action_payload,
 )
@@ -950,7 +950,7 @@ def _ensure_runtime_dependencies() -> None:
     from grid_topology_ai.actions import make_do_nothing_action as stop_action
     from grid_topology_ai.data import GridFMAdapter as Adapter
     from grid_topology_ai.environment import TopologySwitchingEnv as Env
-    from grid_topology_ai.models.neural_evaluator import (
+    from grid_topology_ai.evaluator import (
         NeuralPolicyValueEvaluator as Evaluator,
     )
     from grid_topology_ai.physics.utility import GridFMReward as Reward

@@ -11,7 +11,7 @@ from enum import StrEnum
 from numbers import Integral, Real
 from typing import Any
 
-from grid_topology_ai.topology_actions import ActionSpaceConfig
+from grid_topology_ai.actions import ActionSpaceConfig
 
 ConfigMapping = Mapping[str, Any]
 

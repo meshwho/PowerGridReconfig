@@ -125,7 +125,7 @@ def _ensure_runtime_dependencies() -> None:
     )
     from grid_topology_ai.data import GridFMAdapter as _Adapter
     from grid_topology_ai.environment import TopologySwitchingEnv as _Env
-    from grid_topology_ai.models.neural_evaluator import (
+    from grid_topology_ai.evaluator import (
         NeuralPolicyValueEvaluator as _Evaluator,
     )
     from grid_topology_ai.physics.utility import GridFMReward as _Reward
