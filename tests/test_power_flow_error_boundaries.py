@@ -8,10 +8,7 @@ import pandas as pd
 import pytest
 from pypower.idx_bus import VM
 
-from grid_topology_ai.data_adapter import (
-    BRANCH_FEATURE_COLUMNS,
-    BUS_FEATURE_COLUMNS,
-)
+from grid_topology_ai.state import BRANCH_FEATURE_COLUMNS, BUS_FEATURE_COLUMNS
 from grid_topology_ai.power_flow.errors import PowerFlowFailureKind
 from grid_topology_ai.power_flow.backend import GridFMPowerFlowBackend
 

@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 from grid_topology_ai.config import PhysicsConfig
-from grid_topology_ai.data_adapter import BRANCH_FEATURE_COLUMNS, GridFMState
+from grid_topology_ai.state import BRANCH_FEATURE_COLUMNS, GridFMState
 from grid_topology_ai.physics.utility import (
     CONTINUATION_GRID_UTILITY_WEIGHTS,
     CONTINUATION_SWITCH_PENALTY,

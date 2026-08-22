@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import numpy as np
 
-from grid_topology_ai.data_adapter import BRANCH_FEATURE_COLUMNS, GridFMState
+from grid_topology_ai.state import BRANCH_FEATURE_COLUMNS, GridFMState
 from grid_topology_ai.search.continuation_gate import analyze_root_branches
 
 

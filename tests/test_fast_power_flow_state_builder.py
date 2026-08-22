@@ -10,10 +10,7 @@ from pypower.idx_bus import VA, VM
 from pypower.idx_gen import GEN_STATUS, PG, QG
 
 from grid_topology_ai.config import PhysicsConfig, ZeroRateAPolicy
-from grid_topology_ai.data_adapter import (
-    BRANCH_FEATURE_COLUMNS,
-    BUS_FEATURE_COLUMNS,
-)
+from grid_topology_ai.state import BRANCH_FEATURE_COLUMNS, BUS_FEATURE_COLUMNS
 from grid_topology_ai.power_flow.backend import GridFMPowerFlowBackend
 
 

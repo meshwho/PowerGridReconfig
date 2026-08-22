@@ -17,7 +17,7 @@ from grid_topology_ai.physics.constraints import (
     calculate_physical_metrics_from_frames,
     calculate_physical_metrics_from_result,
 )
-from grid_topology_ai.state.topology import validate_state_topology
+from .topology import validate_state_topology
 
 
 BUS_FEATURE_COLUMNS = [

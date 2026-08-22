@@ -5,7 +5,7 @@ from typing import Any
 
 import pytest
 
-from grid_topology_ai.action_space import GridFMAction
+from grid_topology_ai.actions import GridFMAction
 from grid_topology_ai.config import EvaluationConfig
 from grid_topology_ai.config import GenerationConfig
 from grid_topology_ai.search.mcts import MCTSConfig, MCTSNode, MCTSPlanner

@@ -6,7 +6,7 @@ import torch
 from grid_topology_ai.config import DEFAULT_PHYSICS_CONFIG
 from grid_topology_ai.models.graph_policy_value_net_v2 import GraphPolicyValueNetV2
 from grid_topology_ai.models.neural_evaluator import NeuralPolicyValueEvaluator
-from grid_topology_ai.state.schema import BRANCH_FEATURE_COLUMNS, BUS_FEATURE_COLUMNS
+from grid_topology_ai.state import BRANCH_FEATURE_COLUMNS, BUS_FEATURE_COLUMNS
 from grid_topology_ai.topology_actions import (
     STOP_PLUS_BRANCH_STATUS_POLICY_LAYOUT,
     action_layout_to_list,

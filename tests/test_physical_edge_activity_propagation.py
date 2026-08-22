@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 import torch
 
-from grid_topology_ai.data_adapter import GridFMState
+from grid_topology_ai.state import GridFMState
 from grid_topology_ai.models.graph_policy_value_net_v2 import GraphPolicyValueNetV2
 from grid_topology_ai.models.neural_evaluator import NeuralPolicyValueEvaluator
 from grid_topology_ai.training.graph_policy_value import _forward_graph_model

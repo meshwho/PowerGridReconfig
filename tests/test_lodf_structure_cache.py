@@ -9,7 +9,7 @@ from grid_topology_ai.cache import (
     LODFStructureCache,
     lodf_structure_fingerprint,
 )
-from grid_topology_ai.data_adapter import BRANCH_FEATURE_COLUMNS
+from grid_topology_ai.state import BRANCH_FEATURE_COLUMNS
 from grid_topology_ai.physics.lodf import build_lodf_structure
 
 
