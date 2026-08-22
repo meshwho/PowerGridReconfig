@@ -17,7 +17,7 @@ from grid_topology_ai.value_targets import (
     terminal_utility_from_outcome,
 )
 from grid_topology_ai.state import validate_state_npz_schema_arrays
-from grid_topology_ai.topology_actions import (
+from grid_topology_ai.actions import (
     ActionSlot,
     ActionSpaceConfig,
     action_layout_fingerprint,

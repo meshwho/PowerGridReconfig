@@ -14,7 +14,7 @@ from grid_topology_ai.self_play.example_validation import (
     validate_example_contract_versions,
     validate_example_topology_action_contracts,
 )
-from grid_topology_ai.topology_actions import (
+from grid_topology_ai.actions import (
     action_layout_fingerprint,
     require_branch_status_policy_layout,
 )

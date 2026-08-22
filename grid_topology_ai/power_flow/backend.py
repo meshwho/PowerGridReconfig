@@ -96,7 +96,7 @@ from grid_topology_ai.power_flow.solver import (
     runpf,
 )
 from grid_topology_ai.state import GridFMStateBuilder
-from grid_topology_ai.topology_actions import GridFMAction
+from grid_topology_ai.actions import GridFMAction
 
 
 def pf_algorithm_name(pf_alg: int) -> str:

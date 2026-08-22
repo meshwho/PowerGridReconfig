@@ -1,5 +1,365 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+
+import numpy as np
+import pandas as pd
+
+from grid_topology_ai.power_flow import InvalidPhysicalState
+
+
+@dataclass(frozen=True, slots=True)
+class ValidatedStateTopology:
+    bus_df: pd.DataFrame
+    branch_df: pd.DataFrame
+    gen_df: pd.DataFrame
+    bus_ids: np.ndarray
+    branch_ids: np.ndarray
+    branch_status: np.ndarray
+    edge_index: np.ndarray
+
+
+def validate_state_topology(
+    *,
+    scenario_id: int,
+    bus_df: pd.DataFrame,
+    branch_df: pd.DataFrame,
+    gen_df: pd.DataFrame,
+) -> ValidatedStateTopology:
+    """Validate state identifiers and build contiguous graph indices."""
+
+    context = f"scenario {int(scenario_id)}"
+    bus = bus_df.copy()
+    branch = branch_df.copy()
+    gen = gen_df.copy()
+
+    bus_ids = _unique_integral_ids(
+        bus,
+        column="bus",
+        entity="bus",
+        context=context,
+    )
+    branch_ids = _unique_integral_ids(
+        branch,
+        column="idx",
+        entity="branch",
+        context=context,
+    )
+    generator_ids = _unique_integral_ids(
+        gen,
+        column="idx",
+        entity="generator",
+        context=context,
+    )
+
+    branch_from_bus = _integral_values(
+        branch,
+        column="from_bus",
+        label="branch from_bus",
+        context=context,
+    )
+    branch_to_bus = _integral_values(
+        branch,
+        column="to_bus",
+        label="branch to_bus",
+        context=context,
+    )
+    generator_bus = _integral_values(
+        gen,
+        column="bus",
+        label="generator bus",
+        context=context,
+    )
+
+    branch_status = _binary_values(
+        branch,
+        column="br_status",
+        label="branch status",
+        context=context,
+    )
+    generator_status = _binary_values(
+        gen,
+        column="in_service",
+        label="generator status",
+        context=context,
+    )
+
+    _require_ordered_limits(
+        bus,
+        id_values=bus_ids,
+        entity="bus",
+        lower_column="min_vm_pu",
+        upper_column="max_vm_pu",
+        context=context,
+    )
+    _require_ordered_limits(
+        gen,
+        id_values=generator_ids,
+        entity="generator",
+        lower_column="min_p_mw",
+        upper_column="max_p_mw",
+        context=context,
+    )
+    _require_ordered_limits(
+        gen,
+        id_values=generator_ids,
+        entity="generator",
+        lower_column="min_q_mvar",
+        upper_column="max_q_mvar",
+        context=context,
+    )
+    _require_finite_columns(
+        gen,
+        columns=("p_mw", "q_mvar"),
+        label="generator output",
+        context=context,
+    )
+
+    known_bus_ids = set(int(value) for value in bus_ids)
+    _require_known_branch_endpoints(
+        branch_ids=branch_ids,
+        from_bus=branch_from_bus,
+        to_bus=branch_to_bus,
+        known_bus_ids=known_bus_ids,
+        context=context,
+    )
+    _require_known_generator_buses(
+        generator_ids=generator_ids,
+        generator_bus=generator_bus,
+        known_bus_ids=known_bus_ids,
+        context=context,
+    )
+
+    bus["bus"] = bus_ids
+    branch["idx"] = branch_ids
+    branch["from_bus"] = branch_from_bus
+    branch["to_bus"] = branch_to_bus
+    branch["br_status"] = branch_status
+    gen["idx"] = generator_ids
+    gen["bus"] = generator_bus
+    gen["in_service"] = generator_status
+
+    bus = bus.sort_values("bus").reset_index(drop=True)
+    branch = branch.sort_values("idx").reset_index(drop=True)
+    gen = gen.sort_values("idx").reset_index(drop=True)
+
+    sorted_bus_ids = bus["bus"].to_numpy(dtype=np.int64)
+    bus_position = {
+        int(bus_id): position
+        for position, bus_id in enumerate(sorted_bus_ids)
+    }
+
+    from_position = branch["from_bus"].map(bus_position).to_numpy(dtype=np.int64)
+    to_position = branch["to_bus"].map(bus_position).to_numpy(dtype=np.int64)
+    edge_index = np.vstack((from_position, to_position))
+
+    if edge_index.size:
+        if edge_index.min() < 0 or edge_index.max() >= len(sorted_bus_ids):
+            raise InvalidPhysicalState(
+                f"{context}: edge_index contains an invalid bus position."
+            )
+
+    return ValidatedStateTopology(
+        bus_df=bus,
+        branch_df=branch,
+        gen_df=gen,
+        bus_ids=sorted_bus_ids,
+        branch_ids=branch["idx"].to_numpy(dtype=np.int64),
+        branch_status=branch["br_status"].to_numpy(dtype=np.float32),
+        edge_index=edge_index,
+    )
+
+
+def _numeric_values(
+    frame: pd.DataFrame,
+    *,
+    column: str,
+    label: str,
+    context: str,
+) -> np.ndarray:
+    if column not in frame.columns:
+        raise InvalidPhysicalState(
+            f"{context}: missing required {label} column {column!r}."
+        )
+
+    try:
+        values = frame[column].to_numpy(dtype=np.float64)
+    except (TypeError, ValueError) as exc:
+        raise InvalidPhysicalState(
+            f"{context}: {label} must be numeric."
+        ) from exc
+
+    if not np.isfinite(values).all():
+        raise InvalidPhysicalState(
+            f"{context}: {label} contains NaN or infinity."
+        )
+
+    return values
+
+
+def _integral_values(
+    frame: pd.DataFrame,
+    *,
+    column: str,
+    label: str,
+    context: str,
+) -> np.ndarray:
+    values = _numeric_values(
+        frame,
+        column=column,
+        label=label,
+        context=context,
+    )
+
+    if not np.equal(values, np.rint(values)).all():
+        raise InvalidPhysicalState(
+            f"{context}: {label} must contain integral values."
+        )
+
+    int64 = np.iinfo(np.int64)
+    if np.any(values < int64.min) or np.any(values > int64.max):
+        raise InvalidPhysicalState(
+            f"{context}: {label} cannot be represented as int64."
+        )
+
+    return values.astype(np.int64)
+
+
+def _unique_integral_ids(
+    frame: pd.DataFrame,
+    *,
+    column: str,
+    entity: str,
+    context: str,
+) -> np.ndarray:
+    ids = _integral_values(
+        frame,
+        column=column,
+        label=f"{entity} IDs",
+        context=context,
+    )
+
+    unique_ids, counts = np.unique(ids, return_counts=True)
+    duplicates = unique_ids[counts > 1]
+    if duplicates.size:
+        rendered = ", ".join(str(int(value)) for value in duplicates[:10])
+        raise InvalidPhysicalState(
+            f"{context}: duplicate {entity} IDs: {rendered}."
+        )
+
+    return ids
+
+
+def _binary_values(
+    frame: pd.DataFrame,
+    *,
+    column: str,
+    label: str,
+    context: str,
+) -> np.ndarray:
+    values = _numeric_values(
+        frame,
+        column=column,
+        label=label,
+        context=context,
+    )
+    if not np.isin(values, (0.0, 1.0)).all():
+        raise InvalidPhysicalState(
+            f"{context}: {label} must contain only 0 or 1."
+        )
+    return values
+
+
+def _require_ordered_limits(
+    frame: pd.DataFrame,
+    *,
+    id_values: np.ndarray,
+    entity: str,
+    lower_column: str,
+    upper_column: str,
+    context: str,
+) -> None:
+    lower = _numeric_values(
+        frame,
+        column=lower_column,
+        label=f"{entity} {lower_column}",
+        context=context,
+    )
+    upper = _numeric_values(
+        frame,
+        column=upper_column,
+        label=f"{entity} {upper_column}",
+        context=context,
+    )
+
+    invalid = np.flatnonzero(lower > upper)
+    if invalid.size:
+        position = int(invalid[0])
+        entity_id = int(id_values[position])
+        raise InvalidPhysicalState(
+            f"{context}: {entity} {entity_id} has "
+            f"{lower_column}={lower[position]} greater than "
+            f"{upper_column}={upper[position]}."
+        )
+
+
+def _require_finite_columns(
+    frame: pd.DataFrame,
+    *,
+    columns: tuple[str, ...],
+    label: str,
+    context: str,
+) -> None:
+    for column in columns:
+        _numeric_values(
+            frame,
+            column=column,
+            label=f"{label} {column}",
+            context=context,
+        )
+
+
+def _require_known_branch_endpoints(
+    *,
+    branch_ids: np.ndarray,
+    from_bus: np.ndarray,
+    to_bus: np.ndarray,
+    known_bus_ids: set[int],
+    context: str,
+) -> None:
+    for position, branch_id in enumerate(branch_ids):
+        from_id = int(from_bus[position])
+        to_id = int(to_bus[position])
+
+        if from_id not in known_bus_ids:
+            raise InvalidPhysicalState(
+                f"{context}: branch {int(branch_id)} references "
+                f"unknown from_bus={from_id}."
+            )
+        if to_id not in known_bus_ids:
+            raise InvalidPhysicalState(
+                f"{context}: branch {int(branch_id)} references "
+                f"unknown to_bus={to_id}."
+            )
+
+
+def _require_known_generator_buses(
+    *,
+    generator_ids: np.ndarray,
+    generator_bus: np.ndarray,
+    known_bus_ids: set[int],
+    context: str,
+) -> None:
+    for position, generator_id in enumerate(generator_ids):
+        bus_id = int(generator_bus[position])
+        if bus_id not in known_bus_ids:
+            raise InvalidPhysicalState(
+                f"{context}: generator {int(generator_id)} references "
+                f"unknown bus={bus_id}."
+            )
+
+
+# In-memory state schema and construction.
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -17,7 +377,6 @@ from grid_topology_ai.physics.constraints import (
     calculate_physical_metrics_from_frames,
     calculate_physical_metrics_from_result,
 )
-from .topology import validate_state_topology
 
 
 BUS_FEATURE_COLUMNS = [
@@ -641,9 +1000,279 @@ class GridFMStateBuilder:
             bus_ids=bus_ids,
         )
 
-# State artifact IO remains separate from in-memory construction, but its small
-# public surface is owned by this canonical package.
-from grid_topology_ai.state.io import (  # noqa: E402
-    GridFMStateStore,
-    validate_state_npz_schema_arrays,
+
+# Crash-safe NPZ state artifacts.
+import json
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+
+
+_REQUIRED_ARRAYS = (
+    "bus_features",
+    "branch_features",
+    "edge_index",
+    "bus_ids",
+    "branch_ids",
+    "branch_status",
 )
+
+
+def validate_state_npz_schema_arrays(state_path: str | Path) -> None:
+    """Validate that NPZ arrays implement the declared graph-state schema."""
+
+    path = Path(state_path)
+    try:
+        with np.load(path, allow_pickle=False) as data:
+            missing = [name for name in _REQUIRED_ARRAYS if name not in data.files]
+            if missing:
+                raise ValueError(
+                    f"State NPZ is missing required schema arrays {missing}: {path}"
+                )
+
+            bus_features = _feature_matrix(
+                data["bus_features"],
+                expected_columns=len(BUS_FEATURE_COLUMNS),
+                name="bus_features",
+                path=path,
+            )
+            branch_features = _feature_matrix(
+                data["branch_features"],
+                expected_columns=len(BRANCH_FEATURE_COLUMNS),
+                name="branch_features",
+                path=path,
+            )
+            num_buses = int(bus_features.shape[0])
+            num_branches = int(branch_features.shape[0])
+
+            _integer_ids(
+                data["bus_ids"],
+                expected_size=num_buses,
+                name="bus_ids",
+                path=path,
+            )
+            _integer_ids(
+                data["branch_ids"],
+                expected_size=num_branches,
+                name="branch_ids",
+                path=path,
+            )
+            branch_status = _branch_status(
+                data["branch_status"],
+                expected_size=num_branches,
+                path=path,
+            )
+            _edge_index(
+                data["edge_index"],
+                num_buses=num_buses,
+                num_branches=num_branches,
+                path=path,
+            )
+    except (OSError, EOFError) as exc:
+        raise ValueError(f"Could not read NPZ state: {path}") from exc
+
+    status_column = BRANCH_FEATURE_COLUMNS.index("br_status")
+    feature_status = branch_features[:, status_column]
+    if not np.array_equal(feature_status, branch_status):
+        raise ValueError(
+            f"{path}: branch_features br_status does not match branch_status"
+        )
+
+
+def _feature_matrix(
+    value: object,
+    *,
+    expected_columns: int,
+    name: str,
+    path: Path,
+) -> np.ndarray:
+    try:
+        matrix = np.asarray(value, dtype=np.float64)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{path}: {name} must be numeric") from exc
+
+    expected = f"non-empty 2D with {expected_columns} columns"
+    if (
+        matrix.ndim != 2
+        or matrix.shape[0] <= 0
+        or matrix.shape[1] != expected_columns
+    ):
+        raise ValueError(
+            f"{path}: {name} must be {expected}; "
+            f"feature dimensions mismatch, got {matrix.shape}"
+        )
+    if not np.isfinite(matrix).all():
+        raise ValueError(f"{path}: {name} must contain only finite values")
+
+    with np.errstate(over="ignore", under="ignore", invalid="ignore"):
+        float32_matrix = matrix.astype(np.float32)
+    if not np.isfinite(float32_matrix).all():
+        raise ValueError(f"{path}: {name} cannot be represented in float32")
+    return float32_matrix
+
+
+def _integer_ids(
+    value: object,
+    *,
+    expected_size: int,
+    name: str,
+    path: Path,
+) -> np.ndarray:
+    try:
+        values = np.asarray(value, dtype=np.float64)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{path}: {name} must be numeric") from exc
+
+    expected_shape = (expected_size,)
+    if values.shape != expected_shape:
+        raise ValueError(
+            f"{path}: {name} must have shape {expected_shape}, got {values.shape}"
+        )
+    if not np.isfinite(values).all():
+        raise ValueError(f"{path}: {name} must contain only finite values")
+    if not np.equal(values, np.rint(values)).all():
+        raise ValueError(f"{path}: {name} must be integer-valued")
+
+    limits = np.iinfo(np.int64)
+    if np.any(values < limits.min) or np.any(values > limits.max):
+        raise ValueError(f"{path}: {name} cannot be represented as int64")
+
+    ids = values.astype(np.int64)
+    if np.unique(ids).size != ids.size:
+        raise ValueError(f"{path}: {name} must be unique")
+    return ids
+
+
+def _branch_status(
+    value: object,
+    *,
+    expected_size: int,
+    path: Path,
+) -> np.ndarray:
+    try:
+        status = np.asarray(value, dtype=np.float32)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{path}: branch_status must be numeric") from exc
+
+    expected_shape = (expected_size,)
+    if status.shape != expected_shape:
+        raise ValueError(
+            f"{path}: branch_status must have shape {expected_shape}, "
+            f"got {status.shape}"
+        )
+    if not np.isfinite(status).all():
+        raise ValueError(f"{path}: branch_status must contain only finite values")
+    if not np.isin(status, (0.0, 1.0)).all():
+        raise ValueError(f"{path}: branch_status must contain only 0 or 1")
+    return status
+
+
+def _edge_index(
+    value: object,
+    *,
+    num_buses: int,
+    num_branches: int,
+    path: Path,
+) -> np.ndarray:
+    try:
+        edges = np.asarray(value, dtype=np.float64)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{path}: edge_index must be numeric") from exc
+
+    expected_shape = (2, num_branches)
+    if edges.shape != expected_shape:
+        raise ValueError(
+            f"{path}: edge_index must have shape {expected_shape}, "
+            f"got {edges.shape}"
+        )
+    if not np.isfinite(edges).all():
+        raise ValueError(f"{path}: edge_index must contain only finite values")
+    if not np.equal(edges, np.rint(edges)).all():
+        raise ValueError(f"{path}: edge_index must be integer-valued")
+
+    edge_ids = edges.astype(np.int64)
+    if edge_ids.min() < 0 or edge_ids.max() >= num_buses:
+        raise ValueError(f"{path}: edge_index values out of bounds")
+    return edge_ids
+
+
+class GridFMStateStore:
+    """Save one validated graph state per compressed NPZ file."""
+
+    def __init__(self, output_dir: str | Path):
+        self.output_dir = Path(output_dir)
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+
+    def save_state(
+        self,
+        state: GridFMState,
+        state_id: str,
+        action_mask: np.ndarray | None = None,
+        extra_metadata: dict[str, Any] | None = None,
+    ) -> Path:
+        output_path = self.output_dir / f"{state_id}.npz"
+
+        if action_mask is None:
+            action_mask_array = np.array([], dtype=np.int8)
+        else:
+            action_mask_array = np.asarray(action_mask, dtype=np.int8)
+
+        bus_ids = self._validated_bus_ids(state)
+        metadata = dict(extra_metadata or {})
+        metadata.update(
+            {
+                "scenario_id": int(state.scenario_id),
+                "load_scenario_idx": float(state.load_scenario_idx),
+                "outaged_branch_ids": [
+                    int(value) for value in state.outaged_branch_ids
+                ],
+            }
+        )
+
+        np.savez_compressed(
+            output_path,
+            bus_features=state.bus_features.astype(np.float32),
+            branch_features=state.branch_features.astype(np.float32),
+            edge_index=state.edge_index.astype(np.int64),
+            bus_ids=bus_ids,
+            branch_ids=state.branch_ids.astype(np.int64),
+            branch_status=state.branch_status.astype(np.float32),
+            action_mask=action_mask_array,
+            metrics_json=np.array(json.dumps(state.metrics)),
+            metadata_json=np.array(json.dumps(metadata)),
+        )
+
+        return output_path
+
+    @staticmethod
+    def _validated_bus_ids(state: GridFMState) -> np.ndarray:
+        if state.bus_ids is None:
+            raise ValueError(
+                "GridFMState.bus_ids is required when saving graph states."
+            )
+
+        try:
+            values = np.asarray(state.bus_ids, dtype=np.float64)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("GridFMState.bus_ids must be numeric.") from exc
+
+        expected_shape = (int(state.bus_features.shape[0]),)
+        if values.shape != expected_shape:
+            raise ValueError(
+                "GridFMState.bus_ids shape mismatch: expected "
+                f"{expected_shape}, observed {values.shape}."
+            )
+        if not np.isfinite(values).all():
+            raise ValueError(
+                "GridFMState.bus_ids must contain finite values."
+            )
+        if not np.equal(values, np.rint(values)).all():
+            raise ValueError(
+                "GridFMState.bus_ids must contain integer-valued IDs."
+            )
+
+        bus_ids = values.astype(np.int64)
+        if np.unique(bus_ids).size != bus_ids.size:
+            raise ValueError("GridFMState.bus_ids must be unique.")
+        return bus_ids

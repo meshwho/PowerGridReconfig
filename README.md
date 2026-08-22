@@ -8,18 +8,27 @@ The main learned-control path uses model-guided neural MCTS over a fixed physica
 
 For implementation details, see [docs/self_play.md](docs/self_play.md). The stable bidirectional branch-status policy and artifact compatibility rules are specified in [docs/topology_action_contract.md](docs/research/topology_action_contract.md).
 
-## Current implemented pipeline
+## Light reference pipeline
 
 ```text
-fixed physical scenario pool
-  -> optional deterministic teacher bootstrap
-  -> neural MCTS self-play generation
-  -> scenario-level train/validation split
-  -> policy-value checkpoint training
-  -> explicit checkpoint evaluation
+GridFM/raw scenario
+  -> canonical state and scenario data (`grid_topology_ai.state`, `.data`)
+  -> optimized AC power flow (`grid_topology_ai.power_flow`)
+  -> stable topology action space (`grid_topology_ai.actions`)
+  -> deterministic teacher search (`grid_topology_ai.search.teacher`)
+  -> graph examples and dataset (`grid_topology_ai.dataset`)
+  -> GraphPolicyValueNetV2 training (`grid_topology_ai.model`, `.training`)
+  -> neural MCTS self-play (`grid_topology_ai.search.mcts`, `.self_play`)
+  -> scientific evaluation (`grid_topology_ai.evaluation`)
 ```
 
 Each stage is invoked directly. The Light runtime does not contain a checkpoint arena, automatic promotion/acceptance loop, curriculum controller, or sealed final-test orchestrator.
+
+The memory-mapped scenario representation and worker-safe adapters have one
+runtime owner, `grid_topology_ai.runtime`. Model inference is intentionally
+separate from scientific evaluation and is owned by
+`grid_topology_ai.evaluator`. The command-line entry point is
+`power-grid-reconfig` (equivalently `python -m grid_topology_ai.cli`).
 
 ## Evaluation contract
 
