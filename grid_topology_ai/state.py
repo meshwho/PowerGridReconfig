@@ -1,10 +1,26 @@
 from __future__ import annotations
 
+import json
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pandas as pd
+from pypower.idx_brch import BR_STATUS, PF, PT, QF, QT, RATE_A
+from pypower.idx_bus import VA, VM
+from pypower.idx_gen import GEN_STATUS, PG, QG
 
+from grid_topology_ai.config import (
+    DEFAULT_PHYSICS_CONFIG,
+    PhysicsConfig,
+    ZeroRateAPolicy,
+)
+from grid_topology_ai.physics.constraints import (
+    calculate_physical_metrics_from_frames,
+    calculate_physical_metrics_from_result,
+)
 from grid_topology_ai.power_flow import InvalidPhysicalState
 
 
@@ -145,8 +161,7 @@ def validate_state_topology(
 
     sorted_bus_ids = bus["bus"].to_numpy(dtype=np.int64)
     bus_position = {
-        int(bus_id): position
-        for position, bus_id in enumerate(sorted_bus_ids)
+        int(bus_id): position for position, bus_id in enumerate(sorted_bus_ids)
     }
 
     from_position = branch["from_bus"].map(bus_position).to_numpy(dtype=np.int64)
@@ -185,14 +200,10 @@ def _numeric_values(
     try:
         values = frame[column].to_numpy(dtype=np.float64)
     except (TypeError, ValueError) as exc:
-        raise InvalidPhysicalState(
-            f"{context}: {label} must be numeric."
-        ) from exc
+        raise InvalidPhysicalState(f"{context}: {label} must be numeric.") from exc
 
     if not np.isfinite(values).all():
-        raise InvalidPhysicalState(
-            f"{context}: {label} contains NaN or infinity."
-        )
+        raise InvalidPhysicalState(f"{context}: {label} contains NaN or infinity.")
 
     return values
 
@@ -212,9 +223,7 @@ def _integral_values(
     )
 
     if not np.equal(values, np.rint(values)).all():
-        raise InvalidPhysicalState(
-            f"{context}: {label} must contain integral values."
-        )
+        raise InvalidPhysicalState(f"{context}: {label} must contain integral values.")
 
     int64 = np.iinfo(np.int64)
     if np.any(values < int64.min) or np.any(values > int64.max):
@@ -243,9 +252,7 @@ def _unique_integral_ids(
     duplicates = unique_ids[counts > 1]
     if duplicates.size:
         rendered = ", ".join(str(int(value)) for value in duplicates[:10])
-        raise InvalidPhysicalState(
-            f"{context}: duplicate {entity} IDs: {rendered}."
-        )
+        raise InvalidPhysicalState(f"{context}: duplicate {entity} IDs: {rendered}.")
 
     return ids
 
@@ -264,9 +271,7 @@ def _binary_values(
         context=context,
     )
     if not np.isin(values, (0.0, 1.0)).all():
-        raise InvalidPhysicalState(
-            f"{context}: {label} must contain only 0 or 1."
-        )
+        raise InvalidPhysicalState(f"{context}: {label} must contain only 0 or 1.")
     return values
 
 
@@ -338,8 +343,7 @@ def _require_known_branch_endpoints(
             )
         if to_id not in known_bus_ids:
             raise InvalidPhysicalState(
-                f"{context}: branch {int(branch_id)} references "
-                f"unknown to_bus={to_id}."
+                f"{context}: branch {int(branch_id)} references unknown to_bus={to_id}."
             )
 
 
@@ -357,26 +361,6 @@ def _require_known_generator_buses(
                 f"{context}: generator {int(generator_id)} references "
                 f"unknown bus={bus_id}."
             )
-
-
-# In-memory state construction
-from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
-from typing import Any
-
-import numpy as np
-import pandas as pd
-
-from grid_topology_ai.power_flow import InvalidPhysicalState
-from pypower.idx_brch import BR_STATUS, PF, PT, QF, QT, RATE_A
-from pypower.idx_bus import VA, VM
-from pypower.idx_gen import GEN_STATUS, PG, QG
-
-from grid_topology_ai.config import DEFAULT_PHYSICS_CONFIG, PhysicsConfig, ZeroRateAPolicy
-from grid_topology_ai.physics.constraints import (
-    calculate_physical_metrics_from_frames,
-    calculate_physical_metrics_from_result,
-)
 
 
 BUS_FEATURE_COLUMNS = [
@@ -490,13 +474,9 @@ def with_bus_generator_features(
 
     status = gen_df["in_service"].to_numpy(dtype=np.float64)
     if not np.isfinite(status).all():
-        raise InvalidPhysicalState(
-            "Generator in_service contains NaN or infinity."
-        )
+        raise InvalidPhysicalState("Generator in_service contains NaN or infinity.")
     if not np.isin(status, (0.0, 1.0)).all():
-        raise InvalidPhysicalState(
-            "Generator in_service must contain only 0 or 1."
-        )
+        raise InvalidPhysicalState("Generator in_service must contain only 0 or 1.")
 
     active = gen_df.loc[status > 0.0].copy()
     if active.empty:
@@ -518,19 +498,13 @@ def with_bus_generator_features(
 
     active["p_down_margin_mw"] = active["p_mw"] - active["min_p_mw"]
     active["p_up_margin_mw"] = active["max_p_mw"] - active["p_mw"]
-    active["q_down_margin_mvar"] = (
-        active["q_mvar"] - active["min_q_mvar"]
-    )
-    active["q_up_margin_mvar"] = (
-        active["max_q_mvar"] - active["q_mvar"]
-    )
+    active["q_down_margin_mvar"] = active["q_mvar"] - active["min_q_mvar"]
+    active["q_up_margin_mvar"] = active["max_q_mvar"] - active["q_mvar"]
     active["p_limit_violated"] = (
-        (active["p_down_margin_mw"] < 0.0)
-        | (active["p_up_margin_mw"] < 0.0)
+        (active["p_down_margin_mw"] < 0.0) | (active["p_up_margin_mw"] < 0.0)
     ).astype(np.float64)
     active["q_limit_violated"] = (
-        (active["q_down_margin_mvar"] < 0.0)
-        | (active["q_up_margin_mvar"] < 0.0)
+        (active["q_down_margin_mvar"] < 0.0) | (active["q_up_margin_mvar"] < 0.0)
     ).astype(np.float64)
 
     grouped = active.groupby("bus", sort=False).agg(
@@ -569,21 +543,11 @@ def with_bus_generator_features(
     for column in mapped_columns:
         result[column] = bus_ids.map(grouped[column]).fillna(0.0)
 
-    result["gen_available"] = (
-        result["gen_online_count"] > 0.0
-    ).astype(np.float64)
-    result["gen_p_down_margin_mw"] = (
-        result["Pg"] - result["gen_p_min_mw"]
-    )
-    result["gen_p_up_margin_mw"] = (
-        result["gen_p_max_mw"] - result["Pg"]
-    )
-    result["gen_q_down_margin_mvar"] = (
-        result["Qg"] - result["gen_q_min_mvar"]
-    )
-    result["gen_q_up_margin_mvar"] = (
-        result["gen_q_max_mvar"] - result["Qg"]
-    )
+    result["gen_available"] = (result["gen_online_count"] > 0.0).astype(np.float64)
+    result["gen_p_down_margin_mw"] = result["Pg"] - result["gen_p_min_mw"]
+    result["gen_p_up_margin_mw"] = result["gen_p_max_mw"] - result["Pg"]
+    result["gen_q_down_margin_mvar"] = result["Qg"] - result["gen_q_min_mvar"]
+    result["gen_q_up_margin_mvar"] = result["gen_q_max_mvar"] - result["Qg"]
 
     return result
 
@@ -594,21 +558,15 @@ def with_branch_rating_features(
     """Add the explicit unlimited-rating flag used by the current schema."""
 
     if "rate_a" not in branch_df.columns:
-        raise InvalidPhysicalState(
-            "Branch data is missing required column: rate_a."
-        )
+        raise InvalidPhysicalState("Branch data is missing required column: rate_a.")
 
     result = branch_df.copy()
     rate_a = result["rate_a"].to_numpy(dtype=np.float64)
 
     if not np.isfinite(rate_a).all():
-        raise InvalidPhysicalState(
-            "Branch rate_a contains NaN or infinity."
-        )
+        raise InvalidPhysicalState("Branch rate_a contains NaN or infinity.")
     if np.any(rate_a < 0.0):
-        raise InvalidPhysicalState(
-            "Branch rate_a must be non-negative."
-        )
+        raise InvalidPhysicalState("Branch rate_a must be non-negative.")
 
     result["unlimited_rating"] = (rate_a == 0.0).astype(np.float32)
     return result
@@ -623,8 +581,7 @@ def finite_feature_matrix(
     missing = set(columns) - set(frame.columns)
     if missing:
         raise InvalidPhysicalState(
-            f"{label.capitalize()} data is missing feature columns: "
-            f"{sorted(missing)}."
+            f"{label.capitalize()} data is missing feature columns: {sorted(missing)}."
         )
 
     with np.errstate(over="ignore", under="ignore", invalid="ignore"):
@@ -636,6 +593,7 @@ def finite_feature_matrix(
         )
 
     return features
+
 
 MetricsCalculator = Callable[..., Mapping[str, object]]
 
@@ -661,9 +619,7 @@ class GridFMStateBuilder:
     """Build initial and solved states through one representation path."""
 
     physics_config: PhysicsConfig = DEFAULT_PHYSICS_CONFIG
-    frame_metrics_calculator: MetricsCalculator = (
-        calculate_physical_metrics_from_frames
-    )
+    frame_metrics_calculator: MetricsCalculator = calculate_physical_metrics_from_frames
     result_metrics_calculator: MetricsCalculator = (
         calculate_physical_metrics_from_result
     )
@@ -809,20 +765,15 @@ class GridFMStateBuilder:
                 )
 
         if not np.isin(status, (0.0, 1.0)).all():
-            raise InvalidPhysicalState(
-                "Branch status must contain only 0 or 1."
-            )
+            raise InvalidPhysicalState("Branch status must contain only 0 or 1.")
         if np.any(rate_a < 0.0):
-            raise InvalidPhysicalState(
-                "Branch RATE_A must be non-negative."
-            )
+            raise InvalidPhysicalState("Branch RATE_A must be non-negative.")
 
         active = status > 0.0
         rated = active & (rate_a > 0.0)
         unlimited = active & (rate_a == 0.0)
         if (
-            self.physics_config.zero_rate_a_policy
-            is ZeroRateAPolicy.ERROR
+            self.physics_config.zero_rate_a_policy is ZeroRateAPolicy.ERROR
             and unlimited.any()
         ):
             raise InvalidPhysicalState(
@@ -832,21 +783,14 @@ class GridFMStateBuilder:
         s_from = np.hypot(pf, qf)
         s_to = np.hypot(pt, qt)
         s_max = np.maximum(s_from, s_to)
-        if not all(
-            np.isfinite(values).all()
-            for values in (s_from, s_to, s_max)
-        ):
-            raise InvalidPhysicalState(
-                "Branch apparent-power magnitude is non-finite."
-            )
+        if not all(np.isfinite(values).all() for values in (s_from, s_to, s_max)):
+            raise InvalidPhysicalState("Branch apparent-power magnitude is non-finite.")
 
         loading = np.zeros_like(s_max, dtype=np.float64)
         with np.errstate(over="ignore", divide="ignore", invalid="ignore"):
             loading[rated] = s_max[rated] / rate_a[rated] * 100.0
         if not np.isfinite(loading[rated]).all():
-            raise InvalidPhysicalState(
-                "Active rated branch loading is non-finite."
-            )
+            raise InvalidPhysicalState("Active rated branch loading is non-finite.")
 
         feature_values = {
             **required_values,
@@ -864,9 +808,7 @@ class GridFMStateBuilder:
                 raise InvalidPhysicalState(
                     f"Branch feature {name} cannot be represented in float32."
                 )
-            if name == "rate_a" and np.any(
-                (values > 0.0) & (feature == 0.0)
-            ):
+            if name == "rate_a" and np.any((values > 0.0) & (feature == 0.0)):
                 raise InvalidPhysicalState(
                     "Positive RATE_A underflows to zero in feature precision."
                 )
@@ -893,9 +835,7 @@ class GridFMStateBuilder:
         }
         for name, frame in frames.items():
             if frame.empty:
-                raise ValueError(
-                    f"Scenario {scenario_id} not found in {name}."
-                )
+                raise ValueError(f"Scenario {scenario_id} not found in {name}.")
 
     @staticmethod
     def _copy_frames(
@@ -962,19 +902,14 @@ class GridFMStateBuilder:
             label="branch",
         )
 
-        rated = branch_df[
-            (branch_df["br_status"] > 0.0)
-            & (branch_df["rate_a"] > 0.0)
-        ]
+        rated = branch_df[(branch_df["br_status"] > 0.0) & (branch_df["rate_a"] > 0.0)]
         outaged = branch_df[branch_df["br_status"] <= 0.0]
         metrics = {
             "num_buses": int(len(bus_df)),
             "num_branches": int(len(branch_df)),
             "num_generators": int(num_generators),
             "mean_loading_percent": (
-                float(rated["loading_percent"].mean())
-                if len(rated)
-                else 0.0
+                float(rated["loading_percent"].mean()) if len(rated) else 0.0
             ),
             "min_vm_pu": float(bus_df["Vm"].min()),
             "max_vm_pu": float(bus_df["Vm"].max()),
@@ -984,9 +919,7 @@ class GridFMStateBuilder:
 
         return GridFMState(
             scenario_id=int(scenario_id),
-            load_scenario_idx=float(
-                bus_df["load_scenario_idx"].iloc[0]
-            ),
+            load_scenario_idx=float(bus_df["load_scenario_idx"].iloc[0]),
             bus_features=bus_features,
             branch_features=branch_features,
             edge_index=edge_index,
@@ -994,20 +927,10 @@ class GridFMStateBuilder:
             branch_status=branch_status,
             metrics=metrics,
             outaged_branch_ids=[
-                int(value)
-                for value in outaged["idx"].to_numpy(dtype=np.int64)
+                int(value) for value in outaged["idx"].to_numpy(dtype=np.int64)
             ],
             bus_ids=bus_ids,
         )
-
-
-# State artifact persistence
-import json
-from pathlib import Path
-from typing import Any
-
-import numpy as np
-
 
 
 _REQUIRED_ARRAYS = (
@@ -1094,11 +1017,7 @@ def _feature_matrix(
         raise ValueError(f"{path}: {name} must be numeric") from exc
 
     expected = f"non-empty 2D with {expected_columns} columns"
-    if (
-        matrix.ndim != 2
-        or matrix.shape[0] <= 0
-        or matrix.shape[1] != expected_columns
-    ):
+    if matrix.ndim != 2 or matrix.shape[0] <= 0 or matrix.shape[1] != expected_columns:
         raise ValueError(
             f"{path}: {name} must be {expected}; "
             f"feature dimensions mismatch, got {matrix.shape}"
@@ -1184,8 +1103,7 @@ def _edge_index(
     expected_shape = (2, num_branches)
     if edges.shape != expected_shape:
         raise ValueError(
-            f"{path}: edge_index must have shape {expected_shape}, "
-            f"got {edges.shape}"
+            f"{path}: edge_index must have shape {expected_shape}, got {edges.shape}"
         )
     if not np.isfinite(edges).all():
         raise ValueError(f"{path}: edge_index must contain only finite values")
@@ -1265,13 +1183,9 @@ class GridFMStateStore:
                 f"{expected_shape}, observed {values.shape}."
             )
         if not np.isfinite(values).all():
-            raise ValueError(
-                "GridFMState.bus_ids must contain finite values."
-            )
+            raise ValueError("GridFMState.bus_ids must contain finite values.")
         if not np.equal(values, np.rint(values)).all():
-            raise ValueError(
-                "GridFMState.bus_ids must contain integer-valued IDs."
-            )
+            raise ValueError("GridFMState.bus_ids must contain integer-valued IDs.")
 
         bus_ids = values.astype(np.int64)
         if np.unique(bus_ids).size != bus_ids.size:

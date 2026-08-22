@@ -4,20 +4,37 @@ import hashlib
 import json
 import os
 import shutil
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 import numpy as np
 import pandas as pd
-from pypower.idx_brch import BR_STATUS
+from pypower.idx_brch import BR_STATUS, PF, PT, QF, QT
 
 from grid_topology_ai.actions import GridFMActionSpace
 from grid_topology_ai.config import DEFAULT_PHYSICS_CONFIG, PhysicsConfig
-from grid_topology_ai.power_flow.problem import build_scenario_power_flow_template
+from grid_topology_ai.power_flow import InvalidPhysicalState
+from grid_topology_ai.power_flow.problem import (
+    ScenarioPowerFlowTemplate,
+    _build_branch_matrix,
+    _build_bus_matrix,
+    _build_gen_matrix,
+    build_scenario_power_flow_template,
+)
 from grid_topology_ai.power_flow.backend import GridFMPowerFlowBackend
+from grid_topology_ai.physics.constraints import (
+    PhysicalNetworkArrays,
+    calculate_physical_metrics,
+)
 from grid_topology_ai.physics.utility import GridFMReward
-from grid_topology_ai.state import GridFMState, GridFMStateBuilder
-from grid_topology_ai.state import GridFMStateStore
+from grid_topology_ai.state import (
+    BRANCH_FEATURE_COLUMNS,
+    BUS_FEATURE_COLUMNS,
+    GridFMState,
+    GridFMStateBuilder,
+    GridFMStateStore,
+)
 
 
 RUNTIME_SCENARIO_STORE_SCHEMA_VERSION = 1
@@ -310,7 +327,9 @@ def ensure_runtime_scenario_store(
             table_metadata[table_name] = metadata
             scenario_sets.append(scenario_ids)
 
-        if not scenario_sets or any(ids != scenario_sets[0] for ids in scenario_sets[1:]):
+        if not scenario_sets or any(
+            ids != scenario_sets[0] for ids in scenario_sets[1:]
+        ):
             raise ValueError(
                 "bus/branch/gen runtime tables do not contain the same scenarios."
             )
@@ -390,10 +409,7 @@ class MemoryMappedScenarioStore:
 
         rows = records[left:right]
         return pd.DataFrame(
-            {
-                column: np.array(rows[column], copy=True)
-                for column in columns
-            }
+            {column: np.array(rows[column], copy=True) for column in columns}
         )
 
     def scenario_frames(self, scenario_id: int) -> dict[str, pd.DataFrame]:
@@ -428,8 +444,7 @@ class MemoryMappedGridFMAdapter:
             missing = sorted(set(requested) - available)
             if missing:
                 raise ValueError(
-                    "Runtime store is missing requested scenarios: "
-                    f"{missing[:20]}"
+                    f"Runtime store is missing requested scenarios: {missing[:20]}"
                 )
             self._scenario_ids = requested
 
@@ -575,36 +590,7 @@ def build_memory_mapped_teacher_context(
     }
 
 
-# NumPy execution view over the scenario store
-from dataclasses import dataclass
-from pathlib import Path
-from typing import Any, Mapping, Sequence
-
-import numpy as np
-from pypower.idx_brch import BR_STATUS, PF, PT, QF, QT
-
-from grid_topology_ai.actions import GridFMActionSpace
-from grid_topology_ai.config import DEFAULT_PHYSICS_CONFIG, PhysicsConfig
-from grid_topology_ai.physics.constraints import (
-    PhysicalNetworkArrays,
-    calculate_physical_metrics,
-)
-from grid_topology_ai.power_flow import InvalidPhysicalState
-from grid_topology_ai.power_flow.problem import (
-    ScenarioPowerFlowTemplate,
-    _build_branch_matrix,
-    _build_bus_matrix,
-    _build_gen_matrix,
-)
-from grid_topology_ai.physics.utility import GridFMReward
-from grid_topology_ai.state import GridFMState
-from grid_topology_ai.state import BRANCH_FEATURE_COLUMNS, BUS_FEATURE_COLUMNS
-from grid_topology_ai.state import GridFMStateStore
-
-
-_BUS_FEATURE_INDEX = {
-    name: index for index, name in enumerate(BUS_FEATURE_COLUMNS)
-}
+_BUS_FEATURE_INDEX = {name: index for index, name in enumerate(BUS_FEATURE_COLUMNS)}
 _BRANCH_FEATURE_INDEX = {
     name: index for index, name in enumerate(BRANCH_FEATURE_COLUMNS)
 }
@@ -662,10 +648,7 @@ def _integral_values(
     scenario_id: int,
 ) -> np.ndarray:
     numeric = np.asarray(values, dtype=np.float64)
-    if (
-        not np.isfinite(numeric).all()
-        or not np.equal(numeric, np.rint(numeric)).all()
-    ):
+    if not np.isfinite(numeric).all() or not np.equal(numeric, np.rint(numeric)).all():
         raise InvalidPhysicalState(
             f"scenario {scenario_id}: {label} must contain finite integral values."
         )
@@ -686,9 +669,7 @@ def _unique_ids(
 ) -> np.ndarray:
     ids = _integral_values(values, label=label, scenario_id=scenario_id)
     if np.unique(ids).size != ids.size:
-        raise InvalidPhysicalState(
-            f"scenario {scenario_id}: duplicate {label}."
-        )
+        raise InvalidPhysicalState(f"scenario {scenario_id}: duplicate {label}.")
     return ids
 
 
@@ -714,9 +695,7 @@ def _float32_feature(values: np.ndarray, *, label: str) -> np.ndarray:
     with np.errstate(over="ignore", under="ignore", invalid="ignore"):
         feature = numeric.astype(np.float32)
     if not np.isfinite(feature).all():
-        raise InvalidPhysicalState(
-            f"{label} cannot be represented in float32."
-        )
+        raise InvalidPhysicalState(f"{label} cannot be represented in float32.")
     return feature
 
 
@@ -766,10 +745,7 @@ def _fill_generator_features(
         label="generator bus",
         scenario_id=scenario_id,
     )
-    bus_position = {
-        int(bus_id): position
-        for position, bus_id in enumerate(bus_ids)
-    }
+    bus_position = {int(bus_id): position for position, bus_id in enumerate(bus_ids)}
     try:
         gen_bus_pos = np.asarray(
             [bus_position[int(bus_id)] for bus_id in gen_bus_ids],
@@ -777,8 +753,7 @@ def _fill_generator_features(
         )
     except KeyError as exc:
         raise InvalidPhysicalState(
-            f"scenario {scenario_id}: generator references unknown bus "
-            f"{exc.args[0]}."
+            f"scenario {scenario_id}: generator references unknown bus {exc.args[0]}."
         ) from exc
 
     status = _binary_values(
@@ -797,10 +772,7 @@ def _fill_generator_features(
         raise InvalidPhysicalState(
             f"scenario {scenario_id}: generator output contains NaN or infinity."
         )
-    if not all(
-        np.isfinite(values).all()
-        for values in (p_min, p_max, q_min, q_max)
-    ):
+    if not all(np.isfinite(values).all() for values in (p_min, p_max, q_min, q_max)):
         raise InvalidPhysicalState(
             f"scenario {scenario_id}: generator limits contain NaN or infinity."
         )
@@ -929,10 +901,7 @@ def _build_runtime_state(
         scenario_id=scenario_id,
     )
 
-    bus_position = {
-        int(bus_id): position
-        for position, bus_id in enumerate(bus_ids)
-    }
+    bus_position = {int(bus_id): position for position, bus_id in enumerate(bus_ids)}
     try:
         edge_index = np.vstack(
             (
@@ -948,8 +917,7 @@ def _build_runtime_state(
         )
     except KeyError as exc:
         raise InvalidPhysicalState(
-            f"scenario {scenario_id}: branch references unknown bus "
-            f"{exc.args[0]}."
+            f"scenario {scenario_id}: branch references unknown bus {exc.args[0]}."
         ) from exc
 
     vmin = np.asarray(data.bus["min_vm_pu"], dtype=np.float64)
@@ -1005,9 +973,8 @@ def _build_runtime_state(
     rate_a64 = np.asarray(data.branch["rate_a"], dtype=np.float64)
     if not np.isfinite(rate_a64).all() or np.any(rate_a64 < 0.0):
         raise InvalidPhysicalState("Branch RATE_A must be finite and non-negative.")
-    if (
-        physics_config.zero_rate_a_policy.value == "error"
-        and np.any((branch_status64 > 0.0) & (rate_a64 == 0.0))
+    if physics_config.zero_rate_a_policy.value == "error" and np.any(
+        (branch_status64 > 0.0) & (rate_a64 == 0.0)
     ):
         raise InvalidPhysicalState(
             "Active branch RATE_A=0 is forbidden by PhysicsConfig."
@@ -1090,9 +1057,7 @@ def _build_runtime_state(
         branch_ids=branch_ids,
         branch_status=branch_status,
         metrics=metrics,
-        outaged_branch_ids=[
-            int(value) for value in branch_ids[outaged]
-        ],
+        outaged_branch_ids=[int(value) for value in branch_ids[outaged]],
         bus_ids=bus_ids,
     )
 
@@ -1121,8 +1086,7 @@ class NumPyMemoryMappedGridFMAdapter:
             missing = sorted(set(requested) - available)
             if missing:
                 raise ValueError(
-                    "Runtime store is missing requested scenarios: "
-                    f"{missing[:20]}"
+                    f"Runtime store is missing requested scenarios: {missing[:20]}"
                 )
             self._scenario_ids = requested
 
@@ -1140,9 +1104,7 @@ class NumPyMemoryMappedGridFMAdapter:
     def _require_scenario(self, scenario_id: int) -> int:
         scenario_id = int(scenario_id)
         if scenario_id not in self._scenario_ids:
-            raise ValueError(
-                f"Scenario {scenario_id} is outside this worker shard."
-            )
+            raise ValueError(f"Scenario {scenario_id} is outside this worker shard.")
         return scenario_id
 
     def _rows(self, table_name: str, scenario_id: int) -> np.ndarray:
@@ -1155,8 +1117,7 @@ class NumPyMemoryMappedGridFMAdapter:
             right = int(np.searchsorted(scenario_values, scenario_id, side="right"))
             if left == right:
                 raise ValueError(
-                    f"Scenario {scenario_id} not found in runtime table "
-                    f"{table_name}."
+                    f"Scenario {scenario_id} not found in runtime table {table_name}."
                 )
             bounds = (left, right)
             ranges[scenario_id] = bounds

@@ -2,11 +2,9 @@ from __future__ import annotations
 
 import math
 import random
-from contextlib import contextmanager
-from contextvars import ContextVar
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterator, Mapping
+from typing import Any, Mapping
 
 import numpy as np
 import torch
@@ -23,16 +21,13 @@ from grid_topology_ai.dataset import (
 from grid_topology_ai.training.checkpoints import (
     NORMALIZATION_STAT_KEYS,
     atomic_save_checkpoint,
-    checkpoint_variant_path,
     extract_normalization_stats,
     load_checkpoint_payload,
     load_initial_checkpoint_into_model,
     make_checkpoint as _make_checkpoint,
-    save_checkpoint_now,
 )
 from grid_topology_ai.training.metrics import (
     build_value_target_diagnostics,
-    compute_policy_selection_score,
     log_epoch_metrics as _log_epoch_metrics,
     print_value_target_diagnostics,
     setup_live_logging,
@@ -69,208 +64,6 @@ class TrainingRequest:
     seed: int = 42
     physics_config: PhysicsConfig | None = None
 
-_CANDIDATE_SELECTORS = (
-    (
-        "policy_loss",
-        "best_policy_loss",
-        "validation_policy_loss",
-    ),
-    (
-        "value_loss",
-        "best_value_loss",
-        "validation_value_loss",
-    ),
-    (
-        "value_calibration_error",
-        "best_calibration",
-        "validation_value_calibration_error",
-    ),
-)
-
-@dataclass(slots=True)
-class _CandidateTrackingState:
-    request: TrainingRequest
-    training_dataset: GraphSelfPlayDataset | None = None
-    epoch: int = 0
-    normalization_metadata: dict[str, object] | None = None
-    best_values: dict[str, float] = field(
-        default_factory=lambda: {
-            metric_name: float("inf")
-            for metric_name, _, _ in _CANDIDATE_SELECTORS
-        }
-    )
-
-_TRACKING_STATE: ContextVar[_CandidateTrackingState | None] = ContextVar(
-    "checkpoint_candidate_tracking_state",
-    default=None,
-)
-
-@contextmanager
-def checkpoint_candidate_tracking(
-    request: TrainingRequest,
-) -> Iterator[None]:
-    if not request.config.save_multiple_best:
-        yield
-        return
-
-    token = _TRACKING_STATE.set(
-        _CandidateTrackingState(request=request)
-    )
-    try:
-        yield
-    finally:
-        _TRACKING_STATE.reset(token)
-
-def register_training_dataset(
-    dataset: GraphSelfPlayDataset,
-) -> None:
-    state = _TRACKING_STATE.get()
-    if state is not None:
-        state.training_dataset = dataset
-
-def _candidate_normalization_metadata(
-    request: TrainingRequest,
-) -> dict[str, object]:
-    state = _TRACKING_STATE.get()
-    if state is not None and state.normalization_metadata is not None:
-        return dict(state.normalization_metadata)
-    from_init = request.init_checkpoint is not None
-    return {
-        "normalization_source": (
-            "init_checkpoint"
-            if from_init
-            else "training_dataset"
-        ),
-        "normalization_frozen_from_init_checkpoint": from_init,
-        "normalization_source_checkpoint": (
-            None
-            if request.init_checkpoint is None
-            else str(request.init_checkpoint)
-        ),
-    }
-
-def _finite_metric(
-    metrics: Mapping[str, object],
-    name: str,
-) -> float | None:
-    if name not in metrics:
-        return None
-
-    try:
-        value = float(metrics[name])
-    except (TypeError, ValueError, OverflowError):
-        return None
-
-    return value if math.isfinite(value) else None
-
-def _save_candidate(
-    *,
-    path: Path,
-    model: torch.nn.Module,
-    training_dataset: GraphSelfPlayDataset,
-    validation_dataset: GraphSelfPlayDataset,
-    request: TrainingRequest,
-    device: torch.device,
-    use_amp: bool,
-    epoch: int,
-    metric_name: str,
-    selector_name: str,
-    selector_value: float,
-    val_metrics: Mapping[str, object],
-) -> None:
-    checkpoint = _make_checkpoint(
-        model=model,
-        dataset=training_dataset,
-        request=request,
-        device=device,
-        use_amp=use_amp,
-        normalization_metadata=(
-            _candidate_normalization_metadata(request)
-        ),
-        validation_dataset=validation_dataset,
-    )
-
-    checkpoint["saved_epoch"] = int(epoch)
-    checkpoint["selector_name"] = selector_name
-    checkpoint["selector_value"] = float(
-        selector_value
-    )
-    checkpoint["checkpoint_selection_metric"] = (
-        metric_name
-    )
-    checkpoint["val_metrics"] = {
-        key: float(value)
-        for key, value in val_metrics.items()
-        if isinstance(value, (int, float))
-    }
-
-    path.parent.mkdir(
-        parents=True,
-        exist_ok=True,
-    )
-    atomic_save_checkpoint(checkpoint, path)
-
-def record_validation_candidates(
-    *,
-    model: torch.nn.Module,
-    validation_dataset: GraphSelfPlayDataset,
-    metrics: Mapping[str, object],
-    device: torch.device,
-    use_amp: bool,
-) -> None:
-    state = _TRACKING_STATE.get()
-
-    if state is None:
-        return
-
-    if state.training_dataset is None:
-        raise RuntimeError(
-            "Checkpoint candidate tracking has no "
-            "training dataset."
-        )
-
-    state.epoch += 1
-
-    for (
-        metric_key,
-        variant_name,
-        selection_metric,
-    ) in _CANDIDATE_SELECTORS:
-        value = _finite_metric(
-            metrics,
-            metric_key,
-        )
-
-        if (
-            value is None
-            or value
-            >= state.best_values[metric_key]
-        ):
-            continue
-
-        state.best_values[metric_key] = value
-
-        _save_candidate(
-            path=checkpoint_variant_path(
-                state.request.output_path,
-                variant_name,
-            ),
-            model=model,
-            training_dataset=(
-                state.training_dataset
-            ),
-            validation_dataset=(
-                validation_dataset
-            ),
-            request=state.request,
-            device=device,
-            use_amp=use_amp,
-            epoch=state.epoch,
-            metric_name=selection_metric,
-            selector_name=f"val_{metric_key}",
-            selector_value=value,
-            val_metrics=metrics,
-        )
 
 def resolve_device(device_arg: str) -> torch.device:
     device_arg = str(device_arg).lower().strip()
@@ -287,9 +80,7 @@ def resolve_device(device_arg: str) -> torch.device:
     if device_arg == "cpu":
         return torch.device("cpu")
 
-    raise ValueError(
-        f"Unsupported device: {device_arg}. Use one of: auto, cuda, cpu."
-    )
+    raise ValueError(f"Unsupported device: {device_arg}. Use one of: auto, cuda, cpu.")
 
 
 def soft_policy_loss(
@@ -307,9 +98,7 @@ def move_batch_to_device(
     moved: dict[str, Any] = {}
     for key, value in batch.items():
         moved[key] = (
-            value.to(device, non_blocking=True)
-            if torch.is_tensor(value)
-            else value
+            value.to(device, non_blocking=True) if torch.is_tensor(value) else value
         )
     return moved
 
@@ -419,13 +208,6 @@ def evaluate_one_epoch(
         device=device,
         use_amp=use_amp,
         value_loss_weight=value_loss_weight,
-    )
-    record_validation_candidates(
-        model=model,
-        validation_dataset=loader.dataset,
-        metrics=metrics,
-        device=device,
-        use_amp=use_amp,
     )
     return metrics
 
@@ -545,8 +327,6 @@ def _build_model(
     dataset: GraphSelfPlayDataset,
     device: torch.device,
 ) -> GraphModel:
-    register_training_dataset(dataset)
-
     if dataset.policy_layout != STOP_PLUS_BRANCH_STATUS_POLICY_LAYOUT:
         raise ValueError(
             "Graph policy-value networks require "
@@ -602,7 +382,9 @@ def _checkpoint_normalization_provenance(
         "normalization_frozen_from_init_checkpoint": bool(
             payload.get("normalization_frozen_from_init_checkpoint", False)
         ),
-        "normalization_source_checkpoint": payload.get("normalization_source_checkpoint"),
+        "normalization_source_checkpoint": payload.get(
+            "normalization_source_checkpoint"
+        ),
     }
 
 
@@ -651,612 +433,437 @@ def log_epoch_metrics(**kwargs: Any) -> None:
 
 
 def train_graph_policy_value_model(request: TrainingRequest) -> Path:
-    with checkpoint_candidate_tracking(request):
-        if request.init_checkpoint is not None and request.resume_checkpoint is not None:
-            raise ValueError("init_checkpoint and resume_checkpoint are mutually exclusive.")
-        if request.init_checkpoint is not None and not request.normalize_features:
-            raise ValueError(
-                "Fine-tuning from an initial checkpoint requires "
-                "normalize_features=True because checkpoint weights and "
-                "normalization statistics form one model contract."
-            )
+    if request.init_checkpoint is not None and request.resume_checkpoint is not None:
+        raise ValueError(
+            "init_checkpoint and resume_checkpoint are mutually exclusive."
+        )
+    if request.init_checkpoint is not None and not request.normalize_features:
+        raise ValueError(
+            "Fine-tuning from an initial checkpoint requires "
+            "normalize_features=True because checkpoint weights and "
+            "normalization statistics form one model contract."
+        )
 
-        if not request.examples_csv.exists():
-            raise FileNotFoundError(
-                f"Examples CSV not found: {request.examples_csv}"
-            )
+    if not request.examples_csv.exists():
+        raise FileNotFoundError(f"Examples CSV not found: {request.examples_csv}")
 
-        seed = int(request.seed)
-        random.seed(seed)
-        np.random.seed(seed)
-        torch.manual_seed(seed)
-        if torch.cuda.is_available():
-            torch.cuda.manual_seed_all(seed)
+    seed = int(request.seed)
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
 
-        device = resolve_device(request.config.device)
-        use_amp = bool(request.use_amp and device.type == "cuda")
-        output_path = request.output_path
-        output_path.parent.mkdir(parents=True, exist_ok=True)
+    device = resolve_device(request.config.device)
+    use_amp = bool(request.use_amp and device.type == "cuda")
+    output_path = request.output_path
+    output_path.parent.mkdir(parents=True, exist_ok=True)
 
-        print("=" * 100)
-        print("Training graph/GNN policy-value baseline")
-        print("=" * 100)
-        print(f"Examples CSV:  {request.examples_csv}")
-        print(f"Device:        {device}")
-        print(f"CUDA available:{torch.cuda.is_available()}")
-        if torch.cuda.is_available():
-            print(f"CUDA device:   {torch.cuda.get_device_name(0)}")
-            print(f"CUDA version:  {torch.version.cuda}")
-        print(f"AMP enabled:   {use_amp}")
+    print("=" * 100)
+    print("Training graph/GNN policy-value baseline")
+    print("=" * 100)
+    print(f"Examples CSV:  {request.examples_csv}")
+    print(f"Device:        {device}")
+    print(f"CUDA available:{torch.cuda.is_available()}")
+    if torch.cuda.is_available():
+        print(f"CUDA device:   {torch.cuda.get_device_name(0)}")
+        print(f"CUDA version:  {torch.version.cuda}")
+    print(f"AMP enabled:   {use_amp}")
 
-        init_checkpoint_payload = None
-        checkpoint_normalization_stats = None
-        source_checkpoint = request.resume_checkpoint or request.init_checkpoint
-        if source_checkpoint is not None:
-            if not source_checkpoint.exists():
-                raise FileNotFoundError(
-                    f"Checkpoint not found: {source_checkpoint}"
-                )
-            init_checkpoint_payload = load_checkpoint_payload(
-                source_checkpoint,
-                map_location="cpu",
-                expected_physics_config=request.physics_config,
-            )
-            checkpoint_normalization_stats = extract_normalization_stats(
-                init_checkpoint_payload,
-                source=source_checkpoint,
-            )
+    init_checkpoint_payload = None
+    checkpoint_normalization_stats = None
+    source_checkpoint = request.resume_checkpoint or request.init_checkpoint
+    if source_checkpoint is not None:
+        if not source_checkpoint.exists():
+            raise FileNotFoundError(f"Checkpoint not found: {source_checkpoint}")
+        init_checkpoint_payload = load_checkpoint_payload(
+            source_checkpoint,
+            map_location="cpu",
+            expected_physics_config=request.physics_config,
+        )
+        checkpoint_normalization_stats = extract_normalization_stats(
+            init_checkpoint_payload,
+            source=source_checkpoint,
+        )
 
-        dataset = GraphSelfPlayDataset(
-            examples_csv=request.examples_csv,
+    dataset = GraphSelfPlayDataset(
+        examples_csv=request.examples_csv,
+        normalize_features=request.normalize_features,
+        normalization_stats=checkpoint_normalization_stats,
+        physics_config=request.physics_config,
+    )
+    if init_checkpoint_payload is not None:
+        require_physics_config_payload(
+            init_checkpoint_payload,
+            source=str(source_checkpoint),
+            expected_physics_config=dataset.physics_config,
+        )
+    effective_normalization_stats = dataset.normalization_state_dict()
+
+    if checkpoint_normalization_stats is not None:
+        _assert_same_normalization_stats(
+            actual=effective_normalization_stats,
+            expected=checkpoint_normalization_stats,
+            checkpoint_path=source_checkpoint,
+        )
+        _validate_normalization_feature_dimensions(
+            normalization_stats=effective_normalization_stats,
+            dataset=dataset,
+            checkpoint_path=source_checkpoint,
+        )
+
+    normalization_metadata = (
+        _checkpoint_normalization_provenance(init_checkpoint_payload)
+        if request.resume_checkpoint is not None and init_checkpoint_payload is not None
+        else _normalization_provenance(init_checkpoint=request.init_checkpoint)
+    )
+
+    val_dataset = None
+    if request.validation_examples_csv is not None:
+        val_dataset = GraphSelfPlayDataset(
+            examples_csv=request.validation_examples_csv,
             normalize_features=request.normalize_features,
-            normalization_stats=checkpoint_normalization_stats,
-            physics_config=request.physics_config,
-        )
-        if init_checkpoint_payload is not None:
-            require_physics_config_payload(
-                init_checkpoint_payload,
-                source=str(source_checkpoint),
-                expected_physics_config=dataset.physics_config,
-            )
-        effective_normalization_stats = dataset.normalization_state_dict()
-
-        if checkpoint_normalization_stats is not None:
-            _assert_same_normalization_stats(
-                actual=effective_normalization_stats,
-                expected=checkpoint_normalization_stats,
-                checkpoint_path=source_checkpoint,
-            )
-            _validate_normalization_feature_dimensions(
-                normalization_stats=effective_normalization_stats,
-                dataset=dataset,
-                checkpoint_path=source_checkpoint,
-            )
-
-        normalization_metadata = (
-            _checkpoint_normalization_provenance(init_checkpoint_payload)
-            if request.resume_checkpoint is not None and init_checkpoint_payload is not None
-            else _normalization_provenance(init_checkpoint=request.init_checkpoint)
-        )
-        tracking_state = _TRACKING_STATE.get()
-        if tracking_state is not None:
-            tracking_state.normalization_metadata = normalization_metadata
-
-        val_dataset = None
-        if request.validation_examples_csv is not None:
-            val_dataset = GraphSelfPlayDataset(
-                examples_csv=request.validation_examples_csv,
-                normalize_features=request.normalize_features,
-                normalization_stats=effective_normalization_stats,
-                physics_config=dataset.physics_config,
-            )
-
-        if val_dataset is not None:
-            if val_dataset.policy_layout != dataset.policy_layout:
-                raise ValueError(
-                    "Training and validation policy layouts do not match."
-                )
-            if val_dataset.topology_action_config != dataset.topology_action_config:
-                raise ValueError(
-                    "Training and validation topology action configs do not match."
-                )
-            if val_dataset.num_bus_features != dataset.num_bus_features:
-                raise ValueError(
-                    "Training and validation bus feature dimensions do not match."
-                )
-            if val_dataset.num_branch_features != dataset.num_branch_features:
-                raise ValueError(
-                    "Training and validation branch feature dimensions do not match."
-                )
-
-        validate_no_scenario_overlap(train_dataset=dataset, val_dataset=val_dataset)
-
-        print(f"Examples:      {len(dataset)}")
-        print(f"Action layouts:     {dataset.action_layout_count}")
-        print(f"Bus features:  {dataset.num_bus_features}")
-        print(f"Branch feats:  {dataset.num_branch_features}")
-
-        train_value_diagnostics = build_value_target_diagnostics(dataset=dataset)
-        print_value_target_diagnostics(train_value_diagnostics)
-
-        print(f"Batch size:    {request.config.batch_size}")
-        print(f"Num workers:   {request.config.num_workers}")
-        print(f"Hidden dim:    {request.config.hidden_dim}")
-        print(f"Num layers:    {request.config.num_layers}")
-        print(f"Dropout:       {request.config.dropout}")
-        print("Model type:    graph_v2")
-        print(
-            f"Value loss:    HuberLoss(delta={request.config.value_huber_delta})"
-        )
-        if val_dataset is not None:
-            print(f"Val examples:   {len(val_dataset)}")
-            print(f"Val CSV:        {request.validation_examples_csv}")
-
-        writer, metrics_csv_path = setup_live_logging(
-            request=request,
-            output_path=output_path,
+            normalization_stats=effective_normalization_stats,
+            physics_config=dataset.physics_config,
         )
 
-        pin_memory = device.type == "cuda"
-        train_generator = torch.Generator()
-        train_generator.manual_seed(int(request.seed))
-        collate_fn = collate_graph_samples
+    if val_dataset is not None:
+        if val_dataset.policy_layout != dataset.policy_layout:
+            raise ValueError("Training and validation policy layouts do not match.")
+        if val_dataset.topology_action_config != dataset.topology_action_config:
+            raise ValueError(
+                "Training and validation topology action configs do not match."
+            )
+        if val_dataset.num_bus_features != dataset.num_bus_features:
+            raise ValueError(
+                "Training and validation bus feature dimensions do not match."
+            )
+        if val_dataset.num_branch_features != dataset.num_branch_features:
+            raise ValueError(
+                "Training and validation branch feature dimensions do not match."
+            )
 
-        loader = DataLoader(
-            dataset,
-            batch_size=min(request.config.batch_size, len(dataset)),
-            shuffle=True,
+    validate_no_scenario_overlap(train_dataset=dataset, val_dataset=val_dataset)
+
+    print(f"Examples:      {len(dataset)}")
+    print(f"Action layouts:     {dataset.action_layout_count}")
+    print(f"Bus features:  {dataset.num_bus_features}")
+    print(f"Branch feats:  {dataset.num_branch_features}")
+
+    train_value_diagnostics = build_value_target_diagnostics(dataset=dataset)
+    print_value_target_diagnostics(train_value_diagnostics)
+
+    print(f"Batch size:    {request.config.batch_size}")
+    print(f"Num workers:   {request.config.num_workers}")
+    print(f"Hidden dim:    {request.config.hidden_dim}")
+    print(f"Num layers:    {request.config.num_layers}")
+    print(f"Dropout:       {request.config.dropout}")
+    print("Model type:    graph_v2")
+    print(f"Value loss:    HuberLoss(delta={request.config.value_huber_delta})")
+    if val_dataset is not None:
+        print(f"Val examples:   {len(val_dataset)}")
+        print(f"Val CSV:        {request.validation_examples_csv}")
+
+    writer, metrics_csv_path = setup_live_logging(
+        request=request,
+        output_path=output_path,
+    )
+
+    pin_memory = device.type == "cuda"
+    train_generator = torch.Generator()
+    train_generator.manual_seed(int(request.seed))
+    collate_fn = collate_graph_samples
+
+    loader = DataLoader(
+        dataset,
+        batch_size=min(request.config.batch_size, len(dataset)),
+        shuffle=True,
+        num_workers=int(request.config.num_workers),
+        pin_memory=pin_memory,
+        generator=train_generator,
+        collate_fn=collate_fn,
+    )
+
+    val_loader = None
+    if val_dataset is not None:
+        val_loader = DataLoader(
+            val_dataset,
+            batch_size=min(request.config.batch_size, len(val_dataset)),
+            shuffle=False,
             num_workers=int(request.config.num_workers),
             pin_memory=pin_memory,
-            generator=train_generator,
             collate_fn=collate_fn,
         )
 
-        val_loader = None
-        if val_dataset is not None:
-            val_loader = DataLoader(
-                val_dataset,
-                batch_size=min(request.config.batch_size, len(val_dataset)),
-                shuffle=False,
-                num_workers=int(request.config.num_workers),
-                pin_memory=pin_memory,
-                collate_fn=collate_fn,
-            )
+    model = _build_model(request=request, dataset=dataset, device=device)
 
-        model = _build_model(request=request, dataset=dataset, device=device)
-
-        if source_checkpoint is not None:
-            load_initial_checkpoint_into_model(
-                model=model,
-                checkpoint_path=source_checkpoint,
-                dataset=dataset,
-                hidden_dim=request.config.hidden_dim,
-                num_layers=request.config.num_layers,
-                dropout=request.config.dropout,
-                device=device,
-                checkpoint_payload=init_checkpoint_payload,
-            )
-
-        optimizer = torch.optim.AdamW(
-            model.parameters(),
-            lr=request.config.learning_rate,
-            weight_decay=1e-4,
+    if source_checkpoint is not None:
+        load_initial_checkpoint_into_model(
+            model=model,
+            checkpoint_path=source_checkpoint,
+            dataset=dataset,
+            hidden_dim=request.config.hidden_dim,
+            num_layers=request.config.num_layers,
+            dropout=request.config.dropout,
+            device=device,
+            checkpoint_payload=init_checkpoint_payload,
         )
-        value_loss_fn = nn.HuberLoss(
-            delta=float(request.config.value_huber_delta)
-        )
-        scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
 
-        best_metric = float("inf")
-        best_epoch = 0
-        best_checkpoint = None
-        best_model_state_dict = None
-        best_top1 = -float("inf")
-        best_top1_epoch = 0
-        best_top5 = -float("inf")
-        best_top5_epoch = 0
-        best_switch = -float("inf")
-        best_switch_epoch = 0
-        best_policy_score = -float("inf")
-        best_policy_score_epoch = 0
+    optimizer = torch.optim.AdamW(
+        model.parameters(),
+        lr=request.config.learning_rate,
+        weight_decay=1e-4,
+    )
+    value_loss_fn = nn.HuberLoss(delta=float(request.config.value_huber_delta))
+    scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
 
-        start_epoch = 1
-        if request.resume_checkpoint is not None:
-            resume = init_checkpoint_payload
-            assert resume is not None
-            saved_config = resume.get("training_config")
-            if not isinstance(saved_config, Mapping):
-                raise ValueError(
-                    f"Resume checkpoint is missing training_config: {request.resume_checkpoint}"
-                )
-            current_config = {
-                "seed": int(request.seed),
-                "lr": float(request.config.learning_rate),
-                "batch_size": int(request.config.batch_size),
-                "value_loss_weight": float(request.config.value_loss_weight),
-                "value_huber_delta": float(request.config.value_huber_delta),
-                "amp": bool(request.use_amp),
-                "num_workers": int(request.config.num_workers),
-                "no_normalize_features": bool(not request.normalize_features),
-                "hidden_dim": int(request.config.hidden_dim),
-                "num_layers": int(request.config.num_layers),
-                "dropout": float(request.config.dropout),
-                "save_best": bool(request.save_best),
-                "save_multiple_best": bool(request.config.save_multiple_best),
-            }
-            for key, expected in current_config.items():
-                if saved_config.get(key) != expected:
-                    raise ValueError(
-                        f"Resume training configuration mismatch for {key}: "
-                        f"expected {expected!r}, checkpoint has {saved_config.get(key)!r}."
-                    )
-            saved_identity = resume.get("training_source_identity")
-            current_identity = _training_source_identity(request)
-            if saved_identity != current_identity:
-                raise ValueError(
-                    "Resume training source identity mismatch: "
-                    f"expected {current_identity!r}, checkpoint has {saved_identity!r}."
-                )
-            for key in ("optimizer_state_dict", "scaler_state_dict", "completed_epoch", "rng_state", "train_generator_state"):
-                if key not in resume:
-                    raise ValueError(f"Resume checkpoint is missing {key!r}: {request.resume_checkpoint}")
-            optimizer.load_state_dict(resume["optimizer_state_dict"])
-            scaler.load_state_dict(resume["scaler_state_dict"])
-            train_generator.set_state(resume["train_generator_state"])
-            rng_state = resume["rng_state"]
-            random.setstate(rng_state["python"])
-            np.random.set_state(rng_state["numpy"])
-            torch.set_rng_state(rng_state["torch"])
-            if device.type == "cuda" and "cuda" in rng_state:
-                torch.cuda.set_rng_state_all(rng_state["cuda"])
-            start_epoch = int(resume["completed_epoch"]) + 1
-            best_metric = float(resume.get("best_metric", best_metric))
-            best_epoch = int(resume.get("best_epoch", best_epoch))
-            if request.save_best:
-                saved_best_state = resume.get("best_model_state_dict")
-                if not isinstance(saved_best_state, Mapping):
-                    raise ValueError("Resume checkpoint is missing 'best_model_state_dict'.")
-                best_model_state_dict = dict(saved_best_state)
-            best_top1 = float(resume.get("best_top1", best_top1))
-            best_top1_epoch = int(resume.get("best_top1_epoch", best_top1_epoch))
-            best_top5 = float(resume.get("best_top5", best_top5))
-            best_top5_epoch = int(resume.get("best_top5_epoch", best_top5_epoch))
-            best_switch = float(resume.get("best_switch", best_switch))
-            best_switch_epoch = int(resume.get("best_switch_epoch", best_switch_epoch))
-            best_policy_score = float(resume.get("best_policy_score", best_policy_score))
-            best_policy_score_epoch = int(
-                resume.get("best_policy_score_epoch", best_policy_score_epoch)
+    best_metric = float("inf")
+    best_epoch = 0
+    best_checkpoint = None
+    best_model_state_dict = None
+
+    start_epoch = 1
+    if request.resume_checkpoint is not None:
+        resume = init_checkpoint_payload
+        assert resume is not None
+        saved_config = resume.get("training_config")
+        if not isinstance(saved_config, Mapping):
+            raise ValueError(
+                f"Resume checkpoint is missing training_config: {request.resume_checkpoint}"
             )
-            if tracking_state is not None:
-                tracking_state.epoch = int(resume["completed_epoch"])
-                saved_candidates = resume.get("candidate_best_values", {})
-                if isinstance(saved_candidates, Mapping):
-                    for key in tracking_state.best_values:
-                        if key in saved_candidates:
-                            tracking_state.best_values[key] = float(saved_candidates[key])
+        current_config = {
+            "seed": int(request.seed),
+            "lr": float(request.config.learning_rate),
+            "batch_size": int(request.config.batch_size),
+            "value_loss_weight": float(request.config.value_loss_weight),
+            "value_huber_delta": float(request.config.value_huber_delta),
+            "amp": bool(request.use_amp),
+            "num_workers": int(request.config.num_workers),
+            "no_normalize_features": bool(not request.normalize_features),
+            "hidden_dim": int(request.config.hidden_dim),
+            "num_layers": int(request.config.num_layers),
+            "dropout": float(request.config.dropout),
+            "save_best": bool(request.save_best),
+        }
+        for key, expected in current_config.items():
+            if saved_config.get(key) != expected:
+                raise ValueError(
+                    f"Resume training configuration mismatch for {key}: "
+                    f"expected {expected!r}, checkpoint has {saved_config.get(key)!r}."
+                )
+        saved_identity = resume.get("training_source_identity")
+        current_identity = _training_source_identity(request)
+        if saved_identity != current_identity:
+            raise ValueError(
+                "Resume training source identity mismatch: "
+                f"expected {current_identity!r}, checkpoint has {saved_identity!r}."
+            )
+        for key in (
+            "optimizer_state_dict",
+            "scaler_state_dict",
+            "completed_epoch",
+            "rng_state",
+            "train_generator_state",
+        ):
+            if key not in resume:
+                raise ValueError(
+                    f"Resume checkpoint is missing {key!r}: {request.resume_checkpoint}"
+                )
+        optimizer.load_state_dict(resume["optimizer_state_dict"])
+        scaler.load_state_dict(resume["scaler_state_dict"])
+        train_generator.set_state(resume["train_generator_state"])
+        rng_state = resume["rng_state"]
+        random.setstate(rng_state["python"])
+        np.random.set_state(rng_state["numpy"])
+        torch.set_rng_state(rng_state["torch"])
+        if device.type == "cuda" and "cuda" in rng_state:
+            torch.cuda.set_rng_state_all(rng_state["cuda"])
+        start_epoch = int(resume["completed_epoch"]) + 1
+        best_metric = float(resume.get("best_metric", best_metric))
+        best_epoch = int(resume.get("best_epoch", best_epoch))
+        if request.save_best:
+            saved_best_state = resume.get("best_model_state_dict")
+            if not isinstance(saved_best_state, Mapping):
+                raise ValueError(
+                    "Resume checkpoint is missing 'best_model_state_dict'."
+                )
+            best_model_state_dict = dict(saved_best_state)
 
-        for epoch in range(start_epoch, request.config.epochs + 1):
-            total_loss, policy_loss, value_loss = train_one_epoch(
+    for epoch in range(start_epoch, request.config.epochs + 1):
+        total_loss, policy_loss, value_loss = train_one_epoch(
+            model=model,
+            loader=loader,
+            optimizer=optimizer,
+            value_loss_fn=value_loss_fn,
+            device=device,
+            scaler=scaler,
+            use_amp=use_amp,
+            value_loss_weight=request.config.value_loss_weight,
+        )
+
+        val_metrics = None
+        if val_loader is not None:
+            val_metrics = evaluate_one_epoch(
                 model=model,
-                loader=loader,
-                optimizer=optimizer,
+                loader=val_loader,
                 value_loss_fn=value_loss_fn,
                 device=device,
-                scaler=scaler,
                 use_amp=use_amp,
                 value_loss_weight=request.config.value_loss_weight,
             )
+            current_metric = float(val_metrics["loss"])
 
-            val_metrics = None
-            if val_loader is not None:
-                val_metrics = evaluate_one_epoch(
+            if current_metric < best_metric:
+                best_metric = current_metric
+                best_epoch = epoch
+                best_checkpoint = make_checkpoint(
                     model=model,
-                    loader=val_loader,
-                    value_loss_fn=value_loss_fn,
+                    dataset=dataset,
+                    request=request,
                     device=device,
                     use_amp=use_amp,
-                    value_loss_weight=request.config.value_loss_weight,
+                    normalization_metadata=normalization_metadata,
+                    validation_dataset=val_dataset,
                 )
-                current_metric = float(val_metrics["loss"])
+                best_model_state_dict = best_checkpoint["model_state_dict"]
 
-                if current_metric < best_metric:
-                    best_metric = current_metric
-                    best_epoch = epoch
-                    best_checkpoint = make_checkpoint(
-                        model=model,
-                        dataset=dataset,
-                        request=request,
-                        device=device,
-                        use_amp=use_amp,
-                        normalization_metadata=normalization_metadata,
-                        validation_dataset=val_dataset,
-                    )
-                    best_model_state_dict = best_checkpoint["model_state_dict"]
+            print(
+                f"Epoch {epoch:4d} | "
+                f"train_loss={total_loss:.6f} | "
+                f"train_policy={policy_loss:.6f} | "
+                f"train_value={value_loss:.6f} | "
+                f"val_loss={val_metrics['loss']:.6f} | "
+                f"val_policy={val_metrics['policy_loss']:.6f} | "
+                f"val_value={val_metrics['value_loss']:.6f} | "
+                f"val_top1={val_metrics['top1']:.4f} | "
+                f"val_top5={val_metrics['top5']:.4f} | "
+                f"val_stop={val_metrics['stop_acc']:.4f} | "
+                f"val_switch={val_metrics['switch_acc']:.4f} | "
+                f"best_epoch={best_epoch}"
+            )
+        else:
+            current_metric = total_loss
+            if current_metric < best_metric:
+                best_metric = current_metric
+                best_epoch = epoch
+                best_checkpoint = make_checkpoint(
+                    model=model,
+                    dataset=dataset,
+                    request=request,
+                    device=device,
+                    use_amp=use_amp,
+                    normalization_metadata=normalization_metadata,
+                    validation_dataset=val_dataset,
+                )
+                best_model_state_dict = best_checkpoint["model_state_dict"]
 
-                if request.config.save_multiple_best:
-                    current_top1 = float(val_metrics["top1"])
-                    current_top5 = float(val_metrics["top5"])
-                    current_switch = float(val_metrics["switch_acc"])
-                    current_policy_score = compute_policy_selection_score(
-                        val_metrics
-                    )
-
-                    if current_metric <= best_metric:
-                        save_checkpoint_now(
-                            path=checkpoint_variant_path(
-                                output_path, "best_loss"
-                            ),
-                            model=model,
-                            dataset=dataset,
-                            request=request,
-                            device=device,
-                            use_amp=use_amp,
-                            epoch=epoch,
-                            selector_name="val_loss",
-                            selector_value=current_metric,
-                            val_metrics=val_metrics,
-                            normalization_metadata=normalization_metadata,
-                            validation_dataset=val_dataset,
-                        )
-
-                    if current_top1 > best_top1:
-                        best_top1 = current_top1
-                        best_top1_epoch = epoch
-                        save_checkpoint_now(
-                            path=checkpoint_variant_path(
-                                output_path, "best_top1"
-                            ),
-                            model=model,
-                            dataset=dataset,
-                            request=request,
-                            device=device,
-                            use_amp=use_amp,
-                            epoch=epoch,
-                            selector_name="val_top1",
-                            selector_value=current_top1,
-                            val_metrics=val_metrics,
-                            normalization_metadata=normalization_metadata,
-                            validation_dataset=val_dataset,
-                        )
-
-                    if current_top5 > best_top5:
-                        best_top5 = current_top5
-                        best_top5_epoch = epoch
-                        save_checkpoint_now(
-                            path=checkpoint_variant_path(
-                                output_path, "best_top5"
-                            ),
-                            model=model,
-                            dataset=dataset,
-                            request=request,
-                            device=device,
-                            use_amp=use_amp,
-                            epoch=epoch,
-                            selector_name="val_top5",
-                            selector_value=current_top5,
-                            val_metrics=val_metrics,
-                            normalization_metadata=normalization_metadata,
-                            validation_dataset=val_dataset,
-                        )
-
-                    if current_switch > best_switch:
-                        best_switch = current_switch
-                        best_switch_epoch = epoch
-                        save_checkpoint_now(
-                            path=checkpoint_variant_path(
-                                output_path, "best_switch"
-                            ),
-                            model=model,
-                            dataset=dataset,
-                            request=request,
-                            device=device,
-                            use_amp=use_amp,
-                            epoch=epoch,
-                            selector_name="val_switch",
-                            selector_value=current_switch,
-                            val_metrics=val_metrics,
-                            normalization_metadata=normalization_metadata,
-                            validation_dataset=val_dataset,
-                        )
-
-                    if current_policy_score > best_policy_score:
-                        best_policy_score = current_policy_score
-                        best_policy_score_epoch = epoch
-                        save_checkpoint_now(
-                            path=checkpoint_variant_path(
-                                output_path, "best_policy"
-                            ),
-                            model=model,
-                            dataset=dataset,
-                            request=request,
-                            device=device,
-                            use_amp=use_amp,
-                            epoch=epoch,
-                            selector_name="policy_selection_score",
-                            selector_value=current_policy_score,
-                            val_metrics=val_metrics,
-                            normalization_metadata=normalization_metadata,
-                            validation_dataset=val_dataset,
-                        )
-
+            if epoch == 1 or epoch % 25 == 0 or epoch == request.config.epochs:
                 print(
                     f"Epoch {epoch:4d} | "
-                    f"train_loss={total_loss:.6f} | "
-                    f"train_policy={policy_loss:.6f} | "
-                    f"train_value={value_loss:.6f} | "
-                    f"val_loss={val_metrics['loss']:.6f} | "
-                    f"val_policy={val_metrics['policy_loss']:.6f} | "
-                    f"val_value={val_metrics['value_loss']:.6f} | "
-                    f"val_top1={val_metrics['top1']:.4f} | "
-                    f"val_top5={val_metrics['top5']:.4f} | "
-                    f"val_stop={val_metrics['stop_acc']:.4f} | "
-                    f"val_switch={val_metrics['switch_acc']:.4f} | "
+                    f"loss={total_loss:.6f} | "
+                    f"policy_loss={policy_loss:.6f} | "
+                    f"value_loss={value_loss:.6f} | "
+                    f"best={best_metric:.6f} | "
                     f"best_epoch={best_epoch}"
                 )
-            else:
-                current_metric = total_loss
-                if current_metric < best_metric:
-                    best_metric = current_metric
-                    best_epoch = epoch
-                    best_checkpoint = make_checkpoint(
-                        model=model,
-                        dataset=dataset,
-                        request=request,
-                        device=device,
-                        use_amp=use_amp,
-                        normalization_metadata=normalization_metadata,
-                        validation_dataset=val_dataset,
-                    )
-                    best_model_state_dict = best_checkpoint["model_state_dict"]
 
-                if (
-                    epoch == 1
-                    or epoch % 25 == 0
-                    or epoch == request.config.epochs
-                ):
-                    print(
-                        f"Epoch {epoch:4d} | "
-                        f"loss={total_loss:.6f} | "
-                        f"policy_loss={policy_loss:.6f} | "
-                        f"value_loss={value_loss:.6f} | "
-                        f"best={best_metric:.6f} | "
-                        f"best_epoch={best_epoch}"
-                    )
+        learning_rate = float(optimizer.param_groups[0]["lr"])
+        log_epoch_metrics(
+            tensorboard_writer=writer,
+            metrics_csv_path=metrics_csv_path,
+            epoch=epoch,
+            train_loss=total_loss,
+            train_policy=policy_loss,
+            train_value=value_loss,
+            val_metrics=val_metrics,
+            best_epoch=best_epoch,
+            best_metric=best_metric,
+            learning_rate=learning_rate,
+        )
 
-            learning_rate = float(optimizer.param_groups[0]["lr"])
-            log_epoch_metrics(
-                tensorboard_writer=writer,
-                metrics_csv_path=metrics_csv_path,
-                epoch=epoch,
-                train_loss=total_loss,
-                train_policy=policy_loss,
-                train_value=value_loss,
-                val_metrics=val_metrics,
-                best_epoch=best_epoch,
-                best_metric=best_metric,
-                learning_rate=learning_rate,
-            )
-
-            progress_checkpoint = (
-                request.resume_checkpoint
-                if request.resume_checkpoint is not None
-                else checkpoint_variant_path(output_path, "resume")
-            )
-            resume_payload = make_checkpoint(
-                model=model,
-                dataset=dataset,
-                request=request,
-                device=device,
-                use_amp=use_amp,
-                normalization_metadata=normalization_metadata,
-                validation_dataset=val_dataset,
-            )
-            resume_payload.update({
+        progress_checkpoint = request.resume_checkpoint or output_path
+        resume_payload = make_checkpoint(
+            model=model,
+            dataset=dataset,
+            request=request,
+            device=device,
+            use_amp=use_amp,
+            normalization_metadata=normalization_metadata,
+            validation_dataset=val_dataset,
+        )
+        resume_payload.update(
+            {
                 "optimizer_state_dict": optimizer.state_dict(),
                 "scaler_state_dict": scaler.state_dict(),
                 "completed_epoch": int(epoch),
                 "best_metric": float(best_metric),
                 "best_epoch": int(best_epoch),
                 "training_source_identity": _training_source_identity(request),
-                "best_top1": float(best_top1),
-                "best_top1_epoch": int(best_top1_epoch),
-                "best_top5": float(best_top5),
-                "best_top5_epoch": int(best_top5_epoch),
-                "best_switch": float(best_switch),
-                "best_switch_epoch": int(best_switch_epoch),
-                "best_policy_score": float(best_policy_score),
-                "best_policy_score_epoch": int(best_policy_score_epoch),
-                "candidate_best_values": (
-                    dict(tracking_state.best_values) if tracking_state is not None else {}
-                ),
                 "train_generator_state": train_generator.get_state(),
                 "rng_state": {
                     "python": random.getstate(),
                     "numpy": np.random.get_state(),
                     "torch": torch.get_rng_state(),
-                    **({"cuda": torch.cuda.get_rng_state_all()} if device.type == "cuda" else {}),
+                    **(
+                        {"cuda": torch.cuda.get_rng_state_all()}
+                        if device.type == "cuda"
+                        else {}
+                    ),
                 },
-            })
-            if request.save_best:
-                resume_payload["best_model_state_dict"] = best_model_state_dict
-            atomic_save_checkpoint(resume_payload, progress_checkpoint)
+            }
+        )
+        if request.save_best:
+            resume_payload["best_model_state_dict"] = best_model_state_dict
+        atomic_save_checkpoint(resume_payload, progress_checkpoint)
 
-        if request.save_best and best_model_state_dict is not None:
-            checkpoint = best_checkpoint or make_checkpoint(
-                model=model, dataset=dataset, request=request, device=device,
-                use_amp=use_amp, normalization_metadata=normalization_metadata,
-                validation_dataset=val_dataset,
-            )
-            checkpoint["model_state_dict"] = best_model_state_dict
-            checkpoint["best_epoch"] = int(best_epoch)
-            checkpoint["best_metric"] = float(best_metric)
-        else:
-            checkpoint = make_checkpoint(
-                model=model,
-                dataset=dataset,
-                request=request,
-                device=device,
-                use_amp=use_amp,
-                normalization_metadata=normalization_metadata,
-                validation_dataset=val_dataset,
-            )
-            checkpoint["best_epoch"] = int(best_epoch)
-            checkpoint["best_metric"] = float(best_metric)
-
-        atomic_save_checkpoint(checkpoint, output_path)
-
-        if request.save_best and best_model_state_dict is not None:
-            model.load_state_dict(checkpoint["model_state_dict"])
-
-        if request.config.save_multiple_best:
-            last_checkpoint_path = checkpoint_variant_path(output_path, "last")
-            last_checkpoint = make_checkpoint(
-                model=model,
-                dataset=dataset,
-                request=request,
-                device=device,
-                use_amp=use_amp,
-                normalization_metadata=normalization_metadata,
-                validation_dataset=val_dataset,
-            )
-            last_checkpoint["saved_epoch"] = int(request.config.epochs)
-            last_checkpoint["selector_name"] = "last_epoch"
-            last_checkpoint["selector_value"] = float(request.config.epochs)
-            last_checkpoint["checkpoint_selection_metric"] = "last_epoch"
-            atomic_save_checkpoint(last_checkpoint, last_checkpoint_path)
-
-            print("\nSaved additional checkpoint variants:")
-            print(checkpoint_variant_path(output_path, "best_loss"))
-            print(checkpoint_variant_path(output_path, "best_top1"))
-            print(checkpoint_variant_path(output_path, "best_top5"))
-            print(checkpoint_variant_path(output_path, "best_switch"))
-            print(checkpoint_variant_path(output_path, "best_policy"))
-            print(last_checkpoint_path)
-
-            print("\nBest selector epochs:")
-            print(f"  best_loss epoch:   {best_epoch}")
-            print(f"  best_top1 epoch:   {best_top1_epoch}")
-            print(f"  best_top5 epoch:   {best_top5_epoch}")
-            print(f"  best_switch epoch: {best_switch_epoch}")
-            print(f"  best_policy epoch: {best_policy_score_epoch}")
-
-        if writer is not None:
-            writer.close()
-
-        print("\nSaved graph model:")
-        print(output_path)
-        print(f"Best epoch:  {best_epoch}")
-        print(f"Best metric: {best_metric:.6f}")
-
-        evaluate_training_samples(
+    if request.save_best and best_model_state_dict is not None:
+        checkpoint = best_checkpoint or make_checkpoint(
             model=model,
             dataset=dataset,
+            request=request,
             device=device,
-            max_samples=20,
+            use_amp=use_amp,
+            normalization_metadata=normalization_metadata,
+            validation_dataset=val_dataset,
         )
+        checkpoint["model_state_dict"] = best_model_state_dict
+        checkpoint["best_epoch"] = int(best_epoch)
+        checkpoint["best_metric"] = float(best_metric)
+    else:
+        checkpoint = make_checkpoint(
+            model=model,
+            dataset=dataset,
+            request=request,
+            device=device,
+            use_amp=use_amp,
+            normalization_metadata=normalization_metadata,
+            validation_dataset=val_dataset,
+        )
+        checkpoint["best_epoch"] = int(best_epoch)
+        checkpoint["best_metric"] = float(best_metric)
 
-        print("\nDone.")
-        return output_path
+    atomic_save_checkpoint(checkpoint, output_path)
+
+    if request.save_best and best_model_state_dict is not None:
+        model.load_state_dict(checkpoint["model_state_dict"])
+
+    if writer is not None:
+        writer.close()
+
+    print("\nSaved graph model:")
+    print(output_path)
+    print(f"Best epoch:  {best_epoch}")
+    print(f"Best metric: {best_metric:.6f}")
+
+    evaluate_training_samples(
+        model=model,
+        dataset=dataset,
+        device=device,
+        max_samples=20,
+    )
+
+    print("\nDone.")
+    return output_path
 
 
 __all__ = [
@@ -1272,10 +879,8 @@ __all__ = [
     "TrainingConfig",
     "TrainingRequest",
     "build_value_target_diagnostics",
-    "checkpoint_variant_path",
     "collate_graph_samples",
     "collect_scenario_ids",
-    "compute_policy_selection_score",
     "dataclass",
     "evaluate_one_epoch",
     "evaluate_training_samples",
@@ -1291,7 +896,6 @@ __all__ = [
     "random",
     "require_physics_config_payload",
     "resolve_device",
-    "save_checkpoint_now",
     "setup_live_logging",
     "soft_policy_loss",
     "torch",
