@@ -27,5 +27,5 @@ def test_canonical_state_package_layout():
         assert importlib.util.find_spec(module_name) is None
 
 
-def test_grid_fm_state_keeps_historical_public_identity():
-    assert GridFMState.__module__ == "grid_topology_ai.data"
+def test_grid_fm_state_has_canonical_state_identity():
+    assert GridFMState.__module__ == "grid_topology_ai.state"

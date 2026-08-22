@@ -53,10 +53,6 @@ _RAW_BRANCH_FEATURE_COLUMNS = [
 ]
 
 
-# Preserve the public path used by pickled states and type displays.
-GridFMState.__module__ = __name__
-
-
 def compute_voltage_violation_metrics(
     bus_df: pd.DataFrame,
 ) -> dict[str, float | int]:
