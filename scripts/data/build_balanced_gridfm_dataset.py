@@ -1511,12 +1511,14 @@ def build_transitions_from_manifest(selected: pd.DataFrame) -> pd.DataFrame:
 def stratified_split(
     transitions: pd.DataFrame,
     train_fraction: float,
+    self_play_fraction: float,
     seed: int,
-) -> tuple[pd.DataFrame, pd.DataFrame]:
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     rng = np.random.default_rng(int(seed))
 
     train_parts: list[pd.DataFrame] = []
     val_parts: list[pd.DataFrame] = []
+    self_play_parts: list[pd.DataFrame] = []
 
     for _, group in transitions.groupby("difficulty_class", sort=False):
         group = group.copy()
@@ -1524,18 +1526,24 @@ def stratified_split(
         order = rng.permutation(len(group))
         group = group.iloc[order].reset_index(drop=True)
 
-        n_train = int(round(len(group) * float(train_fraction)))
+        train_end = int(round(len(group) * float(train_fraction)))
+        self_play_start = int(
+            round(len(group) * (1.0 - float(self_play_fraction)))
+        )
 
-        train_parts.append(group.iloc[:n_train].copy())
-        val_parts.append(group.iloc[n_train:].copy())
+        train_parts.append(group.iloc[:train_end].copy())
+        val_parts.append(group.iloc[train_end:self_play_start].copy())
+        self_play_parts.append(group.iloc[self_play_start:].copy())
 
     train = pd.concat(train_parts, ignore_index=True)
     val = pd.concat(val_parts, ignore_index=True)
+    self_play = pd.concat(self_play_parts, ignore_index=True)
 
     train = train.sort_values("scenario_id").reset_index(drop=True)
     val = val.sort_values("scenario_id").reset_index(drop=True)
+    self_play = self_play.sort_values("scenario_id").reset_index(drop=True)
 
-    return train, val
+    return train, val, self_play
 
 
 # ======================================================================================
@@ -1865,17 +1873,20 @@ def write_outputs(
     transitions_path = paths["transitions_dir"] / "transitions_balanced.csv"
     train_path = paths["transitions_dir"] / "transitions_train.csv"
     val_path = paths["transitions_dir"] / "transitions_val.csv"
+    self_play_path = paths["transitions_dir"] / "transitions_self_play.csv"
 
     transitions.to_csv(transitions_path, index=False)
 
-    train, val = stratified_split(
+    train, val, self_play = stratified_split(
         transitions=transitions,
         train_fraction=float(args.train_fraction),
+        self_play_fraction=float(args.self_play_fraction),
         seed=int(args.split_seed),
     )
 
     train.to_csv(train_path, index=False)
     val.to_csv(val_path, index=False)
+    self_play.to_csv(self_play_path, index=False)
 
     summary_rows = []
 
@@ -1908,9 +1919,10 @@ def write_outputs(
     print(class_summary.to_string(index=False))
 
     print("\nTransitions:")
-    print(f"  all:   {transitions_path} ({len(transitions)})")
-    print(f"  train: {train_path} ({len(train)})")
-    print(f"  val:   {val_path} ({len(val)})")
+    print(f"  all:       {transitions_path} ({len(transitions)})")
+    print(f"  train:     {train_path} ({len(train)})")
+    print(f"  val:       {val_path} ({len(val)})")
+    print(f"  self-play: {self_play_path} ({len(self_play)})")
 
     save_json(
         paths["manifest_dir"] / "summary.json",
@@ -1930,6 +1942,7 @@ def write_outputs(
                 "transitions": str(transitions_path),
                 "train": str(train_path),
                 "val": str(val_path),
+                "self_play": str(self_play_path),
                 "selected_manifest": str(selected_manifest_path),
                 "all_candidates": str(all_candidates_path),
             },
@@ -2052,7 +2065,8 @@ def main() -> None:
     parser.add_argument("--hard-min-loading", type=float, default=150.0)
     parser.add_argument("--hard-min-hard", type=int, default=2)
 
-    parser.add_argument("--train-fraction", type=float, default=0.8)
+    parser.add_argument("--train-fraction", type=float, default=0.7)
+    parser.add_argument("--self-play-fraction", type=float, default=0.2)
     parser.add_argument("--split-seed", type=int, default=42)
 
     parser.add_argument(
@@ -2076,6 +2090,14 @@ def main() -> None:
         parser.error("--gridfm-retries must be >= 0")
     if args.gridfm_inactivity_timeout_sec < 0.0:
         parser.error("--gridfm-inactivity-timeout-sec must be >= 0")
+    if not 0.0 <= args.train_fraction <= 1.0:
+        parser.error("--train-fraction must be between 0 and 1")
+    if not 0.0 <= args.self_play_fraction <= 1.0:
+        parser.error("--self-play-fraction must be between 0 and 1")
+    if args.train_fraction + args.self_play_fraction > 1.0:
+        parser.error(
+            "--train-fraction + --self-play-fraction must be <= 1"
+        )
 
     total_start = now()
 
@@ -2284,6 +2306,7 @@ def main() -> None:
     print(f"  transitions:  {paths['transitions_dir'] / 'transitions_balanced.csv'}")
     print(f"  train:        {paths['transitions_dir'] / 'transitions_train.csv'}")
     print(f"  val:          {paths['transitions_dir'] / 'transitions_val.csv'}")
+    print(f"  self-play:    {paths['transitions_dir'] / 'transitions_self_play.csv'}")
     print(f"  manifest:     {paths['manifest_dir'] / 'selected_manifest.csv'}")
 
     print_time("\nTotal runtime", total_start)
