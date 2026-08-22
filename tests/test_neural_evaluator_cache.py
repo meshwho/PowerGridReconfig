@@ -5,7 +5,7 @@ from dataclasses import replace
 import numpy as np
 import pytest
 
-from grid_topology_ai.config.physics import PhysicsConfig
+from grid_topology_ai.config import PhysicsConfig
 from grid_topology_ai.data_adapter import GridFMState
 from grid_topology_ai.models.neural_evaluator import NeuralPolicyValueEvaluator
 from grid_topology_ai.state.schema import (

@@ -9,7 +9,7 @@ from pypower.idx_brch import PF, PT, QF, QT, RATE_A
 from pypower.idx_bus import VM
 
 import grid_topology_ai.power_flow.backend as backend_module
-from grid_topology_ai.config.physics import (
+from grid_topology_ai.config import (
     DEFAULT_PHYSICS_CONFIG,
     PhysicsConfig,
     ZeroRateAPolicy,

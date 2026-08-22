@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from grid_topology_ai.config.physics import DEFAULT_PHYSICS_CONFIG
+from grid_topology_ai.config import DEFAULT_PHYSICS_CONFIG
 from grid_topology_ai.models.graph_self_play_dataset import GraphSelfPlayDataset
 from grid_topology_ai.reward import TERMINAL_UTILITY_GAMMA, VALUE_TARGET_MODE
 from grid_topology_ai.state.schema import BRANCH_FEATURE_COLUMNS, BUS_FEATURE_COLUMNS

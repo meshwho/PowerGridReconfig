@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 from pypower.idx_bus import BS, GS
 
-from grid_topology_ai.config.physics import PhysicsConfig
+from grid_topology_ai.config import PhysicsConfig
 from grid_topology_ai.power_flow.backend import GridFMPowerFlowBackend
 
 

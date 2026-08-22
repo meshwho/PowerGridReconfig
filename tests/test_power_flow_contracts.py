@@ -24,7 +24,7 @@ from pypower.idx_gen import (
 )
 
 from grid_topology_ai.cache import exact_power_flow_fingerprint
-from grid_topology_ai.config.physics import (
+from grid_topology_ai.config import (
     PhysicsConfig,
     QLimitPolicy,
     ZeroRateAPolicy,

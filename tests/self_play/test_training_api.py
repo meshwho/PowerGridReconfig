@@ -10,7 +10,7 @@ import pytest
 import torch
 
 from grid_topology_ai.config import TrainingConfig
-from grid_topology_ai.config.physics import DEFAULT_PHYSICS_CONFIG
+from grid_topology_ai.config import DEFAULT_PHYSICS_CONFIG
 from grid_topology_ai.state.schema import BRANCH_FEATURE_COLUMNS, BUS_FEATURE_COLUMNS
 from grid_topology_ai.topology_actions import (
     STOP_PLUS_BRANCH_STATUS_POLICY_LAYOUT,

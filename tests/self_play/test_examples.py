@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from grid_topology_ai.config.physics import DEFAULT_PHYSICS_CONFIG
+from grid_topology_ai.config import DEFAULT_PHYSICS_CONFIG
 from grid_topology_ai.return_contract import VALUE_TARGET_MODE
 from grid_topology_ai.self_play.examples import ExampleWriter, SelfPlayExample
 from grid_topology_ai.termination import TerminationReason

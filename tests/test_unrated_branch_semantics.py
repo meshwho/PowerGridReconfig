@@ -8,7 +8,7 @@ import pandas as pd
 import pytest
 from pypower.idx_brch import PF, PT, QF, QT, RATE_A
 
-from grid_topology_ai.config.physics import (
+from grid_topology_ai.config import (
     PhysicsConfig,
     ZeroRateAPolicy,
 )

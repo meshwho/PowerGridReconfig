@@ -8,7 +8,7 @@ import pandas as pd
 import pytest
 
 from grid_topology_ai.config import GenerationConfig
-from grid_topology_ai.config.physics import DEFAULT_PHYSICS_CONFIG
+from grid_topology_ai.config import DEFAULT_PHYSICS_CONFIG
 from grid_topology_ai.data_adapter import BRANCH_FEATURE_COLUMNS, GridFMState
 from grid_topology_ai.environment import TopologySwitchingEnv
 from grid_topology_ai.outcome_contract import (

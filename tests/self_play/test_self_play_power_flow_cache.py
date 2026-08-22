@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import numpy as np
 
 from grid_topology_ai.action_space import GridFMAction
-from grid_topology_ai.config.physics import DEFAULT_PHYSICS_CONFIG
+from grid_topology_ai.config import DEFAULT_PHYSICS_CONFIG
 from grid_topology_ai.data_adapter import (
     BRANCH_FEATURE_COLUMNS,
     BUS_FEATURE_COLUMNS,
