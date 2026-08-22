@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from grid_topology_ai.outcome_record import (
+from grid_topology_ai.physics.objective import (
     TerminalOutcomeEvidence,
     redispatch_status_for_reason,
 )

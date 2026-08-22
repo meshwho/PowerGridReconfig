@@ -24,21 +24,17 @@ from pypower.idx_gen import (
 )
 
 from grid_topology_ai.cache import exact_power_flow_fingerprint
-from grid_topology_ai.config.physics import (
+from grid_topology_ai.config import (
     PhysicsConfig,
     QLimitPolicy,
     ZeroRateAPolicy,
 )
-from grid_topology_ai.data_adapter import (
-    BRANCH_FEATURE_COLUMNS,
-    BUS_FEATURE_COLUMNS,
-    GridFMState,
-)
+from grid_topology_ai.state import BRANCH_FEATURE_COLUMNS, BUS_FEATURE_COLUMNS, GridFMState
 from grid_topology_ai.physics.constraints import (
     validate_ppc_input,
     validate_pypower_result,
 )
-from grid_topology_ai.power_flow.errors import InvalidPhysicalState
+from grid_topology_ai.power_flow import InvalidPhysicalState
 from grid_topology_ai.power_flow.problem import CanonicalPowerFlowProblem
 from grid_topology_ai.power_flow.backend import GridFMPowerFlowBackend
 

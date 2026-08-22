@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 import grid_topology_ai.evaluation as evaluation_checkpoint
-from grid_topology_ai.reward import (
+from grid_topology_ai.value_targets import (
     TERMINAL_UTILITY_GAMMA,
     VALUE_TARGET_MODE,
     terminal_utility_from_outcome,
@@ -116,7 +116,7 @@ def test_mcts_backup_has_no_dense_reward_path() -> None:
 
 
 def test_training_datasets_have_no_shaped_return_fallback() -> None:
-    text = Path("grid_topology_ai/models/graph_self_play_dataset.py").read_text(
+    text = Path("grid_topology_ai/dataset.py").read_text(
         encoding="utf-8"
     )
     forbidden = (

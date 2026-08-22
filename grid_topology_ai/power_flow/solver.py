@@ -21,7 +21,7 @@ from pypower.ppoption import ppoption
 from pypower.printpf import printpf
 from pypower.savecase import savecase
 
-from grid_topology_ai.power_flow.network_workspace import (
+from grid_topology_ai.power_flow.workspace import (
     PreparedACNetwork,
     solve_newton_power_flow,
 )

@@ -13,7 +13,7 @@ from grid_topology_ai.search.screening import (
     DCScreeningCache,
     dc_screening_fingerprint,
 )
-from grid_topology_ai.topology_actions import GridFMAction
+from grid_topology_ai.actions import GridFMAction
 
 
 def _problem(marker: float = 0.0) -> CanonicalPowerFlowProblem:

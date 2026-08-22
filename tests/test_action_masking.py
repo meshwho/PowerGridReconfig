@@ -4,12 +4,11 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from grid_topology_ai.config.physics import DEFAULT_PHYSICS_CONFIG
-from grid_topology_ai.models.graph_self_play_dataset import GraphSelfPlayDataset
-from grid_topology_ai.reward import TERMINAL_UTILITY_GAMMA, VALUE_TARGET_MODE
-from grid_topology_ai.state.schema import BRANCH_FEATURE_COLUMNS, BUS_FEATURE_COLUMNS
-from grid_topology_ai.topology_actions import (
-    ActionSpaceConfig,
+from grid_topology_ai.config import ActionSpaceConfig, DEFAULT_PHYSICS_CONFIG
+from grid_topology_ai.dataset import GraphSelfPlayDataset
+from grid_topology_ai.value_targets import TERMINAL_UTILITY_GAMMA, VALUE_TARGET_MODE
+from grid_topology_ai.state import BRANCH_FEATURE_COLUMNS, BUS_FEATURE_COLUMNS
+from grid_topology_ai.actions import (
     action_layout_fingerprint,
     action_layout_to_list,
     build_branch_action_slots,
@@ -269,7 +268,7 @@ def test_npz_loader_closes_file_before_returning_arrays(
 
     fake_npz = FakeNpz()
     monkeypatch.setattr(
-        "grid_topology_ai.models.graph_self_play_dataset.np.load",
+        "grid_topology_ai.dataset.np.load",
         lambda *args, **kwargs: fake_npz,
     )
 

@@ -9,7 +9,7 @@ from pypower.idx_bus import VA, VM
 from pypower.idx_cost import COST, MODEL, NCOST, SHUTDOWN, STARTUP
 from pypower.idx_gen import GEN_STATUS, PG, QG
 
-from grid_topology_ai.data_adapter import GridFMState
+from grid_topology_ai.state import GridFMState
 from grid_topology_ai.physics.constraints import (
     calculate_physical_metrics_from_result,
     validate_ppc_input,
@@ -19,7 +19,7 @@ from grid_topology_ai.physics.objective import (
     PhysicalStateAssessment,
     assess_physical_state,
 )
-from grid_topology_ai.power_flow.errors import (
+from grid_topology_ai.power_flow import (
     InvalidPhysicalState,
     PowerFlowNotConverged,
 )

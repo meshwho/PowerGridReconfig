@@ -6,20 +6,35 @@ PowerGridReconfig is a Python 3.11 research framework for emergency topology con
 
 The main learned-control path uses model-guided neural MCTS over a fixed physical scenario pool. Teacher generation remains available as an optional deterministic bootstrap path. Training and evaluation are separate explicit operations, and evaluation runs one selected policy behavior per invocation.
 
-For implementation details, see [docs/self_play.md](docs/self_play.md). The stable bidirectional branch-status policy and artifact compatibility rules are specified in [docs/topology_action_contract.md](docs/research/topology_action_contract.md).
+For implementation details, see [docs/self_play.md](docs/self_play.md). The stable bidirectional branch-status policy and artifact compatibility rules are specified in [the topology-action contract](docs/research/topology_action_contract.md).
 
 ## Current implemented pipeline
 
 ```text
-fixed physical scenario pool
+GridFM/raw scenario
+  -> canonical state and scenario data
+  -> optimized AC power flow
+  -> stable topology action space
   -> optional deterministic teacher bootstrap
+  -> graph dataset construction
+  -> GraphPolicyValueNetV2 training
   -> neural MCTS self-play generation
-  -> scenario-level train/validation split
-  -> policy-value checkpoint training
-  -> explicit checkpoint evaluation
+  -> scientific evaluation
 ```
 
 Each stage is invoked directly. The Light runtime does not contain a checkpoint arena, automatic promotion/acceptance loop, curriculum controller, or sealed final-test orchestrator.
+
+## Canonical implementation layout
+
+The public implementation owners are intentionally direct: `state.py` owns
+state construction and persistence, `actions.py` owns the topology action
+contract and executable action space, `runtime.py` owns the memory-mapped
+scenario store and NumPy execution view, `model.py` owns
+`GraphPolicyValueNetV2`, `dataset.py` owns graph-example tensor construction,
+and `evaluator.py` owns cached neural inference. Training and self-play remain
+cohesive packages because their checkpoint/metrics and generation/validation
+components are substantial independent responsibilities. Physics, optimized
+power flow, and search remain focused subpackages.
 
 ## Evaluation contract
 

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from grid_topology_ai.config.physics import PhysicsConfig
+from grid_topology_ai.config import PhysicsConfig
 from grid_topology_ai.power_flow.backend import GridFMPowerFlowBackend
 
 

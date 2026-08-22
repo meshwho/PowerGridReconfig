@@ -62,15 +62,15 @@ from grid_topology_ai.cache import (
     CachedPowerFlowSuccess,
     ExactPowerFlowCache,
 )
-from grid_topology_ai.config.physics import (
+from grid_topology_ai.config import (
     DEFAULT_PHYSICS_CONFIG,
     PhysicsConfig,
     QLimitPolicy,
 )
-from grid_topology_ai.data_adapter import (
+from grid_topology_ai.data import GridFMAdapter
+from grid_topology_ai.state import (
     BRANCH_FEATURE_COLUMNS,
     BUS_FEATURE_COLUMNS,
-    GridFMAdapter,
     GridFMState,
 )
 from grid_topology_ai.physics.constraints import (
@@ -79,7 +79,7 @@ from grid_topology_ai.physics.constraints import (
     validate_pypower_result,
 )
 from grid_topology_ai.physics.objective import assess_physical_state
-from grid_topology_ai.power_flow.errors import (
+from grid_topology_ai.power_flow import (
     InvalidPhysicalState,
     PowerFlowFailureKind,
     PowerFlowNotConverged,
@@ -95,8 +95,8 @@ from grid_topology_ai.power_flow.solver import (
     get_power_flow_workload_counters,
     runpf,
 )
-from grid_topology_ai.state.builder import GridFMStateBuilder
-from grid_topology_ai.topology_actions import GridFMAction
+from grid_topology_ai.state import GridFMStateBuilder
+from grid_topology_ai.actions import GridFMAction
 
 
 def pf_algorithm_name(pf_alg: int) -> str:

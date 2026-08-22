@@ -9,11 +9,7 @@ import pytest
 from pypower.idx_brch import BR_STATUS
 from pypower.idx_gen import GEN_STATUS, PG, QG, VG
 
-from grid_topology_ai.data_adapter import (
-    BRANCH_FEATURE_COLUMNS,
-    BUS_FEATURE_COLUMNS,
-    GridFMState,
-)
+from grid_topology_ai.state import BRANCH_FEATURE_COLUMNS, BUS_FEATURE_COLUMNS, GridFMState
 from grid_topology_ai.power_flow.problem import (
     GeneratorOperatingPoint,
     build_power_flow_problem_from_state,

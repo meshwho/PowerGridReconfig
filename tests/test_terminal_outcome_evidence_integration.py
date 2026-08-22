@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from grid_topology_ai.outcome_record import RedispatchStatus, TerminalOutcomeEvidence
+from grid_topology_ai.physics.objective import RedispatchStatus, TerminalOutcomeEvidence
 from grid_topology_ai.physics.objective import (
     assess_physical_state,
     classify_stop_outcome,

@@ -17,7 +17,7 @@ from pypower.newtonpf import newtonpf as stock_newtonpf
 from scipy.sparse import hstack, vstack
 
 from grid_topology_ai.power_flow import solver as compat
-from grid_topology_ai.power_flow.newton_workspace import (
+from grid_topology_ai.power_flow.workspace import (
     JacobianWorkspace,
     PowerDerivativeWorkspace,
     newton_power_flow,

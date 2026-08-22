@@ -10,7 +10,7 @@ import sys
 import time
 import traceback
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from pathlib import Path
 from contextlib import redirect_stderr, redirect_stdout
 from typing import Any, Callable, Sequence
@@ -39,21 +39,15 @@ def _configure_cache_runtime_from_cli() -> None:
         default=None,
     )
 
-    parsed, remaining = parser.parse_known_args(
-        sys.argv[1:]
-    )
+    parsed, remaining = parser.parse_known_args(sys.argv[1:])
 
     if parsed.exact_cache_max_mb is not None:
         max_mb = float(parsed.exact_cache_max_mb)
 
         if not math.isfinite(max_mb) or max_mb <= 0.0:
-            raise SystemExit(
-                "--exact-cache-max-mb must be a positive finite number."
-            )
+            raise SystemExit("--exact-cache-max-mb must be a positive finite number.")
 
-        os.environ[_EXACT_L1_CACHE_MAX_MB_ENV] = (
-            f"{max_mb:.12g}"
-        )
+        os.environ[_EXACT_L1_CACHE_MAX_MB_ENV] = f"{max_mb:.12g}"
 
     sys.argv[:] = [
         sys.argv[0],
@@ -80,54 +74,50 @@ try:
 except ImportError:  # pragma: no cover
     tqdm = None
 
-from grid_topology_ai.cache import (
-    DEFAULT_EXACT_POWER_FLOW_CACHE_BYTES,
-    LODFStructureCache,
-)
-from grid_topology_ai.action_space import GridFMAction, GridFMActionSpace
-from grid_topology_ai.config.physics import DEFAULT_PHYSICS_CONFIG, PhysicsConfig
-from grid_topology_ai.teacher_config import (
-    ensure_teacher_checkpoint_config,
-    teacher_run_id,
-    teacher_source_identity,
-)
-from grid_topology_ai.data_adapter import GridFMAdapter
+from grid_topology_ai.actions import make_do_nothing_action
+from grid_topology_ai.cache import DEFAULT_EXACT_POWER_FLOW_CACHE_BYTES
+from grid_topology_ai.config import DEFAULT_PHYSICS_CONFIG
 from grid_topology_ai.environment import TopologySwitchingEnv
-from grid_topology_ai.physics.utility import state_utility
-from grid_topology_ai.physics.lodf import lodf_loading_safety_score
-from grid_topology_ai.outcome_record import (
+from grid_topology_ai.physics.lodf import LODFStructureCache
+from grid_topology_ai.physics.objective import (
     TerminalOutcomeEvidence,
+    assess_physical_state,
     redispatch_status_for_reason,
 )
-from grid_topology_ai.physics.objective import assess_physical_state
-from grid_topology_ai.power_flow.backend import GridFMPowerFlowBackend
 from grid_topology_ai.physics.redispatch import (
     MinimalRedispatchResult,
     empty_redispatch_diagnostics,
     run_minimal_ac_redispatch,
 )
+from grid_topology_ai.physics.utility import state_utility
 from grid_topology_ai.runtime import (
+    build_memory_mapped_teacher_context,
     ensure_runtime_scenario_store,
 )
-from grid_topology_ai.runtime import build_memory_mapped_teacher_context
-from grid_topology_ai.reward import GridFMReward
-from grid_topology_ai.search.continuation_gate import make_do_nothing_action
-from grid_topology_ai.search.impact_beam_search import (
+from grid_topology_ai.search.teacher import (
+    _MIN_MEANINGFUL_SAFETY_IMPROVEMENT,
+    _TERMINAL_REDISPATCH_ABSOLUTE_EPSILON_MW,
+    _TERMINAL_REDISPATCH_RELATIVE_EPSILON,
+    _redispatch_aware_selection,
+    _safe_short_sequence,
+    _selection_provenance,
     ImpactBeamSearchConfig,
     ImpactBeamSearchPlanner,
     LODFScreenedImpactBeamSearchPlanner,
-    ImpactBeamSearchResult,
+    ensure_teacher_checkpoint_config,
+    make_one_hot_policy,
+    make_policy_from_final_beam,
     safety_score,
+    teacher_run_id,
+    teacher_source_identity,
 )
-from grid_topology_ai.search.impact_beam_search import switch_count
-from grid_topology_ai.state.store import GridFMStateStore
 from grid_topology_ai.termination import (
     TerminationReason,
     parse_termination_reason,
     termination_reason_value,
     validate_outcome_invariants,
 )
-from grid_topology_ai.topology_actions import (
+from grid_topology_ai.actions import (
     action_layout_fingerprint,
     action_layout_to_list,
     build_branch_action_slots,
@@ -153,111 +143,10 @@ def _require_worker_context() -> dict[str, Any]:
     return _WORKER_CONTEXT
 
 
-
-
 # ======================================================================================
 # Small helpers
 # ======================================================================================
 
-
-def compute_auto_reward_scale_from_rows(
-    rows: list[dict],
-    quantile: float = 0.95,
-    min_scale: float = 1.0,
-) -> float:
-    """
-    Compute reward scale from generated step rewards.
-
-    This scale is used only for value_target normalization,
-    not for teacher search and not for action selection.
-    """
-
-    rewards = []
-
-    for row in rows:
-        if "step_reward" not in row:
-            continue
-
-        value = float(row["step_reward"])
-
-        if math.isfinite(value):
-            rewards.append(abs(value))
-
-    if not rewards:
-        return float(min_scale)
-
-    rewards_sorted = sorted(rewards)
-
-    q = min(max(float(quantile), 0.0), 1.0)
-    index = int(round(q * (len(rewards_sorted) - 1)))
-
-    scale = float(rewards_sorted[index])
-
-    return max(scale, float(min_scale))
-
-
-def add_normalized_value_targets_to_rows(
-    rows: list[dict],
-    gamma: float,
-    reward_scale: float,
-    group_keys: tuple[str, ...] = ("scenario_id",),
-) -> None:
-    """
-    Add normalized value_target to generated teacher rows.
-
-    Existing raw reward fields stay unchanged:
-    - step_reward
-    - discounted_return_from_step
-    - final_return
-
-    New value target:
-        r_norm_t = tanh(step_reward_t / reward_scale)
-
-        value_target_t =
-            sum_k gamma^k * r_norm_{t+k}
-            /
-            sum_k gamma^k
-
-    The denominator is important: it keeps value_target in [-1, 1],
-    compatible with the Tanh value head.
-    """
-
-    if reward_scale <= 0:
-        raise ValueError(f"reward_scale must be positive, got {reward_scale}")
-
-    groups: dict[tuple, list[dict]] = {}
-
-    for row in rows:
-        key = tuple(row.get(k) for k in group_keys)
-        groups.setdefault(key, []).append(row)
-
-    for _, group_rows in groups.items():
-        group_rows.sort(key=lambda r: int(r.get("step", 0)))
-
-        normalized_rewards = [
-            math.tanh(float(row.get("step_reward", 0.0)) / float(reward_scale))
-            for row in group_rows
-        ]
-
-        n = len(group_rows)
-
-        for i, row in enumerate(group_rows):
-            weighted_sum = 0.0
-            weight_sum = 0.0
-            discount = 1.0
-
-            for j in range(i, n):
-                weighted_sum += discount * normalized_rewards[j]
-                weight_sum += discount
-                discount *= float(gamma)
-
-            value_target = weighted_sum / max(weight_sum, 1e-12)
-
-            row["value_target"] = float(value_target)
-            row["value_target_mode"] = "tanh_step_reward_discounted_average"
-            row["value_reward_scale"] = float(reward_scale)
-            row["value_gamma"] = float(gamma)
-            row["value_horizon_normalized"] = True
 
 def discounted_returns(
     rewards: list[float],
@@ -275,59 +164,6 @@ def discounted_returns(
         returns[i] = float(running)
 
     return returns
-
-
-def make_one_hot_policy(action_id: int) -> dict[int, float]:
-    return {int(action_id): 1.0}
-
-
-def make_policy_from_final_beam(
-    result: ImpactBeamSearchResult,
-    temperature: float,
-) -> tuple[dict[int, float], dict[int, int]]:
-    """
-    Convert final beam into a policy over first actions.
-
-    For teacher generation we usually use temperature=0, meaning one-hot target.
-    """
-
-    best_node = result.best_node
-
-    if not best_node.action_ids:
-        return {}, {}
-
-    best_action_id = int(best_node.action_ids[0])
-
-    if temperature <= 1e-12:
-        return make_one_hot_policy(best_action_id), {best_action_id: 1}
-
-    best_safety = float(best_node.safety_score)
-
-    weights_by_action: dict[int, float] = {}
-    counts_by_action: dict[int, int] = {}
-
-    for node in result.final_beam:
-        if not node.action_ids:
-            continue
-
-        action_id = int(node.action_ids[0])
-        safety_gap = max(float(node.safety_score) - best_safety, 0.0)
-        weight = float(np.exp(-safety_gap / float(temperature)))
-
-        weights_by_action[action_id] = weights_by_action.get(action_id, 0.0) + weight
-        counts_by_action[action_id] = counts_by_action.get(action_id, 0) + 1
-
-    total = float(sum(weights_by_action.values()))
-
-    if total <= 0.0:
-        return make_one_hot_policy(best_action_id), {best_action_id: 1}
-
-    policy = {
-        int(action_id): float(weight / total)
-        for action_id, weight in weights_by_action.items()
-    }
-
-    return policy, counts_by_action
 
 
 def _force_stop_action_valid(action_mask: np.ndarray) -> np.ndarray:
@@ -370,76 +206,6 @@ def _make_action_for_env(
     return env.action_by_id(action_id)
 
 
-def _get_state_hard_count(state) -> int:
-    return int(state.metrics["num_hard_overloaded_branches"])
-
-
-def _get_state_max_loading(state) -> float:
-    return float(state.metrics["max_loading_percent"])
-
-
-def should_continue_teacher_action(
-    safety_before: float,
-    safety_after: float,
-    state_before,
-    state_after,
-    task: dict[str, Any],
-) -> tuple[bool, str, float]:
-    """
-    Decide whether the teacher should execute the next topology action
-    or hand off the remaining problem to redispatch.
-    """
-
-    if state_after is None:
-        return False, "power_flow_failed", -float("inf")
-
-    safety_before = float(safety_before)
-    safety_after = float(safety_after)
-
-    improvement = float(safety_before - safety_after)
-
-    hard_before = _get_state_hard_count(state_before)
-    hard_after = _get_state_hard_count(state_after)
-
-    max_before = _get_state_max_loading(state_before)
-    max_after = _get_state_max_loading(state_after)
-
-    allow_hard_increase = bool(task["allow_hard_count_increase"])
-
-    if hard_after > hard_before and not allow_hard_increase:
-        return (
-            False,
-            f"hard_count_increase_{hard_before}_to_{hard_after}",
-            improvement,
-        )
-
-    max_loading_increase_limit = float(task["max_loading_increase_limit"])
-
-    if max_after > max_before + max_loading_increase_limit:
-        return (
-            False,
-            f"max_loading_increase_{max_before:.2f}_to_{max_after:.2f}",
-            improvement,
-        )
-
-    if hard_before > 0:
-        required_improvement = float(task["min_continue_improvement_with_hard"])
-    else:
-        required_improvement = float(task["min_continue_improvement_without_hard"])
-
-    if hard_after < hard_before and improvement > 0.0:
-        return True, "hard_count_reduced", improvement
-
-    if improvement < required_improvement:
-        return (
-            False,
-            f"improvement_too_small_{improvement:.2f}_lt_{required_improvement:.2f}",
-            improvement,
-        )
-
-    return True, "useful_safety_improvement", improvement
-
-
 def make_handoff_step_item(
     step_idx: int,
     state_before,
@@ -472,26 +238,6 @@ def make_handoff_step_item(
         ),
         "teacher_decision_reason": reason,
     }
-
-
-def _safe_short_sequence(best_node) -> str:
-    if hasattr(best_node, "short_sequence"):
-        return str(best_node.short_sequence())
-
-    parts = []
-
-    for branch_id in getattr(best_node, "branch_ids", []):
-        parts.append("stop" if branch_id is None else str(branch_id))
-
-    return " -> ".join(parts) if parts else "(root)"
-
-
-# ======================================================================================
-# LODF screening
-# ======================================================================================
-
-
-
 
 
 # ======================================================================================
@@ -643,9 +389,7 @@ def _generate_scenario(scenario_id: int) -> dict[str, Any]:
             selected_action_id = int(best.action_ids[step_idx])
             selected_branch_id = best.branch_ids[step_idx]
 
-            if not _selected_teacher_action_is_valid(
-                action_mask, selected_action_id
-            ):
+            if not _selected_teacher_action_is_valid(action_mask, selected_action_id):
                 if bool(task["add_handoff_example"]):
                     safety_before = safety_score(
                         state_before,
@@ -820,11 +564,7 @@ def _generate_scenario(scenario_id: int) -> dict[str, Any]:
         )
 
         rows: list[dict[str, Any]] = []
-        final_return = (
-            float(returns[0])
-            if returns
-            else float(total_safety_improvement)
-        )
+        final_return = float(returns[0]) if returns else float(total_safety_improvement)
 
         for item, return_from_step in zip(step_items, returns):
             step_idx = int(item["step"])
@@ -853,11 +593,15 @@ def _generate_scenario(scenario_id: int) -> dict[str, Any]:
                     "handoff_reason": handoff_reason,
                     "episode_done": bool(episode_done),
                     "episode_solved": bool(episode_solved),
-                    "episode_termination_reason": termination_reason_value(episode_reason),
+                    "episode_termination_reason": termination_reason_value(
+                        episode_reason
+                    ),
                     "step_done": bool(item.get("done_after_step", False)),
                     "step_solved": bool(item.get("solved_after_step", False)),
                     "step_termination_reason": termination_reason_value(
-                        parse_termination_reason(item.get("termination_reason_after_step"))
+                        parse_termination_reason(
+                            item.get("termination_reason_after_step")
+                        )
                     ),
                     "best_sequence_action_ids": [int(x) for x in best.action_ids],
                     "best_sequence_branch_ids": [
@@ -900,7 +644,9 @@ def _generate_scenario(scenario_id: int) -> dict[str, Any]:
                     "step_solved": bool(item.get("solved_after_step", False)),
                     "step_done": bool(item.get("done_after_step", False)),
                     "step_termination_reason": termination_reason_value(
-                        parse_termination_reason(item.get("termination_reason_after_step"))
+                        parse_termination_reason(
+                            item.get("termination_reason_after_step")
+                        )
                     ),
                     "physics_config": json.dumps(
                         physics_config.to_dict(), sort_keys=True, separators=(",", ":")
@@ -948,8 +694,6 @@ def _generate_scenario(scenario_id: int) -> dict[str, Any]:
         }
 
 
-
-
 # ======================================================================================
 # IO / CLI helpers
 # ======================================================================================
@@ -969,8 +713,7 @@ def load_scenario_ids(
         )
 
     scenario_ids = [
-        int(x)
-        for x in transitions["scenario_id"].drop_duplicates().tolist()
+        int(x) for x in transitions["scenario_id"].drop_duplicates().tolist()
     ]
     if limit is not None:
         scenario_ids = scenario_ids[: int(limit)]
@@ -1010,8 +753,7 @@ def print_success(result: dict[str, Any]) -> None:
 
 def print_failure(result: dict[str, Any]) -> None:
     _console_write(
-        f"Scenario {result['scenario_id']}: skipped | "
-        f"reason={result['reason']}"
+        f"Scenario {result['scenario_id']}: skipped | reason={result['reason']}"
     )
     if result.get("traceback"):
         _console_write(result["traceback"])
@@ -1115,7 +857,9 @@ def load_scenario_checkpoints(
     if not checkpoint_path.exists():
         return results
 
-    with checkpoint_path.open("r", encoding="utf-8", errors="replace") as checkpoint_file:
+    with checkpoint_path.open(
+        "r", encoding="utf-8", errors="replace"
+    ) as checkpoint_file:
         for line_number, raw_line in enumerate(checkpoint_file, start=1):
             line = raw_line.strip()
             if not line:
@@ -1148,8 +892,6 @@ def load_scenario_checkpoints(
                 "rows": rows if ok else [],
             }
     return results
-
-
 
 
 def collect_rows_from_checkpoints(
@@ -1250,8 +992,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--allow-hard-count-increase", action="store_true")
     parser.add_argument("--disable-cache", action="store_true")
     parser.add_argument("--power-flow-failure-penalty", type=float, default=1_000_000.0)
-    parser.add_argument("--min-continue-improvement-with-hard", type=float, default=100.0)
-    parser.add_argument("--min-continue-improvement-without-hard", type=float, default=150.0)
+    parser.add_argument(
+        "--min-continue-improvement-with-hard", type=float, default=100.0
+    )
+    parser.add_argument(
+        "--min-continue-improvement-without-hard", type=float, default=150.0
+    )
     parser.add_argument("--max-loading-increase-limit", type=float, default=5.0)
     parser.add_argument("--add-handoff-example", action="store_true")
     parser.add_argument(
@@ -1295,36 +1041,6 @@ def main(argv: list[str] | None = None) -> int:
         default=8,
         help="Apply LODF screening only if there are at least this many switch candidates.",
     )
-    parser.add_argument(
-        "--value-target-mode",
-        type=str,
-        default="tanh_step_reward_discounted_average",
-        choices=[
-            "legacy_discounted_return",
-            "tanh_step_reward_discounted_average",
-        ],
-        help=(
-            "How to create value targets in examples.csv. "
-            "legacy_discounted_return keeps old behavior. "
-            "tanh_step_reward_discounted_average adds bounded value_target."
-        ),
-    )
-    parser.add_argument(
-        "--value-reward-scale",
-        type=str,
-        default="auto",
-        help=(
-            "Reward scale for tanh value target normalization. "
-            "Use 'auto' to compute it from generated step_reward values, "
-            "or pass a positive number for reproducible fixed scaling."
-        ),
-    )
-    parser.add_argument(
-        "--value-reward-scale-quantile",
-        type=float,
-        default=0.95,
-        help="Quantile of abs(step_reward) used when --value-reward-scale auto.",
-    )
 
     args = parser.parse_args(argv)
     raw_dir = Path(args.raw_dir)
@@ -1340,7 +1056,6 @@ def main(argv: list[str] | None = None) -> int:
         limit=args.limit,
     )
     task_config = make_task_config(args)
-    physics_config = PhysicsConfig.from_mapping(task_config["physics_config"])
     checkpoint_path = output_dir / "teacher_checkpoint.jsonl"
     checkpoint_config_path = output_dir / "teacher_checkpoint_config.json"
     checkpoint_config = {
@@ -1415,7 +1130,11 @@ def main(argv: list[str] | None = None) -> int:
 
     if not raw_dir.exists():
         raise FileNotFoundError(f"Raw directory not found: {raw_dir}")
-    for required_name in ["bus_data.parquet", "branch_data.parquet", "gen_data.parquet"]:
+    for required_name in [
+        "bus_data.parquet",
+        "branch_data.parquet",
+        "gen_data.parquet",
+    ]:
         required_path = raw_dir / required_name
         if not required_path.exists():
             raise FileNotFoundError(f"Required raw file not found: {required_path}")
@@ -1460,9 +1179,7 @@ def main(argv: list[str] | None = None) -> int:
             "Run the same command again to resume."
         )
 
-    rows, total_saved, total_skipped = collect_rows_from_checkpoints(
-        checkpoint_results
-    )
+    rows, total_saved, total_skipped = collect_rows_from_checkpoints(checkpoint_results)
     if not rows:
         raise RuntimeError("No teacher examples were generated.")
 
@@ -1473,29 +1190,6 @@ def main(argv: list[str] | None = None) -> int:
     )
     print("Outcome value target mode: alphazero_terminal_utility")
     print(f"Outcome gamma:             {args.gamma}")
-
-    if args.value_target_mode == "tanh_step_reward_discounted_average":
-        if str(args.value_reward_scale).lower().strip() == "auto":
-            value_reward_scale = compute_auto_reward_scale_from_rows(
-                rows=rows,
-                quantile=float(args.value_reward_scale_quantile),
-                min_scale=1.0,
-            )
-        else:
-            value_reward_scale = float(args.value_reward_scale)
-            if value_reward_scale <= 0:
-                raise ValueError(
-                    f"--value-reward-scale must be positive, got {value_reward_scale}"
-                )
-        add_normalized_value_targets_to_rows(
-            rows=rows,
-            gamma=float(args.gamma),
-            reward_scale=float(value_reward_scale),
-            group_keys=("scenario_id",),
-        )
-        print(f"Value target mode:  {args.value_target_mode}")
-        print(f"Value reward scale: {value_reward_scale}")
-        print(f"Value gamma:        {args.gamma}")
 
     examples_df = pd.DataFrame(rows)
     examples_df = examples_df.sort_values(
@@ -1537,8 +1231,6 @@ _REDISPATCH_ROW_FIELDS = (
 _SELECTION_PROVENANCE_BY_SCENARIO: dict[int, dict[str, object]] = {}
 
 
-
-
 def _selected_teacher_action_is_valid(
     action_mask: np.ndarray,
     action_id: int,
@@ -1567,28 +1259,13 @@ def _selected_teacher_replay_decision(
     return True, "selected_by_beam_search", improvement
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 def _set_redispatch_diagnostics(
     rows: list[dict[str, Any]],
     result: MinimalRedispatchResult | None,
 ) -> None:
-    diagnostics = empty_redispatch_diagnostics() if result is None else result.diagnostics()
+    diagnostics = (
+        empty_redispatch_diagnostics() if result is None else result.diagnostics()
+    )
     for row in rows:
         row.update(diagnostics)
 
@@ -1788,7 +1465,8 @@ def _finalize_success_result(result: dict[str, Any]) -> dict[str, Any]:
                 **selection_provenance,
                 **{
                     key: json.dumps(value, sort_keys=True, separators=(",", ":"))
-                    if key != "action_layout_fingerprint" else value
+                    if key != "action_layout_fingerprint"
+                    else value
                     for key, value in action_data.items()
                 },
             }
@@ -1839,293 +1517,9 @@ def process_one_scenario_fast(scenario_id: int) -> dict[str, Any]:
     return result
 
 
-
-
 # ======================================================================================
 # Redispatch-aware final layer
 # ======================================================================================
-
-
-_TEACHER_SELECTION_MODE = "redispatch_aware_epsilon_minimum_switch"
-_TERMINAL_REDISPATCH_RELATIVE_EPSILON = 0.01
-_TERMINAL_REDISPATCH_ABSOLUTE_EPSILON_MW = 1.0
-_MIN_MEANINGFUL_SAFETY_IMPROVEMENT = 1.0
-_TOLERANCE = 1e-9
-
-@dataclass(frozen=True)
-class _TerminalCandidate:
-    node: Any
-    redispatch_l1_mw: float
-
-
-
-
-def _action_key(node: Any) -> tuple[int, ...]:
-    return tuple(int(action_id) for action_id in node.action_ids)
-
-
-def _terminal_candidate_key(candidate: _TerminalCandidate) -> tuple[object, ...]:
-    return (
-        switch_count(candidate.node),
-        float(candidate.redispatch_l1_mw),
-        float(candidate.node.safety_score),
-        _action_key(candidate.node),
-    )
-
-
-def _same_terminal_objectives(
-    left: _TerminalCandidate,
-    right: _TerminalCandidate,
-) -> bool:
-    return (
-        switch_count(left.node) == switch_count(right.node)
-        and abs(left.redispatch_l1_mw - right.redispatch_l1_mw) <= _TOLERANCE
-    )
-
-
-def _terminal_dominates(
-    left: _TerminalCandidate,
-    right: _TerminalCandidate,
-) -> bool:
-    left_switches = switch_count(left.node)
-    right_switches = switch_count(right.node)
-    left_redispatch = float(left.redispatch_l1_mw)
-    right_redispatch = float(right.redispatch_l1_mw)
-    no_worse = (
-        left_switches <= right_switches
-        and left_redispatch <= right_redispatch + _TOLERANCE
-    )
-    strictly_better = (
-        left_switches < right_switches
-        or left_redispatch < right_redispatch - _TOLERANCE
-    )
-    return no_worse and strictly_better
-
-
-def _terminal_pareto_front(
-    candidates: Sequence[_TerminalCandidate],
-) -> list[_TerminalCandidate]:
-    unique: list[_TerminalCandidate] = []
-    for candidate in candidates:
-        duplicate_index = next(
-            (
-                index
-                for index, other in enumerate(unique)
-                if _same_terminal_objectives(candidate, other)
-            ),
-            None,
-        )
-        if duplicate_index is None:
-            unique.append(candidate)
-            continue
-        if _terminal_candidate_key(candidate) < _terminal_candidate_key(
-            unique[duplicate_index]
-        ):
-            unique[duplicate_index] = candidate
-
-    front = [
-        candidate
-        for candidate in unique
-        if not any(
-            other is not candidate and _terminal_dominates(other, candidate)
-            for other in unique
-        )
-    ]
-    return sorted(front, key=_terminal_candidate_key)
-
-
-def _with_handoff(node: Any) -> Any:
-    if node.action_ids and int(node.action_ids[-1]) == 0:
-        return node
-    return replace(
-        node,
-        action_ids=[*node.action_ids, 0],
-        branch_ids=[*node.branch_ids, None],
-        done=True,
-        solved=False,
-        termination_reason=TerminationReason.HANDOFF_TO_REDISPATCH,
-    )
-
-
-def _terminal_candidate(node: Any) -> _TerminalCandidate | None:
-    state = node.env.current_state
-    if state is None:
-        return None
-    assessment = assess_physical_state(state.metrics)
-    if assessment.physically_secure:
-        return _TerminalCandidate(node=node, redispatch_l1_mw=0.0)
-    if not assessment.hard_overload_free:
-        return None
-    if node.done:
-        reason = parse_termination_reason(node.termination_reason)
-        if reason not in {
-            TerminationReason.HANDOFF_TO_REDISPATCH,
-            TerminationReason.HANDOFF_TO_REDISPATCH_TEACHER,
-        }:
-            return None
-
-    redispatch_result = run_minimal_ac_redispatch(node.env.backend, state)
-    if (
-        not redispatch_result.validated
-        or redispatch_result.redispatch_l1_mw is None
-    ):
-        return None
-    redispatch_l1_mw = float(redispatch_result.redispatch_l1_mw)
-    if not math.isfinite(redispatch_l1_mw) or redispatch_l1_mw < 0.0:
-        return None
-    return _TerminalCandidate(
-        node=_with_handoff(node),
-        redispatch_l1_mw=redispatch_l1_mw,
-    )
-
-
-def _root_node(result) -> Any | None:
-    roots = [
-        node
-        for node in result.pareto_front
-        if switch_count(node) == 0 and not node.action_ids
-    ]
-    if not roots:
-        return None
-    return min(roots, key=lambda node: float(node.safety_score))
-
-
-def _retained_physical_improvement(
-    *,
-    root_safety: float,
-    best_physical_safety: float,
-    selected_safety: float,
-) -> float:
-    available = max(float(root_safety) - float(best_physical_safety), 0.0)
-    if available <= _TOLERANCE:
-        return 1.0
-    retained = (float(root_safety) - float(selected_safety)) / available
-    return float(min(max(retained, 0.0), 1.0))
-
-
-def _select_terminal_candidate(
-    candidates: Sequence[_TerminalCandidate],
-    *,
-    relative_epsilon: float,
-    absolute_epsilon_mw: float,
-) -> tuple[_TerminalCandidate, list[_TerminalCandidate], list[_TerminalCandidate]]:
-    front = _terminal_pareto_front(candidates)
-    if not front:
-        raise ValueError("Terminal redispatch selection requires at least one candidate.")
-    best_redispatch = min(candidate.redispatch_l1_mw for candidate in front)
-    threshold = (
-        best_redispatch * (1.0 + float(relative_epsilon))
-        + float(absolute_epsilon_mw)
-    )
-    pool = [
-        candidate
-        for candidate in front
-        if candidate.redispatch_l1_mw <= threshold + _TOLERANCE
-    ]
-    selected = min(pool, key=_terminal_candidate_key)
-    return selected, front, sorted(pool, key=_terminal_candidate_key)
-
-
-def _redispatch_aware_selection(
-    result,
-    *,
-    task_config: dict[str, Any],
-) -> tuple[Any, dict[str, object]]:
-    terminal_candidates = [
-        candidate
-        for node in result.pareto_front
-        if (candidate := _terminal_candidate(node)) is not None
-    ]
-    diagnostics: dict[str, object] = {
-        "terminal_redispatch_relative_epsilon": float(
-            task_config["terminal_redispatch_relative_epsilon"]
-        ),
-        "terminal_redispatch_absolute_epsilon_mw": float(
-            task_config["terminal_redispatch_absolute_epsilon_mw"]
-        ),
-        "min_meaningful_safety_improvement": float(
-            task_config["min_meaningful_safety_improvement"]
-        ),
-        "teacher_terminal_selection_applied": False,
-        "teacher_terminal_candidate_count": int(len(terminal_candidates)),
-        "teacher_terminal_pareto_front_size": 0,
-    }
-    root = _root_node(result)
-    root_safety = (
-        float(root.safety_score)
-        if root is not None
-        else float(result.selected_safety)
-    )
-
-    if terminal_candidates:
-        selected, terminal_front, terminal_pool = _select_terminal_candidate(
-            terminal_candidates,
-            relative_epsilon=float(
-                task_config["terminal_redispatch_relative_epsilon"]
-            ),
-            absolute_epsilon_mw=float(
-                task_config["terminal_redispatch_absolute_epsilon_mw"]
-            ),
-        )
-        diagnostics["teacher_terminal_selection_applied"] = True
-        diagnostics["teacher_terminal_pareto_front_size"] = int(len(terminal_front))
-        retained = _retained_physical_improvement(
-            root_safety=root_safety,
-            best_physical_safety=float(result.best_physical_safety),
-            selected_safety=float(selected.node.safety_score),
-        )
-        updated = replace(
-            result,
-            best_node=selected.node,
-            final_beam=[
-                candidate.node
-                for candidate in terminal_pool[: result.config.beam_width]
-            ],
-            selected_safety=float(selected.node.safety_score),
-            selected_switch_count=int(switch_count(selected.node)),
-            retained_improvement_fraction=retained,
-        )
-        return updated, diagnostics
-
-    meaningful_improvement = float(root_safety) - float(result.selected_safety)
-    minimum = float(task_config["min_meaningful_safety_improvement"])
-    if (
-        root is not None
-        and not bool(result.best_node.solved)
-        and meaningful_improvement < minimum
-    ):
-        result = replace(
-            result,
-            best_node=root,
-            final_beam=[root],
-            selected_safety=float(root.safety_score),
-            selected_switch_count=0,
-            retained_improvement_fraction=0.0,
-        )
-    return result, diagnostics
-
-
-def _selection_provenance(
-    result,
-    diagnostics: dict[str, object],
-) -> dict[str, object]:
-    return {
-        "teacher_selection_mode": _TEACHER_SELECTION_MODE,
-        "relative_physical_epsilon": float(result.config.relative_physical_epsilon),
-        "teacher_best_physical_safety": float(result.best_physical_safety),
-        "teacher_selected_safety": float(result.selected_safety),
-        "teacher_selected_switch_count": int(result.selected_switch_count),
-        "teacher_retained_improvement_fraction": float(
-            result.retained_improvement_fraction
-        ),
-        "teacher_pareto_front_size": int(len(result.pareto_front)),
-        **diagnostics,
-    }
-
-
-
-
-
 
 
 # ======================================================================================
@@ -2138,12 +1532,12 @@ _RUNTIME_SCENARIO_STORE_DIR = "_redispatch_runtime_scenario_store_dir"
 _RUNTIME_WORKER_INIT_SEMAPHORE = "_redispatch_worker_init_semaphore"
 
 
-
 def _native_math_thread_summary() -> str:
     return ", ".join(
         f"{name}={os.environ.get(name, '<unset>')}"
         for name in _NATIVE_MATH_THREAD_ENV_VARS
     )
+
 
 def _worker_init_concurrency() -> int:
     raw_value = os.environ.get(
@@ -2161,11 +1555,11 @@ def _worker_init_concurrency() -> int:
 
     if concurrency <= 0:
         raise ValueError(
-            f"{_WORKER_INIT_CONCURRENCY_ENV} must be >= 1, "
-            f"got {concurrency}."
+            f"{_WORKER_INIT_CONCURRENCY_ENV} must be >= 1, got {concurrency}."
         )
 
     return concurrency
+
 
 def _worker_run_id() -> str:
     ctx = _require_worker_context()
@@ -2193,25 +1587,10 @@ def ensure_checkpoint_config(
     ensure_teacher_checkpoint_config(config_path, bound_config)
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
 def clear_worker_caches_if_needed() -> None:
     """Bounded caches and process lifetime replace global cache clearing."""
 
     return None
-
-
 
 
 def init_worker_context(
@@ -2237,9 +1616,7 @@ def init_worker_context(
     )
 
     if store_dir is None:
-        store_dir = ensure_runtime_scenario_store(
-            raw_dir_str
-        )
+        store_dir = ensure_runtime_scenario_store(raw_dir_str)
 
     def build_context() -> dict[str, Any]:
         return build_memory_mapped_teacher_context(
@@ -2283,9 +1660,7 @@ def _partition_batches(
     shards: list[list[list[int]]] = [[] for _ in range(workers)]
 
     for index, batch in enumerate(scenario_batches):
-        shards[index % workers].append(
-            [int(value) for value in batch]
-        )
+        shards[index % workers].append([int(value) for value in batch])
 
     return [shard for shard in shards if shard]
 
@@ -2294,13 +1669,7 @@ def _shard_scenario_ids(
     shard_batches: Sequence[Sequence[int]],
 ) -> tuple[int, ...]:
     return tuple(
-        sorted(
-            {
-                int(scenario_id)
-                for batch in shard_batches
-                for scenario_id in batch
-            }
-        )
+        sorted({int(scenario_id) for batch in shard_batches for scenario_id in batch})
     )
 
 
@@ -2346,8 +1715,6 @@ def _run_timed_batch(
     return results, time.perf_counter() - started
 
 
-
-
 def _scenario_runtime_line(
     result: dict[str, Any],
 ) -> str:
@@ -2358,11 +1725,7 @@ def _scenario_runtime_line(
         status = "saved"
     else:
         reason = result.get("reason")
-        status = (
-            "skipped"
-            if reason is None
-            else f"skipped ({reason})"
-        )
+        status = "skipped" if reason is None else f"skipped ({reason})"
 
     return f"scenario {scenario_id} | {seconds:.1f}s | {status}"
 
@@ -2380,18 +1743,12 @@ def run_parallel(
     if not scenario_batches:
         return [], 0, 0
 
-    store_dir = ensure_runtime_scenario_store(
-        Path(raw_dir)
-    )
+    store_dir = ensure_runtime_scenario_store(Path(raw_dir))
 
     runtime_task_config = dict(task_config)
-    runtime_task_config[
-        _RUNTIME_SCENARIO_STORE_DIR
-    ] = str(store_dir)
+    runtime_task_config[_RUNTIME_SCENARIO_STORE_DIR] = str(store_dir)
 
-    print(
-        f"Memory-mapped runtime store: {store_dir}"
-    )
+    print(f"Memory-mapped runtime store: {store_dir}")
 
     print(
         "Exact L1 PF cache:          "
@@ -2399,10 +1756,7 @@ def run_parallel(
         "MiB / worker"
     )
 
-    print(
-        "Native math threads:       "
-        f"{_native_math_thread_summary()}"
-    )
+    print(f"Native math threads:       {_native_math_thread_summary()}")
 
     workers = min(
         max(int(num_workers), 1),
@@ -2414,14 +1768,10 @@ def run_parallel(
         workers,
     )
 
-    print(
-        f"Worker init concurrency: {init_concurrency}"
-    )
+    print(f"Worker init concurrency: {init_concurrency}")
 
     if init_concurrency < workers:
-        runtime_task_config[
-            _RUNTIME_WORKER_INIT_SEMAPHORE
-        ] = mp.BoundedSemaphore(
+        runtime_task_config[_RUNTIME_WORKER_INIT_SEMAPHORE] = mp.BoundedSemaphore(
             init_concurrency
         )
 
@@ -2432,10 +1782,7 @@ def run_parallel(
 
     workers = len(shards)
 
-    shard_sizes = [
-        _shard_scenario_ids(shard)
-        for shard in shards
-    ]
+    shard_sizes = [_shard_scenario_ids(shard) for shard in shards]
 
     print(f"\nParallel sharded mode: {workers} workers")
     print(f"Batches:                {len(scenario_batches)}")

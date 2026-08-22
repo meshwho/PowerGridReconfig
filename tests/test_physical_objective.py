@@ -4,7 +4,6 @@ import math
 import pytest
 
 from grid_topology_ai.physics.objective import (
-    PHYSICAL_OBJECTIVE_SCHEMA_VERSION,
     assess_physical_state,
     classify_stop_outcome,
     physical_objective_contract,
@@ -41,13 +40,14 @@ def _metrics(**overrides):
     return metrics
 
 
-def test_contract_metadata_is_deterministic_and_json_safe():
+def test_physical_objective_is_deterministic_and_json_safe():
     first = physical_objective_contract()
     second = physical_objective_contract()
     assert first == second
     assert first is not second
     assert json.loads(json.dumps(first, sort_keys=True)) == first
-    assert first["schema_version"] == PHYSICAL_OBJECTIVE_SCHEMA_VERSION
+    assert "schema_version" not in first
+    assert "physics_config" in first
 
 
 def test_thermal_solved_and_voltage_feasible_is_physically_secure():

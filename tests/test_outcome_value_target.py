@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from grid_topology_ai.reward import (
+from grid_topology_ai.value_targets import (
     TERMINAL_UTILITY_GAMMA,
     VALUE_TARGET_MODE,
     terminal_utility_from_outcome,

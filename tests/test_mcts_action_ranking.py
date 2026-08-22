@@ -6,8 +6,8 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from grid_topology_ai.action_space import GridFMAction
-from grid_topology_ai.data_adapter import BRANCH_FEATURE_COLUMNS
+from grid_topology_ai.actions import GridFMAction
+from grid_topology_ai.state import BRANCH_FEATURE_COLUMNS
 from grid_topology_ai.search.screening import (
     DCActionScore,
     DCActionScreener,

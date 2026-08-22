@@ -8,21 +8,21 @@ from typing import Any
 
 import pandas as pd
 
-from grid_topology_ai.config.physics import PhysicsConfig
-from grid_topology_ai.data_adapter import GridFMState
-from grid_topology_ai.outcome_record import TerminalOutcomeEvidence
-from grid_topology_ai.reward import TERMINAL_UTILITY_GAMMA
-from grid_topology_ai.search.root_policy import (
+from grid_topology_ai.config import PhysicsConfig
+from grid_topology_ai.state import GridFMState
+from grid_topology_ai.physics.objective import TerminalOutcomeEvidence
+from grid_topology_ai.value_targets import TERMINAL_UTILITY_GAMMA
+from grid_topology_ai.search.mcts import (
     normalize_policy,
     require_action_in_policy_support,
 )
-from grid_topology_ai.state.store import GridFMStateStore
+from grid_topology_ai.state import GridFMStateStore
 from grid_topology_ai.termination import (
     TerminationReason,
     termination_reason_value,
     validate_outcome_invariants,
 )
-from grid_topology_ai.topology_actions import (
+from grid_topology_ai.actions import (
     ActionSpaceConfig,
     action_layout_fingerprint,
     action_layout_to_list,

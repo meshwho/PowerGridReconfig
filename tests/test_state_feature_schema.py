@@ -4,18 +4,12 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from grid_topology_ai.data_adapter import GridFMAdapter
-from grid_topology_ai.power_flow.errors import InvalidPhysicalState
-from grid_topology_ai.state.schema import (
+from grid_topology_ai.data import GridFMAdapter
+from grid_topology_ai.power_flow import InvalidPhysicalState
+from grid_topology_ai.state import (
     BRANCH_FEATURE_COLUMNS,
     BUS_FEATURE_COLUMNS,
-    BUS_ID_SEMANTICS,
-    EDGE_INDEX_SEMANTICS,
-    STATE_FEATURE_SCHEMA_VERSION,
     finite_feature_matrix,
-    state_feature_schema_fingerprint,
-    state_feature_schema_payload,
-    state_feature_schema_provenance,
     with_branch_rating_features,
     with_bus_generator_features,
 )
@@ -127,29 +121,9 @@ def _generator_frame() -> pd.DataFrame:
     )
 
 
-def test_schema_v3_has_stable_feature_order_and_fingerprint() -> None:
-    assert STATE_FEATURE_SCHEMA_VERSION == 3
+def test_state_has_stable_feature_order() -> None:
     assert BUS_FEATURE_COLUMNS == EXPECTED_BUS_FEATURE_COLUMNS
     assert BRANCH_FEATURE_COLUMNS == EXPECTED_BRANCH_FEATURE_COLUMNS
-
-    payload = state_feature_schema_payload()
-    assert payload == {
-        "state_feature_schema_version": 3,
-        "bus_feature_columns": EXPECTED_BUS_FEATURE_COLUMNS,
-        "branch_feature_columns": EXPECTED_BRANCH_FEATURE_COLUMNS,
-    }
-    assert (
-        state_feature_schema_fingerprint()
-        == "4ecbbc19d6085176a254427d34c719fa29c2d721abb0537b36ad881065eb1930"
-    )
-    assert state_feature_schema_provenance() == {
-        **payload,
-        "state_feature_schema_fingerprint": (
-            state_feature_schema_fingerprint()
-        ),
-        "edge_index_semantics": EDGE_INDEX_SEMANTICS,
-        "bus_id_semantics": BUS_ID_SEMANTICS,
-    }
 
 
 def test_bus_features_include_aggregate_and_individual_generator_margins() -> None:

@@ -58,7 +58,6 @@ def test_cli_builds_graph_v2_training_request(
             "--workers", "2",
             "--amp",
             "--save-best",
-            "--save-multiple-best",
             "--no-tensorboard",
         ]
     ) == 0
@@ -85,7 +84,6 @@ def test_cli_builds_graph_v2_training_request(
     assert config.value_huber_delta == 0.25
     assert config.device == "cpu"
     assert config.num_workers == 2
-    assert config.save_multiple_best is True
     assert config.no_tensorboard is True
 
 

@@ -30,8 +30,8 @@ from pypower.idx_gen import (
     QMIN,
 )
 
-from grid_topology_ai.config.physics import PhysicsConfig, ZeroRateAPolicy
-from grid_topology_ai.power_flow.errors import InvalidPhysicalState
+from grid_topology_ai.config import PhysicsConfig, ZeroRateAPolicy
+from grid_topology_ai.power_flow import InvalidPhysicalState
 
 
 @dataclass(frozen=True, slots=True)

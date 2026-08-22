@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from grid_topology_ai.models.graph_policy_value_net_v2 import (
+from grid_topology_ai.model import (
     GraphPolicyValueNetV2,
     ResidualEdgeMessagePassingV2,
 )

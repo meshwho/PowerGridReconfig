@@ -6,11 +6,11 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from grid_topology_ai.action_space import GridFMAction
-from grid_topology_ai.config.evaluation import EvaluationConfig
-from grid_topology_ai.config.generation import GenerationConfig
-from grid_topology_ai.config.physics import DEFAULT_PHYSICS_CONFIG
-from grid_topology_ai.data_adapter import BRANCH_FEATURE_COLUMNS
+from grid_topology_ai.actions import GridFMAction
+from grid_topology_ai.config import EvaluationConfig
+from grid_topology_ai.config import GenerationConfig
+from grid_topology_ai.config import DEFAULT_PHYSICS_CONFIG
+from grid_topology_ai.state import BRANCH_FEATURE_COLUMNS
 import grid_topology_ai.evaluation as evaluation
 from grid_topology_ai.evaluation import EvaluationRequest
 from grid_topology_ai.search.mcts import MCTSConfig, MCTSNode, MCTSPlanner
@@ -349,7 +349,7 @@ def test_evaluation_task_config_records_exploration_quota(
     )
     monkeypatch.setattr(
         evaluation,
-        "_load_checkpoint_topology_action_provenance",
+        "_load_checkpoint_topology_action_payload",
         lambda checkpoint_path: topology_metadata(),
     )
 

@@ -10,9 +10,7 @@ CANONICAL_MODULES = (
     "grid_topology_ai.power_flow.backend",
     "grid_topology_ai.power_flow.problem",
     "grid_topology_ai.power_flow.solver",
-    "grid_topology_ai.power_flow.network_workspace",
-    "grid_topology_ai.power_flow.newton_workspace",
-    "grid_topology_ai.power_flow.errors",
+    "grid_topology_ai.power_flow.workspace",
 )
 
 LEGACY_MODULES = (
@@ -22,6 +20,9 @@ LEGACY_MODULES = (
     "grid_topology_ai.pypower_network_workspace",
     "grid_topology_ai.pypower_newton_workspace",
     "grid_topology_ai.power_flow_errors",
+    "grid_topology_ai.power_flow.network_workspace",
+    "grid_topology_ai.power_flow.newton_workspace",
+    "grid_topology_ai.power_flow.errors",
 )
 
 

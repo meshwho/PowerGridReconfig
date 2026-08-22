@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import pytest
 
-from grid_topology_ai.outcome_record import RedispatchStatus, TerminalOutcomeEvidence
+from grid_topology_ai.physics.objective import RedispatchStatus, TerminalOutcomeEvidence
 from grid_topology_ai.physics.objective import assess_physical_state
-from grid_topology_ai.reward import terminal_utility_from_outcome
+from grid_topology_ai.value_targets import terminal_utility_from_outcome
 from grid_topology_ai.termination import TerminationReason
 
 

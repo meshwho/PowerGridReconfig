@@ -3,16 +3,16 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from grid_topology_ai.data_adapter import BRANCH_FEATURE_COLUMNS, GridFMState
-from grid_topology_ai.reward import (
+from grid_topology_ai.state import BRANCH_FEATURE_COLUMNS, GridFMState
+from grid_topology_ai.value_targets import (
     TERMINAL_UTILITY_GAMMA,
     VALUE_TARGET_MODE,
     heuristic_terminal_utility_estimate,
     require_bounded_utility,
     require_discount_factor,
-    require_reward_discount_factor,
     terminal_utility_from_outcome,
 )
+from grid_topology_ai.physics.utility import require_reward_discount_factor
 from grid_topology_ai.termination import TerminationReason
 
 

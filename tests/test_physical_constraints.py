@@ -26,7 +26,7 @@ from pypower.idx_gen import (
     QMIN,
 )
 
-from grid_topology_ai.config.physics import PhysicsConfig
+from grid_topology_ai.config import PhysicsConfig
 from grid_topology_ai.physics.constraints import (
     PhysicalNetworkArrays,
     calculate_physical_metrics,

@@ -10,8 +10,8 @@ from pypower.idx_bus import BUS_I, BUS_TYPE, PQ, REF, VA
 from pypower.idx_gen import GEN_BUS, GEN_STATUS, QG, QMAX, QMIN
 
 from grid_topology_ai.power_flow import solver as compat
-from grid_topology_ai.power_flow import network_workspace as workspace
-from grid_topology_ai.power_flow.network_workspace import solve_newton_power_flow
+from grid_topology_ai.power_flow import workspace
+from grid_topology_ai.power_flow.workspace import solve_newton_power_flow
 
 
 def _options(*, qlim: int) -> dict[str, object]:

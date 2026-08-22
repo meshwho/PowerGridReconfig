@@ -3,18 +3,11 @@ from __future__ import annotations
 import importlib
 import importlib.util
 
-from grid_topology_ai.data_adapter import GridFMState
+from grid_topology_ai.state import GridFMState
 
 
 def test_canonical_state_package_layout():
-    canonical_modules = (
-        "grid_topology_ai.state.builder",
-        "grid_topology_ai.state.schema",
-        "grid_topology_ai.state.topology",
-        "grid_topology_ai.state.artifacts",
-        "grid_topology_ai.state.fingerprint",
-        "grid_topology_ai.state.store",
-    )
+    canonical_modules = ("grid_topology_ai.state",)
     legacy_modules = (
         "grid_topology_ai.state_builder",
         "grid_topology_ai.state_schema",
@@ -31,5 +24,5 @@ def test_canonical_state_package_layout():
         assert importlib.util.find_spec(module_name) is None
 
 
-def test_grid_fm_state_keeps_historical_public_identity():
-    assert GridFMState.__module__ == "grid_topology_ai.data_adapter"
+def test_grid_fm_state_has_canonical_state_identity():
+    assert GridFMState.__module__ == "grid_topology_ai.state"

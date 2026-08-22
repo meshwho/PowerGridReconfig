@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pandas as pd
 
-from grid_topology_ai.data_adapter import GridFMAdapter
+from grid_topology_ai.data import GridFMAdapter
 import grid_topology_ai.teacher_runtime as teacher
 
 

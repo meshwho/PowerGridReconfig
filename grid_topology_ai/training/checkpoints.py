@@ -10,16 +10,16 @@ from typing import TYPE_CHECKING, Any, Mapping
 import numpy as np
 import torch
 
-from grid_topology_ai.config.physics import PhysicsConfig
-from grid_topology_ai.contracts import (
-    require_checkpoint_contracts,
-    require_topology_action_provenance,
-)
-from grid_topology_ai.models.graph_self_play_dataset import (
+from grid_topology_ai.config import PhysicsConfig
+from grid_topology_ai.evaluator import require_checkpoint_contracts
+from grid_topology_ai.dataset import (
     GraphSelfPlayDataset,
 )
 from grid_topology_ai.training.metrics import build_value_target_diagnostics
-from grid_topology_ai.topology_actions import action_layout_to_list
+from grid_topology_ai.actions import (
+    action_layout_to_list,
+    require_topology_action_payload,
+)
 
 _SELECTOR_METRIC_NAMES = {
     "val_loss": "validation_loss",
@@ -49,7 +49,9 @@ def load_checkpoint_payload(
         raise FileNotFoundError(f"Initial checkpoint not found: {checkpoint_path}")
     payload = torch.load(checkpoint_path, map_location=map_location, weights_only=False)
     if not isinstance(payload, dict):
-        raise ValueError(f"Checkpoint payload must be a mapping. Checkpoint: {checkpoint_path}")
+        raise ValueError(
+            f"Checkpoint payload must be a mapping. Checkpoint: {checkpoint_path}"
+        )
     require_checkpoint_contracts(
         payload,
         source=str(checkpoint_path),
@@ -169,7 +171,6 @@ def build_training_config_payload(request: "TrainingRequest") -> dict[str, Any]:
         "run_name": make_json_safe(request.run_name),
         "no_tensorboard": bool(request.config.no_tensorboard),
         "metrics_csv": make_json_safe(request.metrics_csv),
-        "save_multiple_best": bool(request.config.save_multiple_best),
     }
 
 
@@ -184,8 +185,7 @@ def make_checkpoint(
     validation_dataset: GraphSelfPlayDataset | None = None,
 ) -> dict[str, Any]:
     model_state_dict_cpu = {
-        key: value.detach().cpu().clone()
-        for key, value in model.state_dict().items()
+        key: value.detach().cpu().clone() for key, value in model.state_dict().items()
     }
     normalization = dataset.normalization_state_dict()
     repo_root = request.project_root.resolve()
@@ -222,9 +222,7 @@ def make_checkpoint(
         "examples_csv": str(request.examples_csv),
         "training_seed": int(request.seed),
         "checkpoint_selection_metric": (
-            "validation_loss"
-            if validation_dataset is not None
-            else "training_loss"
+            "validation_loss" if validation_dataset is not None else "training_loss"
         ),
         "validation_examples_csv": (
             None
@@ -289,9 +287,7 @@ def load_initial_checkpoint_into_model(
 ) -> None:
     checkpoint_path = Path(checkpoint_path)
     if not checkpoint_path.exists():
-        raise FileNotFoundError(
-            f"Initial checkpoint not found: {checkpoint_path}"
-        )
+        raise FileNotFoundError(f"Initial checkpoint not found: {checkpoint_path}")
 
     checkpoint = (
         dict(checkpoint_payload)
@@ -303,7 +299,7 @@ def load_initial_checkpoint_into_model(
         source=str(checkpoint_path),
         expected_physics_config=dataset.physics_config,
     )
-    require_topology_action_provenance(
+    require_topology_action_payload(
         checkpoint,
         source=str(checkpoint_path),
         expected_action_space_config=dataset.topology_action_config,
@@ -334,8 +330,7 @@ def load_initial_checkpoint_into_model(
     for key, expected_value in checks.items():
         if key not in checkpoint:
             raise KeyError(
-                f"Initial checkpoint is missing required key {key!r}: "
-                f"{checkpoint_path}"
+                f"Initial checkpoint is missing required key {key!r}: {checkpoint_path}"
             )
         actual_value = int(checkpoint[key])
         if actual_value != expected_value:
@@ -354,9 +349,7 @@ def load_initial_checkpoint_into_model(
         )
 
     if "model_state_dict" not in checkpoint:
-        raise KeyError(
-            f"Initial checkpoint has no model_state_dict: {checkpoint_path}"
-        )
+        raise KeyError(f"Initial checkpoint has no model_state_dict: {checkpoint_path}")
 
     model.load_state_dict(checkpoint["model_state_dict"])
 
@@ -369,54 +362,3 @@ def load_initial_checkpoint_into_model(
     print(f"Hidden dim:     {checkpoint['hidden_dim']}")
     print(f"Num layers:     {checkpoint['num_layers']}")
     print("Policy actions: dynamic per graph")
-
-
-def checkpoint_variant_path(output_path: Path, variant_name: str) -> Path:
-    return output_path.with_name(
-        f"{output_path.stem}_{variant_name}{output_path.suffix}"
-    )
-
-
-def save_checkpoint_now(
-    *,
-    path: Path,
-    model: torch.nn.Module,
-    dataset: GraphSelfPlayDataset,
-    request: "TrainingRequest",
-    device: torch.device,
-    use_amp: bool,
-    epoch: int,
-    selector_name: str,
-    selector_value: float,
-    val_metrics: dict[str, float] | None,
-    normalization_metadata: Mapping[str, object] | None = None,
-    validation_dataset: GraphSelfPlayDataset | None = None,
-) -> None:
-    checkpoint = make_checkpoint(
-        model=model,
-        dataset=dataset,
-        request=request,
-        device=device,
-        use_amp=use_amp,
-        normalization_metadata=normalization_metadata,
-        validation_dataset=validation_dataset,
-    )
-
-    if selector_name not in _SELECTOR_METRIC_NAMES:
-        raise ValueError(f"Unknown checkpoint selector: {selector_name!r}")
-
-    checkpoint["saved_epoch"] = int(epoch)
-    checkpoint["selector_name"] = str(selector_name)
-    checkpoint["selector_value"] = float(selector_value)
-    checkpoint["checkpoint_selection_metric"] = _SELECTOR_METRIC_NAMES[
-        selector_name
-    ]
-
-    if val_metrics is not None:
-        checkpoint["val_metrics"] = {
-            key: float(value)
-            for key, value in val_metrics.items()
-            if isinstance(value, (int, float))
-        }
-
-    atomic_save_checkpoint(checkpoint, path)

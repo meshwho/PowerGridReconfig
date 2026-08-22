@@ -23,8 +23,8 @@ try:
 except ImportError:  # pragma: no cover
     tqdm = None
 
-from grid_topology_ai.config.physics import DEFAULT_PHYSICS_CONFIG
-from grid_topology_ai.data_adapter import GridFMAdapter
+from grid_topology_ai.config import DEFAULT_PHYSICS_CONFIG
+from grid_topology_ai.data import GridFMAdapter
 from grid_topology_ai.power_flow.backend import GridFMPowerFlowBackend
 
 

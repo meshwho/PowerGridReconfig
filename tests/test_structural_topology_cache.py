@@ -4,9 +4,12 @@ from types import SimpleNamespace
 
 import numpy as np
 
-from grid_topology_ai.action_space import GridFMActionSpace
-from grid_topology_ai.cache import StructuralTopologyCache, structural_topology_fingerprint
-from grid_topology_ai.data_adapter import BRANCH_FEATURE_COLUMNS
+from grid_topology_ai.actions import GridFMActionSpace
+from grid_topology_ai.actions import (
+    StructuralTopologyCache,
+    structural_topology_fingerprint,
+)
+from grid_topology_ai.state import BRANCH_FEATURE_COLUMNS
 
 
 def _state(

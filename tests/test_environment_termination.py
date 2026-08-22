@@ -1,11 +1,11 @@
 import numpy as np
 import pytest
 
-from grid_topology_ai.action_space import GridFMAction
-from grid_topology_ai.data_adapter import BRANCH_FEATURE_COLUMNS, GridFMState
+from grid_topology_ai.actions import GridFMAction
+from grid_topology_ai.state import BRANCH_FEATURE_COLUMNS, GridFMState
 from grid_topology_ai.environment import TopologySwitchingEnv
 from grid_topology_ai.power_flow.backend import GridFMPowerFlowResult
-from grid_topology_ai.reward import GridFMRewardBreakdown
+from grid_topology_ai.physics.utility import GridFMRewardBreakdown
 from grid_topology_ai.termination import TerminationReason
 
 

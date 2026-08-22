@@ -1,29 +1,27 @@
 from __future__ import annotations
 
-import json
 import inspect
+import json
 import multiprocessing
 import os
 import uuid
 from concurrent.futures import ProcessPoolExecutor
-from dataclasses import asdict
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import pandas as pd
 
-from grid_topology_ai.config import GenerationConfig
-from grid_topology_ai.config.physics import (
+from grid_topology_ai.config import (
+    GenerationConfig,
     PhysicsConfig,
     resolve_physics_config,
 )
-from grid_topology_ai.search.root_policy import (
+from grid_topology_ai.search.mcts import (
     require_action_in_policy_support,
     select_policy_action,
 )
-
 
 _RUNTIME_DEPENDENCIES_LOADED = False
 
@@ -66,23 +64,15 @@ class GenerationRequest:
     def __post_init__(self) -> None:
         for field_name in ("mcts_seed", "action_seed"):
             value = getattr(self, field_name)
-            if (
-                isinstance(value, bool)
-                or not isinstance(value, (int, np.integer))
-            ):
-                raise ValueError(
-                    f"{field_name} must be a non-negative integer."
-                )
+            if isinstance(value, bool) or not isinstance(value, (int, np.integer)):
+                raise ValueError(f"{field_name} must be a non-negative integer.")
             seed = int(value)
             if seed < 0:
-                raise ValueError(
-                    f"{field_name} must be a non-negative integer."
-                )
+                raise ValueError(f"{field_name} must be a non-negative integer.")
             object.__setattr__(self, field_name, seed)
 
-        if (
-            isinstance(self.iteration, bool)
-            or not isinstance(self.iteration, (int, np.integer))
+        if isinstance(self.iteration, bool) or not isinstance(
+            self.iteration, (int, np.integer)
         ):
             raise ValueError("iteration must be a positive integer.")
         iteration = int(self.iteration)
@@ -90,9 +80,11 @@ class GenerationRequest:
             raise ValueError("iteration must be a positive integer.")
         object.__setattr__(self, "iteration", iteration)
 
-        if isinstance(self.workers, bool) or not isinstance(
-            self.workers, (int, np.integer)
-        ) or int(self.workers) < 1:
+        if (
+            isinstance(self.workers, bool)
+            or not isinstance(self.workers, (int, np.integer))
+            or int(self.workers) < 1
+        ):
             raise ValueError("workers must be a positive integer.")
         object.__setattr__(self, "workers", int(self.workers))
 
@@ -127,18 +119,18 @@ def _ensure_runtime_dependencies() -> None:
     if _RUNTIME_DEPENDENCIES_LOADED:
         return
 
-    from grid_topology_ai.action_space import GridFMActionSpace as _ActionSpace
-    from grid_topology_ai.data_adapter import GridFMAdapter as _Adapter
+    from grid_topology_ai.actions import GridFMActionSpace as _ActionSpace
+    from grid_topology_ai.actions import (
+        make_do_nothing_action as _make_do_nothing_action,
+    )
+    from grid_topology_ai.data import GridFMAdapter as _Adapter
     from grid_topology_ai.environment import TopologySwitchingEnv as _Env
-    from grid_topology_ai.models.neural_evaluator import (
+    from grid_topology_ai.evaluator import (
         NeuralPolicyValueEvaluator as _Evaluator,
     )
+    from grid_topology_ai.physics.utility import GridFMReward as _Reward
     from grid_topology_ai.power_flow.backend import (
         GridFMPowerFlowBackend as _Backend,
-    )
-    from grid_topology_ai.reward import GridFMReward as _Reward
-    from grid_topology_ai.search.continuation_gate import (
-        make_do_nothing_action as _make_do_nothing_action,
     )
     from grid_topology_ai.search.mcts import MCTSConfig as _MCTSConfig
     from grid_topology_ai.search.mcts import MCTSPlanner as _MCTSPlanner
@@ -172,9 +164,7 @@ def discounted_returns(
 
 
 def _scenario_seed(stream_seed: int, scenario_id: int) -> int:
-    sequence = np.random.SeedSequence(
-        [int(stream_seed), int(scenario_id)]
-    )
+    sequence = np.random.SeedSequence([int(stream_seed), int(scenario_id)])
     state = sequence.generate_state(1, dtype=np.uint64)
     return int(state[0])
 
@@ -191,10 +181,7 @@ def selection_temperature_for_step(
         raise ValueError("step must be non-negative.")
     if config.selection_temperature <= 0.0:
         return 0.0
-    if (
-        config.temperature_iterations <= 0
-        or config.temperature_steps <= 0
-    ):
+    if config.temperature_iterations <= 0 or config.temperature_steps <= 0:
         return 0.0
     if iteration > config.temperature_iterations:
         return 0.0
@@ -211,10 +198,7 @@ def _select_generation_action(
     scenario_id: int | None = None,
     step: int | None = None,
 ) -> _GenerationActionDecision:
-    context = (
-        "self-play behavior policy "
-        f"(scenario_id={scenario_id}, step={step})"
-    )
+    context = f"self-play behavior policy (scenario_id={scenario_id}, step={step})"
     selection = select_policy_action(
         search_result.policy,
         temperature,
@@ -232,9 +216,7 @@ def _select_generation_action(
     if selected_action_id == 0:
         selected_branch_id = None
     else:
-        selected_action = search_result.root.actions_by_id.get(
-            selected_action_id
-        )
+        selected_action = search_result.root.actions_by_id.get(selected_action_id)
         if selected_action is None:
             raise RuntimeError(
                 f"Action {selected_action_id} is present in {context} but "
@@ -262,9 +244,7 @@ def _scenario_ids_from_request(
             f"Transitions CSV is missing scenario_id: {request.transitions_csv}"
         )
 
-    available = {
-        int(value) for value in transitions["scenario_id"].unique()
-    }
+    available = {int(value) for value in transitions["scenario_id"].unique()}
     if request.scenario_ids is None:
         scenario_ids = sorted(available)
     else:
@@ -306,25 +286,15 @@ def _step_metadata(
         "selection_temperature": float(selection_temperature),
         "selection_mode": selection_mode,
         "temperature_steps": int(request.config.temperature_steps),
-        "temperature_iterations": int(
-            request.config.temperature_iterations
-        ),
+        "temperature_iterations": int(request.config.temperature_iterations),
         "mcts_simulations": int(request.config.simulations),
         "mcts_depth": int(request.config.depth),
         "mcts_top_k": int(request.config.top_k),
-        "mcts_widening_coefficient": float(
-            request.config.widening_coefficient
-        ),
-        "mcts_widening_exponent": float(
-            request.config.widening_exponent
-        ),
-        "mcts_exploration_quota": int(
-            request.config.exploration_quota
-        ),
+        "mcts_widening_coefficient": float(request.config.widening_coefficient),
+        "mcts_widening_exponent": float(request.config.widening_exponent),
+        "mcts_exploration_quota": int(request.config.exploration_quota),
         "pf_alg": request.resolved_physics_config.pf_alg,
-        "policy_target_source": (
-            "temperature_adjusted_mcts_visit_distribution"
-        ),
+        "policy_target_source": ("temperature_adjusted_mcts_visit_distribution"),
         "execution_action_source": "policy_target_sampling",
         "mcts_best_action_id": (
             None
@@ -366,12 +336,8 @@ def _build_runtime(request: GenerationRequest) -> dict[str, Any]:
     )
     action_config = request.config.action_space_config
     action_space = GridFMActionSpace(
-        require_connected_after_switch=(
-            action_config.require_connected_after_switch
-        ),
-        min_loading_for_switch_percent=(
-            action_config.min_loading_for_switch_percent
-        ),
+        require_connected_after_switch=(action_config.require_connected_after_switch),
+        min_loading_for_switch_percent=(action_config.min_loading_for_switch_percent),
         closeable_branch_ids=action_config.closeable_branch_ids,
         enable_cache=request.enable_cache,
     )
@@ -513,8 +479,7 @@ def _generate_scenario(scenario_id: int) -> _ScenarioResult:
             decision.selected_action_id,
             decision.policy_target,
             context=(
-                "self-play policy target "
-                f"(scenario_id={scenario_id}, step={step})"
+                f"self-play policy target (scenario_id={scenario_id}, step={step})"
             ),
         )
         selected_action = (
@@ -524,29 +489,31 @@ def _generate_scenario(scenario_id: int) -> _ScenarioResult:
         )
         step_result = env.step(selected_action)
         rewards.append(float(step_result.reward))
-        pending_examples.append({
-            "state": state_before,
-            "action_mask": action_mask,
-            "scenario_id": scenario_id,
-            "step": step,
-            "selected_action_id": decision.selected_action_id,
-            "selected_branch_id": decision.selected_branch_id,
-            "step_reward": float(step_result.reward),
-            "visit_counts": search_result.visit_counts,
-            "mcts_policy": decision.policy_target,
-            "selection_temperature": float(temperature),
-            "selection_mode": selection_mode,
-            "extra_metadata": _step_metadata(
-                request=request,
-                scenario_id=scenario_id,
-                step=step,
-                scenario_mcts_seed=scenario_mcts_seed,
-                scenario_action_seed=scenario_action_seed,
-                selection_temperature=temperature,
-                selection_mode=selection_mode,
-                search_result=search_result,
-            ),
-        })
+        pending_examples.append(
+            {
+                "state": state_before,
+                "action_mask": action_mask,
+                "scenario_id": scenario_id,
+                "step": step,
+                "selected_action_id": decision.selected_action_id,
+                "selected_branch_id": decision.selected_branch_id,
+                "step_reward": float(step_result.reward),
+                "visit_counts": search_result.visit_counts,
+                "mcts_policy": decision.policy_target,
+                "selection_temperature": float(temperature),
+                "selection_mode": selection_mode,
+                "extra_metadata": _step_metadata(
+                    request=request,
+                    scenario_id=scenario_id,
+                    step=step,
+                    scenario_mcts_seed=scenario_mcts_seed,
+                    scenario_action_seed=scenario_action_seed,
+                    selection_temperature=temperature,
+                    selection_mode=selection_mode,
+                    search_result=search_result,
+                ),
+            }
+        )
         if step_result.done:
             break
 
@@ -594,9 +561,7 @@ _RAW_SOURCE_FILES = (
 
 def _preflight_generation_inputs(request: GenerationRequest) -> None:
     if not request.raw_dir.is_dir():
-        raise FileNotFoundError(
-            f"GridFM raw directory not found: {request.raw_dir}"
-        )
+        raise FileNotFoundError(f"GridFM raw directory not found: {request.raw_dir}")
     for name in _RAW_SOURCE_FILES:
         path = request.raw_dir / name
         if not path.is_file():
@@ -606,16 +571,11 @@ def _preflight_generation_inputs(request: GenerationRequest) -> None:
             f"Transitions file not found: {request.transitions_csv}"
         )
     if request.checkpoint is not None and not request.checkpoint.is_file():
-        raise FileNotFoundError(
-            f"Checkpoint file not found: {request.checkpoint}"
-        )
+        raise FileNotFoundError(f"Checkpoint file not found: {request.checkpoint}")
 
 
 def _raw_source_identity(raw_dir: Path) -> dict[str, object]:
-    return {
-        name: _source_identity(raw_dir / name)
-        for name in _RAW_SOURCE_FILES
-    }
+    return {name: _source_identity(raw_dir / name) for name in _RAW_SOURCE_FILES}
 
 
 def _resume_identity(
@@ -671,9 +631,7 @@ def _load_generation_progress(
             raise ValueError("progress.json run_id must be a non-empty string.")
         run_id = raw_run_id
         requested = set(identity["scenario_ids"])
-        completed = {
-            int(value) for value in progress.get("completed_scenario_ids", [])
-        }
+        completed = {int(value) for value in progress.get("completed_scenario_ids", [])}
         if not completed <= requested:
             raise ValueError(
                 "progress.json contains scenario IDs outside this request."
@@ -681,8 +639,12 @@ def _load_generation_progress(
         if examples_path.exists():
             frame = pd.read_csv(examples_path)
             required = {
-                "run_id", "iteration", "episode_id", "scenario_id",
-                "step", "state_id",
+                "run_id",
+                "iteration",
+                "episode_id",
+                "scenario_id",
+                "step",
+                "state_id",
             }
             missing = required - set(frame.columns)
             if missing:
@@ -756,11 +718,14 @@ def _load_generation_progress(
             "Self-play output already exists; choose a new output directory or use resume."
         )
     run_id = uuid.uuid4().hex
-    _atomic_json(progress_path, {
-        "identity": identity,
-        "completed_scenario_ids": [],
-        "run_id": run_id,
-    })
+    _atomic_json(
+        progress_path,
+        {
+            "identity": identity,
+            "completed_scenario_ids": [],
+            "run_id": run_id,
+        },
+    )
     return run_id, set()
 
 
@@ -824,11 +789,14 @@ def generate_self_play_examples(request: GenerationRequest) -> Path:
                 writer.save()
             completed.add(result.scenario_id)
             ordered_completed = [sid for sid in scenario_ids if sid in completed]
-            _atomic_json(request.output_dir / "progress.json", {
-                "identity": identity,
-                "completed_scenario_ids": ordered_completed,
-                "run_id": run_id,
-            })
+            _atomic_json(
+                request.output_dir / "progress.json",
+                {
+                    "identity": identity,
+                    "completed_scenario_ids": ordered_completed,
+                    "run_id": run_id,
+                },
+            )
     finally:
         if executor is not None:
             executor.shutdown(wait=True, cancel_futures=True)

@@ -7,15 +7,12 @@ import numpy as np
 import pandas as pd
 from pypower.idx_bus import VM
 
-from grid_topology_ai.data_adapter import (
-    BRANCH_FEATURE_COLUMNS,
-    BUS_FEATURE_COLUMNS,
-)
+from grid_topology_ai.state import BRANCH_FEATURE_COLUMNS, BUS_FEATURE_COLUMNS
 from grid_topology_ai.power_flow.backend import (
     GridFMPowerFlowBackend,
     _GeneratorOperatingPointState,
 )
-from grid_topology_ai.topology_actions import GridFMAction
+from grid_topology_ai.actions import GridFMAction
 
 
 def _adapter() -> SimpleNamespace:

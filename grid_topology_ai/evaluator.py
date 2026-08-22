@@ -1,24 +1,210 @@
 from __future__ import annotations
 
+import hashlib
+from numbers import Integral
 from pathlib import Path
+from typing import Mapping
 
 import numpy as np
 import torch
 
-from grid_topology_ai.config.physics import PhysicsConfig
-from grid_topology_ai.contracts import (
-    require_checkpoint_contracts,
-    require_topology_action_provenance,
+from grid_topology_ai.config import (
+    PhysicsConfig,
+    require_physics_config_payload,
 )
-from grid_topology_ai.data_adapter import GridFMState
-from grid_topology_ai.models.graph_policy_value_net_v2 import GraphPolicyValueNetV2
-from grid_topology_ai.state.fingerprint import physical_state_fingerprint
-from grid_topology_ai.topology_actions import (
+from grid_topology_ai.model import GraphPolicyValueNetV2
+from grid_topology_ai.state import GridFMState
+from grid_topology_ai.actions import (
     STOP_PLUS_BRANCH_STATUS_POLICY_LAYOUT,
     action_layout_fingerprint,
     build_branch_action_slots,
+    require_topology_action_payload,
 )
 
+
+def require_graph_batching_checkpoint_contract(
+    payload: Mapping[str, object],
+    *,
+    source: str,
+) -> None:
+    model_type = str(payload.get("model_type", "")).strip()
+    if model_type != "graph_policy_value_net_v2":
+        return
+
+    if payload.get("topology_cardinality_independent") is not True:
+        raise ValueError(
+            "Graph V2 checkpoint must declare "
+            f"topology_cardinality_independent=True for {source}."
+        )
+
+
+def _require_graph_checkpoint_feature_dimensions(
+    payload: Mapping[str, object],
+    *,
+    source: str,
+) -> None:
+    import numpy as np
+
+    from grid_topology_ai.state import (
+        BRANCH_FEATURE_COLUMNS,
+        BUS_FEATURE_COLUMNS,
+    )
+
+    model_type = str(payload.get("model_type", ""))
+    if model_type not in {
+        "graph_policy_value_net",
+        "graph_policy_value_net_v2",
+    }:
+        return
+
+    expected_dimensions = {
+        "num_bus_features": len(BUS_FEATURE_COLUMNS),
+        "num_branch_features": len(BRANCH_FEATURE_COLUMNS),
+    }
+    for key, expected in expected_dimensions.items():
+        value = payload.get(key)
+        if isinstance(value, bool) or not isinstance(value, Integral):
+            raise ValueError(
+                f"Graph checkpoint {source} is missing exact integer {key}."
+            )
+        if int(value) != expected:
+            raise ValueError(
+                f"Graph checkpoint {key} mismatch for {source}: "
+                f"expected {expected}, observed {int(value)}."
+            )
+
+    for key, expected in (
+        ("bus_feature_mean", len(BUS_FEATURE_COLUMNS)),
+        ("bus_feature_std", len(BUS_FEATURE_COLUMNS)),
+        ("branch_feature_mean", len(BRANCH_FEATURE_COLUMNS)),
+        ("branch_feature_std", len(BRANCH_FEATURE_COLUMNS)),
+    ):
+        value = payload.get(key)
+        try:
+            size = len(value)  # type: ignore[arg-type]
+        except TypeError as exc:
+            raise ValueError(
+                f"Graph checkpoint is missing normalization vector "
+                f"{key} for {source}."
+            ) from exc
+        if size != expected:
+            raise ValueError(
+                f"Graph checkpoint normalization vector {key} mismatch "
+                f"for {source}: expected {expected}, observed {size}."
+            )
+        array = np.asarray(value, dtype=np.float32)
+        if not np.isfinite(array).all():
+            raise ValueError(
+                f"Graph checkpoint normalization vector {key} is not finite for {source}."
+            )
+        if key.endswith("_std") and not (array > 0.0).all():
+            raise ValueError(
+                f"Graph checkpoint normalization vector {key} must be positive for {source}."
+            )
+
+
+def require_checkpoint_contracts(
+    payload: Mapping[str, object],
+    *,
+    source: str,
+    expected_physics_config: "PhysicsConfig | None" = None,
+) -> "PhysicsConfig":
+    """Validate the semantic facts needed to reconstruct a current Graph V2."""
+
+    if payload.get("model_type") != "graph_policy_value_net_v2":
+        raise ValueError(f"Unsupported graph checkpoint model_type for {source}.")
+    if payload.get("topology_cardinality_independent") is not True:
+        raise ValueError(
+            f"Graph checkpoint must be topology-cardinality independent for {source}."
+        )
+    if payload.get("policy_layout") != "stop_plus_branch_status_v1":
+        raise ValueError(f"Unsupported graph checkpoint policy_layout for {source}.")
+    if "model_state_dict" not in payload:
+        raise ValueError(f"Graph checkpoint is missing model_state_dict for {source}.")
+    for key in ("hidden_dim", "num_layers"):
+        if int(payload.get(key, 0)) <= 0:
+            raise ValueError(f"Graph checkpoint has invalid {key} for {source}.")
+    dropout = float(payload.get("dropout", -1.0))
+    if not 0.0 <= dropout < 1.0:
+        raise ValueError(f"Graph checkpoint has invalid dropout for {source}.")
+    require_topology_action_payload(
+        payload,
+        source=source,
+    )
+    physics_config = require_physics_config_payload(
+        payload,
+        source=source,
+        expected_physics_config=expected_physics_config,
+    )
+
+    _require_graph_checkpoint_feature_dimensions(
+        payload,
+        source=source,
+    )
+    return physics_config
+
+
+_FINGERPRINT_VERSION = b"physical-state-v1"
+
+
+def _update_fingerprint_array(
+    digest,
+    *,
+    name: str,
+    value: object,
+    dtype: str,
+) -> None:
+    array = np.asarray(value, dtype=np.dtype(dtype))
+    array = np.ascontiguousarray(array)
+
+    digest.update(name.encode("ascii"))
+    digest.update(b"\0")
+    digest.update(array.dtype.str.encode("ascii"))
+    digest.update(b"\0")
+    digest.update(str(array.shape).encode("ascii"))
+    digest.update(b"\0")
+    digest.update(array.tobytes(order="C"))
+
+
+def physical_state_fingerprint(state: GridFMState) -> str:
+    """Return the stable physical-state cache key used by this evaluator."""
+
+    digest = hashlib.sha256()
+    digest.update(_FINGERPRINT_VERSION)
+    digest.update(b"\0")
+
+    for name, value, dtype in (
+        ("scenario_id", [state.scenario_id], "<i8"),
+        ("load_scenario_idx", [state.load_scenario_idx], "<f8"),
+        ("bus_features", state.bus_features, "<f4"),
+        ("branch_features", state.branch_features, "<f4"),
+        ("edge_index", state.edge_index, "<i8"),
+    ):
+        _update_fingerprint_array(
+            digest, name=name, value=value, dtype=dtype
+        )
+
+    if state.bus_ids is None:
+        digest.update(b"bus_ids\0none\0")
+    else:
+        _update_fingerprint_array(
+            digest, name="bus_ids", value=state.bus_ids, dtype="<i8"
+        )
+
+    for name, value, dtype in (
+        ("branch_ids", state.branch_ids, "<i8"),
+        ("branch_status", state.branch_status, "<f4"),
+        (
+            "outaged_branch_ids",
+            sorted(int(value) for value in state.outaged_branch_ids),
+            "<i8",
+        ),
+    ):
+        _update_fingerprint_array(
+            digest, name=name, value=value, dtype=dtype
+        )
+
+    return digest.hexdigest()
 
 _MODEL_TYPE = "graph_policy_value_net_v2"
 
@@ -59,7 +245,7 @@ class NeuralPolicyValueEvaluator:
             source=str(self.checkpoint_path),
             expected_physics_config=physics_config,
         )
-        self.topology_action_config, _ = require_topology_action_provenance(
+        self.topology_action_config, _ = require_topology_action_payload(
             checkpoint,
             source=str(self.checkpoint_path),
         )

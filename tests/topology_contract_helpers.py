@@ -6,13 +6,13 @@ from pathlib import Path
 
 import numpy as np
 
-from grid_topology_ai.contracts import topology_action_provenance
-from grid_topology_ai.topology_actions import (
+from grid_topology_ai.actions import (
     STOP_PLUS_BRANCH_STATUS_POLICY_LAYOUT,
-    ActionSpaceConfig,
     action_layout_fingerprint,
     build_branch_action_slots,
+    topology_action_payload,
 )
+from grid_topology_ai.config import ActionSpaceConfig
 
 TEST_ACTION_SPACE_CONFIG = ActionSpaceConfig()
 
@@ -35,7 +35,7 @@ def topology_metadata(
     *,
     action_space_config: ActionSpaceConfig = TEST_ACTION_SPACE_CONFIG,
 ) -> dict[str, object]:
-    return topology_action_provenance(
+    return topology_action_payload(
         action_space_config,
         test_action_layout(branch_ids),
     )
@@ -51,26 +51,17 @@ def topology_csv_fields(
         action_space_config=action_space_config,
     )
     return {
-        "topology_action_contract_version": int(
-            provenance["topology_action_contract_version"]
-        ),
         "topology_action_config": json.dumps(
             provenance["topology_action_config"],
             sort_keys=True,
             separators=(",", ":"),
             allow_nan=False,
         ),
-        "topology_action_config_fingerprint": str(
-            provenance["topology_action_config_fingerprint"]
-        ),
         "action_layout": json.dumps(
             provenance["action_layout"],
             sort_keys=True,
             separators=(",", ":"),
             allow_nan=False,
-        ),
-        "action_layout_fingerprint": str(
-            provenance["action_layout_fingerprint"]
         ),
     }
 
