@@ -6,13 +6,13 @@ from pathlib import Path
 
 import numpy as np
 
-from grid_topology_ai.topology_actions import (
+from grid_topology_ai.actions import (
     STOP_PLUS_BRANCH_STATUS_POLICY_LAYOUT,
-    ActionSpaceConfig,
     action_layout_fingerprint,
     build_branch_action_slots,
     topology_action_payload,
 )
+from grid_topology_ai.config import ActionSpaceConfig
 
 TEST_ACTION_SPACE_CONFIG = ActionSpaceConfig()
 

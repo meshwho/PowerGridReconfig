@@ -3,13 +3,13 @@ from __future__ import annotations
 import pytest
 import torch
 
-from grid_topology_ai.models.neural_evaluator import (
+from grid_topology_ai.evaluator import (
     require_graph_batching_checkpoint_contract,
 )
-from grid_topology_ai.models.graph_policy_value_net_v2 import (
+from grid_topology_ai.model import (
     GraphPolicyValueNetV2,
 )
-from grid_topology_ai.models.graph_self_play_dataset import (
+from grid_topology_ai.dataset import (
     collate_graph_samples,
 )
 from tests.topology_contract_helpers import checkpoint_topology_fields

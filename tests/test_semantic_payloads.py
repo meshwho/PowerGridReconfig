@@ -3,12 +3,12 @@ from __future__ import annotations
 import pytest
 
 from grid_topology_ai.config import (
+    ActionSpaceConfig,
     PhysicsConfig,
     physics_config_payload,
     require_physics_config_payload,
 )
-from grid_topology_ai.topology_actions import (
-    ActionSpaceConfig,
+from grid_topology_ai.actions import (
     build_branch_action_slots,
     require_topology_action_payload,
     topology_action_payload,

@@ -9,12 +9,10 @@ import pandas as pd
 import pytest
 import torch
 
-from grid_topology_ai.config import TrainingConfig
-from grid_topology_ai.config import DEFAULT_PHYSICS_CONFIG
+from grid_topology_ai.config import ActionSpaceConfig, DEFAULT_PHYSICS_CONFIG, TrainingConfig
 from grid_topology_ai.state import BRANCH_FEATURE_COLUMNS, BUS_FEATURE_COLUMNS
-from grid_topology_ai.topology_actions import (
+from grid_topology_ai.actions import (
     STOP_PLUS_BRANCH_STATUS_POLICY_LAYOUT,
-    ActionSpaceConfig,
     build_branch_action_slots,
 )
 from grid_topology_ai.training import graph_policy_value as training_api
@@ -293,7 +291,6 @@ def test_checkpoint_training_config_has_no_architecture_knob(
                 epochs=3,
                 batch_size=5,
                 learning_rate=0.01,
-                save_multiple_best=True,
             ),
         )
     )
@@ -302,7 +299,6 @@ def test_checkpoint_training_config_has_no_architecture_knob(
     assert payload["epochs"] == 3
     assert payload["batch_size"] == 5
     assert payload["lr"] == 0.01
-    assert payload["save_multiple_best"] is True
 
 
 def test_cpu_training_resume_matches_continuous_run(

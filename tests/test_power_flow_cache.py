@@ -12,7 +12,7 @@ from grid_topology_ai.power_flow.backend import (
     GridFMPowerFlowBackend,
     _GeneratorOperatingPointState,
 )
-from grid_topology_ai.topology_actions import GridFMAction
+from grid_topology_ai.actions import GridFMAction
 
 
 def _adapter() -> SimpleNamespace:

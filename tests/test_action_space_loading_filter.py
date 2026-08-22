@@ -6,12 +6,27 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from grid_topology_ai.actions import (
-    ActionSpaceConfig,
-    GridFMActionSpace,
-)
+from grid_topology_ai.actions import GridFMActionSpace
+from grid_topology_ai.config import ActionSpaceConfig
 from grid_topology_ai.actions import structural_topology_fingerprint
 from grid_topology_ai.state import BRANCH_FEATURE_COLUMNS
+
+
+def test_closeable_branch_ids_require_non_negative_integral_values() -> None:
+    config = ActionSpaceConfig(closeable_branch_ids=(1, np.int64(2), 0))
+
+    assert config.closeable_branch_ids == (0, 1, 2)
+    assert config.to_contract_dict()["closeable_branch_ids"] == [0, 1, 2]
+    assert ActionSpaceConfig.from_contract_mapping(
+        config.to_contract_dict()
+    ) == config
+
+    for invalid in (-1, 1.0, "1", True):
+        with pytest.raises(ValueError):
+            ActionSpaceConfig(closeable_branch_ids=(invalid,))
+
+    with pytest.raises(ValueError, match="duplicate"):
+        ActionSpaceConfig(closeable_branch_ids=(1, np.int64(1)))
 
 
 def _state(

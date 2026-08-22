@@ -7,12 +7,12 @@ import pytest
 
 from grid_topology_ai.config import PhysicsConfig
 from grid_topology_ai.state import GridFMState
-from grid_topology_ai.models.neural_evaluator import NeuralPolicyValueEvaluator
+from grid_topology_ai.evaluator import NeuralPolicyValueEvaluator
 from grid_topology_ai.state import (
     BRANCH_FEATURE_COLUMNS,
     BUS_FEATURE_COLUMNS,
 )
-from grid_topology_ai.topology_actions import (
+from grid_topology_ai.actions import (
     action_layout_fingerprint,
     build_branch_action_slots,
 )

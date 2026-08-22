@@ -781,7 +781,9 @@ def train_graph_policy_value_model(request: TrainingRequest) -> Path:
             learning_rate=learning_rate,
         )
 
-        progress_checkpoint = request.resume_checkpoint or output_path
+        progress_checkpoint = request.resume_checkpoint or output_path.with_name(
+            f"{output_path.stem}_resume{output_path.suffix}"
+        )
         resume_payload = make_checkpoint(
             model=model,
             dataset=dataset,

@@ -7,10 +7,7 @@ from grid_topology_ai.state import GridFMState
 
 
 def test_canonical_state_package_layout():
-    canonical_modules = (
-        "grid_topology_ai.state",
-        "grid_topology_ai.state.io",
-    )
+    canonical_modules = ("grid_topology_ai.state",)
     legacy_modules = (
         "grid_topology_ai.state_builder",
         "grid_topology_ai.state_schema",

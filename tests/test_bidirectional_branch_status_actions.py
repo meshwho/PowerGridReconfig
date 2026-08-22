@@ -5,7 +5,7 @@ import pytest
 from grid_topology_ai.actions import GridFMActionSpace
 from grid_topology_ai.state import BRANCH_FEATURE_COLUMNS, BUS_FEATURE_COLUMNS, GridFMState
 from grid_topology_ai.power_flow.backend import GridFMPowerFlowBackend
-from grid_topology_ai.topology_actions import GridFMAction
+from grid_topology_ai.actions import GridFMAction
 
 
 _LOADING_INDEX = BRANCH_FEATURE_COLUMNS.index("loading_percent")
