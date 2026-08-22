@@ -16,7 +16,6 @@ from grid_topology_ai.termination import (
     validate_outcome_invariants,
 )
 
-PHYSICAL_OBJECTIVE_SCHEMA_VERSION = 3
 OVERLOAD_LIMIT_PERCENT = 100.0
 HARD_OVERLOAD_LIMIT_PERCENT = 120.0
 THERMAL_LIMIT_TOLERANCE_PERCENT = 1e-6

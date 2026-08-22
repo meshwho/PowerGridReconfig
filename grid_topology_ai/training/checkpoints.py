@@ -11,15 +11,15 @@ import numpy as np
 import torch
 
 from grid_topology_ai.config import PhysicsConfig
-from grid_topology_ai.models.neural_evaluator import (
-    require_checkpoint_contracts,
-    require_topology_action_payload,
-)
+from grid_topology_ai.models.neural_evaluator import require_checkpoint_contracts
 from grid_topology_ai.models.graph_self_play_dataset import (
     GraphSelfPlayDataset,
 )
 from grid_topology_ai.training.metrics import build_value_target_diagnostics
-from grid_topology_ai.topology_actions import action_layout_to_list
+from grid_topology_ai.topology_actions import (
+    action_layout_to_list,
+    require_topology_action_payload,
+)
 
 _SELECTOR_METRIC_NAMES = {
     "val_loss": "validation_loss",

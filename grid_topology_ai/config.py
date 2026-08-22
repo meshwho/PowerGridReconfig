@@ -183,6 +183,55 @@ class PhysicsConfig:
 
 DEFAULT_PHYSICS_CONFIG = PhysicsConfig()
 
+
+def physics_config_payload(
+    physics_config: PhysicsConfig,
+) -> dict[str, object]:
+    """Serialize the actual physics configuration."""
+
+    return {"physics_config": physics_config.to_dict()}
+
+
+def require_physics_config_payload(
+    payload: Mapping[str, object],
+    *,
+    source: str,
+    expected_physics_config: PhysicsConfig | None = None,
+) -> PhysicsConfig:
+    """Validate the actual ``PhysicsConfig`` stored by the current pipeline."""
+
+    raw_config = payload.get("physics_config")
+    if isinstance(raw_config, str):
+        try:
+            raw_config = json.loads(raw_config)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"Invalid physics_config JSON for {source}.") from exc
+    if not isinstance(raw_config, Mapping):
+        raise ValueError(f"Missing or invalid physics_config for {source}.")
+    try:
+        observed_config = PhysicsConfig.from_mapping(raw_config)
+    except ValueError as exc:
+        raise ValueError(f"Invalid physics_config for {source}: {exc}") from exc
+
+    legacy_pf_alg = payload.get("pf_alg")
+    if legacy_pf_alg is not None:
+        if isinstance(legacy_pf_alg, bool):
+            parsed_pf_alg: int | None = None
+        elif isinstance(legacy_pf_alg, Integral):
+            parsed_pf_alg = int(legacy_pf_alg)
+        elif isinstance(legacy_pf_alg, Real) and float(legacy_pf_alg).is_integer():
+            parsed_pf_alg = int(legacy_pf_alg)
+        elif isinstance(legacy_pf_alg, str) and legacy_pf_alg.strip().isdigit():
+            parsed_pf_alg = int(legacy_pf_alg.strip())
+        else:
+            parsed_pf_alg = None
+        if parsed_pf_alg != observed_config.pf_alg:
+            raise ValueError(f"PF_ALG conflicts with PhysicsConfig for {source}.")
+
+    if expected_physics_config is not None and observed_config != expected_physics_config:
+        raise ValueError(f"PhysicsConfig mismatch for {source}.")
+    return observed_config
+
 def resolve_physics_config(
     physics_config: PhysicsConfig | None,
     legacy_pf_alg: int | None,

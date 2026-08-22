@@ -5,7 +5,7 @@ import pytest
 
 from grid_topology_ai.state import BRANCH_FEATURE_COLUMNS, BUS_FEATURE_COLUMNS, GridFMState
 from grid_topology_ai.physics.utility import state_potential
-from grid_topology_ai.reward import GridFMReward
+from grid_topology_ai.physics.utility import GridFMReward
 
 
 def _state(

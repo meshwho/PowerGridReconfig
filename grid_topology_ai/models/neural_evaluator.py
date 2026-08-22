@@ -1,174 +1,25 @@
 from __future__ import annotations
 
 import hashlib
-import json
-from numbers import Integral, Real
-from typing import Mapping
+from numbers import Integral
 from pathlib import Path
+from typing import Mapping
 
 import numpy as np
 import torch
 
-from grid_topology_ai.config import PhysicsConfig
-from grid_topology_ai.state import GridFMState
+from grid_topology_ai.config import (
+    PhysicsConfig,
+    require_physics_config_payload,
+)
 from grid_topology_ai.models.graph_policy_value_net_v2 import GraphPolicyValueNetV2
+from grid_topology_ai.state import GridFMState
 from grid_topology_ai.topology_actions import (
     STOP_PLUS_BRANCH_STATUS_POLICY_LAYOUT,
     action_layout_fingerprint,
     build_branch_action_slots,
+    require_topology_action_payload,
 )
-
-
-def _json_value(value: object, *, name: str, source: str) -> object:
-    if not isinstance(value, str):
-        return value
-    try:
-        return json.loads(value)
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"Invalid {name} JSON for {source}.") from exc
-
-
-def physics_config_payload(
-    physics_config: "PhysicsConfig",
-) -> dict[str, object]:
-    """Serialize the actual physics configuration."""
-
-    return {
-        "physics_config": physics_config.to_dict(),
-    }
-
-
-def topology_action_payload(
-    action_space_config: object,
-    action_layout: object,
-) -> dict[str, object]:
-    """Serialize the actual action configuration and ordered layout."""
-
-    from grid_topology_ai.topology_actions import (
-        action_layout_to_list,
-    )
-
-    config_payload = action_space_config.to_contract_dict()
-    layout_payload = action_layout_to_list(action_layout)
-    return {
-        "topology_action_config": config_payload,
-        "action_layout": layout_payload,
-    }
-
-
-def require_topology_action_payload(
-    payload: Mapping[str, object],
-    *,
-    source: str,
-    expected_action_space_config: object | None = None,
-    expected_action_layout: object | None = None,
-):
-    """Validate the actual action config/layout, not provenance metadata."""
-
-    from grid_topology_ai.topology_actions import (
-        ActionSpaceConfig,
-        action_layout_from_value,
-    )
-
-    if payload.get("topology_action_config") is None:
-        raise ValueError(
-            f"Missing topology_action_config for {source}."
-        )
-    if payload.get("action_layout") is None:
-        raise ValueError(
-            f"Missing action_layout for {source}."
-        )
-
-    raw_config = _json_value(
-        payload["topology_action_config"],
-        name="topology_action_config",
-        source=source,
-    )
-    if not isinstance(raw_config, Mapping):
-        raise ValueError(
-            f"Invalid topology_action_config for {source}."
-        )
-    observed_config = ActionSpaceConfig.from_contract_mapping(raw_config)
-    observed_layout = action_layout_from_value(payload["action_layout"])
-
-    if expected_action_space_config is not None:
-        if (
-            observed_config.to_contract_dict()
-            != expected_action_space_config.to_contract_dict()
-        ):
-            raise ValueError(
-                f"Topology action config mismatch for {source}."
-            )
-
-    if (
-        expected_action_layout is not None
-        and tuple(observed_layout) != tuple(expected_action_layout)
-    ):
-        raise ValueError(
-            f"Action layout mismatch for {source}."
-        )
-
-    return observed_config, observed_layout
-
-
-def require_physics_config_payload(
-    payload: Mapping[str, object],
-    *,
-    source: str,
-    expected_physics_config: "PhysicsConfig | None" = None,
-) -> "PhysicsConfig":
-    """Validate the actual PhysicsConfig stored by the current pipeline."""
-
-    from grid_topology_ai.config import PhysicsConfig
-
-    raw_config = _json_value(
-        payload.get("physics_config"),
-        name="physics_config",
-        source=source,
-    )
-    if not isinstance(raw_config, Mapping):
-        raise ValueError(
-            f"Missing or invalid physics_config for {source}."
-        )
-    try:
-        observed_config = PhysicsConfig.from_mapping(raw_config)
-    except ValueError as exc:
-        raise ValueError(
-            f"Invalid physics_config for {source}: {exc}"
-        ) from exc
-
-    legacy_pf_alg = payload.get("pf_alg")
-    if legacy_pf_alg is not None:
-        if isinstance(legacy_pf_alg, bool):
-            parsed_pf_alg: int | None = None
-        elif isinstance(legacy_pf_alg, Integral):
-            parsed_pf_alg = int(legacy_pf_alg)
-        elif (
-            isinstance(legacy_pf_alg, Real)
-            and float(legacy_pf_alg).is_integer()
-        ):
-            parsed_pf_alg = int(legacy_pf_alg)
-        elif (
-            isinstance(legacy_pf_alg, str)
-            and legacy_pf_alg.strip().isdigit()
-        ):
-            parsed_pf_alg = int(legacy_pf_alg.strip())
-        else:
-            parsed_pf_alg = None
-        if parsed_pf_alg != observed_config.pf_alg:
-            raise ValueError(
-                f"PF_ALG conflicts with PhysicsConfig for {source}."
-            )
-
-    if (
-        expected_physics_config is not None
-        and observed_config != expected_physics_config
-    ):
-        raise ValueError(
-            f"PhysicsConfig mismatch for {source}."
-        )
-
-    return observed_config
 
 
 def require_graph_batching_checkpoint_contract(

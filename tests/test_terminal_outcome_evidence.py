@@ -4,7 +4,7 @@ from dataclasses import replace
 
 import pytest
 
-from grid_topology_ai.outcome_record import (
+from grid_topology_ai.physics.objective import (
     RedispatchStatus,
     TerminalOutcomeEvidence,
 )

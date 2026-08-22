@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 import torch
 
-from grid_topology_ai.contracts import (
+from grid_topology_ai.models.neural_evaluator import (
     require_graph_batching_checkpoint_contract,
 )
 from grid_topology_ai.models.graph_policy_value_net_v2 import (

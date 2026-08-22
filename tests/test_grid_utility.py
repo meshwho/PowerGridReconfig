@@ -16,7 +16,7 @@ from grid_topology_ai.physics.utility import (
     state_potential,
     state_security_penalty,
 )
-from grid_topology_ai.reward import GridFMReward
+from grid_topology_ai.physics.utility import GridFMReward
 from grid_topology_ai.search.continuation_gate import topology_penalty
 
 
@@ -223,11 +223,11 @@ def test_grid_utility_rejects_invalid_weights() -> None:
 
 def test_shaping_is_separate_from_mcts_backup() -> None:
     root = Path(__file__).resolve().parents[1] / "grid_topology_ai"
-    reward = (root / "reward.py").read_text(encoding="utf-8")
+    utility = (root / "physics" / "utility.py").read_text(encoding="utf-8")
     mcts = (root / "search/mcts.py").read_text(encoding="utf-8")
     backup = mcts.split("def _backup", 1)[1].split("def _leaf_value", 1)[0]
 
-    assert "potential_shaping_reward" in reward
+    assert "potential_shaping_reward" in utility
     assert "scaled_reward" not in backup
     assert "_scale_value(" not in backup
     assert "node.total_value += value" in backup

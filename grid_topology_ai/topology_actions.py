@@ -42,6 +42,59 @@ def _fingerprint_json(value: object) -> str:
         encoded.encode("utf-8")
     ).hexdigest()
 
+
+def topology_action_payload(
+    action_space_config: "ActionSpaceConfig",
+    action_layout: object,
+) -> dict[str, object]:
+    """Serialize the actual action configuration and ordered layout."""
+
+    return {
+        "topology_action_config": action_space_config.to_contract_dict(),
+        "action_layout": action_layout_to_list(action_layout),
+    }
+
+
+def require_topology_action_payload(
+    payload: Mapping[str, object],
+    *,
+    source: str,
+    expected_action_space_config: "ActionSpaceConfig | None" = None,
+    expected_action_layout: object | None = None,
+) -> tuple["ActionSpaceConfig", tuple["ActionSlot", ...]]:
+    """Validate the actual action configuration and ordered layout."""
+
+    if payload.get("topology_action_config") is None:
+        raise ValueError(f"Missing topology_action_config for {source}.")
+    if payload.get("action_layout") is None:
+        raise ValueError(f"Missing action_layout for {source}.")
+
+    raw_config = payload["topology_action_config"]
+    if isinstance(raw_config, str):
+        try:
+            raw_config = json.loads(raw_config)
+        except json.JSONDecodeError as exc:
+            raise ValueError(
+                f"Invalid topology_action_config JSON for {source}."
+            ) from exc
+    if not isinstance(raw_config, Mapping):
+        raise ValueError(f"Invalid topology_action_config for {source}.")
+
+    observed_config = ActionSpaceConfig.from_contract_mapping(raw_config)
+    observed_layout = action_layout_from_value(payload["action_layout"])
+    if (
+        expected_action_space_config is not None
+        and observed_config.to_contract_dict()
+        != expected_action_space_config.to_contract_dict()
+    ):
+        raise ValueError(f"Topology action config mismatch for {source}.")
+    if (
+        expected_action_layout is not None
+        and tuple(observed_layout) != tuple(expected_action_layout)
+    ):
+        raise ValueError(f"Action layout mismatch for {source}.")
+    return observed_config, observed_layout
+
 def _non_negative_int(
     name: str,
     value: object,

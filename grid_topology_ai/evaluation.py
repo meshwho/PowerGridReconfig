@@ -22,19 +22,19 @@ from grid_topology_ai.config import EvaluationConfig
 from grid_topology_ai.config import (
     DEFAULT_PHYSICS_CONFIG,
     PhysicsConfig,
-    resolve_physics_config,
-)
-from grid_topology_ai.models.neural_evaluator import (
     physics_config_payload,
     require_physics_config_payload,
-    require_topology_action_payload,
-    topology_action_payload,
+    resolve_physics_config,
 )
 from grid_topology_ai.physics.objective import (
     STOP_POLICIES,
     assess_physical_state,
 )
 from grid_topology_ai.physics.utility import state_security_penalty, state_utility
+from grid_topology_ai.topology_actions import (
+    require_topology_action_payload,
+    topology_action_payload,
+)
 from grid_topology_ai.search.root_policy import (
     constrain_policy,
     normalize_policy,

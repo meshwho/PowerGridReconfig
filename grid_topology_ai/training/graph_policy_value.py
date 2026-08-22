@@ -14,8 +14,7 @@ from torch import nn
 from torch.utils.data import DataLoader
 
 from grid_topology_ai.config import TrainingConfig
-from grid_topology_ai.config import PhysicsConfig
-from grid_topology_ai.models.neural_evaluator import require_physics_config_payload
+from grid_topology_ai.config import PhysicsConfig, require_physics_config_payload
 from grid_topology_ai.models.graph_policy_value_net_v2 import GraphPolicyValueNetV2
 from grid_topology_ai.models.graph_self_play_dataset import (
     GraphSelfPlayDataset,

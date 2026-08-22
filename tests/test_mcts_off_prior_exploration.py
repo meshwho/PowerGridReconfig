@@ -349,7 +349,7 @@ def test_evaluation_task_config_records_exploration_quota(
     )
     monkeypatch.setattr(
         evaluation,
-        "_load_checkpoint_topology_action_provenance",
+        "_load_checkpoint_topology_action_payload",
         lambda checkpoint_path: topology_metadata(),
     )
 

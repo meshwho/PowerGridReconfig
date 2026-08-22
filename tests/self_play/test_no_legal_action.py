@@ -11,12 +11,12 @@ from grid_topology_ai.config import GenerationConfig
 from grid_topology_ai.config import DEFAULT_PHYSICS_CONFIG
 from grid_topology_ai.state import BRANCH_FEATURE_COLUMNS, GridFMState
 from grid_topology_ai.environment import TopologySwitchingEnv
-from grid_topology_ai.outcome_contract import (
+from grid_topology_ai.physics.objective import (
     RedispatchStatus,
     TerminalOutcomeEvidence,
 )
 from grid_topology_ai.power_flow.backend import GridFMPowerFlowResult
-from grid_topology_ai.return_contract import (
+from grid_topology_ai.value_targets import (
     VALUE_TARGET_MODE,
     terminal_utility_from_outcome,
 )

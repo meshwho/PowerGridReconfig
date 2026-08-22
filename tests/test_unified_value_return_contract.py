@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 import grid_topology_ai.evaluation as evaluation_checkpoint
-from grid_topology_ai.reward import (
+from grid_topology_ai.value_targets import (
     TERMINAL_UTILITY_GAMMA,
     VALUE_TARGET_MODE,
     terminal_utility_from_outcome,

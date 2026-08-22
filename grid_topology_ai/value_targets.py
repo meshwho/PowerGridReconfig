@@ -15,6 +15,7 @@ from grid_topology_ai.config import PhysicsConfig
 from grid_topology_ai.state import GridFMState
 from grid_topology_ai.physics.utility import (
     DEFAULT_STATE_UTILITY_SCALE,
+    require_reward_discount_factor,
     state_utility,
 )
 from grid_topology_ai.termination import (
@@ -31,15 +32,7 @@ _UTILITY_TOLERANCE = 1e-7
 
 def require_discount_factor(value: object) -> float:
     """Validate a caller gamma and return the fixed value-target gamma."""
-    if isinstance(value, bool) or not isinstance(value, Real):
-        raise ValueError(
-            f"gamma must be a finite real number in [0, 1], got {value!r}"
-        )
-    gamma = float(value)
-    if not math.isfinite(gamma) or not 0.0 <= gamma <= 1.0:
-        raise ValueError(
-            f"gamma must be a finite real number in [0, 1], got {value!r}"
-        )
+    require_reward_discount_factor(value)
     return TERMINAL_UTILITY_GAMMA
 
 

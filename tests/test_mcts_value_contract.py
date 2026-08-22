@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from grid_topology_ai.reward import TERMINAL_UTILITY_GAMMA
+from grid_topology_ai.value_targets import TERMINAL_UTILITY_GAMMA
 from grid_topology_ai.search.mcts import MCTSConfig, MCTSNode, MCTSPlanner
 from grid_topology_ai.termination import TerminationReason
 from grid_topology_ai.value_targets import add_outcome_value_targets_to_rows

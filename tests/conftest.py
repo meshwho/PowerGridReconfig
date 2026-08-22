@@ -290,60 +290,6 @@ def _adapt_artifact_builders(
             current_checkpoint,
         )
 
-    if filename == "test_replay.py":
-        original_physics_provenance = (
-            module.physics_provenance
-        )
-
-        def replay_provenance(config):
-            payload = dict(
-                original_physics_provenance(config)
-            )
-            payload.update(topology_metadata((0,)))
-            return payload
-
-        monkeypatch.setattr(
-            module,
-            "physics_provenance",
-            replay_provenance,
-        )
-
-        original_rows = module.rows
-
-        def current_rows(*args, **kwargs):
-            result = original_rows(*args, **kwargs)
-            for row in result:
-                row.update(topology_csv_fields((0,)))
-            return result
-
-        monkeypatch.setattr(
-            module,
-            "rows",
-            current_rows,
-        )
-
-        if (
-            request.node.name
-            == "test_replay_manifest_physics_config_mismatch_is_rejected"
-        ):
-            original_save_manifest = (
-                module.RollingReplayBuffer.save_manifest
-            )
-
-            def save_non_empty_manifest(self):
-                if not self.buffer:
-                    self.add_examples(
-                        module.rows("seed", 1),
-                        iteration=0,
-                    )
-                return original_save_manifest(self)
-
-            monkeypatch.setattr(
-                module.RollingReplayBuffer,
-                "save_manifest",
-                save_non_empty_manifest,
-            )
-
     if filename == "test_example_validation.py":
         original_load = (
             module.load_and_validate_examples_csv
