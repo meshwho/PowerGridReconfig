@@ -34,7 +34,7 @@ from grid_topology_ai.physics.constraints import (
     validate_ppc_input,
     validate_pypower_result,
 )
-from grid_topology_ai.power_flow.errors import InvalidPhysicalState
+from grid_topology_ai.power_flow import InvalidPhysicalState
 from grid_topology_ai.power_flow.problem import CanonicalPowerFlowProblem
 from grid_topology_ai.power_flow.backend import GridFMPowerFlowBackend
 

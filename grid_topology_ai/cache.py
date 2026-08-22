@@ -1,8 +1,17 @@
 from __future__ import annotations
 
+import hashlib
+import math
+import os
 from collections import OrderedDict
 from dataclasses import dataclass
-from typing import Generic, Hashable, TypeVar
+from typing import Generic, Hashable, Mapping, TypeVar
+
+import numpy as np
+from pypower.idx_bus import BUS_TYPE, PQ, PV, REF, VA, VM
+
+from grid_topology_ai.power_flow import PowerFlowFailureKind
+from grid_topology_ai.power_flow.problem import CanonicalPowerFlowProblem
 
 
 K = TypeVar("K", bound=Hashable)
@@ -94,17 +103,6 @@ class ByteLRUCache(Generic[K, V]):
             max_bytes=int(self.max_bytes),
             evictions=int(self._evictions),
         )
-
-
-import hashlib
-from dataclasses import dataclass
-from typing import Mapping
-
-import numpy as np
-from pypower.idx_bus import BUS_TYPE, PQ, PV, REF, VA, VM
-
-from grid_topology_ai.power_flow import PowerFlowFailureKind
-from grid_topology_ai.power_flow.problem import CanonicalPowerFlowProblem
 
 
 EXACT_POWER_FLOW_CACHE_SCHEMA_VERSION = 2
@@ -431,11 +429,8 @@ class ExactPowerFlowCache:
         }
         return result
 
-import math
-import os
-
-
 EXACT_L1_CACHE_MAX_MB_ENV = "POWERGRID_EXACT_L1_CACHE_MAX_MB"
+
 
 def _configured_exact_l1_cache_bytes() -> int:
     raw_value = os.environ.get(EXACT_L1_CACHE_MAX_MB_ENV, "").strip()

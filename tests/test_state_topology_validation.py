@@ -8,7 +8,7 @@ import grid_topology_ai.data as data_adapter_module
 from grid_topology_ai.config import DEFAULT_PHYSICS_CONFIG
 from grid_topology_ai.data import GridFMAdapter
 from grid_topology_ai.state import BRANCH_FEATURE_COLUMNS, BUS_FEATURE_COLUMNS
-from grid_topology_ai.power_flow.errors import InvalidPhysicalState
+from grid_topology_ai.power_flow import InvalidPhysicalState
 from grid_topology_ai.state import validate_state_topology
 
 

@@ -4,13 +4,13 @@ from types import SimpleNamespace
 
 import numpy as np
 
-import grid_topology_ai.cache.lodf_structure as cache_module
-from grid_topology_ai.cache import (
+import grid_topology_ai.physics.lodf as cache_module
+from grid_topology_ai.physics.lodf import (
     LODFStructureCache,
+    build_lodf_structure,
     lodf_structure_fingerprint,
 )
 from grid_topology_ai.state import BRANCH_FEATURE_COLUMNS
-from grid_topology_ai.physics.lodf import build_lodf_structure
 
 
 _STATUS = BRANCH_FEATURE_COLUMNS.index("br_status")

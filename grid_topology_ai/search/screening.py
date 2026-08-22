@@ -11,15 +11,15 @@ from pypower.idx_brch import BR_STATUS, PF, PT, RATE_A
 
 from grid_topology_ai.actions import GridFMAction
 from grid_topology_ai.cache import ByteLRUCache
-from grid_topology_ai.physics.lodf import LODFStructureCache
 from grid_topology_ai.config import DEFAULT_PHYSICS_CONFIG, PhysicsConfig
-from grid_topology_ai.state import GridFMState
 from grid_topology_ai.physics.lodf import (
+    LODFStructureCache,
     build_lodf_structure,
     rank_actions_with_lodf_structure,
 )
 from grid_topology_ai.power_flow.backend import GridFMPowerFlowBackend
 from grid_topology_ai.power_flow.problem import CanonicalPowerFlowProblem
+from grid_topology_ai.state import GridFMState
 
 DEFAULT_DC_SCREENING_CACHE_BYTES = 16 * 1024 * 1024
 _ENTRY_OVERHEAD_BYTES = 128

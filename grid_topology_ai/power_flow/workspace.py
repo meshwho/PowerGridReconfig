@@ -1,11 +1,36 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass
+from time import perf_counter
 from typing import Any
 
 import numpy as np
 from scipy.sparse import csr_matrix
 
+from pypower.bustypes import bustypes
+from pypower.ext2int import ext2int
+from pypower.idx_brch import (
+    BR_B,
+    BR_R,
+    BR_STATUS,
+    BR_X,
+    F_BUS,
+    PF,
+    PT,
+    QF,
+    QT,
+    SHIFT,
+    TAP,
+    T_BUS,
+)
+from pypower.idx_bus import BS, BUS_I, GS, VA, VM
+from pypower.idx_gen import GEN_BUS, GEN_STATUS, PG, QG, VG
+from pypower.int2ext import int2ext
+from pypower.loadcase import loadcase
+from pypower.makeSbus import makeSbus
+from pypower.makeYbus import makeYbus
+from pypower.pfsoln import pfsoln
 from pypower.pplinsolve import pplinsolve
 
 
@@ -294,38 +319,6 @@ def newton_power_flow(
         converged = bool(np.linalg.norm(residual, np.inf) < tolerance)
 
     return voltage, converged, iteration
-
-
-from copy import deepcopy
-from dataclasses import dataclass
-from time import perf_counter
-from typing import Any
-
-import numpy as np
-from pypower.bustypes import bustypes
-from pypower.ext2int import ext2int
-from pypower.idx_brch import (
-    BR_B,
-    BR_R,
-    BR_STATUS,
-    BR_X,
-    F_BUS,
-    PF,
-    PT,
-    QF,
-    QT,
-    SHIFT,
-    TAP,
-    T_BUS,
-)
-from pypower.idx_bus import BS, BUS_I, GS, VA, VM
-from pypower.idx_gen import GEN_BUS, GEN_STATUS, PG, QG, VG
-from pypower.int2ext import int2ext
-from pypower.loadcase import loadcase
-from pypower.makeSbus import makeSbus
-from pypower.makeYbus import makeYbus
-from pypower.pfsoln import pfsoln
-
 
 
 _BUS_NETWORK_COLUMNS = (BUS_I, GS, BS)

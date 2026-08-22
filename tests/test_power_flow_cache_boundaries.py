@@ -30,9 +30,7 @@ def test_public_backend_has_only_exact_cache_component() -> None:
     )
 
     assert isinstance(backend._exact_power_flow_cache, ExactPowerFlowCache)
-    assert backend._exact_power_flow_cache.__class__.__module__.startswith(
-        "grid_topology_ai.cache."
-    )
+    assert backend._exact_power_flow_cache.__class__.__module__ == "grid_topology_ai.cache"
     for name in _OLD_CACHE_SYMBOLS:
         assert not hasattr(backend, name), name
 

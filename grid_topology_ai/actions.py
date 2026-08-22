@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from collections import Counter
 import hashlib
+from collections import Counter
 from dataclasses import dataclass
 from typing import Any
 
@@ -19,8 +19,6 @@ from grid_topology_ai.topology_actions import (
     action_layout_fingerprint,
     build_branch_action_slots,
 )
-
-
 
 # Topology-only action precomputation is owned by the action runtime.
 DEFAULT_STRUCTURAL_TOPOLOGY_CACHE_BYTES = 8 * 1024 * 1024

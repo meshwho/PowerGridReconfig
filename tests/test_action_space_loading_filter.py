@@ -10,7 +10,7 @@ from grid_topology_ai.actions import (
     ActionSpaceConfig,
     GridFMActionSpace,
 )
-from grid_topology_ai.cache import structural_topology_fingerprint
+from grid_topology_ai.actions import structural_topology_fingerprint
 from grid_topology_ai.state import BRANCH_FEATURE_COLUMNS
 
 

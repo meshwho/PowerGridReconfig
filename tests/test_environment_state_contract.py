@@ -10,7 +10,7 @@ import pytest
 from grid_topology_ai.config import DEFAULT_PHYSICS_CONFIG
 from grid_topology_ai.state import GridFMState
 from grid_topology_ai.environment import TopologySwitchingEnv
-from grid_topology_ai.power_flow.errors import PowerFlowFailureKind
+from grid_topology_ai.power_flow import PowerFlowFailureKind
 from grid_topology_ai.power_flow.backend import (
     GridFMPowerFlowBackend,
     GridFMPowerFlowResult,
