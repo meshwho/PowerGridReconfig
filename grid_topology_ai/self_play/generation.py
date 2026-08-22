@@ -127,8 +127,8 @@ def _ensure_runtime_dependencies() -> None:
     if _RUNTIME_DEPENDENCIES_LOADED:
         return
 
-    from grid_topology_ai.action_space import GridFMActionSpace as _ActionSpace
-    from grid_topology_ai.data_adapter import GridFMAdapter as _Adapter
+    from grid_topology_ai.actions import GridFMActionSpace as _ActionSpace
+    from grid_topology_ai.data import GridFMAdapter as _Adapter
     from grid_topology_ai.environment import TopologySwitchingEnv as _Env
     from grid_topology_ai.models.neural_evaluator import (
         NeuralPolicyValueEvaluator as _Evaluator,

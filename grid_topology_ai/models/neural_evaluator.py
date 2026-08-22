@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 import numpy as np
@@ -10,15 +11,76 @@ from grid_topology_ai.contracts import (
     require_checkpoint_contracts,
     require_topology_action_provenance,
 )
-from grid_topology_ai.data_adapter import GridFMState
+from grid_topology_ai.state import GridFMState
 from grid_topology_ai.models.graph_policy_value_net_v2 import GraphPolicyValueNetV2
-from grid_topology_ai.state.fingerprint import physical_state_fingerprint
 from grid_topology_ai.topology_actions import (
     STOP_PLUS_BRANCH_STATUS_POLICY_LAYOUT,
     action_layout_fingerprint,
     build_branch_action_slots,
 )
 
+
+_FINGERPRINT_VERSION = b"physical-state-v1"
+
+
+def _update_fingerprint_array(
+    digest,
+    *,
+    name: str,
+    value: object,
+    dtype: str,
+) -> None:
+    array = np.asarray(value, dtype=np.dtype(dtype))
+    array = np.ascontiguousarray(array)
+
+    digest.update(name.encode("ascii"))
+    digest.update(b"\0")
+    digest.update(array.dtype.str.encode("ascii"))
+    digest.update(b"\0")
+    digest.update(str(array.shape).encode("ascii"))
+    digest.update(b"\0")
+    digest.update(array.tobytes(order="C"))
+
+
+def physical_state_fingerprint(state: GridFMState) -> str:
+    """Return the stable physical-state cache key used by this evaluator."""
+
+    digest = hashlib.sha256()
+    digest.update(_FINGERPRINT_VERSION)
+    digest.update(b"\0")
+
+    for name, value, dtype in (
+        ("scenario_id", [state.scenario_id], "<i8"),
+        ("load_scenario_idx", [state.load_scenario_idx], "<f8"),
+        ("bus_features", state.bus_features, "<f4"),
+        ("branch_features", state.branch_features, "<f4"),
+        ("edge_index", state.edge_index, "<i8"),
+    ):
+        _update_fingerprint_array(
+            digest, name=name, value=value, dtype=dtype
+        )
+
+    if state.bus_ids is None:
+        digest.update(b"bus_ids\0none\0")
+    else:
+        _update_fingerprint_array(
+            digest, name="bus_ids", value=state.bus_ids, dtype="<i8"
+        )
+
+    for name, value, dtype in (
+        ("branch_ids", state.branch_ids, "<i8"),
+        ("branch_status", state.branch_status, "<f4"),
+        (
+            "outaged_branch_ids",
+            sorted(int(value) for value in state.outaged_branch_ids),
+            "<i8",
+        ),
+    ):
+        _update_fingerprint_array(
+            digest, name=name, value=value, dtype=dtype
+        )
+
+    return digest.hexdigest()
 
 _MODEL_TYPE = "graph_policy_value_net_v2"
 

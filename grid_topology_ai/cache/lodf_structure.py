@@ -5,7 +5,7 @@ import hashlib
 import numpy as np
 
 from grid_topology_ai.cache.byte_lru import ByteLRUCache
-from grid_topology_ai.data_adapter import BRANCH_FEATURE_COLUMNS, GridFMState
+from grid_topology_ai.state import BRANCH_FEATURE_COLUMNS, GridFMState
 from grid_topology_ai.physics.lodf import LODFStructure, build_lodf_structure
 
 

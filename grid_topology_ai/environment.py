@@ -3,8 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from grid_topology_ai.action_space import GridFMAction, GridFMActionSpace
-from grid_topology_ai.data_adapter import GridFMAdapter, GridFMState
+from grid_topology_ai.actions import GridFMAction, GridFMActionSpace
+from grid_topology_ai.data import GridFMAdapter
+from grid_topology_ai.state import GridFMState
 from grid_topology_ai.physics.utility import state_utility
 from grid_topology_ai.outcome_record import (
     TERMINAL_OUTCOME_EVIDENCE_SCHEMA_VERSION,

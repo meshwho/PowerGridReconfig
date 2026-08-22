@@ -67,10 +67,10 @@ from grid_topology_ai.config import (
     PhysicsConfig,
     QLimitPolicy,
 )
-from grid_topology_ai.data_adapter import (
+from grid_topology_ai.data import GridFMAdapter
+from grid_topology_ai.state import (
     BRANCH_FEATURE_COLUMNS,
     BUS_FEATURE_COLUMNS,
-    GridFMAdapter,
     GridFMState,
 )
 from grid_topology_ai.physics.constraints import (
@@ -95,7 +95,7 @@ from grid_topology_ai.power_flow.solver import (
     get_power_flow_workload_counters,
     runpf,
 )
-from grid_topology_ai.state.builder import GridFMStateBuilder
+from grid_topology_ai.state import GridFMStateBuilder
 from grid_topology_ai.topology_actions import GridFMAction
 
 

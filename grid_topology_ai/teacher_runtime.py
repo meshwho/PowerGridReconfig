@@ -84,14 +84,14 @@ from grid_topology_ai.cache import (
     DEFAULT_EXACT_POWER_FLOW_CACHE_BYTES,
     LODFStructureCache,
 )
-from grid_topology_ai.action_space import GridFMAction, GridFMActionSpace
+from grid_topology_ai.actions import GridFMAction, GridFMActionSpace
 from grid_topology_ai.config import DEFAULT_PHYSICS_CONFIG, PhysicsConfig
 from grid_topology_ai.teacher_config import (
     ensure_teacher_checkpoint_config,
     teacher_run_id,
     teacher_source_identity,
 )
-from grid_topology_ai.data_adapter import GridFMAdapter
+from grid_topology_ai.data import GridFMAdapter
 from grid_topology_ai.environment import TopologySwitchingEnv
 from grid_topology_ai.physics.utility import state_utility
 from grid_topology_ai.physics.lodf import lodf_loading_safety_score
@@ -120,7 +120,7 @@ from grid_topology_ai.search.impact_beam_search import (
     safety_score,
 )
 from grid_topology_ai.search.impact_beam_search import switch_count
-from grid_topology_ai.state.store import GridFMStateStore
+from grid_topology_ai.state import GridFMStateStore
 from grid_topology_ai.termination import (
     TerminationReason,
     parse_termination_reason,

@@ -3,9 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from grid_topology_ai.action_space import GridFMAction
+from grid_topology_ai.actions import GridFMAction
 from grid_topology_ai.config import DEFAULT_PHYSICS_CONFIG, PhysicsConfig
-from grid_topology_ai.data_adapter import GridFMState
+from grid_topology_ai.state import GridFMState
 from grid_topology_ai.physics.utility import (
     CONTINUATION_GRID_UTILITY_WEIGHTS,
     CONTINUATION_SWITCH_PENALTY,

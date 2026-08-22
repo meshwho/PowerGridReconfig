@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from numbers import Integral, Real
 from typing import TYPE_CHECKING
 
@@ -77,91 +77,12 @@ def _json_value(value: object, *, name: str, source: str) -> object:
         raise ValueError(f"Invalid {name} JSON for {source}.") from exc
 
 
-def require_state_feature_schema_provenance(
-    payload: Mapping[str, object],
-    *,
-    source: str,
-) -> dict[str, object]:
-    """Validate explicit state-schema metadata when it is present."""
-
-    from grid_topology_ai.state.schema import (
-        BRANCH_FEATURE_COLUMNS,
-        BUS_FEATURE_COLUMNS,
-        BUS_ID_SEMANTICS,
-        EDGE_INDEX_SEMANTICS,
-        STATE_FEATURE_SCHEMA_VERSION,
-        state_feature_schema_fingerprint,
-        state_feature_schema_provenance,
-    )
-
-    version = payload.get("state_feature_schema_version")
-    fingerprint = payload.get("state_feature_schema_fingerprint")
-    edge_semantics = payload.get("edge_index_semantics")
-    bus_semantics = payload.get("bus_id_semantics")
-    bus_columns = payload.get("bus_feature_columns")
-    branch_columns = payload.get("branch_feature_columns")
-
-    fields = (
-        version,
-        fingerprint,
-        edge_semantics,
-        bus_semantics,
-        bus_columns,
-        branch_columns,
-    )
-    if all(value is None for value in fields):
-        return state_feature_schema_provenance()
-    if any(value is None for value in fields):
-        raise ValueError(
-            f"Incomplete state feature metadata for {source}."
-        )
-
-    require_exact_contract_version(
-        version,
-        expected=STATE_FEATURE_SCHEMA_VERSION,
-        name="state-feature schema",
-        source=source,
-        regeneration_command="",
-    )
-    if fingerprint != state_feature_schema_fingerprint():
-        raise ValueError(
-            f"State-feature schema identity mismatch for {source}."
-        )
-    if edge_semantics != EDGE_INDEX_SEMANTICS:
-        raise ValueError(
-            f"Incompatible edge_index semantics for {source}."
-        )
-    if bus_semantics != BUS_ID_SEMANTICS:
-        raise ValueError(
-            f"Incompatible bus ID semantics for {source}."
-        )
-
-    for field, raw, expected_columns in (
-        ("bus_feature_columns", bus_columns, BUS_FEATURE_COLUMNS),
-        ("branch_feature_columns", branch_columns, BRANCH_FEATURE_COLUMNS),
-    ):
-        parsed = _json_value(raw, name=field, source=source)
-        if (
-            not isinstance(parsed, Sequence)
-            or isinstance(parsed, (str, bytes))
-            or list(parsed) != list(expected_columns)
-        ):
-            raise ValueError(
-                f"Ordered {field} mismatch for {source}."
-            )
-
-    return state_feature_schema_provenance()
-
-
 def physics_provenance(
     physics_config: "PhysicsConfig",
 ) -> dict[str, object]:
     """Legacy replay/checkpoint metadata; example rows no longer use it."""
 
-    from grid_topology_ai.state.schema import state_feature_schema_provenance
-
     return {
-        **state_feature_schema_provenance(),
         "physics_config_contract_version": PHYSICS_CONFIG_CONTRACT_VERSION,
         "physics_config": physics_config.to_dict(),
         "physics_config_fingerprint": physics_config.fingerprint(),
@@ -367,7 +288,7 @@ def _require_graph_checkpoint_feature_dimensions(
 ) -> None:
     import numpy as np
 
-    from grid_topology_ai.state.schema import (
+    from grid_topology_ai.state import (
         BRANCH_FEATURE_COLUMNS,
         BUS_FEATURE_COLUMNS,
     )

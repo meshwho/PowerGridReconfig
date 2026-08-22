@@ -7,7 +7,7 @@ from typing import Any, Mapping, Sequence
 import numpy as np
 from pypower.idx_brch import BR_STATUS, PF, PT, QF, QT
 
-from grid_topology_ai.action_space import GridFMActionSpace
+from grid_topology_ai.actions import GridFMActionSpace
 from grid_topology_ai.config import DEFAULT_PHYSICS_CONFIG, PhysicsConfig
 from grid_topology_ai.contracts import PHYSICS_CONFIG_CONTRACT_VERSION
 from grid_topology_ai.physics.constraints import (
@@ -26,9 +26,9 @@ from grid_topology_ai.runtime.scenario_store import (
     MemoryMappedGridFMPowerFlowBackend,
     MemoryMappedScenarioStore,
 )
-from grid_topology_ai.state.builder import GridFMState
-from grid_topology_ai.state.schema import BRANCH_FEATURE_COLUMNS, BUS_FEATURE_COLUMNS
-from grid_topology_ai.state.store import GridFMStateStore
+from grid_topology_ai.state import GridFMState
+from grid_topology_ai.state import BRANCH_FEATURE_COLUMNS, BUS_FEATURE_COLUMNS
+from grid_topology_ai.state import GridFMStateStore
 
 
 _BUS_FEATURE_INDEX = {

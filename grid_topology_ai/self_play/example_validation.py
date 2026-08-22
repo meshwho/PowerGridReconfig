@@ -16,7 +16,7 @@ from grid_topology_ai.reward import (
     VALUE_TARGET_MODE,
     terminal_utility_from_outcome,
 )
-from grid_topology_ai.state.artifacts import validate_state_npz_schema_arrays
+from grid_topology_ai.state import validate_state_npz_schema_arrays
 from grid_topology_ai.topology_actions import (
     ActionSlot,
     ActionSpaceConfig,

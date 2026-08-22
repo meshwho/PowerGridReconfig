@@ -16,18 +16,7 @@ from grid_topology_ai.physics.constraints import (
     calculate_physical_metrics_from_frames,
 )
 from grid_topology_ai.power_flow.errors import InvalidPhysicalState
-from grid_topology_ai.state.builder import GridFMState, GridFMStateBuilder
-from grid_topology_ai.state.schema import (
-    BRANCH_FEATURE_COLUMNS,
-    BUS_FEATURE_COLUMNS,
-    STATE_FEATURE_SCHEMA_VERSION,
-    finite_feature_matrix,
-    state_feature_schema_fingerprint,
-    state_feature_schema_payload,
-    state_feature_schema_provenance,
-    with_branch_rating_features,
-    with_bus_generator_features,
-)
+from grid_topology_ai.state import GridFMState, GridFMStateBuilder
 
 
 _RAW_BUS_FEATURE_COLUMNS = [
