@@ -8,7 +8,7 @@ import numpy as np
 from pypower.idx_brch import BR_STATUS, PF, PT, QF, QT
 
 from grid_topology_ai.action_space import GridFMActionSpace
-from grid_topology_ai.config.physics import DEFAULT_PHYSICS_CONFIG, PhysicsConfig
+from grid_topology_ai.config import DEFAULT_PHYSICS_CONFIG, PhysicsConfig
 from grid_topology_ai.contracts import PHYSICS_CONFIG_CONTRACT_VERSION
 from grid_topology_ai.physics.constraints import (
     PhysicalNetworkArrays,

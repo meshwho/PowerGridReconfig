@@ -256,7 +256,7 @@ def classify_stop_outcome(
 
 def physical_objective_contract(physics_config=None) -> dict[str, object]:
     """Describe the actual physics contract used to produce an artifact."""
-    from grid_topology_ai.config.physics import DEFAULT_PHYSICS_CONFIG
+    from grid_topology_ai.config import DEFAULT_PHYSICS_CONFIG
     from grid_topology_ai.contracts import physics_provenance
 
     config = physics_config or DEFAULT_PHYSICS_CONFIG

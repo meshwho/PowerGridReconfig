@@ -12,7 +12,7 @@ import pandas as pd
 from pypower.idx_brch import BR_STATUS
 
 from grid_topology_ai.action_space import GridFMActionSpace
-from grid_topology_ai.config.physics import DEFAULT_PHYSICS_CONFIG, PhysicsConfig
+from grid_topology_ai.config import DEFAULT_PHYSICS_CONFIG, PhysicsConfig
 from grid_topology_ai.contracts import PHYSICS_CONFIG_CONTRACT_VERSION
 from grid_topology_ai.power_flow.problem import build_scenario_power_flow_template
 from grid_topology_ai.power_flow.backend import GridFMPowerFlowBackend

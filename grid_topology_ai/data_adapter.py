@@ -7,7 +7,7 @@ from typing import Any, Sequence
 import numpy as np
 import pandas as pd
 
-from grid_topology_ai.config.physics import (
+from grid_topology_ai.config import (
     DEFAULT_PHYSICS_CONFIG,
     PhysicsConfig,
     ZeroRateAPolicy,

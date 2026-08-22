@@ -62,7 +62,7 @@ from grid_topology_ai.cache import (
     CachedPowerFlowSuccess,
     ExactPowerFlowCache,
 )
-from grid_topology_ai.config.physics import (
+from grid_topology_ai.config import (
     DEFAULT_PHYSICS_CONFIG,
     PhysicsConfig,
     QLimitPolicy,

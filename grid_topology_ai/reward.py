@@ -5,7 +5,7 @@ import math
 from numbers import Real
 from typing import Any
 
-from grid_topology_ai.config.physics import PhysicsConfig
+from grid_topology_ai.config import PhysicsConfig
 from grid_topology_ai.data_adapter import GridFMState
 from grid_topology_ai.physics.utility import (
     GridUtilityBreakdown,

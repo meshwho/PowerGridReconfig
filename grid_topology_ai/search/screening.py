@@ -12,7 +12,7 @@ from pypower.idx_brch import BR_STATUS, PF, PT, RATE_A
 from grid_topology_ai.action_space import GridFMAction
 from grid_topology_ai.cache.byte_lru import ByteLRUCache
 from grid_topology_ai.cache.lodf_structure import LODFStructureCache
-from grid_topology_ai.config.physics import DEFAULT_PHYSICS_CONFIG, PhysicsConfig
+from grid_topology_ai.config import DEFAULT_PHYSICS_CONFIG, PhysicsConfig
 from grid_topology_ai.data_adapter import GridFMState
 from grid_topology_ai.physics.lodf import (
     build_lodf_structure,

@@ -85,7 +85,7 @@ from grid_topology_ai.cache import (
     LODFStructureCache,
 )
 from grid_topology_ai.action_space import GridFMAction, GridFMActionSpace
-from grid_topology_ai.config.physics import DEFAULT_PHYSICS_CONFIG, PhysicsConfig
+from grid_topology_ai.config import DEFAULT_PHYSICS_CONFIG, PhysicsConfig
 from grid_topology_ai.teacher_config import (
     ensure_teacher_checkpoint_config,
     teacher_run_id,

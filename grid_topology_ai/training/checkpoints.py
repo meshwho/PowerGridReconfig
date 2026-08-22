@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any, Mapping
 import numpy as np
 import torch
 
-from grid_topology_ai.config.physics import PhysicsConfig
+from grid_topology_ai.config import PhysicsConfig
 from grid_topology_ai.contracts import (
     require_checkpoint_contracts,
     require_topology_action_provenance,

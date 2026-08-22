@@ -8,7 +8,7 @@ from typing import Any
 
 import pandas as pd
 
-from grid_topology_ai.config.physics import PhysicsConfig
+from grid_topology_ai.config import PhysicsConfig
 from grid_topology_ai.data_adapter import GridFMState
 from grid_topology_ai.outcome_record import TerminalOutcomeEvidence
 from grid_topology_ai.reward import TERMINAL_UTILITY_GAMMA

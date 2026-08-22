@@ -15,7 +15,7 @@ import numpy as np
 import pandas as pd
 
 from grid_topology_ai.config import GenerationConfig
-from grid_topology_ai.config.physics import (
+from grid_topology_ai.config import (
     PhysicsConfig,
     resolve_physics_config,
 )

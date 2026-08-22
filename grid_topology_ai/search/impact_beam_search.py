@@ -6,7 +6,7 @@ from typing import Protocol, Sequence, TypeVar
 import numpy as np
 
 from grid_topology_ai.action_space import GridFMAction
-from grid_topology_ai.config.physics import DEFAULT_PHYSICS_CONFIG, PhysicsConfig
+from grid_topology_ai.config import DEFAULT_PHYSICS_CONFIG, PhysicsConfig
 from grid_topology_ai.data_adapter import BRANCH_FEATURE_COLUMNS, GridFMState
 from grid_topology_ai.environment import TopologyStepResult, TopologySwitchingEnv
 from grid_topology_ai.physics.utility import state_security_penalty

@@ -6,7 +6,7 @@ from numbers import Integral, Real
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from grid_topology_ai.config.physics import PhysicsConfig
+    from grid_topology_ai.config import PhysicsConfig
 
 
 # These versions remain only for checkpoint/replay writers that are simplified
@@ -283,7 +283,7 @@ def require_physics_provenance(
 ) -> "PhysicsConfig":
     """Validate the actual PhysicsConfig stored by the current pipeline."""
 
-    from grid_topology_ai.config.physics import PhysicsConfig
+    from grid_topology_ai.config import PhysicsConfig
 
     raw_config = _json_value(
         payload.get("physics_config"),

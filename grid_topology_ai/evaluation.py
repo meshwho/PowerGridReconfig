@@ -19,7 +19,7 @@ except ImportError:  # pragma: no cover
     tqdm = None
 
 from grid_topology_ai.config import EvaluationConfig
-from grid_topology_ai.config.physics import (
+from grid_topology_ai.config import (
     DEFAULT_PHYSICS_CONFIG,
     PhysicsConfig,
     resolve_physics_config,

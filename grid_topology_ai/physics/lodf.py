@@ -6,7 +6,7 @@ import numpy as np
 from scipy import sparse
 from scipy.sparse.linalg import splu
 
-from grid_topology_ai.config.physics import DEFAULT_PHYSICS_CONFIG, PhysicsConfig
+from grid_topology_ai.config import DEFAULT_PHYSICS_CONFIG, PhysicsConfig
 from grid_topology_ai.data_adapter import BRANCH_FEATURE_COLUMNS, GridFMState
 from grid_topology_ai.topology_actions import GridFMAction
 
