@@ -103,6 +103,19 @@ def coerce_exact_int(
     raise _error()
 
 
+def _validate_closeable_branch_id(value: object) -> int:
+    if isinstance(value, bool) or not isinstance(value, Integral):
+        raise ValueError(
+            "closeable_branch_ids item must be a non-negative integer."
+        )
+    branch_id = int(value)
+    if branch_id < 0:
+        raise ValueError(
+            "closeable_branch_ids item must be a non-negative integer."
+        )
+    return branch_id
+
+
 @dataclass(frozen=True, slots=True)
 class ActionSpaceConfig:
     """Configuration contract for the topology action space."""
@@ -135,17 +148,13 @@ class ActionSpaceConfig:
         object.__setattr__(self, "min_loading_for_switch_percent", threshold)
         try:
             branch_ids = tuple(
-                coerce_exact_int("closeable_branch_ids item", value)
+                _validate_closeable_branch_id(value)
                 for value in self.closeable_branch_ids
             )
         except TypeError:
             raise ValueError(
                 "closeable_branch_ids must be an iterable of non-negative integers."
             ) from None
-        if any(value < 0 for value in branch_ids):
-            raise ValueError(
-                "closeable_branch_ids item must be a non-negative integer."
-            )
         if len(set(branch_ids)) != len(branch_ids):
             raise ValueError(
                 "closeable_branch_ids must not contain duplicate branch IDs."
