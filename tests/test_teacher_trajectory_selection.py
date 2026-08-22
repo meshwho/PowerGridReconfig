@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 import pytest
 
-from grid_topology_ai.search.impact_beam_search import (
+from grid_topology_ai.search.teacher import (
     ImpactBeamSearchConfig,
     pareto_front,
     select_epsilon_optimal_trajectory,

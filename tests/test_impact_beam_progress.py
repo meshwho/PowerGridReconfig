@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from grid_topology_ai.search.impact_beam_search import (
+from grid_topology_ai.search.teacher import (
     ImpactBeamSearchConfig,
     ImpactBeamSearchPlanner,
 )
-from grid_topology_ai.teacher_runtime import LODFScreenedImpactBeamSearchPlanner
+from grid_topology_ai.search.teacher import LODFScreenedImpactBeamSearchPlanner
 
 
 class _FakeProgressBar:

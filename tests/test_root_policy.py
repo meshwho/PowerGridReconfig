@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from grid_topology_ai.search.root_policy import (
+from grid_topology_ai.search.mcts import (
     constrain_policy,
     normalize_policy,
     policy_at_temperature,

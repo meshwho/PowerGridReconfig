@@ -17,7 +17,7 @@ from grid_topology_ai.physics.utility import (
     state_security_penalty,
 )
 from grid_topology_ai.physics.utility import GridFMReward
-from grid_topology_ai.search.continuation_gate import topology_penalty
+from grid_topology_ai.search.mcts import topology_penalty
 
 
 def _state(

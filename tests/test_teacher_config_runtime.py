@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from grid_topology_ai.teacher_config import (
+from grid_topology_ai.search.teacher import (
     ensure_teacher_checkpoint_config,
     load_teacher_task_config,
     semantic_teacher_task_config,

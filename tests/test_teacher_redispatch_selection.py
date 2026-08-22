@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 
-import grid_topology_ai.teacher_runtime as teacher
+import grid_topology_ai.search.teacher as teacher
 from grid_topology_ai.termination import TerminationReason
 
 

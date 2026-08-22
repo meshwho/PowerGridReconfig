@@ -10,7 +10,7 @@ from grid_topology_ai.config import DEFAULT_PHYSICS_CONFIG
 from grid_topology_ai.state import BRANCH_FEATURE_COLUMNS, BUS_FEATURE_COLUMNS, GridFMState
 from grid_topology_ai.environment import TopologySwitchingEnv
 from grid_topology_ai.power_flow.backend import GridFMPowerFlowResult
-from grid_topology_ai.search.continuation_gate import make_do_nothing_action
+from grid_topology_ai.actions import make_do_nothing_action
 from grid_topology_ai.search.mcts import MCTSConfig, MCTSPlanner
 
 
