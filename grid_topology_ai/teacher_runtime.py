@@ -92,7 +92,7 @@ from grid_topology_ai.data import GridFMAdapter
 from grid_topology_ai.environment import TopologySwitchingEnv
 from grid_topology_ai.physics.utility import state_utility
 from grid_topology_ai.physics.lodf import LODFStructureCache, lodf_loading_safety_score
-from grid_topology_ai.outcome_record import (
+from grid_topology_ai.physics.objective import (
     TerminalOutcomeEvidence,
     redispatch_status_for_reason,
 )
@@ -107,7 +107,7 @@ from grid_topology_ai.runtime import (
     ensure_runtime_scenario_store,
 )
 from grid_topology_ai.runtime import build_memory_mapped_teacher_context
-from grid_topology_ai.reward import GridFMReward
+from grid_topology_ai.physics.utility import GridFMReward
 from grid_topology_ai.search.continuation_gate import make_do_nothing_action
 from grid_topology_ai.search.impact_beam_search import (
     ImpactBeamSearchConfig,

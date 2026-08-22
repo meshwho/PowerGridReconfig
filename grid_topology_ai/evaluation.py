@@ -24,11 +24,11 @@ from grid_topology_ai.config import (
     PhysicsConfig,
     resolve_physics_config,
 )
-from grid_topology_ai.contracts import (
-    physics_provenance,
-    require_physics_provenance,
-    require_topology_action_provenance,
-    topology_action_provenance,
+from grid_topology_ai.models.neural_evaluator import (
+    physics_config_payload,
+    require_physics_config_payload,
+    require_topology_action_payload,
+    topology_action_payload,
 )
 from grid_topology_ai.physics.objective import (
     STOP_POLICIES,
@@ -953,7 +953,7 @@ def _ensure_runtime_dependencies() -> None:
         NeuralPolicyValueEvaluator as Evaluator,
     )
     from grid_topology_ai.power_flow.backend import GridFMPowerFlowBackend as Backend
-    from grid_topology_ai.reward import GridFMReward as Reward
+    from grid_topology_ai.physics.utility import GridFMReward as Reward
     from grid_topology_ai.search.continuation_gate import (
         analyze_root_branches as analyze,
         make_do_nothing_action as stop_action,
@@ -1000,14 +1000,14 @@ def init_worker_context(
     global _WORKER_CONTEXT
     _ensure_runtime_dependencies()
 
-    physics = require_physics_provenance(
+    physics = require_physics_config_payload(
         task_config,
         source="evaluation task",
     )
     (
         topology_action_config,
         action_layout,
-    ) = require_topology_action_provenance(
+    ) = require_topology_action_payload(
         task_config,
         source="evaluation task",
     )
@@ -1031,7 +1031,7 @@ def init_worker_context(
         physics_config=physics,
     )
 
-    require_topology_action_provenance(
+    require_topology_action_payload(
         evaluator.checkpoint,
         source=str(checkpoint_path),
         expected_action_space_config=(topology_action_config),
@@ -1281,7 +1281,7 @@ def chunk_list(values: list[int], batch_size: int) -> list[list[int]]:
     return [values[index : index + size] for index in range(0, len(values), size)]
 
 
-def _load_checkpoint_topology_action_provenance(
+def _load_checkpoint_topology_action_payload(
     checkpoint_path: Path,
 ) -> dict[str, object]:
     checkpoint = torch.load(
@@ -1296,12 +1296,12 @@ def _load_checkpoint_topology_action_provenance(
     (
         action_space_config,
         action_layout,
-    ) = require_topology_action_provenance(
+    ) = require_topology_action_payload(
         checkpoint,
         source=str(checkpoint_path),
     )
 
-    return topology_action_provenance(
+    return topology_action_payload(
         action_space_config,
         action_layout,
     )
@@ -1312,7 +1312,7 @@ def _make_task_config(request: EvaluationRequest) -> dict[str, Any]:
         _ensure_runtime_dependencies()
 
     config = request.config
-    topology_provenance = _load_checkpoint_topology_action_provenance(
+    topology_provenance = _load_checkpoint_topology_action_payload(
         request.checkpoint
     )
 
@@ -1331,7 +1331,7 @@ def _make_task_config(request: EvaluationRequest) -> dict[str, Any]:
         "stop_policy": str(request.stop_policy),
         "device": str(config.device),
         "pf_alg": request.resolved_physics_config.pf_alg,
-        **physics_provenance(request.resolved_physics_config),
+        **physics_config_payload(request.resolved_physics_config),
         **topology_provenance,
         "disable_cache": bool(request.disable_cache),
         "use_continuation_gate": bool(config.use_continuation_gate),

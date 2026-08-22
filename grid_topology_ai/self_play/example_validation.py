@@ -10,8 +10,8 @@ import numpy as np
 import pandas as pd
 
 from grid_topology_ai.config import PhysicsConfig
-from grid_topology_ai.outcome_record import TerminalOutcomeEvidence
-from grid_topology_ai.reward import (
+from grid_topology_ai.physics.objective import TerminalOutcomeEvidence
+from grid_topology_ai.value_targets import (
     TERMINAL_UTILITY_GAMMA,
     VALUE_TARGET_MODE,
     terminal_utility_from_outcome,
@@ -896,7 +896,7 @@ def _load_state_metadata(state_path: Path) -> Mapping[str, object]:
     return metadata
 
 
-def validate_state_physics_provenance(
+def validate_state_physics_config_payload(
     state_path: str | Path,
     *,
     expected_physics_config: PhysicsConfig,
@@ -916,7 +916,7 @@ def validate_state_physics_provenance(
     validate_state_npz_schema_arrays(state_path)
 
 
-def validate_state_topology_action_provenance(
+def validate_state_topology_action_payload(
     state_path: str | Path,
     *,
     expected_action_space_config: ActionSpaceConfig,
@@ -1029,11 +1029,11 @@ def _validate_npz_state(
             f"Could not read NPZ state: {state_path}"
         ) from exc
 
-    validate_state_physics_provenance(
+    validate_state_physics_config_payload(
         state_path,
         expected_physics_config=expected_physics_config,
     )
-    _, state_action_layout = validate_state_topology_action_provenance(
+    _, state_action_layout = validate_state_topology_action_payload(
         state_path,
         expected_action_space_config=expected_action_space_config,
         expected_action_layout=expected_action_layout,

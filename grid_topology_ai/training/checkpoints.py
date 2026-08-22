@@ -11,9 +11,9 @@ import numpy as np
 import torch
 
 from grid_topology_ai.config import PhysicsConfig
-from grid_topology_ai.contracts import (
+from grid_topology_ai.models.neural_evaluator import (
     require_checkpoint_contracts,
-    require_topology_action_provenance,
+    require_topology_action_payload,
 )
 from grid_topology_ai.models.graph_self_play_dataset import (
     GraphSelfPlayDataset,
@@ -303,7 +303,7 @@ def load_initial_checkpoint_into_model(
         source=str(checkpoint_path),
         expected_physics_config=dataset.physics_config,
     )
-    require_topology_action_provenance(
+    require_topology_action_payload(
         checkpoint,
         source=str(checkpoint_path),
         expected_action_space_config=dataset.topology_action_config,

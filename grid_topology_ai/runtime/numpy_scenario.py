@@ -9,7 +9,6 @@ from pypower.idx_brch import BR_STATUS, PF, PT, QF, QT
 
 from grid_topology_ai.actions import GridFMActionSpace
 from grid_topology_ai.config import DEFAULT_PHYSICS_CONFIG, PhysicsConfig
-from grid_topology_ai.contracts import PHYSICS_CONFIG_CONTRACT_VERSION
 from grid_topology_ai.physics.constraints import (
     PhysicalNetworkArrays,
     calculate_physical_metrics,
@@ -21,7 +20,7 @@ from grid_topology_ai.power_flow.problem import (
     _build_bus_matrix,
     _build_gen_matrix,
 )
-from grid_topology_ai.reward import GridFMReward
+from grid_topology_ai.physics.utility import GridFMReward
 from grid_topology_ai.runtime.scenario_store import (
     MemoryMappedGridFMPowerFlowBackend,
     MemoryMappedScenarioStore,
@@ -732,15 +731,7 @@ def build_numpy_teacher_context(
 ) -> dict[str, Any]:
     """Build teacher components without DataFrame scenario materialization."""
 
-    if (
-        task_config.get("physics_config_contract_version")
-        != PHYSICS_CONFIG_CONTRACT_VERSION
-    ):
-        raise ValueError("Unsupported physics config contract in worker payload.")
-
     physics_config = PhysicsConfig.from_mapping(task_config["physics_config"])
-    if physics_config.fingerprint() != task_config.get("physics_config_fingerprint"):
-        raise ValueError("PhysicsConfig fingerprint mismatch in worker payload.")
 
     adapter = NumPyMemoryMappedGridFMAdapter(
         runtime_store_dir,

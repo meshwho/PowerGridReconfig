@@ -7,7 +7,7 @@ from grid_topology_ai.actions import GridFMAction, GridFMActionSpace
 from grid_topology_ai.data import GridFMAdapter
 from grid_topology_ai.state import GridFMState
 from grid_topology_ai.physics.utility import state_utility
-from grid_topology_ai.outcome_record import (
+from grid_topology_ai.physics.objective import (
     TERMINAL_OUTCOME_EVIDENCE_SCHEMA_VERSION,
     TerminalOutcomeEvidence,
     redispatch_status_for_reason,
@@ -21,7 +21,7 @@ from grid_topology_ai.physics.objective import (
     assess_physical_state,
     classify_stop_outcome,
 )
-from grid_topology_ai.reward import GridFMReward, GridFMRewardBreakdown
+from grid_topology_ai.physics.utility import GridFMReward, GridFMRewardBreakdown
 from grid_topology_ai.termination import (
     TerminationReason,
     termination_reason_value,

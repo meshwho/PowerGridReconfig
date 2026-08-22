@@ -15,7 +15,7 @@ from torch.utils.data import DataLoader
 
 from grid_topology_ai.config import TrainingConfig
 from grid_topology_ai.config import PhysicsConfig
-from grid_topology_ai.contracts import require_physics_provenance
+from grid_topology_ai.models.neural_evaluator import require_physics_config_payload
 from grid_topology_ai.models.graph_policy_value_net_v2 import GraphPolicyValueNetV2
 from grid_topology_ai.models.graph_self_play_dataset import (
     GraphSelfPlayDataset,
@@ -715,7 +715,7 @@ def train_graph_policy_value_model(request: TrainingRequest) -> Path:
             physics_config=request.physics_config,
         )
         if init_checkpoint_payload is not None:
-            require_physics_provenance(
+            require_physics_config_payload(
                 init_checkpoint_payload,
                 source=str(source_checkpoint),
                 expected_physics_config=dataset.physics_config,
@@ -1290,7 +1290,7 @@ __all__ = [
     "np",
     "print_value_target_diagnostics",
     "random",
-    "require_physics_provenance",
+    "require_physics_config_payload",
     "resolve_device",
     "save_checkpoint_now",
     "setup_live_logging",

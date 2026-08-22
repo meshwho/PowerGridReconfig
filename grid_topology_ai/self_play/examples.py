@@ -10,8 +10,8 @@ import pandas as pd
 
 from grid_topology_ai.config import PhysicsConfig
 from grid_topology_ai.state import GridFMState
-from grid_topology_ai.outcome_record import TerminalOutcomeEvidence
-from grid_topology_ai.reward import TERMINAL_UTILITY_GAMMA
+from grid_topology_ai.physics.objective import TerminalOutcomeEvidence
+from grid_topology_ai.value_targets import TERMINAL_UTILITY_GAMMA
 from grid_topology_ai.search.root_policy import (
     normalize_policy,
     require_action_in_policy_support,

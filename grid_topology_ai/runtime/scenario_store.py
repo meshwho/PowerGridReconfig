@@ -13,10 +13,9 @@ from pypower.idx_brch import BR_STATUS
 
 from grid_topology_ai.actions import GridFMActionSpace
 from grid_topology_ai.config import DEFAULT_PHYSICS_CONFIG, PhysicsConfig
-from grid_topology_ai.contracts import PHYSICS_CONFIG_CONTRACT_VERSION
 from grid_topology_ai.power_flow.problem import build_scenario_power_flow_template
 from grid_topology_ai.power_flow.backend import GridFMPowerFlowBackend
-from grid_topology_ai.reward import GridFMReward
+from grid_topology_ai.physics.utility import GridFMReward
 from grid_topology_ai.state import GridFMState, GridFMStateBuilder
 from grid_topology_ai.state import GridFMStateStore
 
@@ -546,11 +545,7 @@ def build_memory_mapped_teacher_context(
 ) -> dict[str, Any]:
     """Construct the same teacher components using a read-only mmap adapter."""
 
-    if task_config.get("physics_config_contract_version") != PHYSICS_CONFIG_CONTRACT_VERSION:
-        raise ValueError("Unsupported physics config contract in worker payload.")
     physics_config = PhysicsConfig.from_mapping(task_config["physics_config"])
-    if physics_config.fingerprint() != task_config.get("physics_config_fingerprint"):
-        raise ValueError("PhysicsConfig fingerprint mismatch in worker payload.")
 
     adapter = MemoryMappedGridFMAdapter(
         runtime_store_dir,

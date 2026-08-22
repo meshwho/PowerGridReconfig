@@ -10,26 +10,15 @@ import numpy as np
 import pandas as pd
 
 from grid_topology_ai.config import PhysicsConfig
-from grid_topology_ai.contracts import (
-    physics_provenance,
-    require_exact_contract_version,
-    require_physics_provenance,
-    OUTCOME_OBJECTIVE_VERSION,
-    require_outcome_objective_version,
-)
-from grid_topology_ai.outcome_record import (
-    TERMINAL_OUTCOME_EVIDENCE_SCHEMA_VERSION,
-)
-from grid_topology_ai.outcome_record import (
-    terminal_evidence_from_metadata,
+from grid_topology_ai.models.neural_evaluator import (
+    physics_config_payload,
+    require_physics_config_payload,
 )
 from grid_topology_ai.physics.objective import (
-    PHYSICAL_OBJECTIVE_SCHEMA_VERSION,
+    terminal_evidence_from_metadata,
 )
-from grid_topology_ai.reward import (
-    TERMINAL_UTILITY_GAMMA,
-    require_reward_discount_factor,
-)
+from grid_topology_ai.value_targets import TERMINAL_UTILITY_GAMMA
+from grid_topology_ai.physics.utility import require_reward_discount_factor
 from grid_topology_ai.termination import (
     parse_termination_reason,
     validate_outcome_invariants,
@@ -133,27 +122,14 @@ def recover_examples(states_dir: Path, gamma: float) -> pd.DataFrame:
             print(f"WARNING: failed to read {path}: {exc}")
             continue
 
-        require_exact_contract_version(
-            meta.get("physical_objective_schema_version"),
-            expected=PHYSICAL_OBJECTIVE_SCHEMA_VERSION,
-            name="physical-objective contract",
-            source=str(path),
-            regeneration_command=(
-                "python -m grid_topology_ai.cli self-play ..."
-            ),
-        )
-        require_outcome_objective_version(
-            meta,
-            source=str(path),
-        )
-        state_physics_config = require_physics_provenance(
+        state_physics_config = require_physics_config_payload(
             meta,
             source=str(path),
             expected_physics_config=observed_physics_config,
         )
         if observed_physics_config is None:
             observed_physics_config = state_physics_config
-        provenance = physics_provenance(state_physics_config)
+        provenance = physics_config_payload(state_physics_config)
 
         scenario_id = int(
             meta.get("scenario_id", scenario_id_from_name)
@@ -249,29 +225,14 @@ def recover_examples(states_dir: Path, gamma: float) -> pd.DataFrame:
                 "termination_reason": (
                     termination_reason.value
                 ),
-                "terminal_outcome_evidence_schema_version": (
-                    TERMINAL_OUTCOME_EVIDENCE_SCHEMA_VERSION
-                ),
                 "terminal_outcome_evidence_json": (
                     evidence.to_json()
                 ),
-                "physical_objective_schema_version": (
-                    PHYSICAL_OBJECTIVE_SCHEMA_VERSION
-                ),
-                "outcome_objective_version": (
-                    OUTCOME_OBJECTIVE_VERSION
-                ),
-                "physics_config_contract_version": provenance[
-                    "physics_config_contract_version"
-                ],
                 "physics_config": json.dumps(
                     provenance["physics_config"],
                     sort_keys=True,
                     separators=(",", ":"),
                 ),
-                "physics_config_fingerprint": provenance[
-                    "physics_config_fingerprint"
-                ],
                 "visit_counts_json": make_visit_counts_json(
                     selected_action_id
                 ),
