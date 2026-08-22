@@ -19,7 +19,7 @@ from grid_topology_ai.physics.objective import (
     PhysicalStateAssessment,
     assess_physical_state,
 )
-from grid_topology_ai.power_flow.errors import (
+from grid_topology_ai.power_flow import (
     InvalidPhysicalState,
     PowerFlowNotConverged,
 )

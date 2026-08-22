@@ -79,7 +79,7 @@ from grid_topology_ai.physics.constraints import (
     validate_pypower_result,
 )
 from grid_topology_ai.physics.objective import assess_physical_state
-from grid_topology_ai.power_flow.errors import (
+from grid_topology_ai.power_flow import (
     InvalidPhysicalState,
     PowerFlowFailureKind,
     PowerFlowNotConverged,

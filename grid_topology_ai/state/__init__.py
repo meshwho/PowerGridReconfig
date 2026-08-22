@@ -7,7 +7,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from grid_topology_ai.power_flow.errors import InvalidPhysicalState
+from grid_topology_ai.power_flow import InvalidPhysicalState
 from pypower.idx_brch import BR_STATUS, PF, PT, QF, QT, RATE_A
 from pypower.idx_bus import VA, VM
 from pypower.idx_gen import GEN_STATUS, PG, QG

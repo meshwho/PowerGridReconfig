@@ -80,10 +80,7 @@ try:
 except ImportError:  # pragma: no cover
     tqdm = None
 
-from grid_topology_ai.cache import (
-    DEFAULT_EXACT_POWER_FLOW_CACHE_BYTES,
-    LODFStructureCache,
-)
+from grid_topology_ai.cache import DEFAULT_EXACT_POWER_FLOW_CACHE_BYTES
 from grid_topology_ai.actions import GridFMAction, GridFMActionSpace
 from grid_topology_ai.config import DEFAULT_PHYSICS_CONFIG, PhysicsConfig
 from grid_topology_ai.teacher_config import (
@@ -94,7 +91,7 @@ from grid_topology_ai.teacher_config import (
 from grid_topology_ai.data import GridFMAdapter
 from grid_topology_ai.environment import TopologySwitchingEnv
 from grid_topology_ai.physics.utility import state_utility
-from grid_topology_ai.physics.lodf import lodf_loading_safety_score
+from grid_topology_ai.physics.lodf import LODFStructureCache, lodf_loading_safety_score
 from grid_topology_ai.outcome_record import (
     TerminalOutcomeEvidence,
     redispatch_status_for_reason,

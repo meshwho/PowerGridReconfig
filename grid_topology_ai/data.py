@@ -15,7 +15,7 @@ from grid_topology_ai.config import (
 from grid_topology_ai.physics.constraints import (
     calculate_physical_metrics_from_frames,
 )
-from grid_topology_ai.power_flow.errors import InvalidPhysicalState
+from grid_topology_ai.power_flow import InvalidPhysicalState
 from grid_topology_ai.state import GridFMState, GridFMStateBuilder
 
 
