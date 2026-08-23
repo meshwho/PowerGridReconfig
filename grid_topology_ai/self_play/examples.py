@@ -11,6 +11,7 @@ import pandas as pd
 from grid_topology_ai.config import PhysicsConfig
 from grid_topology_ai.state import GridFMState
 from grid_topology_ai.physics.objective import TerminalOutcomeEvidence
+from grid_topology_ai.physics.utility import state_utility
 from grid_topology_ai.value_targets import TERMINAL_UTILITY_GAMMA
 from grid_topology_ai.search.mcts import (
     normalize_policy,
@@ -93,6 +94,23 @@ class ExampleWriter:
         self.action_space_config = action_space_config
         self.run_id = str(run_id or self._existing_run_id())
         self._episode_ids: dict[int, str] = {}
+        episodes = (
+            self._existing_frame.drop_duplicates("scenario_id")
+            if not self._existing_frame.empty
+            else self._existing_frame
+        )
+        self._saved_episodes = len(episodes)
+        self._solved_episodes = (
+            int(episodes["solved"].astype(str).str.lower().eq("true").sum())
+            if "solved" in episodes
+            else 0
+        )
+        if self._saved_episodes:
+            print(
+                f"Self-play resume: {self._saved_episodes} episodes already saved | "
+                f"solve={100.0 * self._solved_episodes / self._saved_episodes:.1f}%",
+                flush=True,
+            )
 
     def _existing_run_id(self) -> str:
         if self._existing_frame.empty or "run_id" not in self._existing_frame:
@@ -215,6 +233,29 @@ class ExampleWriter:
                 self._episode_ids[scenario_id] = previous_episode_id
             raise
 
+        initial_utility = state_utility(
+            pending_examples[0]["state"],
+            physics_config=self.physics_config,
+        )
+        final_utility = float(terminal_outcome_evidence.topology_utility)
+        delta_utility = final_utility - initial_utility
+        trend = (
+            "better"
+            if delta_utility > 1e-12
+            else "worse"
+            if delta_utility < -1e-12
+            else "same"
+        )
+        self._saved_episodes += 1
+        self._solved_episodes += int(bool(solved))
+        print(
+            f"Self-play {self._saved_episodes:>5} | scenario {scenario_id:>5} | "
+            f"steps={len(pending_examples)} | solved={bool(solved)} | "
+            f"reason={reason_value} | U {initial_utility:+.3f} -> "
+            f"{final_utility:+.3f} | dU={delta_utility:+.3f} {trend} | "
+            f"solve={100.0 * self._solved_episodes / self._saved_episodes:.1f}%",
+            flush=True,
+        )
         return len(pending_examples)
 
     @staticmethod
