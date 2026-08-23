@@ -274,7 +274,7 @@ def _step_metadata(
     selection_mode: str,
     search_result: Any,
 ) -> dict[str, Any]:
-    return {
+    metadata = {
         "source": "mcts_self_play",
         "scenario_id": int(scenario_id),
         "step": int(step),
@@ -307,6 +307,36 @@ def _step_metadata(
             else int(search_result.best_branch_id)
         ),
     }
+
+    scores = search_result.root.action_scores
+    if search_result.root.neural_value is None or not scores:
+        return metadata
+
+    total_score = float(sum(scores.values()))
+    nn_top1_action_id = int(max(scores, key=scores.__getitem__))
+    nn_top1_probability = (
+        float(scores[nn_top1_action_id]) / total_score if total_score > 0.0 else 0.0
+    )
+    mcts_top1_action_id = int(search_result.best_action_id)
+    mcts_top1_probability = float(search_result.policy.get(mcts_top1_action_id, 0.0))
+    changed = nn_top1_action_id != mcts_top1_action_id
+
+    metadata.update(
+        {
+            "nn_top1_action_id": nn_top1_action_id,
+            "nn_top1_probability": nn_top1_probability,
+            "mcts_best_probability": mcts_top1_probability,
+            "nn_mcts_top1_changed": changed,
+        }
+    )
+    print(
+        f"NN vs MCTS | scenario={scenario_id} step={step} | "
+        f"NN={nn_top1_action_id} p={nn_top1_probability:.3f} | "
+        f"MCTS={mcts_top1_action_id} p={mcts_top1_probability:.3f} | "
+        f"changed={changed}",
+        flush=True,
+    )
+    return metadata
 
 
 _WORKER_RUNTIME: dict[str, Any] | None = None
