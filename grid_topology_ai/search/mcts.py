@@ -1129,6 +1129,7 @@ class MCTSPlanner:
             terminal_utility, _ = terminal_utility_from_outcome(
                 node.solved,
                 getattr(node.env, "termination_reason", None),
+                evidence=getattr(node.env, "terminal_outcome_evidence", None),
             )
             return terminal_utility
 
