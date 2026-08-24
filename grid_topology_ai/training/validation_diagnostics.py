@@ -47,6 +47,7 @@ def evaluate_one_epoch(
             "policy_loss",
             "value_loss",
             "top1",
+            "top3",
             "top5",
             "stop_acc",
             "switch_acc",
@@ -76,6 +77,7 @@ def evaluate_one_epoch(
             count = int(target_value.numel())
             target_action = target_policy.argmax(dim=1)
             top = logits.topk(min(5, logits.shape[1]), dim=1).indices
+            top3 = top[:, : min(3, top.shape[1])]
             predicted_action = top[:, 0]
             stop_mask = target_action == 0
             switch_mask = ~stop_mask
@@ -83,6 +85,9 @@ def evaluate_one_epoch(
             totals["policy_loss"] += float(policy_losses.sum().item())
             totals["value_loss"] += float(value_losses.sum().item())
             totals["top1"] += float((predicted_action == target_action).sum().item())
+            totals["top3"] += float(
+                (top3 == target_action[:, None]).any(dim=1).sum().item()
+            )
             totals["top5"] += float(
                 (top == target_action[:, None]).any(dim=1).sum().item()
             )
@@ -103,6 +108,7 @@ def evaluate_one_epoch(
         "policy_loss": totals["policy_loss"] / examples,
         "value_loss": totals["value_loss"] / examples,
         "top1": totals["top1"] / examples,
+        "top3": totals["top3"] / examples,
         "top5": totals["top5"] / examples,
         "stop_acc": totals["stop_acc"] / max(stop_examples, 1),
         "switch_acc": totals["switch_acc"] / max(switch_examples, 1),
