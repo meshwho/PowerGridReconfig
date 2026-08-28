@@ -982,7 +982,7 @@ def main(argv: list[str] | None = None) -> int:
         default=1.0,
         help="Terminal-utility gamma. The current contract requires 1.0.",
     )
-    parser.add_argument("--pf-alg", type=int, default=3, choices=[1, 2, 3, 4])
+    parser.add_argument("--pf-alg", type=int, default=1, choices=[1, 2, 3, 4])
     parser.add_argument("--pf-max-iter", type=int, default=30)
     parser.add_argument("--max-steps", type=int, default=5)
     parser.add_argument("--max-teacher-steps", type=int, default=4)

@@ -170,8 +170,7 @@ def select_epsilon_optimal_trajectory(
     """
     Select the minimum-intervention trajectory among physically near-optimal ones.
 
-    Strictly solved trajectories are handled lexicographically: choose the one
-    requiring the fewest switching actions. If none is solved, keep trajectories
+    choose the one requiring the fewest switching actions. If none is solved, keep trajectories
     within a relative epsilon of the best physical improvement found by the
     search, then choose the one with the fewest switches.
     """
@@ -202,11 +201,14 @@ def select_epsilon_optimal_trajectory(
     else:
         best_physical = min(float(node.safety_score) for node in front)
         root_safety = float(root.safety_score)
-        available_improvement = max(root_safety - best_physical, 0.0)
-        threshold = best_physical + epsilon * available_improvement
+
+        physical_tolerance = epsilon * max(abs(root_safety), tolerance)
+        threshold = best_physical + physical_tolerance
 
         pool = [
-            node for node in front if float(node.safety_score) <= threshold + tolerance
+            node
+            for node in front
+            if float(node.safety_score) <= threshold + tolerance
         ]
         if not pool:
             pool = [min(front, key=lambda node: float(node.safety_score))]

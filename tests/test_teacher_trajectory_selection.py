@@ -65,6 +65,26 @@ def test_scenario_61_selects_three_switch_prefix_at_one_percent_epsilon() -> Non
     assert result.best_physical_safety == pytest.approx(35.563)
     assert result.retained_improvement_fraction == pytest.approx(0.99349, abs=1e-5)
 
+def test_tiny_relative_improvement_prefers_zero_switch_root() -> None:
+    root = node(246.58, 0)
+    candidates = [
+        root,
+        node(246.45, 1),
+        node(246.41, 2),
+        node(246.32, 3),
+        node(246.23, 4),
+        node(246.215, 5),
+    ]
+
+    result = select_epsilon_optimal_trajectory(
+        root,
+        candidates,
+        relative_physical_epsilon=0.01,
+        max_hard_overloaded=0,
+    )
+
+    assert result.selected_switch_count == 0
+    assert result.node is root
 
 def test_zero_epsilon_recovers_exact_physical_minimum() -> None:
     root = node(181.276, 0)
