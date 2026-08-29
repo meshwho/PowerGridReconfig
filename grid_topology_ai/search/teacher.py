@@ -1451,8 +1451,6 @@ def _terminal_candidate(node: Any) -> _TerminalCandidate | None:
     assessment = assess_physical_state(state.metrics)
     if assessment.physically_secure:
         return _TerminalCandidate(node=node, redispatch_l1_mw=0.0)
-    if not assessment.hard_overload_free:
-        return None
     if node.done:
         reason = parse_termination_reason(node.termination_reason)
         if reason not in {
