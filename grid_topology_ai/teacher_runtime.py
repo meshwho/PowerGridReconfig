@@ -333,6 +333,19 @@ def _generate_scenario(scenario_id: int) -> dict[str, Any]:
                 "traceback": None,
             }
 
+        terminal_handoff_selected = bool(
+            best.action_ids
+            and best.branch_ids
+            and int(best.action_ids[-1]) == 0
+            and best.branch_ids[-1] is None
+        )
+        topology_action_ids = (
+            best.action_ids[:-1] if terminal_handoff_selected else best.action_ids
+        )
+        topology_branch_ids = (
+            best.branch_ids[:-1] if terminal_handoff_selected else best.branch_ids
+        )
+
         final_teacher_safety = float(best.safety_score)
         total_safety_improvement = float(initial_safety - final_teacher_safety)
 
@@ -374,7 +387,7 @@ def _generate_scenario(scenario_id: int) -> dict[str, Any]:
         step_items: list[dict[str, Any]] = []
         step_rewards: list[float] = []
         max_teacher_steps = min(
-            len(best.action_ids),
+            len(topology_action_ids),
             int(task["max_teacher_steps"]),
         )
         handoff_added = False
@@ -389,8 +402,8 @@ def _generate_scenario(scenario_id: int) -> dict[str, Any]:
                 break
 
             action_mask = replay_env.operational_action_mask()
-            selected_action_id = int(best.action_ids[step_idx])
-            selected_branch_id = best.branch_ids[step_idx]
+            selected_action_id = int(topology_action_ids[step_idx])
+            selected_branch_id = topology_branch_ids[step_idx]
 
             if not _selected_teacher_action_is_valid(action_mask, selected_action_id):
                 if bool(task["add_handoff_example"]):
@@ -493,31 +506,39 @@ def _generate_scenario(scenario_id: int) -> dict[str, Any]:
             if step_result.done:
                 break
 
-        if (
+        selected_handoff_pending = terminal_handoff_selected and not handoff_added
+        optional_handoff_pending = (
             bool(task["add_handoff_example"])
             and not handoff_added
             and not replay_env.done
-        ):
+        )
+        if selected_handoff_pending or optional_handoff_pending:
             final_teacher_state = replay_env.current_state
             if final_teacher_state is not None:
-                final_action_mask = replay_env.operational_action_mask()
+                final_action_mask = action_space.operational_action_mask(
+                    final_teacher_state
+                )
                 final_safety_before = safety_score(
                     final_teacher_state,
                     physics_config=physics_config,
                 )
                 final_stop_step = len(step_items)
+                if terminal_handoff_selected:
+                    terminal_handoff_reason = "terminal_redispatch_selected"
+                else:
+                    terminal_handoff_reason = "terminal_handoff_after_useful_sequence"
                 step_items.append(
                     make_handoff_step_item(
                         step_idx=final_stop_step,
                         state_before=final_teacher_state,
                         action_mask=final_action_mask,
                         safety_before=final_safety_before,
-                        reason="terminal_handoff_after_useful_sequence",
+                        reason=terminal_handoff_reason,
                     )
                 )
                 step_rewards.append(0.0)
                 handoff_added = True
-                handoff_reason = "terminal_handoff_after_useful_sequence"
+                handoff_reason = terminal_handoff_reason
 
         if not step_items:
             clear_worker_caches_if_needed()
