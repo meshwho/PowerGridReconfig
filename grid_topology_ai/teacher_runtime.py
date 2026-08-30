@@ -726,6 +726,7 @@ def _generate_scenario(scenario_id: int) -> dict[str, Any]:
 def load_scenario_ids(
     transitions_path: Path,
     limit: int | None,
+    difficulty_class: str | None = None,
 ) -> list[int]:
     if not transitions_path.exists():
         raise FileNotFoundError(f"Transitions file not found: {transitions_path}")
@@ -735,6 +736,23 @@ def load_scenario_ids(
         raise ValueError(
             f"Transitions file must contain scenario_id column: {transitions_path}"
         )
+
+    if difficulty_class is not None:
+        if "difficulty_class" not in transitions.columns:
+            raise ValueError(
+                "Transitions file must contain difficulty_class column when "
+                f"--difficulty-class is used: {transitions_path}"
+            )
+        normalized = (
+            transitions["difficulty_class"].astype(str).str.strip().str.lower()
+        )
+        requested = str(difficulty_class).strip().lower()
+        transitions = transitions.loc[normalized == requested]
+        if transitions.empty:
+            raise ValueError(
+                f"No {requested!r} scenarios found in transitions file: "
+                f"{transitions_path}"
+            )
 
     scenario_ids = [
         int(x) for x in transitions["scenario_id"].drop_duplicates().tolist()
@@ -990,6 +1008,12 @@ def main(argv: list[str] | None = None) -> int:
         help="Transitions CSV with scenario_id column.",
     )
     parser.add_argument(
+        "--difficulty-class",
+        choices=["simple", "medium", "hard"],
+        default=None,
+        help="Restrict teacher generation to one difficulty_class in the transitions CSV.",
+    )
+    parser.add_argument(
         "--output-dir",
         type=str,
         required=True,
@@ -1076,6 +1100,7 @@ def main(argv: list[str] | None = None) -> int:
     scenario_ids = load_scenario_ids(
         transitions_path=transitions_path,
         limit=args.limit,
+        difficulty_class=args.difficulty_class,
     )
     task_config = make_task_config(args)
     checkpoint_path = output_dir / "teacher_checkpoint.jsonl"
@@ -1083,6 +1108,7 @@ def main(argv: list[str] | None = None) -> int:
     checkpoint_config = {
         "raw_dir": str(raw_dir.resolve()),
         "transitions_path": str(transitions_path.resolve()),
+        "difficulty_class": args.difficulty_class,
         "scenario_ids": [int(scenario_id) for scenario_id in scenario_ids],
         "task_config": task_config,
     }
@@ -1118,6 +1144,7 @@ def main(argv: list[str] | None = None) -> int:
     print("=" * 100)
     print(f"Raw directory:        {raw_dir.resolve()}")
     print(f"Transitions:          {transitions_path.resolve()}")
+    print(f"Difficulty class:     {args.difficulty_class or 'all'}")
     print(f"Output dir:           {output_dir}")
     print(f"States dir:           {states_dir}")
     print(f"Examples CSV:         {examples_path}")
