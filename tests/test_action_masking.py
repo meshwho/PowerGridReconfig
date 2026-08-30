@@ -21,6 +21,7 @@ _BRANCH_IDS = (0, 1)
 _ACTION_LAYOUT = build_branch_action_slots(_BRANCH_IDS)
 _ACTION_LAYOUT_PAYLOAD = action_layout_to_list(_ACTION_LAYOUT)
 _EVIDENCE = terminal_evidence("handoff_to_redispatch")
+_TEACHER_OUTCOME = "max_steps_reached"
 _RUN_ID = "test-run"
 _ITERATION = 1
 _EPISODE_ID = "test-episode-1"
@@ -34,6 +35,7 @@ def _state_metadata() -> np.ndarray:
         "physics_config": DEFAULT_PHYSICS_CONFIG.to_dict(),
         "topology_action_config": _ACTION_CONFIG.to_contract_dict(),
         "action_layout": _ACTION_LAYOUT_PAYLOAD,
+        "teacher_outcome": _TEACHER_OUTCOME,
         "terminal_outcome_evidence": _EVIDENCE.to_dict(),
     }
     return np.array(json.dumps(metadata))
@@ -106,8 +108,9 @@ def _write_examples_csv(
                 "solved": False,
                 "done": True,
                 "termination_reason": "handoff_to_redispatch",
+                "teacher_outcome": _TEACHER_OUTCOME,
                 "terminal_outcome_evidence_json": _EVIDENCE.to_json(),
-                "outcome_class": "handoff_to_redispatch",
+                "outcome_class": _TEACHER_OUTCOME,
                 "outcome_steps_to_terminal": 1,
                 "outcome_value_target_mode": VALUE_TARGET_MODE,
                 "outcome_gamma": TERMINAL_UTILITY_GAMMA,
