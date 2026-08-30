@@ -276,6 +276,9 @@ def _generate_scenario(scenario_id: int) -> dict[str, Any]:
             beam_width=int(task["beam_width"]),
             candidate_pool_size=int(task["candidate_pool"]),
             top_k_actions=int(task["top_k"]),
+            redispatch_candidates_per_switch_count=int(
+                task["redispatch_candidates_per_switch_count"]
+            ),
             gamma=float(task["gamma"]),
             include_stop_action=True,
             allow_hard_count_increase=bool(task["allow_hard_count_increase"]),

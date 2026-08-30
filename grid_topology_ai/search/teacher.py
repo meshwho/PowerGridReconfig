@@ -159,6 +159,59 @@ def update_pareto_archive(
     )
 
 
+def update_top_j_candidate_archive(
+    archive: Mapping[int, Sequence[NodeT]],
+    nodes: Sequence[NodeT],
+    *,
+    per_switch_count: int,
+) -> dict[int, list[NodeT]]:
+    """Keep the lowest-J AC-valid trajectories independently for each switch count."""
+
+    limit = int(per_switch_count)
+    if limit <= 0:
+        raise ValueError("per_switch_count must be positive")
+
+    updated = {
+        int(num_switches): list(bucket)
+        for num_switches, bucket in archive.items()
+    }
+
+    for node in nodes:
+        if not math.isfinite(float(node.safety_score)):
+            continue
+
+        num_switches = switch_count(node)
+        bucket = updated.setdefault(num_switches, [])
+        action_key = _action_key(node)
+        duplicate_index = next(
+            (
+                index
+                for index, other in enumerate(bucket)
+                if _action_key(other) == action_key
+            ),
+            None,
+        )
+        node_key = (float(node.safety_score), *_tie_break_key(node))
+
+        if duplicate_index is None:
+            bucket.append(node)
+        else:
+            other = bucket[duplicate_index]
+            other_key = (float(other.safety_score), *_tie_break_key(other))
+            if node_key < other_key:
+                bucket[duplicate_index] = node
+
+        bucket.sort(
+            key=lambda candidate: (
+                float(candidate.safety_score),
+                *_tie_break_key(candidate),
+            )
+        )
+        del bucket[limit:]
+
+    return updated
+
+
 def select_epsilon_optimal_trajectory(
     root: NodeT,
     nodes: Sequence[NodeT],
@@ -428,6 +481,10 @@ class ImpactBeamSearchConfig:
     top_k_actions:
         Number of impact-tested children kept per node.
 
+    redispatch_candidates_per_switch_count:
+        Number of lowest-J AC-valid trajectories retained independently for each
+        physical switch count for later terminal redispatch evaluation.
+
     gamma:
         Discount factor for cumulative impact score.
 
@@ -457,6 +514,7 @@ class ImpactBeamSearchConfig:
     beam_width: int = 20
     candidate_pool_size: int = 120
     top_k_actions: int = 30
+    redispatch_candidates_per_switch_count: int = 5
     gamma: float = 0.95
 
     include_stop_action: bool = True
@@ -474,6 +532,8 @@ class ImpactBeamSearchConfig:
         epsilon = float(self.relative_physical_epsilon)
         if not 0.0 <= epsilon < 1.0:
             raise ValueError("relative_physical_epsilon must satisfy 0 <= epsilon < 1")
+        if int(self.redispatch_candidates_per_switch_count) <= 0:
+            raise ValueError("redispatch_candidates_per_switch_count must be positive")
 
 
 @dataclass
@@ -534,6 +594,7 @@ class ImpactBeamSearchResult:
     selected_safety: float
     selected_switch_count: int
     retained_improvement_fraction: float
+    redispatch_candidates: list[ImpactBeamSearchNode] = field(default_factory=list)
 
 
 # ======================================================================================
@@ -570,6 +631,9 @@ class ImpactBeamSearchPlanner:
 
         self.evaluated_actions = 0
         self.root_num_hard_overloaded = 0
+        self._redispatch_candidate_archive: dict[
+            int, list[ImpactBeamSearchNode]
+        ] = {}
 
         self._progress_bar = None
         self._current_depth = 0
@@ -718,6 +782,11 @@ class ImpactBeamSearchPlanner:
 
             beam: list[ImpactBeamSearchNode] = [root]
             pareto_archive: list[ImpactBeamSearchNode] = [root]
+            self._redispatch_candidate_archive = update_top_j_candidate_archive(
+                {},
+                [root],
+                per_switch_count=self.config.redispatch_candidates_per_switch_count,
+            )
 
             for _depth in range(self.config.max_depth):
                 self._current_depth = int(_depth) + 1
@@ -783,6 +852,12 @@ class ImpactBeamSearchPlanner:
             if not final_beam:
                 final_beam = [best_node]
 
+            redispatch_candidates = [
+                node
+                for num_switches in sorted(self._redispatch_candidate_archive)
+                for node in self._redispatch_candidate_archive[num_switches]
+            ]
+
             result = ImpactBeamSearchResult(
                 scenario_id=int(scenario_id),
                 best_node=best_node,
@@ -796,6 +871,7 @@ class ImpactBeamSearchPlanner:
                 retained_improvement_fraction=float(
                     selection.retained_improvement_fraction
                 ),
+                redispatch_candidates=redispatch_candidates,
             )
 
             return result
@@ -886,6 +962,12 @@ class ImpactBeamSearchPlanner:
 
         if not evaluated_children:
             return []
+
+        self._redispatch_candidate_archive = update_top_j_candidate_archive(
+            self._redispatch_candidate_archive,
+            evaluated_children,
+            per_switch_count=self.config.redispatch_candidates_per_switch_count,
+        )
 
         evaluated_children = self._apply_safety_guards(
             parent=node,
