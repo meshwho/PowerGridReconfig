@@ -32,17 +32,6 @@ class TrajectoryNode(Protocol):
 NodeT = TypeVar("NodeT", bound=TrajectoryNode)
 
 
-@dataclass(frozen=True)
-class TrajectorySelection:
-    node: TrajectoryNode
-    pareto_front: tuple[TrajectoryNode, ...]
-    candidate_pool: tuple[TrajectoryNode, ...]
-    best_physical_safety: float
-    selected_safety: float
-    selected_switch_count: int
-    retained_improvement_fraction: float
-
-
 def switch_count(node: TrajectoryNode) -> int:
     """Count physical switching actions; stop/handoff actions do not count."""
 
@@ -57,102 +46,11 @@ def _tie_break_key(node: TrajectoryNode) -> tuple[float, tuple[int, ...]]:
     return (-float(node.discounted_score), _action_key(node))
 
 
-def _same_objectives(
-    left: TrajectoryNode,
-    right: TrajectoryNode,
-    *,
-    tolerance: float,
-) -> bool:
+def _topology_candidate_key(node: TrajectoryNode) -> tuple[object, ...]:
     return (
-        switch_count(left) == switch_count(right)
-        and abs(float(left.safety_score) - float(right.safety_score)) <= tolerance
-    )
-
-
-def _dominates(
-    left: TrajectoryNode,
-    right: TrajectoryNode,
-    *,
-    tolerance: float,
-) -> bool:
-    left_safety = float(left.safety_score)
-    right_safety = float(right.safety_score)
-    left_switches = switch_count(left)
-    right_switches = switch_count(right)
-
-    no_worse = (
-        left_safety <= right_safety + tolerance and left_switches <= right_switches
-    )
-    strictly_better = (
-        left_safety < right_safety - tolerance or left_switches < right_switches
-    )
-    return no_worse and strictly_better
-
-
-def pareto_front(
-    nodes: Sequence[NodeT],
-    *,
-    max_hard_overloaded: int,
-    tolerance: float = 1e-9,
-) -> list[NodeT]:
-    """Return nondominated AC-valid trajectories in (final penalty, switches)."""
-
-    eligible = [
-        node
-        for node in nodes
-        if float(node.safety_score) < float("inf")
-        and int(node.num_hard_overloaded) <= int(max_hard_overloaded)
-    ]
-
-    unique: list[NodeT] = []
-    for node in eligible:
-        duplicate_index = next(
-            (
-                index
-                for index, other in enumerate(unique)
-                if _same_objectives(node, other, tolerance=tolerance)
-            ),
-            None,
-        )
-        if duplicate_index is None:
-            unique.append(node)
-            continue
-
-        if _tie_break_key(node) < _tie_break_key(unique[duplicate_index]):
-            unique[duplicate_index] = node
-
-    front = [
-        node
-        for node in unique
-        if not any(
-            other is not node and _dominates(other, node, tolerance=tolerance)
-            for other in unique
-        )
-    ]
-
-    return sorted(
-        front,
-        key=lambda node: (
-            switch_count(node),
-            float(node.safety_score),
-            *_tie_break_key(node),
-        ),
-    )
-
-
-def update_pareto_archive(
-    archive: Sequence[NodeT],
-    nodes: Sequence[NodeT],
-    *,
-    max_hard_overloaded: int,
-    tolerance: float = 1e-9,
-) -> list[NodeT]:
-    """Update a compact Pareto archive without retaining every searched env clone."""
-
-    return pareto_front(
-        [*archive, *nodes],
-        max_hard_overloaded=max_hard_overloaded,
-        tolerance=tolerance,
+        float(node.safety_score),
+        switch_count(node),
+        *_tie_break_key(node),
     )
 
 
@@ -188,111 +86,19 @@ def update_top_j_candidate_archive(
             ),
             None,
         )
-        node_key = (float(node.safety_score), *_tie_break_key(node))
+        node_key = _topology_candidate_key(node)
 
         if duplicate_index is None:
             bucket.append(node)
         else:
             other = bucket[duplicate_index]
-            other_key = (float(other.safety_score), *_tie_break_key(other))
-            if node_key < other_key:
+            if node_key < _topology_candidate_key(other):
                 bucket[duplicate_index] = node
 
-        bucket.sort(
-            key=lambda candidate: (
-                float(candidate.safety_score),
-                *_tie_break_key(candidate),
-            )
-        )
+        bucket.sort(key=_topology_candidate_key)
         del bucket[limit:]
 
     return updated
-
-
-def select_epsilon_optimal_trajectory(
-    root: NodeT,
-    nodes: Sequence[NodeT],
-    *,
-    relative_physical_epsilon: float,
-    max_hard_overloaded: int,
-    tolerance: float = 1e-9,
-) -> TrajectorySelection:
-    """
-    Select the minimum-intervention trajectory among physically near-optimal ones.
-
-    choose the one requiring the fewest switching actions. If none is solved, keep trajectories
-    within a relative epsilon of the best physical improvement found by the
-    search, then choose the one with the fewest switches.
-    """
-
-    epsilon = float(relative_physical_epsilon)
-    if not 0.0 <= epsilon < 1.0:
-        raise ValueError("relative_physical_epsilon must satisfy 0 <= epsilon < 1")
-
-    front = pareto_front(
-        nodes,
-        max_hard_overloaded=max_hard_overloaded,
-        tolerance=tolerance,
-    )
-    if not front:
-        front = [root]
-
-    solved = [node for node in front if bool(node.solved)]
-    if solved:
-        pool = sorted(
-            solved,
-            key=lambda node: (
-                switch_count(node),
-                float(node.safety_score),
-                *_tie_break_key(node),
-            ),
-        )
-        selected = pool[0]
-    else:
-        best_physical = min(float(node.safety_score) for node in front)
-        root_safety = float(root.safety_score)
-
-        physical_tolerance = epsilon * max(abs(root_safety), tolerance)
-        threshold = best_physical + physical_tolerance
-
-        pool = [
-            node
-            for node in front
-            if float(node.safety_score) <= threshold + tolerance
-        ]
-        if not pool:
-            pool = [min(front, key=lambda node: float(node.safety_score))]
-
-        pool = sorted(
-            pool,
-            key=lambda node: (
-                switch_count(node),
-                float(node.safety_score),
-                *_tie_break_key(node),
-            ),
-        )
-        selected = pool[0]
-
-    best_physical_safety = min(float(node.safety_score) for node in front)
-    selected_safety = float(selected.safety_score)
-    root_safety = float(root.safety_score)
-    available_improvement = max(root_safety - best_physical_safety, 0.0)
-
-    if available_improvement <= tolerance:
-        retained_fraction = 1.0
-    else:
-        retained_fraction = (root_safety - selected_safety) / available_improvement
-        retained_fraction = min(max(retained_fraction, 0.0), 1.0)
-
-    return TrajectorySelection(
-        node=selected,
-        pareto_front=tuple(front),
-        candidate_pool=tuple(pool),
-        best_physical_safety=best_physical_safety,
-        selected_safety=selected_safety,
-        selected_switch_count=switch_count(selected),
-        retained_improvement_fraction=float(retained_fraction),
-    )
 
 
 # ======================================================================================
@@ -492,11 +298,6 @@ class ImpactBeamSearchConfig:
         If False, the planner filters out actions that increase the number of
         hard-overloaded branches whenever at least one non-worsening action exists.
 
-    relative_physical_epsilon:
-        Maximum fraction of the best discovered physical improvement that may be
-        traded for a shorter switching sequence. Zero recovers exact physical
-        minimization; 0.01 retains at least 99% of the discovered improvement.
-
     switch_penalty:
         Small search-score cost for each topology switching action.
 
@@ -516,7 +317,6 @@ class ImpactBeamSearchConfig:
 
     include_stop_action: bool = True
     allow_hard_count_increase: bool = False
-    relative_physical_epsilon: float = 0.01
 
     switch_penalty: float = 5.0
     failure_penalty: float = 1_000_000.0
@@ -526,9 +326,6 @@ class ImpactBeamSearchConfig:
     progress_update_every: int = 1
 
     def __post_init__(self) -> None:
-        epsilon = float(self.relative_physical_epsilon)
-        if not 0.0 <= epsilon < 1.0:
-            raise ValueError("relative_physical_epsilon must satisfy 0 <= epsilon < 1")
         if int(self.redispatch_candidates_per_switch_count) <= 0:
             raise ValueError("redispatch_candidates_per_switch_count must be positive")
 
@@ -584,13 +381,8 @@ class ImpactBeamSearchResult:
     scenario_id: int
     best_node: ImpactBeamSearchNode
     final_beam: list[ImpactBeamSearchNode]
-    pareto_front: list[ImpactBeamSearchNode]
     config: ImpactBeamSearchConfig
     evaluated_actions: int
-    best_physical_safety: float
-    selected_safety: float
-    selected_switch_count: int
-    retained_improvement_fraction: float
     redispatch_candidates: list[ImpactBeamSearchNode] = field(default_factory=list)
 
 
@@ -778,7 +570,6 @@ class ImpactBeamSearchPlanner:
             )
 
             beam: list[ImpactBeamSearchNode] = [root]
-            pareto_archive: list[ImpactBeamSearchNode] = [root]
             self._redispatch_candidate_archive = update_top_j_candidate_archive(
                 {},
                 [root],
@@ -814,12 +605,6 @@ class ImpactBeamSearchPlanner:
                 if not candidates:
                     break
 
-                pareto_archive = update_pareto_archive(
-                    pareto_archive,
-                    candidates,
-                    max_hard_overloaded=self.root_num_hard_overloaded,
-                )
-
                 candidates = self._sort_nodes(candidates)
                 beam = candidates[: self.config.beam_width]
 
@@ -837,41 +622,26 @@ class ImpactBeamSearchPlanner:
                 if beam and beam[0].solved:
                     break
 
-            selection = select_epsilon_optimal_trajectory(
-                root,
-                pareto_archive,
-                relative_physical_epsilon=self.config.relative_physical_epsilon,
-                max_hard_overloaded=self.root_num_hard_overloaded,
-            )
-
-            best_node = selection.node
-            final_beam = list(selection.candidate_pool)
-            if not final_beam:
-                final_beam = [best_node]
-
             redispatch_candidates = [
                 node
                 for num_switches in sorted(self._redispatch_candidate_archive)
                 for node in self._redispatch_candidate_archive[num_switches]
             ]
+            if not redispatch_candidates:
+                redispatch_candidates = [root]
 
-            result = ImpactBeamSearchResult(
+            ranked_candidates = sorted(redispatch_candidates, key=_topology_candidate_key)
+            best_node = ranked_candidates[0]
+            final_beam = ranked_candidates[: self.config.beam_width]
+
+            return ImpactBeamSearchResult(
                 scenario_id=int(scenario_id),
                 best_node=best_node,
-                final_beam=final_beam[: self.config.beam_width],
-                pareto_front=list(selection.pareto_front),
+                final_beam=final_beam,
                 config=self.config,
                 evaluated_actions=int(self.evaluated_actions),
-                best_physical_safety=float(selection.best_physical_safety),
-                selected_safety=float(selection.selected_safety),
-                selected_switch_count=int(selection.selected_switch_count),
-                retained_improvement_fraction=float(
-                    selection.retained_improvement_fraction
-                ),
                 redispatch_candidates=redispatch_candidates,
             )
-
-            return result
 
         finally:
             self._close_progress()
@@ -1215,9 +985,8 @@ class ImpactBeamSearchPlanner:
         4. higher discounted improvement;
         5. shorter sequence.
 
-        Final teacher selection is performed separately from the Pareto archive,
-        so beam exploration remains focused on physical quality and can pass
-        through locally worse intermediate states.
+        Final teacher selection is performed from the independent redispatch
+        candidate archive, so beam exploration remains focused on physical quality.
         """
 
         return sorted(
@@ -1426,7 +1195,6 @@ def _safe_short_sequence(best_node) -> str:
 _TEACHER_SELECTION_MODE = "top_j_per_switch_then_redispatch_pareto"
 _TERMINAL_REDISPATCH_RELATIVE_EPSILON = 0.01
 _TERMINAL_REDISPATCH_ABSOLUTE_EPSILON_MW = 1.0
-_MIN_MEANINGFUL_SAFETY_IMPROVEMENT = 1.0
 _TOLERANCE = 1e-9
 
 
@@ -1543,30 +1311,6 @@ def _terminal_candidate(node: Any) -> _TerminalCandidate | None:
     )
 
 
-def _root_node(result) -> Any | None:
-    roots = [
-        node
-        for node in result.redispatch_candidates
-        if switch_count(node) == 0 and not node.action_ids
-    ]
-    if not roots:
-        return None
-    return min(roots, key=lambda node: float(node.safety_score))
-
-
-def _retained_physical_improvement(
-    *,
-    root_safety: float,
-    best_physical_safety: float,
-    selected_safety: float,
-) -> float:
-    available = max(float(root_safety) - float(best_physical_safety), 0.0)
-    if available <= _TOLERANCE:
-        return 1.0
-    retained = (float(root_safety) - float(selected_safety)) / available
-    return float(min(max(retained, 0.0), 1.0))
-
-
 def _select_terminal_candidate(
     candidates: Sequence[_TerminalCandidate],
     *,
@@ -1608,63 +1352,37 @@ def _redispatch_aware_selection(
         "terminal_redispatch_absolute_epsilon_mw": float(
             task_config["terminal_redispatch_absolute_epsilon_mw"]
         ),
-        "min_meaningful_safety_improvement": float(
-            task_config["min_meaningful_safety_improvement"]
-        ),
         "teacher_terminal_selection_applied": False,
-        "teacher_redispatch_archive_size": int(len(result.redispatch_candidates)),
+        "teacher_redispatch_candidate_count": int(len(result.redispatch_candidates)),
         "teacher_terminal_candidate_count": int(len(terminal_candidates)),
         "teacher_terminal_pareto_front_size": 0,
     }
-    root = _root_node(result)
-    root_safety = (
-        float(root.safety_score) if root is not None else float(result.selected_safety)
+
+    if not terminal_candidates:
+        return result, diagnostics
+
+    selected, terminal_front, terminal_pool = _select_terminal_candidate(
+        terminal_candidates,
+        relative_epsilon=float(task_config["terminal_redispatch_relative_epsilon"]),
+        absolute_epsilon_mw=float(
+            task_config["terminal_redispatch_absolute_epsilon_mw"]
+        ),
+    )
+    diagnostics["teacher_terminal_selection_applied"] = True
+    diagnostics["teacher_terminal_pareto_front_size"] = int(len(terminal_front))
+    diagnostics["teacher_selected_redispatch_l1_mw"] = float(
+        selected.redispatch_l1_mw
     )
 
-    if terminal_candidates:
-        selected, terminal_front, terminal_pool = _select_terminal_candidate(
-            terminal_candidates,
-            relative_epsilon=float(task_config["terminal_redispatch_relative_epsilon"]),
-            absolute_epsilon_mw=float(
-                task_config["terminal_redispatch_absolute_epsilon_mw"]
-            ),
-        )
-        diagnostics["teacher_terminal_selection_applied"] = True
-        diagnostics["teacher_terminal_pareto_front_size"] = int(len(terminal_front))
-        retained = _retained_physical_improvement(
-            root_safety=root_safety,
-            best_physical_safety=float(result.best_physical_safety),
-            selected_safety=float(selected.node.safety_score),
-        )
-        updated = replace(
-            result,
-            best_node=selected.node,
-            final_beam=[
-                candidate.node
-                for candidate in terminal_pool[: result.config.beam_width]
-            ],
-            selected_safety=float(selected.node.safety_score),
-            selected_switch_count=int(switch_count(selected.node)),
-            retained_improvement_fraction=retained,
-        )
-        return updated, diagnostics
-
-    meaningful_improvement = float(root_safety) - float(result.selected_safety)
-    minimum = float(task_config["min_meaningful_safety_improvement"])
-    if (
-        root is not None
-        and not bool(result.best_node.solved)
-        and meaningful_improvement < minimum
-    ):
-        result = replace(
-            result,
-            best_node=root,
-            final_beam=[root],
-            selected_safety=float(root.safety_score),
-            selected_switch_count=0,
-            retained_improvement_fraction=0.0,
-        )
-    return result, diagnostics
+    updated = replace(
+        result,
+        best_node=selected.node,
+        final_beam=[
+            candidate.node
+            for candidate in terminal_pool[: result.config.beam_width]
+        ],
+    )
+    return updated, diagnostics
 
 
 def _selection_provenance(
@@ -1673,14 +1391,11 @@ def _selection_provenance(
 ) -> dict[str, object]:
     return {
         "teacher_selection_mode": _TEACHER_SELECTION_MODE,
-        "relative_physical_epsilon": float(result.config.relative_physical_epsilon),
-        "teacher_best_physical_safety": float(result.best_physical_safety),
-        "teacher_selected_safety": float(result.selected_safety),
-        "teacher_selected_switch_count": int(result.selected_switch_count),
-        "teacher_retained_improvement_fraction": float(
-            result.retained_improvement_fraction
+        "redispatch_candidates_per_switch_count": int(
+            result.config.redispatch_candidates_per_switch_count
         ),
-        "teacher_pareto_front_size": int(len(result.pareto_front)),
+        "teacher_selected_J": float(result.best_node.safety_score),
+        "teacher_selected_switch_count": int(switch_count(result.best_node)),
         **diagnostics,
     }
 

@@ -95,7 +95,6 @@ from grid_topology_ai.runtime import (
     ensure_runtime_scenario_store,
 )
 from grid_topology_ai.search.teacher import (
-    _MIN_MEANINGFUL_SAFETY_IMPROVEMENT,
     _TERMINAL_REDISPATCH_ABSOLUTE_EPSILON_MW,
     _TERMINAL_REDISPATCH_RELATIVE_EPSILON,
     _redispatch_aware_selection,
@@ -811,7 +810,6 @@ def make_task_config(args: argparse.Namespace) -> dict[str, Any]:
         "use_lodf_screening": bool(args.use_lodf_screening),
         "lodf_screen_top_k": int(args.lodf_screen_top_k),
         "lodf_min_candidate_count": int(args.lodf_min_candidate_count),
-        "min_meaningful_safety_improvement": _MIN_MEANINGFUL_SAFETY_IMPROVEMENT,
         "terminal_redispatch_relative_epsilon": _TERMINAL_REDISPATCH_RELATIVE_EPSILON,
         "terminal_redispatch_absolute_epsilon_mw": _TERMINAL_REDISPATCH_ABSOLUTE_EPSILON_MW,
     }
