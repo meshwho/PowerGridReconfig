@@ -1,9 +1,12 @@
+import inspect
 import json
 
 import pytest
 
 from grid_topology_ai.termination import (
+    TeacherOutcome,
     TerminationReason,
+    classify_teacher_outcome,
     parse_termination_reason,
     termination_reason_value,
     validate_outcome_invariants,
@@ -53,3 +56,38 @@ def test_action_details_are_separate_from_canonical_reason() -> None:
     }
     assert metadata["termination_reason"] == "unsafe_stop_with_hard_overload"
     assert metadata["selected_action_id"] == 42
+
+
+def test_teacher_outcomes_are_exactly_the_three_public_statuses() -> None:
+    assert [outcome.value for outcome in TeacherOutcome] == [
+        "solved",
+        "redispatch",
+        "max_steps_reached",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("topology_solved", "redispatch_validated", "expected"),
+    [
+        (True, False, TeacherOutcome.SOLVED),
+        (True, True, TeacherOutcome.SOLVED),
+        (False, True, TeacherOutcome.REDISPATCH),
+        (False, False, TeacherOutcome.MAX_STEPS_REACHED),
+    ],
+)
+def test_teacher_outcome_depends_only_on_terminal_physical_result(
+    topology_solved: bool,
+    redispatch_validated: bool,
+    expected: TeacherOutcome,
+) -> None:
+    assert classify_teacher_outcome(
+        topology_solved=topology_solved,
+        redispatch_validated=redispatch_validated,
+    ) is expected
+
+
+def test_diagnostic_termination_reason_is_not_a_teacher_outcome_input() -> None:
+    parameters = inspect.signature(classify_teacher_outcome).parameters
+
+    assert set(parameters) == {"topology_solved", "redispatch_validated"}
+    assert "termination_reason" not in parameters
