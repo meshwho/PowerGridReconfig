@@ -84,7 +84,7 @@ def test_load_scenario_ids_requires_requested_difficulty(tmp_path):
 
 
 def test_legacy_profile_matches_historical_search_budgets():
-    profiles = cli._load_teacher_profiles(Path("profiles/teacher_legacy.json"))
+    profiles = cli._load_teacher_profiles(Path("profiles/teacher_ieee118.json"))
 
     assert profiles["simple"] == {
         "depth": 4,
