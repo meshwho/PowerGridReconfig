@@ -24,7 +24,7 @@ _NATIVE_MATH_THREAD_ENV_VARS = (
     "BLIS_NUM_THREADS",
     "VECLIB_MAXIMUM_THREADS",
 )
-_EXACT_L1_CACHE_MAX_MB_ENV = "POWERGRID_EXACT_L1_CACHE_MAX_MB"
+_EXACT_L1_CACHE_MAX_MB_ENV = "POWERGRID_EXACT_POWER_FLOW_CACHE_MAX_MB"
 _WORKER_INIT_CONCURRENCY_ENV = "POWERGRID_TEACHER_INIT_CONCURRENCY"
 
 
@@ -240,6 +240,22 @@ def make_handoff_step_item(
     }
 
 
+def _initial_redispatch_diagnostics(
+    result: MinimalRedispatchResult,
+) -> dict[str, object]:
+    return {
+        "initial_redispatch_attempted": True,
+        "initial_redispatch_opf_success": bool(result.opf_success),
+        "initial_redispatch_validated": bool(result.validated),
+        "initial_redispatch_l1_mw": result.redispatch_l1_mw,
+        "initial_redispatch_up_mw": result.redispatch_up_mw,
+        "initial_redispatch_down_mw": result.redispatch_down_mw,
+        "initial_redispatch_max_generator_delta_mw": (
+            result.redispatch_max_generator_delta_mw
+        ),
+    }
+
+
 # ======================================================================================
 # Scenario processing
 # ======================================================================================
@@ -269,6 +285,10 @@ def _generate_scenario(scenario_id: int) -> dict[str, Any]:
 
         initial_state = search_env.reset(scenario_id)
         initial_safety = safety_score(initial_state, physics_config=physics_config)
+        initial_redispatch_result = run_minimal_ac_redispatch(backend, initial_state)
+        initial_redispatch = _initial_redispatch_diagnostics(
+            initial_redispatch_result
+        )
 
         planner_config = ImpactBeamSearchConfig(
             max_depth=int(task["depth"]),
@@ -602,6 +622,7 @@ def _generate_scenario(scenario_id: int) -> dict[str, Any]:
                     "scenario_id": int(scenario_id),
                     "step": int(step_idx),
                     "initial_safety": float(initial_safety),
+                    **initial_redispatch,
                     "teacher_final_safety": float(final_teacher_safety),
                     "replay_final_safety": float(final_safety),
                     "total_safety_improvement": float(total_safety_improvement),
@@ -671,6 +692,7 @@ def _generate_scenario(scenario_id: int) -> dict[str, Any]:
                             item.get("termination_reason_after_step")
                         )
                     ),
+                    **initial_redispatch,
                     "physics_config": json.dumps(
                         physics_config.to_dict(), sort_keys=True, separators=(",", ":")
                     ),
