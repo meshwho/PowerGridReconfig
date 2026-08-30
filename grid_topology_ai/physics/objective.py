@@ -312,8 +312,6 @@ _REQUESTED_REDISPATCH_REASONS = frozenset(
 _SAFE_HANDOFF_REASONS = frozenset(
     {
         TerminationReason.HANDOFF_TO_REDISPATCH,
-        TerminationReason.HANDOFF_TO_REDISPATCH_TEACHER,
-        TerminationReason.REDISPATCH_VALIDATED,
     }
 )
 _HARD_OVERLOAD_REASONS = frozenset(
