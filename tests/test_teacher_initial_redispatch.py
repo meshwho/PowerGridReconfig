@@ -114,6 +114,26 @@ class FakePlanner:
         )
 
 
+class FakeRootPlanner(FakePlanner):
+    def search(self, *, env, scenario_id):
+        del env, scenario_id
+        best = SimpleNamespace(
+            action_ids=[0],
+            branch_ids=[None],
+            safety_score=100.0,
+            max_loading_percent=140.0,
+            num_hard_overloaded=2,
+            num_overloaded=3,
+            total_hard_overload=20.0,
+            squared_hard_overload=200.0,
+            total_overload=40.0,
+        )
+        return SimpleNamespace(
+            best_node=best,
+            evaluated_actions=7,
+        )
+
+
 def _task_config() -> dict[str, object]:
     return {
         "max_steps": 5,
@@ -164,6 +184,14 @@ def _install_runtime(monkeypatch, state_store: FakeStateStore) -> None:
     )
 
 
+def _failed_redispatch() -> MinimalRedispatchResult:
+    return MinimalRedispatchResult(
+        opf_success=False,
+        assessment=None,
+        message="no feasible initial redispatch",
+    )
+
+
 def test_initial_redispatch_failure_stays_missing_in_rows_and_state_metadata(
     monkeypatch,
 ) -> None:
@@ -174,15 +202,12 @@ def test_initial_redispatch_failure_stays_missing_in_rows_and_state_metadata(
     def fake_initial_redispatch(backend, state):
         del backend
         calls.append(state)
-        return MinimalRedispatchResult(
-            opf_success=False,
-            assessment=None,
-            message="no feasible initial redispatch",
-        )
+        return _failed_redispatch()
 
     monkeypatch.setattr(runtime, "run_minimal_ac_redispatch", fake_initial_redispatch)
 
     result = runtime._generate_scenario(17)
+    runtime._SELECTION_PROVENANCE_BY_SCENARIO.pop(17, None)
 
     assert result["ok"] is True
     assert calls == [FakeEnv.initial_state]
@@ -197,6 +222,42 @@ def test_initial_redispatch_failure_stays_missing_in_rows_and_state_metadata(
         assert artifact["initial_redispatch_up_mw"] is None
         assert artifact["initial_redispatch_down_mw"] is None
         assert artifact["initial_redispatch_max_generator_delta_mw"] is None
+
+
+def test_zero_switch_terminal_selection_is_saved_as_action_zero_handoff(
+    monkeypatch,
+) -> None:
+    state_store = FakeStateStore()
+    _install_runtime(monkeypatch, state_store)
+    monkeypatch.setattr(runtime, "ImpactBeamSearchPlanner", FakeRootPlanner)
+    monkeypatch.setattr(
+        runtime,
+        "make_policy_from_final_beam",
+        lambda result, temperature: ({0: 1.0}, {0: 1}),
+    )
+    monkeypatch.setattr(
+        runtime,
+        "run_minimal_ac_redispatch",
+        lambda backend, state: _failed_redispatch(),
+    )
+
+    def fail_if_topology_step_runs(self, action):
+        del self, action
+        raise AssertionError("0-switch handoff must not execute an environment action")
+
+    monkeypatch.setattr(FakeEnv, "step", fail_if_topology_step_runs)
+
+    result = runtime._generate_scenario(23)
+    runtime._SELECTION_PROVENANCE_BY_SCENARIO.pop(23, None)
+
+    assert result["ok"] is True
+    assert len(result["rows"]) == 1
+    assert result["rows"][0]["selected_action_id"] == 0
+    assert result["rows"][0]["selected_branch_id"] is None
+    assert result["summary"]["first_action"] == 0
+    assert result["summary"]["first_branch"] is None
+    assert result["summary"]["handoff_added"] is True
+    assert result["summary"]["handoff_reason"] == "terminal_redispatch_selected"
 
 
 def test_initial_redispatch_diagnostics_preserve_validated_magnitudes() -> None:
