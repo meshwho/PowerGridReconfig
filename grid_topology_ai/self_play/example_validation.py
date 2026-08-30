@@ -33,7 +33,6 @@ _BASE_OUTCOME_COLUMNS: tuple[str, ...] = (
     "outcome_value_target",
     "solved",
     "done",
-    "termination_reason",
     "teacher_outcome",
     "outcome_class",
     "outcome_steps_to_terminal",
