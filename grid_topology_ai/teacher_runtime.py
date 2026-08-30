@@ -74,7 +74,6 @@ try:
 except ImportError:  # pragma: no cover
     tqdm = None
 
-from grid_topology_ai.actions import make_do_nothing_action
 from grid_topology_ai.cache import DEFAULT_EXACT_POWER_FLOW_CACHE_BYTES
 from grid_topology_ai.config import DEFAULT_PHYSICS_CONFIG
 from grid_topology_ai.environment import TopologySwitchingEnv
@@ -198,12 +197,7 @@ def _make_action_for_env(
     env: TopologySwitchingEnv,
     action_id: int,
 ):
-    action_id = int(action_id)
-
-    if action_id == 0:
-        return make_do_nothing_action()
-
-    return env.action_by_id(action_id)
+    return env.action_by_id(int(action_id))
 
 
 def make_handoff_step_item(
@@ -368,18 +362,6 @@ def _generate_scenario(scenario_id: int) -> dict[str, Any]:
         final_teacher_safety = float(best.safety_score)
         total_safety_improvement = float(initial_safety - final_teacher_safety)
 
-        if total_safety_improvement < float(task["min_safety_improvement"]):
-            clear_worker_caches_if_needed()
-            return {
-                "ok": False,
-                "scenario_id": scenario_id,
-                "reason": (
-                    f"safety_improvement {total_safety_improvement:.4f} "
-                    f"< {float(task['min_safety_improvement']):.4f}"
-                ),
-                "traceback": None,
-            }
-
         root_policy_target, root_visit_counts = make_policy_from_final_beam(
             result=result,
             temperature=float(task["soft_policy_temperature"]),
@@ -424,25 +406,7 @@ def _generate_scenario(scenario_id: int) -> dict[str, Any]:
             selected_action_id = int(topology_action_ids[step_idx])
             selected_branch_id = topology_branch_ids[step_idx]
 
-            if not _selected_teacher_action_is_valid(action_mask, selected_action_id):
-                if bool(task["add_handoff_example"]):
-                    safety_before = safety_score(
-                        state_before,
-                        physics_config=physics_config,
-                    )
-                    step_items.append(
-                        make_handoff_step_item(
-                            step_idx=step_idx,
-                            state_before=state_before,
-                            action_mask=action_mask,
-                            safety_before=safety_before,
-                            reason=f"teacher_action_invalid_{selected_action_id}",
-                        )
-                    )
-                    step_rewards.append(0.0)
-                    handoff_added = True
-                    handoff_reason = f"teacher_action_invalid_{selected_action_id}"
-                break
+            _selected_teacher_action_is_valid(action_mask, selected_action_id)
 
             safety_before = safety_score(
                 state_before,
@@ -457,35 +421,13 @@ def _generate_scenario(scenario_id: int) -> dict[str, Any]:
             next_state = step_result.next_state
 
             if next_state is None:
-                safety_after = safety_before + float(task["power_flow_failure_penalty"])
-            else:
-                safety_after = safety_score(next_state, physics_config=physics_config)
-
-            continue_action, continue_reason, step_improvement = (
-                _selected_teacher_replay_decision(
-                    safety_before=safety_before,
-                    safety_after=safety_after,
-                    state_before=state_before,
-                    state_after=next_state,
-                    task=task,
+                raise RuntimeError(
+                    "Beam-selected teacher trajectory hit a power-flow failure during replay."
                 )
-            )
 
-            if not continue_action:
-                if bool(task["add_handoff_example"]):
-                    step_items.append(
-                        make_handoff_step_item(
-                            step_idx=step_idx,
-                            state_before=state_before,
-                            action_mask=action_mask,
-                            safety_before=safety_before,
-                            reason=continue_reason,
-                        )
-                    )
-                    step_rewards.append(0.0)
-                    handoff_added = True
-                    handoff_reason = continue_reason
-                break
+            safety_after = safety_score(next_state, physics_config=physics_config)
+            step_improvement = float(safety_before - safety_after)
+            continue_reason = "selected_by_beam_search"
 
             replay_env = candidate_env
             env_reward = float(step_result.reward)
@@ -525,13 +467,7 @@ def _generate_scenario(scenario_id: int) -> dict[str, Any]:
             if step_result.done:
                 break
 
-        selected_handoff_pending = terminal_handoff_selected and not handoff_added
-        optional_handoff_pending = (
-            bool(task["add_handoff_example"])
-            and not handoff_added
-            and not replay_env.done
-        )
-        if selected_handoff_pending or optional_handoff_pending:
+        if terminal_handoff_selected and not handoff_added:
             final_teacher_state = replay_env.current_state
             if final_teacher_state is not None:
                 final_action_mask = action_space.operational_action_mask(
@@ -542,10 +478,7 @@ def _generate_scenario(scenario_id: int) -> dict[str, Any]:
                     physics_config=physics_config,
                 )
                 final_stop_step = len(step_items)
-                if terminal_handoff_selected:
-                    terminal_handoff_reason = "terminal_redispatch_selected"
-                else:
-                    terminal_handoff_reason = "terminal_handoff_after_useful_sequence"
+                terminal_handoff_reason = "terminal_redispatch_selected"
                 step_items.append(
                     make_handoff_step_item(
                         step_idx=final_stop_step,
@@ -837,18 +770,8 @@ def make_task_config(args: argparse.Namespace) -> dict[str, Any]:
         "max_teacher_steps": max_teacher_steps,
         "soft_policy_temperature": float(args.soft_policy_temperature),
         "use_soft_root_policy": bool(args.use_soft_root_policy),
-        "min_safety_improvement": 0.0,
         "allow_hard_count_increase": bool(args.allow_hard_count_increase),
         "disable_cache": bool(args.disable_cache),
-        "power_flow_failure_penalty": float(args.power_flow_failure_penalty),
-        "min_continue_improvement_with_hard": float(
-            args.min_continue_improvement_with_hard
-        ),
-        "min_continue_improvement_without_hard": float(
-            args.min_continue_improvement_without_hard
-        ),
-        "max_loading_increase_limit": float(args.max_loading_increase_limit),
-        "add_handoff_example": bool(args.add_handoff_example),
         "use_lodf_screening": bool(args.use_lodf_screening),
         "lodf_screen_top_k": int(args.lodf_screen_top_k),
         "lodf_min_candidate_count": int(args.lodf_min_candidate_count),
@@ -1051,18 +974,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--max-teacher-steps", type=int, default=4)
     parser.add_argument("--soft-policy-temperature", type=float, default=0.0)
     parser.add_argument("--use-soft-root-policy", action="store_true")
-    parser.add_argument("--min-safety-improvement", type=float, default=0.0)
     parser.add_argument("--allow-hard-count-increase", action="store_true")
     parser.add_argument("--disable-cache", action="store_true")
-    parser.add_argument("--power-flow-failure-penalty", type=float, default=1_000_000.0)
-    parser.add_argument(
-        "--min-continue-improvement-with-hard", type=float, default=100.0
-    )
-    parser.add_argument(
-        "--min-continue-improvement-without-hard", type=float, default=150.0
-    )
-    parser.add_argument("--max-loading-increase-limit", type=float, default=5.0)
-    parser.add_argument("--add-handoff-example", action="store_true")
     parser.add_argument(
         "--num-workers",
         type=int,
@@ -1182,10 +1095,6 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Max teacher steps:    {args.max_teacher_steps}")
     print(f"Soft root policy:     {args.use_soft_root_policy}")
     print(f"Soft policy temp:     {args.soft_policy_temperature}")
-    print(f"Min safety improve:   {args.min_safety_improvement}")
-    print(f"Continue hard:        {args.min_continue_improvement_with_hard}")
-    print(f"Continue no hard:     {args.min_continue_improvement_without_hard}")
-    print(f"Max loading increase: {args.max_loading_increase_limit}")
     print(f"Allow hard increase:  {args.allow_hard_count_increase}")
     print(f"Cache enabled:        {not args.disable_cache}")
     print(f"Num workers arg:      {args.num_workers}")
@@ -1308,22 +1217,6 @@ def _selected_teacher_action_is_valid(
             f"action_id={int(action_id)}."
         )
     return True
-
-
-def _selected_teacher_replay_decision(
-    safety_before: float,
-    safety_after: float,
-    state_before,
-    state_after,
-    task: dict[str, Any],
-) -> tuple[bool, str, float]:
-    del state_before, task
-    if state_after is None:
-        raise RuntimeError(
-            "Beam-selected teacher trajectory hit a power-flow failure during replay."
-        )
-    improvement = float(safety_before) - float(safety_after)
-    return True, "selected_by_beam_search", improvement
 
 
 def _set_redispatch_diagnostics(
