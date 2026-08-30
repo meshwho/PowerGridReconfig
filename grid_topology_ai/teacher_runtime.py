@@ -166,9 +166,7 @@ def discounted_returns(
 
 
 def _force_stop_action_valid(action_mask: np.ndarray) -> np.ndarray:
-    """
-    Make sure action 0 can be used as handoff target.
-    """
+    """Make sure action 0 can be used as a terminal training target."""
 
     fixed_mask = np.array(action_mask, dtype=bool).copy()
 
@@ -200,16 +198,17 @@ def _make_action_for_env(
     return env.action_by_id(int(action_id))
 
 
-def make_handoff_step_item(
+def make_terminal_step_item(
     step_idx: int,
     state_before,
     action_mask: np.ndarray,
     safety_before: float,
+    *,
+    solved: bool,
+    termination_reason: TerminationReason,
     reason: str,
 ) -> dict[str, Any]:
-    """
-    Create a training example for action 0 = handoff to redispatch.
-    """
+    """Create an action-0 row for a terminal state with no topology action."""
 
     fixed_action_mask = _force_stop_action_valid(action_mask)
 
@@ -226,12 +225,30 @@ def make_handoff_step_item(
         "step_reward": 0.0,
         "env_reward": 0.0,
         "done_after_step": True,
-        "solved_after_step": False,
-        "termination_reason_after_step": (
-            TerminationReason.HANDOFF_TO_REDISPATCH_TEACHER
-        ),
+        "solved_after_step": bool(solved),
+        "termination_reason_after_step": termination_reason,
         "teacher_decision_reason": reason,
     }
+
+
+def make_handoff_step_item(
+    step_idx: int,
+    state_before,
+    action_mask: np.ndarray,
+    safety_before: float,
+    reason: str,
+) -> dict[str, Any]:
+    """Create a training example for action 0 = handoff to redispatch."""
+
+    return make_terminal_step_item(
+        step_idx=step_idx,
+        state_before=state_before,
+        action_mask=action_mask,
+        safety_before=safety_before,
+        solved=False,
+        termination_reason=TerminationReason.HANDOFF_TO_REDISPATCH_TEACHER,
+        reason=reason,
+    )
 
 
 def _initial_redispatch_diagnostics(
@@ -337,15 +354,6 @@ def _generate_scenario(scenario_id: int) -> dict[str, Any]:
         )
         best = result.best_node
 
-        if not best.action_ids:
-            clear_worker_caches_if_needed()
-            return {
-                "ok": False,
-                "scenario_id": scenario_id,
-                "reason": "no_teacher_action_found",
-                "traceback": None,
-            }
-
         terminal_handoff_selected = bool(
             best.action_ids
             and best.branch_ids
@@ -362,19 +370,17 @@ def _generate_scenario(scenario_id: int) -> dict[str, Any]:
         final_teacher_safety = float(best.safety_score)
         total_safety_improvement = float(initial_safety - final_teacher_safety)
 
-        root_policy_target, root_visit_counts = make_policy_from_final_beam(
-            result=result,
-            temperature=float(task["soft_policy_temperature"]),
-        )
-
-        if not root_policy_target:
-            clear_worker_caches_if_needed()
-            return {
-                "ok": False,
-                "scenario_id": scenario_id,
-                "reason": "empty_root_policy_target",
-                "traceback": None,
-            }
+        if topology_action_ids:
+            root_policy_target, root_visit_counts = make_policy_from_final_beam(
+                result=result,
+                temperature=float(task["soft_policy_temperature"]),
+            )
+            if not root_policy_target:
+                raise RuntimeError(
+                    "Teacher topology trajectory has no root policy target."
+                )
+        else:
+            root_policy_target, root_visit_counts = {}, {}
 
         replay_env = TopologySwitchingEnv(
             adapter=adapter,
@@ -393,6 +399,8 @@ def _generate_scenario(scenario_id: int) -> dict[str, Any]:
         )
         handoff_added = False
         handoff_reason: str | None = None
+        zero_action_episode_reason: TerminationReason | None = None
+        zero_action_episode_solved = False
 
         for step_idx in range(max_teacher_steps):
             if replay_env.done:
@@ -492,14 +500,44 @@ def _generate_scenario(scenario_id: int) -> dict[str, Any]:
                 handoff_added = True
                 handoff_reason = terminal_handoff_reason
 
+        if not step_items and not topology_action_ids:
+            root_state = replay_env.current_state
+            if root_state is None:
+                raise RuntimeError(
+                    "Zero-action teacher trajectory has no root state."
+                )
+            root_assessment = assess_physical_state(root_state.metrics)
+            zero_action_episode_solved = bool(root_assessment.physically_secure)
+            zero_action_episode_reason = (
+                TerminationReason.SOLVED
+                if zero_action_episode_solved
+                else TerminationReason.MAX_STEPS_REACHED
+            )
+            zero_action_decision_reason = (
+                "initial_topology_solved"
+                if zero_action_episode_solved
+                else "terminal_redispatch_unavailable"
+            )
+            step_items.append(
+                make_terminal_step_item(
+                    step_idx=0,
+                    state_before=root_state,
+                    action_mask=action_space.operational_action_mask(root_state),
+                    safety_before=safety_score(
+                        root_state,
+                        physics_config=physics_config,
+                    ),
+                    solved=zero_action_episode_solved,
+                    termination_reason=zero_action_episode_reason,
+                    reason=zero_action_decision_reason,
+                )
+            )
+            step_rewards.append(0.0)
+
         if not step_items:
-            clear_worker_caches_if_needed()
-            return {
-                "ok": False,
-                "scenario_id": scenario_id,
-                "reason": "no_replay_steps_saved",
-                "traceback": None,
-            }
+            raise RuntimeError(
+                "Selected teacher trajectory produced no replay steps."
+            )
 
         returns = discounted_returns(
             rewards=step_rewards,
@@ -518,7 +556,11 @@ def _generate_scenario(scenario_id: int) -> dict[str, Any]:
             final_num_hard = int(final_state.metrics["num_hard_overloaded_branches"])
             final_num_overloaded = int(final_state.metrics["num_overloaded_branches"])
 
-        if handoff_added:
+        if zero_action_episode_reason is not None:
+            episode_done = True
+            episode_solved = bool(zero_action_episode_solved)
+            episode_reason = zero_action_episode_reason
+        elif handoff_added:
             episode_done = True
             episode_solved = False
             episode_reason = TerminationReason.HANDOFF_TO_REDISPATCH_TEACHER
@@ -639,16 +681,20 @@ def _generate_scenario(scenario_id: int) -> dict[str, Any]:
             )
 
         clear_worker_caches_if_needed()
+        first_action = int(best.action_ids[0]) if best.action_ids else 0
+        first_branch = (
+            None
+            if not best.branch_ids or best.branch_ids[0] is None
+            else int(best.branch_ids[0])
+        )
         return {
             "ok": True,
             "scenario_id": int(scenario_id),
             "rows": rows,
             "summary": {
                 "num_examples": int(len(rows)),
-                "first_action": int(best.action_ids[0]),
-                "first_branch": (
-                    None if best.branch_ids[0] is None else int(best.branch_ids[0])
-                ),
+                "first_action": first_action,
+                "first_branch": first_branch,
                 "initial_safety": float(initial_safety),
                 "teacher_final_safety": float(final_teacher_safety),
                 "replay_final_safety": float(final_safety),
