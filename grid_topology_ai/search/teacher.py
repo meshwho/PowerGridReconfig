@@ -17,10 +17,7 @@ from grid_topology_ai.physics.objective import assess_physical_state
 from grid_topology_ai.physics.redispatch import run_minimal_ac_redispatch
 from grid_topology_ai.physics.utility import state_security_penalty
 from grid_topology_ai.state import BRANCH_FEATURE_COLUMNS, GridFMState
-from grid_topology_ai.termination import (
-    TerminationReason,
-    parse_termination_reason,
-)
+from grid_topology_ai.termination import TerminationReason
 
 
 class TrajectoryNode(Protocol):
@@ -1426,7 +1423,7 @@ def _safe_short_sequence(best_node) -> str:
     return " -> ".join(parts) if parts else "(root)"
 
 
-_TEACHER_SELECTION_MODE = "redispatch_aware_epsilon_minimum_switch"
+_TEACHER_SELECTION_MODE = "top_j_per_switch_then_redispatch_pareto"
 _TERMINAL_REDISPATCH_RELATIVE_EPSILON = 0.01
 _TERMINAL_REDISPATCH_ABSOLUTE_EPSILON_MW = 1.0
 _MIN_MEANINGFUL_SAFETY_IMPROVEMENT = 1.0
@@ -1533,13 +1530,6 @@ def _terminal_candidate(node: Any) -> _TerminalCandidate | None:
     assessment = assess_physical_state(state.metrics)
     if assessment.physically_secure:
         return _TerminalCandidate(node=node, redispatch_l1_mw=0.0)
-    if node.done:
-        reason = parse_termination_reason(node.termination_reason)
-        if reason not in {
-            TerminationReason.HANDOFF_TO_REDISPATCH,
-            TerminationReason.HANDOFF_TO_REDISPATCH_TEACHER,
-        }:
-            return None
 
     redispatch_result = run_minimal_ac_redispatch(node.env.backend, state)
     if not redispatch_result.validated or redispatch_result.redispatch_l1_mw is None:
@@ -1556,7 +1546,7 @@ def _terminal_candidate(node: Any) -> _TerminalCandidate | None:
 def _root_node(result) -> Any | None:
     roots = [
         node
-        for node in result.pareto_front
+        for node in result.redispatch_candidates
         if switch_count(node) == 0 and not node.action_ids
     ]
     if not roots:
@@ -1608,7 +1598,7 @@ def _redispatch_aware_selection(
 ) -> tuple[Any, dict[str, object]]:
     terminal_candidates = [
         candidate
-        for node in result.pareto_front
+        for node in result.redispatch_candidates
         if (candidate := _terminal_candidate(node)) is not None
     ]
     diagnostics: dict[str, object] = {
@@ -1622,6 +1612,7 @@ def _redispatch_aware_selection(
             task_config["min_meaningful_safety_improvement"]
         ),
         "teacher_terminal_selection_applied": False,
+        "teacher_redispatch_archive_size": int(len(result.redispatch_candidates)),
         "teacher_terminal_candidate_count": int(len(terminal_candidates)),
         "teacher_terminal_pareto_front_size": 0,
     }
