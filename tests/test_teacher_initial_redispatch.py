@@ -143,22 +143,32 @@ class FakePlanner:
 
 class FakeRootPlanner(FakePlanner):
     def search(self, *, env, scenario_id):
-        del env, scenario_id
+        del scenario_id
+        state = env.current_state
+        metrics = state.metrics
         best = SimpleNamespace(
             action_ids=[],
             branch_ids=[],
-            safety_score=100.0,
-            max_loading_percent=140.0,
-            num_hard_overloaded=2,
-            num_overloaded=3,
-            total_hard_overload=20.0,
-            squared_hard_overload=200.0,
-            total_overload=40.0,
+            safety_score=float(state.safety),
+            max_loading_percent=float(metrics["max_loading_percent"]),
+            num_hard_overloaded=int(metrics["num_hard_overloaded_branches"]),
+            num_overloaded=int(metrics["num_overloaded_branches"]),
+            total_hard_overload=0.0,
+            squared_hard_overload=0.0,
+            total_overload=float(metrics["total_thermal_overload_mva"]),
         )
         return SimpleNamespace(
             best_node=best,
             evaluated_actions=7,
         )
+
+
+class FakeValidatedRootPlanner(FakeRootPlanner):
+    def search(self, *, env, scenario_id):
+        result = super().search(env=env, scenario_id=scenario_id)
+        result.best_node.action_ids = [0]
+        result.best_node.branch_ids = [None]
+        return result
 
 
 class FakeWorseJPlanner(FakePlanner):
@@ -221,6 +231,18 @@ def _failed_redispatch() -> MinimalRedispatchResult:
         opf_success=False,
         assessment=None,
         message="no feasible initial redispatch",
+    )
+
+
+def _validated_redispatch() -> MinimalRedispatchResult:
+    return MinimalRedispatchResult(
+        opf_success=True,
+        assessment=SimpleNamespace(physically_secure=True),
+        message="validated",
+        redispatch_l1_mw=12.5,
+        redispatch_up_mw=6.4,
+        redispatch_down_mw=6.1,
+        redispatch_max_generator_delta_mw=4.2,
     )
 
 
@@ -291,6 +313,75 @@ def test_zero_switch_failed_redispatch_is_saved_as_max_steps_terminal_target(
     assert result["summary"]["handoff_reason"] is None
 
 
+def test_zero_switch_secure_root_is_saved_as_solved_terminal_target(
+    monkeypatch,
+) -> None:
+    state_store = FakeStateStore()
+    _install_runtime(monkeypatch, state_store)
+    secure_root = SimpleNamespace(
+        safety=0.0,
+        metrics=_metrics(
+            max_loading=90.0,
+            overloaded=0,
+            hard_overloaded=0,
+        ),
+    )
+    monkeypatch.setattr(FakeEnv, "initial_state", secure_root)
+    monkeypatch.setattr(runtime, "ImpactBeamSearchPlanner", FakeRootPlanner)
+    monkeypatch.setattr(
+        runtime,
+        "run_minimal_ac_redispatch",
+        lambda backend, state: _failed_redispatch(),
+    )
+
+    result = runtime._generate_scenario(24)
+    runtime._SELECTION_PROVENANCE_BY_SCENARIO.pop(24, None)
+
+    assert result["ok"] is True
+    assert len(result["rows"]) == 1
+    row = result["rows"][0]
+    assert row["selected_action_id"] == 0
+    assert row["solved"] is True
+    assert row["termination_reason"] == TerminationReason.SOLVED.value
+    assert row["step_termination_reason"] == TerminationReason.SOLVED.value
+    assert row["teacher_decision_reason"] == "initial_topology_solved"
+    assert result["summary"]["handoff_added"] is False
+
+
+def test_zero_switch_validated_redispatch_keeps_terminal_handoff(
+    monkeypatch,
+) -> None:
+    state_store = FakeStateStore()
+    _install_runtime(monkeypatch, state_store)
+    monkeypatch.setattr(runtime, "ImpactBeamSearchPlanner", FakeValidatedRootPlanner)
+    monkeypatch.setattr(
+        runtime,
+        "run_minimal_ac_redispatch",
+        lambda backend, state: _validated_redispatch(),
+    )
+
+    def fail_if_topology_step_runs(self, action):
+        del self, action
+        raise AssertionError("validated root handoff must not execute an environment action")
+
+    monkeypatch.setattr(FakeEnv, "step", fail_if_topology_step_runs)
+
+    result = runtime._generate_scenario(25)
+    runtime._SELECTION_PROVENANCE_BY_SCENARIO.pop(25, None)
+
+    assert result["ok"] is True
+    assert len(result["rows"]) == 1
+    row = result["rows"][0]
+    assert row["selected_action_id"] == 0
+    assert row["selected_branch_id"] is None
+    assert row["termination_reason"] == (
+        TerminationReason.HANDOFF_TO_REDISPATCH_TEACHER.value
+    )
+    assert row["teacher_decision_reason"] == "terminal_redispatch_selected"
+    assert result["summary"]["handoff_added"] is True
+    assert result["summary"]["handoff_reason"] == "terminal_redispatch_selected"
+
+
 def test_terminal_redispatch_selection_is_not_rejected_when_selected_j_is_worse(
     monkeypatch,
 ) -> None:
@@ -314,17 +405,7 @@ def test_terminal_redispatch_selection_is_not_rejected_when_selected_j_is_worse(
 
 
 def test_initial_redispatch_diagnostics_preserve_validated_magnitudes() -> None:
-    redispatch = MinimalRedispatchResult(
-        opf_success=True,
-        assessment=SimpleNamespace(physically_secure=True),
-        message="validated",
-        redispatch_l1_mw=12.5,
-        redispatch_up_mw=6.4,
-        redispatch_down_mw=6.1,
-        redispatch_max_generator_delta_mw=4.2,
-    )
-
-    diagnostics = runtime._initial_redispatch_diagnostics(redispatch)
+    diagnostics = runtime._initial_redispatch_diagnostics(_validated_redispatch())
 
     assert diagnostics == {
         "initial_redispatch_attempted": True,
