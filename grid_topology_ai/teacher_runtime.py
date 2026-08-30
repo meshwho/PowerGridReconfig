@@ -113,6 +113,7 @@ from grid_topology_ai.search.teacher import (
 )
 from grid_topology_ai.termination import (
     TerminationReason,
+    classify_teacher_outcome,
     parse_termination_reason,
     termination_reason_value,
     validate_outcome_invariants,
@@ -1212,7 +1213,9 @@ def main(argv: list[str] | None = None) -> int:
     print(examples_df.groupby("step").size().to_string())
     print("\nAction 0 / handoff examples:")
     print(int((examples_df["selected_action_id"] == 0).sum()))
-    print("\nTermination reasons:")
+    print("\nTeacher outcomes:")
+    print(examples_df["teacher_outcome"].value_counts(dropna=False).to_string())
+    print("\nDiagnostic termination reasons:")
     print(examples_df["termination_reason"].value_counts(dropna=False).to_string())
     print("\nDone.")
     return 0
@@ -1283,6 +1286,7 @@ def _replay_terminal_evidence(
             row["termination_reason"] = (
                 TerminationReason.HANDOFF_TO_REDISPATCH_TEACHER.value
             )
+
     ctx = _require_worker_context()
     _set_redispatch_diagnostics(rows, None)
     ordered_rows = sorted(rows, key=lambda row: int(row["step"]))
@@ -1302,9 +1306,10 @@ def _replay_terminal_evidence(
             f"Teacher scenario {scenario_id} contains mixed terminal outcomes."
         )
 
-    solved = solved_values.pop()
+    recorded_solved = solved_values.pop()
     recorded_reason = reason_values.pop()
     assert recorded_reason is not None
+
     env = TopologySwitchingEnv(
         adapter=ctx["adapter"],
         backend=ctx["backend"],
@@ -1331,8 +1336,7 @@ def _replay_terminal_evidence(
     if (
         env.done
         and env.terminal_outcome_evidence is not None
-        and env.terminal_outcome_evidence.solved is solved
-        and env.terminal_outcome_evidence.termination_reason is recorded_reason
+        and env.terminal_outcome_evidence.solved
     ):
         return env.terminal_outcome_evidence
 
@@ -1344,36 +1348,42 @@ def _replay_terminal_evidence(
 
     assessment = assess_physical_state(final_state.metrics)
     topology_value = state_utility(final_state, physics_config=ctx["physics_config"])
-    reason = recorded_reason
-    if (
-        reason is TerminationReason.HANDOFF_TO_REDISPATCH_TEACHER
-        and not assessment.hard_overload_free
-    ):
-        reason = TerminationReason.HANDOFF_TO_REDISPATCH_WITH_HARD_OVERLOAD
 
-    if (
-        reason is TerminationReason.HANDOFF_TO_REDISPATCH_TEACHER
-        and assessment.hard_overload_free
-    ):
-        redispatch_result = run_minimal_ac_redispatch(ctx["backend"], final_state)
-        _set_redispatch_diagnostics(rows, redispatch_result)
-        if redispatch_result.validated:
-            assert redispatch_result.assessment is not None
-            validated_reason = TerminationReason.REDISPATCH_VALIDATED
-            return TerminalOutcomeEvidence(
-                solved=False,
-                termination_reason=validated_reason,
-                assessment=assessment,
-                redispatch_status=redispatch_status_for_reason(validated_reason),
-                topology_utility=topology_value,
-                redispatch_assessment=redispatch_result.assessment,
-            )
+    if assessment.physically_secure:
+        solved_reason = TerminationReason.SOLVED
+        return TerminalOutcomeEvidence(
+            solved=True,
+            termination_reason=solved_reason,
+            assessment=assessment,
+            redispatch_status=redispatch_status_for_reason(solved_reason),
+            topology_utility=topology_value,
+        )
+
+    redispatch_result = run_minimal_ac_redispatch(ctx["backend"], final_state)
+    _set_redispatch_diagnostics(rows, redispatch_result)
+
+    if redispatch_result.validated:
+        assert redispatch_result.assessment is not None
+        validated_reason = TerminationReason.REDISPATCH_VALIDATED
+        return TerminalOutcomeEvidence(
+            solved=False,
+            termination_reason=validated_reason,
+            assessment=assessment,
+            redispatch_status=redispatch_status_for_reason(validated_reason),
+            topology_utility=topology_value,
+            redispatch_assessment=redispatch_result.assessment,
+        )
+
+    if recorded_solved:
+        raise ValueError(
+            f"Teacher scenario {scenario_id} was recorded solved but replay is insecure."
+        )
 
     return TerminalOutcomeEvidence(
-        solved=solved,
-        termination_reason=reason,
+        solved=False,
+        termination_reason=recorded_reason,
         assessment=assessment,
-        redispatch_status=redispatch_status_for_reason(reason),
+        redispatch_status=redispatch_status_for_reason(recorded_reason),
         topology_utility=topology_value,
     )
 
@@ -1435,6 +1445,13 @@ def _finalize_success_result(result: dict[str, Any]) -> dict[str, Any]:
         )
 
     evidence = _replay_terminal_evidence(scenario_id, rows)
+    redispatch_validated = bool(rows[0].get("redispatch_validated", False))
+    teacher_outcome = classify_teacher_outcome(
+        topology_solved=evidence.solved,
+        redispatch_validated=redispatch_validated,
+    )
+    teacher_outcome_value = teacher_outcome.value
+
     run_id = _worker_run_id()
     iteration = 1
     episode_id = f"{run_id}_scenario_{scenario_id:06d}"
@@ -1460,6 +1477,7 @@ def _finalize_success_result(result: dict[str, Any]) -> dict[str, Any]:
                 "episode_id": episode_id,
                 "solved": evidence.solved,
                 "done": True,
+                "teacher_outcome": teacher_outcome_value,
                 "termination_reason": reason_value,
                 "terminal_outcome_evidence_json": evidence_json,
                 **selection_provenance,
@@ -1482,6 +1500,7 @@ def _finalize_success_result(result: dict[str, Any]) -> dict[str, Any]:
                 "episode_id": episode_id,
                 "episode_done": True,
                 "episode_solved": evidence.solved,
+                "episode_teacher_outcome": teacher_outcome_value,
                 "episode_termination_reason": reason_value,
                 "terminal_outcome_evidence": evidence_mapping,
                 **selection_provenance,
@@ -1515,11 +1534,6 @@ def process_one_scenario_fast(scenario_id: int) -> dict[str, Any]:
     result = _generate_scenario(int(scenario_id))
     result["runtime_seconds"] = time.perf_counter() - started
     return result
-
-
-# ======================================================================================
-# Redispatch-aware final layer
-# ======================================================================================
 
 
 # ======================================================================================
