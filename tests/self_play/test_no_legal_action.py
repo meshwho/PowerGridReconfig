@@ -18,14 +18,18 @@ from grid_topology_ai.physics.objective import (
 from grid_topology_ai.power_flow.backend import GridFMPowerFlowResult
 from grid_topology_ai.value_targets import (
     VALUE_TARGET_MODE,
-    terminal_utility_from_outcome,
+    topology_utility_from_evidence,
 )
 from grid_topology_ai.self_play import generation
 from grid_topology_ai.self_play.generation import (
     GenerationRequest,
     generate_self_play_examples,
 )
-from grid_topology_ai.termination import TerminationReason
+from grid_topology_ai.termination import (
+    TeacherOutcome,
+    TerminationReason,
+    classify_teacher_outcome,
+)
 from tests.outcome_evidence_helpers import terminal_evidence
 
 
@@ -123,11 +127,11 @@ def test_no_legal_action_evidence_and_utility_contract() -> None:
     evidence = terminal_evidence(TerminationReason.NO_LEGAL_ACTION)
 
     assert evidence.redispatch_status is RedispatchStatus.NOT_REQUESTED
-    assert terminal_utility_from_outcome(
-        False,
-        TerminationReason.NO_LEGAL_ACTION,
-        evidence=evidence,
-    ) == (-1.0, "no_legal_action")
+    assert topology_utility_from_evidence(evidence) == pytest.approx(-1.0)
+    assert classify_teacher_outcome(
+        topology_solved=evidence.solved,
+        redispatch_validated=False,
+    ) is TeacherOutcome.MAX_STEPS_REACHED
 
     with pytest.raises(ValueError, match="physical assessment"):
         TerminalOutcomeEvidence(
@@ -210,6 +214,13 @@ class _Writer:
             terminal_outcome_evidence,
             TerminalOutcomeEvidence,
         )
+        outcome = classify_teacher_outcome(
+            topology_solved=terminal_outcome_evidence.solved,
+            redispatch_validated=(
+                terminal_outcome_evidence.redispatch_status
+                is RedispatchStatus.VALIDATED
+            ),
+        )
         total_steps = len(pending_examples)
         for item in pending_examples:
             step = int(item["step"])
@@ -221,8 +232,12 @@ class _Writer:
                     "terminal_outcome_evidence_json": (
                         terminal_outcome_evidence.to_json()
                     ),
-                    "outcome_value_target": -1.0,
-                    "outcome_class": termination_reason.value,
+                    "outcome_value_target": (
+                        topology_utility_from_evidence(
+                            terminal_outcome_evidence
+                        )
+                    ),
+                    "outcome_class": outcome.value,
                     "outcome_steps_to_terminal": total_steps - step,
                     "outcome_value_target_mode": VALUE_TARGET_MODE,
                     "outcome_gamma": 1.0,
@@ -295,7 +310,11 @@ class _Planner:
             best_branch_id=10,
             policy={1: 1.0},
             visit_counts={1: 3},
-            root=SimpleNamespace(actions_by_id={1: _Action()}),
+            root=SimpleNamespace(
+                actions_by_id={1: _Action()},
+                action_scores={},
+                neural_value=None,
+            ),
             root_legal_action_count=1,
             root_considered_action_count=1,
             root_visited_action_count=1,
@@ -396,7 +415,7 @@ def test_generation_labels_prior_decisions_as_no_legal_action(
     assert bool(row["solved"]) is False
     assert row["termination_reason"] == "no_legal_action"
     assert row["outcome_value_target"] == pytest.approx(-1.0)
-    assert row["outcome_class"] == "no_legal_action"
+    assert row["outcome_class"] == "max_steps_reached"
     assert row["outcome_gamma"] == pytest.approx(1.0)
     assert row["outcome_value_target_mode"] == VALUE_TARGET_MODE
     assert row["terminal_outcome_evidence_json"] == terminal_evidence(
