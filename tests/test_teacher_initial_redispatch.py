@@ -306,7 +306,9 @@ def test_zero_switch_failed_redispatch_is_saved_as_max_steps_terminal_target(
     assert row["selected_branch_id"] is None
     assert row["termination_reason"] == TerminationReason.MAX_STEPS_REACHED.value
     assert row["step_termination_reason"] == TerminationReason.MAX_STEPS_REACHED.value
-    assert row["teacher_decision_reason"] == "terminal_redispatch_unavailable"
+    assert state_store.metadata[0]["teacher_decision_reason"] == (
+        "terminal_redispatch_unavailable"
+    )
     assert result["summary"]["first_action"] == 0
     assert result["summary"]["first_branch"] is None
     assert result["summary"]["handoff_added"] is False
@@ -344,7 +346,9 @@ def test_zero_switch_secure_root_is_saved_as_solved_terminal_target(
     assert row["solved"] is True
     assert row["termination_reason"] == TerminationReason.SOLVED.value
     assert row["step_termination_reason"] == TerminationReason.SOLVED.value
-    assert row["teacher_decision_reason"] == "initial_topology_solved"
+    assert state_store.metadata[0]["teacher_decision_reason"] == (
+        "initial_topology_solved"
+    )
     assert result["summary"]["handoff_added"] is False
 
 
@@ -377,7 +381,9 @@ def test_zero_switch_validated_redispatch_keeps_terminal_handoff(
     assert row["termination_reason"] == (
         TerminationReason.HANDOFF_TO_REDISPATCH_TEACHER.value
     )
-    assert row["teacher_decision_reason"] == "terminal_redispatch_selected"
+    assert state_store.metadata[0]["teacher_decision_reason"] == (
+        "terminal_redispatch_selected"
+    )
     assert result["summary"]["handoff_added"] is True
     assert result["summary"]["handoff_reason"] == "terminal_redispatch_selected"
 
