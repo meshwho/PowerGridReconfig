@@ -1,0 +1,35 @@
+{
+  "simple": {
+    "depth": 4,
+    "beam_width": 10,
+    "candidate_pool": 60,
+    "top_k": 30,
+    "lodf_top_k": 30,
+    "max_steps": 5,
+    "max_teacher_steps": 5,
+    "batch_size": 3,
+    "auto_worker_max": 10
+  },
+  "medium": {
+    "depth": 5,
+    "beam_width": 20,
+    "candidate_pool": 160,
+    "top_k": 70,
+    "lodf_top_k": 70,
+    "max_steps": 5,
+    "max_teacher_steps": 5,
+    "batch_size": 2,
+    "auto_worker_max": 10
+  },
+  "hard": {
+    "depth": 6,
+    "beam_width": 30,
+    "candidate_pool": 220,
+    "top_k": 100,
+    "lodf_top_k": 100,
+    "max_steps": 6,
+    "max_teacher_steps": 6,
+    "batch_size": 2,
+    "auto_worker_max": 10
+  }
+}
