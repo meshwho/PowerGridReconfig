@@ -927,7 +927,7 @@ def run_sequential(
         scenario_ids=scenario_ids,
         memory_registry=None,
     )
-    rows: list[dict[str, Any]] = []
+    rows: list[dict[str,Any]] = []
     total_saved = 0
     total_skipped = 0
     iterator = scenario_batches
@@ -1215,8 +1215,6 @@ def main(argv: list[str] | None = None) -> int:
     print(int((examples_df["selected_action_id"] == 0).sum()))
     print("\nTeacher outcomes:")
     print(examples_df["teacher_outcome"].value_counts(dropna=False).to_string())
-    print("\nDiagnostic termination reasons:")
-    print(examples_df["termination_reason"].value_counts(dropna=False).to_string())
     print("\nDone.")
     return 0
 
@@ -1455,7 +1453,7 @@ def _finalize_success_result(result: dict[str, Any]) -> dict[str, Any]:
     run_id = _worker_run_id()
     iteration = 1
     episode_id = f"{run_id}_scenario_{scenario_id:06d}"
-    reason_value = evidence.termination_reason.value
+    diagnostic_reason_value = evidence.termination_reason.value
     evidence_json = evidence.to_json()
     evidence_mapping = evidence.to_dict()
     ctx = _require_worker_context()
@@ -1470,6 +1468,11 @@ def _finalize_success_result(result: dict[str, Any]) -> dict[str, Any]:
             "action_layout": action_layout_to_list(layout),
             "action_layout_fingerprint": action_layout_fingerprint(layout),
         }
+
+        step_diagnostic_reason = row.pop("step_termination_reason", None)
+        if int(row["selected_action_id"]) == 0:
+            step_diagnostic_reason = diagnostic_reason_value
+
         row.update(
             {
                 "run_id": run_id,
@@ -1478,7 +1481,7 @@ def _finalize_success_result(result: dict[str, Any]) -> dict[str, Any]:
                 "solved": evidence.solved,
                 "done": True,
                 "teacher_outcome": teacher_outcome_value,
-                "termination_reason": reason_value,
+                "diagnostic_termination_reason": diagnostic_reason_value,
                 "terminal_outcome_evidence_json": evidence_json,
                 **selection_provenance,
                 **{
@@ -1489,10 +1492,13 @@ def _finalize_success_result(result: dict[str, Any]) -> dict[str, Any]:
                 },
             }
         )
+        row.pop("termination_reason", None)
+        if step_diagnostic_reason is not None:
+            row["step_diagnostic_termination_reason"] = step_diagnostic_reason
         _json_feature_columns(row)
-        if int(row["selected_action_id"]) == 0:
-            row["step_termination_reason"] = reason_value
 
+        metadata.pop("episode_termination_reason", None)
+        metadata.pop("step_termination_reason", None)
         metadata.update(
             {
                 "run_id": run_id,
@@ -1501,15 +1507,15 @@ def _finalize_success_result(result: dict[str, Any]) -> dict[str, Any]:
                 "episode_done": True,
                 "episode_solved": evidence.solved,
                 "episode_teacher_outcome": teacher_outcome_value,
-                "episode_termination_reason": reason_value,
+                "episode_diagnostic_termination_reason": diagnostic_reason_value,
                 "terminal_outcome_evidence": evidence_mapping,
                 **selection_provenance,
                 **{field: row.get(field) for field in _REDISPATCH_ROW_FIELDS},
                 **action_data,
             }
         )
-        if int(row["selected_action_id"]) == 0:
-            metadata["step_termination_reason"] = reason_value
+        if step_diagnostic_reason is not None:
+            metadata["step_diagnostic_termination_reason"] = step_diagnostic_reason
         _write_state_metadata(state_path, arrays, metadata)
     return result
 
