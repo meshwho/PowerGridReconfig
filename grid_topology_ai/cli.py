@@ -429,6 +429,50 @@ def _load_teacher_profiles(path: Path) -> dict[str, dict[str, int]]:
     return validated
 
 
+def _merge_teacher_split_examples(output_dir: Path, split_name: str) -> Path:
+    import pandas as pd
+    from grid_topology_ai.self_play.example_validation import validate_examples_dataframe
+
+    parts: list[pd.DataFrame] = []
+    for difficulty in _TEACHER_DIFFICULTIES:
+        source_path = output_dir / split_name / difficulty / "examples.csv"
+        frame = pd.read_csv(source_path)
+        validate_examples_dataframe(frame, source_path=source_path)
+        frame = frame.copy()
+
+        if "difficulty_class" in frame.columns:
+            values = set(
+                frame["difficulty_class"].astype(str).str.strip().str.lower()
+            )
+            if values != {difficulty}:
+                raise ValueError(
+                    f"Unexpected difficulty_class values in {source_path}: {values}"
+                )
+        else:
+            frame["difficulty_class"] = difficulty
+
+        frame["teacher_split"] = split_name
+        frame["source_examples_csv"] = str(source_path)
+        parts.append(frame)
+
+    merged = pd.concat(parts, ignore_index=True, sort=False)
+    if "state_id" in merged.columns and merged["state_id"].duplicated().any():
+        raise ValueError(f"Duplicate state_id values found while merging {split_name}.")
+    if "step" in merged.columns and merged.duplicated(
+        subset=["scenario_id", "step"], keep=False
+    ).any():
+        raise ValueError(
+            f"Duplicate (scenario_id, step) rows found while merging {split_name}."
+        )
+
+    output_path = output_dir / f"examples_{split_name}.csv"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    temp_path = output_path.with_name(output_path.name + ".tmp")
+    merged.to_csv(temp_path, index=False)
+    temp_path.replace(output_path)
+    return output_path
+
+
 def _teacher_argv(
     args: argparse.Namespace,
     transitions: Path,
@@ -499,7 +543,8 @@ def _teacher(args: argparse.Namespace) -> int:
 
     if not args.profiles:
         raise ValueError("--profiles is required when --transitions is a directory.")
-    profiles = _load_teacher_profiles(Path(args.profiles))
+    profile_path = Path(args.profiles)
+    profiles = _load_teacher_profiles(profile_path)
 
     split_inputs = (
         ("train", transitions / "transitions_train.csv"),
@@ -512,6 +557,7 @@ def _teacher(args: argparse.Namespace) -> int:
             + ", ".join(missing)
         )
 
+    merged_paths: dict[str, Path] = {}
     for split_name, split_path in split_inputs:
         for difficulty in _TEACHER_DIFFICULTIES:
             class_output = output_dir / split_name / difficulty
@@ -534,7 +580,20 @@ def _teacher(args: argparse.Namespace) -> int:
             if result:
                 return result
 
+        merged_paths[split_name] = _merge_teacher_split_examples(
+            output_dir,
+            split_name,
+        )
+
+    profile_snapshot = output_dir / "teacher_profile.json"
+    profile_temp = profile_snapshot.with_name(profile_snapshot.name + ".tmp")
+    profile_temp.write_bytes(profile_path.read_bytes())
+    profile_temp.replace(profile_snapshot)
+
     print("\nTeacher train/validation difficulty generation complete.")
+    print(f"Train examples:      {merged_paths['train']}")
+    print(f"Validation examples: {merged_paths['val']}")
+    print(f"Teacher profile:     {profile_snapshot}")
     return 0
 
 
