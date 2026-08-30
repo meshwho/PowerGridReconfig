@@ -302,13 +302,6 @@ class RedispatchStatus(StrEnum):
     VALIDATED = "validated"
 
 
-_REQUESTED_REDISPATCH_REASONS = frozenset(
-    {
-        TerminationReason.HANDOFF_TO_REDISPATCH,
-        TerminationReason.HANDOFF_TO_REDISPATCH_WITH_HARD_OVERLOAD,
-        TerminationReason.HANDOFF_TO_REDISPATCH_TEACHER,
-    }
-)
 _SAFE_HANDOFF_REASONS = frozenset(
     {
         TerminationReason.HANDOFF_TO_REDISPATCH,
@@ -347,22 +340,6 @@ _INTEGER_ASSESSMENT_FIELDS = frozenset(
         "num_angle_difference_violations",
     }
 )
-
-
-def redispatch_status_for_reason(
-    termination_reason: TerminationReason | str,
-) -> RedispatchStatus:
-    reason = parse_termination_reason(
-        termination_reason,
-        allow_none=False,
-    )
-    assert reason is not None
-
-    if reason is TerminationReason.REDISPATCH_VALIDATED:
-        return RedispatchStatus.VALIDATED
-    if reason in _REQUESTED_REDISPATCH_REASONS:
-        return RedispatchStatus.REQUESTED
-    return RedispatchStatus.NOT_REQUESTED
 
 
 def _parse_redispatch_status(value: object) -> RedispatchStatus:
@@ -575,11 +552,19 @@ class TerminalOutcomeEvidence:
             termination_reason=reason,
         )
 
-        expected_status = redispatch_status_for_reason(reason)
-        if status is not expected_status:
+        if reason is TerminationReason.REDISPATCH_VALIDATED:
+            if status is not RedispatchStatus.VALIDATED:
+                raise ValueError(
+                    "redispatch_validated requires redispatch_status='validated'."
+                )
+        elif status is RedispatchStatus.VALIDATED:
             raise ValueError(
-                f"{reason.value} requires "
-                f"redispatch_status={expected_status.value!r}."
+                "redispatch_status='validated' requires redispatch_validated."
+            )
+
+        if self.solved and status is not RedispatchStatus.NOT_REQUESTED:
+            raise ValueError(
+                "A topology-solved outcome cannot request redispatch."
             )
 
         if assessment is None:
