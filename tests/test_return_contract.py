@@ -10,10 +10,16 @@ from grid_topology_ai.value_targets import (
     heuristic_terminal_utility_estimate,
     require_bounded_utility,
     require_discount_factor,
-    terminal_utility_from_outcome,
+    topology_utility_from_evidence,
 )
+from grid_topology_ai.physics.objective import RedispatchStatus
 from grid_topology_ai.physics.utility import require_reward_discount_factor
-from grid_topology_ai.termination import TerminationReason
+from grid_topology_ai.termination import (
+    TeacherOutcome,
+    TerminationReason,
+    classify_teacher_outcome,
+)
+from tests.outcome_evidence_helpers import terminal_evidence
 
 
 def _state(*, loading: float, overloaded: int, hard: int) -> GridFMState:
@@ -44,27 +50,38 @@ def _state(*, loading: float, overloaded: int, hard: int) -> GridFMState:
     )
 
 
-def test_terminal_utility_distinguishes_terminal_outcomes() -> None:
-    assert terminal_utility_from_outcome(
-        True,
-        TerminationReason.SOLVED,
-    ) == (1.0, "solved")
-    assert terminal_utility_from_outcome(
-        False,
+def test_teacher_outcome_is_separate_from_diagnostic_reason() -> None:
+    assert classify_teacher_outcome(
+        topology_solved=True,
+        redispatch_validated=False,
+    ) is TeacherOutcome.SOLVED
+
+    for reason in (
         TerminationReason.HANDOFF_TO_REDISPATCH,
-    ) == (-1.0, "handoff_to_redispatch")
-    assert terminal_utility_from_outcome(
-        False,
         TerminationReason.HANDOFF_TO_REDISPATCH_TEACHER,
-    ) == (-1.0, "handoff_to_redispatch_teacher")
-    assert terminal_utility_from_outcome(
-        False,
-        TerminationReason.HANDOFF_TO_REDISPATCH_WITH_HARD_OVERLOAD,
-    ) == (-1.0, "handoff_to_redispatch_with_hard_overload")
-    assert terminal_utility_from_outcome(
-        False,
         TerminationReason.POWER_FLOW_FAILED,
-    ) == (-1.0, "power_flow_failed")
+        TerminationReason.MAX_STEPS_REACHED,
+    ):
+        evidence = terminal_evidence(reason, topology_utility=-0.4)
+        outcome = classify_teacher_outcome(
+            topology_solved=evidence.solved,
+            redispatch_validated=(
+                evidence.redispatch_status is RedispatchStatus.VALIDATED
+            ),
+        )
+        assert outcome is TeacherOutcome.MAX_STEPS_REACHED
+        assert topology_utility_from_evidence(evidence) == pytest.approx(-0.4)
+
+    validated = terminal_evidence(
+        TerminationReason.REDISPATCH_VALIDATED,
+        topology_utility=0.25,
+        redispatch_status=RedispatchStatus.VALIDATED,
+    )
+    assert classify_teacher_outcome(
+        topology_solved=validated.solved,
+        redispatch_validated=True,
+    ) is TeacherOutcome.REDISPATCH
+    assert topology_utility_from_evidence(validated) == pytest.approx(0.25)
 
 
 def test_policy_value_semantics_are_undiscounted() -> None:
