@@ -29,7 +29,7 @@ from grid_topology_ai.value_targets import (
     heuristic_terminal_utility_estimate,
     require_bounded_utility,
     require_discount_factor,
-    terminal_utility_from_outcome,
+    topology_utility_from_evidence,
 )
 
 if TYPE_CHECKING:
@@ -1126,12 +1126,16 @@ class MCTSPlanner:
         """Evaluate a leaf under the shared terminal-utility contract."""
 
         if node.done:
-            terminal_utility, _ = terminal_utility_from_outcome(
-                node.solved,
-                getattr(node.env, "termination_reason", None),
-                evidence=getattr(node.env, "terminal_outcome_evidence", None),
+            evidence = getattr(
+                node.env,
+                "terminal_outcome_evidence",
+                None,
             )
-            return terminal_utility
+            if evidence is None:
+                raise RuntimeError(
+                    "Terminal MCTS node is missing terminal outcome evidence."
+                )
+            return topology_utility_from_evidence(evidence)
 
         state = node.env.current_state
         if state is None:
