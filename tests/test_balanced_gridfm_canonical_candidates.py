@@ -58,7 +58,6 @@ def _contract_args(**overrides) -> Namespace:
         "medium_max_overloaded": 5,
         "hard_min_loading": 150.0,
         "hard_min_hard": 2,
-        "gridfm_command_template": 'python -m gridfm_datakit.cli generate "{config}"',
     }
     values.update(overrides)
     return Namespace(**values)

@@ -9,7 +9,10 @@ from grid_topology_ai.value_targets import TERMINAL_UTILITY_GAMMA
 from grid_topology_ai.search.mcts import MCTSConfig, MCTSNode, MCTSPlanner
 from grid_topology_ai.termination import TerminationReason
 from grid_topology_ai.value_targets import add_outcome_value_targets_to_rows
-from tests.outcome_evidence_helpers import terminal_evidence_fields
+from tests.outcome_evidence_helpers import (
+    terminal_evidence,
+    terminal_evidence_fields,
+)
 
 
 def _node(
@@ -19,10 +22,16 @@ def _node(
     reason: TerminationReason | None = None,
     reward: float = 0.0,
 ) -> MCTSNode:
+    evidence = (
+        terminal_evidence(reason)
+        if done and reason is not None
+        else None
+    )
     env = SimpleNamespace(
         done=done,
         solved=solved,
         termination_reason=reason,
+        terminal_outcome_evidence=evidence,
         current_state=None,
     )
     return MCTSNode(  # type: ignore[arg-type]
@@ -82,6 +91,19 @@ def test_mcts_terminal_leaf_uses_same_outcome_utility_as_value_targets() -> None
             reason=TerminationReason.POWER_FLOW_FAILED,
         )
     ) == -1.0
+
+
+def test_mcts_terminal_leaf_requires_terminal_evidence() -> None:
+    planner = MCTSPlanner(MCTSConfig())
+    node = _node(
+        done=True,
+        solved=False,
+        reason=TerminationReason.MAX_STEPS_REACHED,
+    )
+    node.env.terminal_outcome_evidence = None
+
+    with pytest.raises(RuntimeError, match="terminal outcome evidence"):
+        planner._leaf_value(node)
 
 
 def test_value_targets_equal_mcts_undiscounted_terminal_backup() -> None:

@@ -12,13 +12,14 @@ import grid_topology_ai.evaluation as evaluation_checkpoint
 from grid_topology_ai.value_targets import (
     TERMINAL_UTILITY_GAMMA,
     VALUE_TARGET_MODE,
-    terminal_utility_from_outcome,
+    add_outcome_value_targets_to_rows,
+    topology_utility_from_evidence,
 )
 from grid_topology_ai.search.mcts import MCTSConfig, MCTSNode, MCTSPlanner
 from grid_topology_ai.self_play import generation
+from grid_topology_ai.physics.objective import RedispatchStatus
 from grid_topology_ai.termination import TerminationReason
-from grid_topology_ai.value_targets import add_outcome_value_targets_to_rows
-from tests.outcome_evidence_helpers import terminal_evidence_fields
+from tests.outcome_evidence_helpers import terminal_evidence, terminal_evidence_fields
 
 
 def _node(*, reward: float = 0.0) -> MCTSNode:
@@ -35,32 +36,38 @@ def _node(*, reward: float = 0.0) -> MCTSNode:
 
 
 @pytest.mark.parametrize(
-    ("solved", "reason", "expected_utility"),
+    ("reason", "status", "expected_utility"),
     [
-        (True, TerminationReason.SOLVED, 1.0),
-        (False, TerminationReason.HANDOFF_TO_REDISPATCH, -1.0),
-        (False, TerminationReason.POWER_FLOW_FAILED, -1.0),
-        (False, TerminationReason.MAX_STEPS_REACHED, -1.0),
+        (TerminationReason.SOLVED, RedispatchStatus.NOT_REQUESTED, 1.0),
+        (TerminationReason.MAX_STEPS_REACHED, RedispatchStatus.REQUESTED, -0.4),
+        (TerminationReason.POWER_FLOW_FAILED, RedispatchStatus.NOT_REQUESTED, -1.0),
+        (TerminationReason.REDISPATCH_VALIDATED, RedispatchStatus.VALIDATED, 0.35),
     ],
 )
-def test_mcts_backup_and_value_targets_share_terminal_utility(
-    solved: bool,
+def test_mcts_backup_and_value_targets_share_supplied_terminal_utility(
     reason: TerminationReason,
+    status: RedispatchStatus,
     expected_utility: float,
 ) -> None:
-    utility, _ = terminal_utility_from_outcome(solved, reason)
-    assert utility == expected_utility
-
-    evidence_fields = terminal_evidence_fields(reason)
+    evidence = terminal_evidence(
+        reason,
+        topology_utility=expected_utility,
+        redispatch_status=status,
+    )
+    utility = topology_utility_from_evidence(evidence)
+    evidence_fields = terminal_evidence_fields(
+        reason,
+        topology_utility=expected_utility,
+        redispatch_status=status,
+    )
     identity = {"run_id": "run-1", "iteration": 1, "episode_id": "episode-1"}
     rows: list[dict[str, object]] = [
         {
             **identity,
             "scenario_id": 1,
             "step": step,
-            "solved": solved,
+            "solved": evidence.solved,
             "done": True,
-            "termination_reason": reason.value,
             **evidence_fields,
         }
         for step in (0, 1)
@@ -116,9 +123,7 @@ def test_mcts_backup_has_no_dense_reward_path() -> None:
 
 
 def test_training_datasets_have_no_shaped_return_fallback() -> None:
-    text = Path("grid_topology_ai/dataset.py").read_text(
-        encoding="utf-8"
-    )
+    text = Path("grid_topology_ai/dataset.py").read_text(encoding="utf-8")
     forbidden = (
         'row.get("outcome_value_target", row["discounted_return_from_step"])',
         'row.get("outcome_value_target", row["final_return"])',

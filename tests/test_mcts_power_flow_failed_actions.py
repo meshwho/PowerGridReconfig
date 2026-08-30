@@ -8,6 +8,7 @@ from grid_topology_ai.actions import GridFMAction
 from grid_topology_ai.state import BRANCH_FEATURE_COLUMNS
 from grid_topology_ai.search.mcts import MCTSConfig, MCTSPlanner
 from grid_topology_ai.termination import TerminationReason
+from tests.outcome_evidence_helpers import terminal_evidence
 
 
 _LOADING_INDEX = BRANCH_FEATURE_COLUMNS.index("loading_percent")
@@ -46,6 +47,7 @@ class _Env:
         self.done = False
         self.solved = False
         self.termination_reason = None
+        self.terminal_outcome_evidence = None
         self._actions = list(actions)
         self._calls = calls
 
@@ -54,6 +56,7 @@ class _Env:
         clone.done = self.done
         clone.solved = self.solved
         clone.termination_reason = self.termination_reason
+        clone.terminal_outcome_evidence = self.terminal_outcome_evidence
         return clone
 
     def valid_actions(self) -> list[GridFMAction]:
@@ -70,6 +73,9 @@ class _Env:
             self.done = True
             self.solved = False
             self.termination_reason = TerminationReason.POWER_FLOW_FAILED
+            self.terminal_outcome_evidence = terminal_evidence(
+                TerminationReason.POWER_FLOW_FAILED
+            )
             return SimpleNamespace(
                 reward=0.0,
                 power_flow_success=False,
@@ -78,6 +84,9 @@ class _Env:
         self.done = True
         self.solved = True
         self.termination_reason = TerminationReason.SOLVED
+        self.terminal_outcome_evidence = terminal_evidence(
+            TerminationReason.SOLVED
+        )
         return SimpleNamespace(
             reward=0.0,
             power_flow_success=True,

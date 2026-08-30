@@ -10,7 +10,10 @@ import pandas as pd
 
 from grid_topology_ai.config import PhysicsConfig
 from grid_topology_ai.state import GridFMState
-from grid_topology_ai.physics.objective import TerminalOutcomeEvidence
+from grid_topology_ai.physics.objective import (
+    RedispatchStatus,
+    TerminalOutcomeEvidence,
+)
 from grid_topology_ai.physics.utility import state_utility
 from grid_topology_ai.value_targets import TERMINAL_UTILITY_GAMMA
 from grid_topology_ai.search.mcts import (
@@ -20,6 +23,7 @@ from grid_topology_ai.search.mcts import (
 from grid_topology_ai.state import GridFMStateStore
 from grid_topology_ai.termination import (
     TerminationReason,
+    classify_teacher_outcome,
     termination_reason_value,
     validate_outcome_invariants,
 )
@@ -58,6 +62,7 @@ class SelfPlayExample:
     action_layout_fingerprint: str
     visit_counts_json: str
     mcts_policy_json: str
+    teacher_outcome: str | None = None
     outcome_value_target: float | None = None
     outcome_class: str | None = None
     outcome_steps_to_terminal: int | None = None
@@ -166,6 +171,13 @@ class ExampleWriter:
         episode_id = f"iteration_{iteration:06d}_scenario_{scenario_id}"
         evidence_json = terminal_outcome_evidence.to_json()
         reason_value = termination_reason_value(parsed_reason)
+        teacher_outcome = classify_teacher_outcome(
+            topology_solved=terminal_outcome_evidence.solved,
+            redispatch_validated=(
+                terminal_outcome_evidence.redispatch_status
+                is RedispatchStatus.VALIDATED
+            ),
+        )
         target_rows = [
             {
                 "run_id": self.run_id,
@@ -176,6 +188,7 @@ class ExampleWriter:
                 "done": True,
                 "solved": bool(solved),
                 "termination_reason": reason_value,
+                "teacher_outcome": teacher_outcome.value,
                 "terminal_outcome_evidence_json": evidence_json,
             }
             for step in steps
@@ -365,6 +378,7 @@ class ExampleWriter:
 
         if outcome_fields is not None:
             for name in (
+                "teacher_outcome",
                 "outcome_value_target",
                 "outcome_class",
                 "outcome_steps_to_terminal",
@@ -435,6 +449,10 @@ class ExampleWriter:
                     str(action_id): float(probability)
                     for action_id, probability in normalized_policy.items()
                 }
+            ),
+            teacher_outcome=self._optional_str(
+                outcome_fields,
+                "teacher_outcome",
             ),
             outcome_value_target=self._optional_float(
                 outcome_fields,

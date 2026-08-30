@@ -4,8 +4,11 @@ import pytest
 
 from grid_topology_ai.physics.objective import RedispatchStatus, TerminalOutcomeEvidence
 from grid_topology_ai.physics.objective import assess_physical_state
-from grid_topology_ai.value_targets import terminal_utility_from_outcome
-from grid_topology_ai.termination import TerminationReason
+from grid_topology_ai.termination import TeacherOutcome, TerminationReason
+from grid_topology_ai.value_targets import (
+    terminal_evidence_from_row,
+    topology_utility_from_evidence,
+)
 
 
 def _metrics(
@@ -18,11 +21,7 @@ def _metrics(
         "all_values_finite": True,
         "topology_connected": True,
         "max_loading_percent": (
-            90.0
-            if overloaded == 0
-            else 130.0
-            if hard_overloaded
-            else 110.0
+            90.0 if overloaded == 0 else 130.0 if hard_overloaded else 110.0
         ),
         "num_overloaded_branches": overloaded,
         "num_hard_overloaded_branches": hard_overloaded,
@@ -43,86 +42,44 @@ def _metrics(
 
 def _assessment(*, overloaded: int, hard_overloaded: int = 0):
     return assess_physical_state(
-        _metrics(
-            overloaded=overloaded,
-            hard_overloaded=hard_overloaded,
-        )
+        _metrics(overloaded=overloaded, hard_overloaded=hard_overloaded)
     )
 
 
-@pytest.mark.parametrize(
-    "reason",
-    [
-        TerminationReason.HANDOFF_TO_REDISPATCH,
-        TerminationReason.HANDOFF_TO_REDISPATCH_TEACHER,
-        TerminationReason.HANDOFF_TO_REDISPATCH_WITH_HARD_OVERLOAD,
-    ],
-)
-def test_evidence_free_handoff_uses_terminal_fallback(
-    reason: TerminationReason,
-) -> None:
-    assert terminal_utility_from_outcome(False, reason) == (
-        -1.0,
-        reason.value,
-    )
-
-
-def test_validated_redispatch_requires_evidence() -> None:
-    with pytest.raises(ValueError, match="requires terminal outcome evidence"):
-        terminal_utility_from_outcome(
-            False,
-            TerminationReason.REDISPATCH_VALIDATED,
-        )
-
-
-def test_validated_redispatch_uses_pre_redispatch_topology_utility() -> None:
-    evidence = TerminalOutcomeEvidence(
+def _validated_evidence(
+    *,
+    topology_utility: float = 0.35,
+    hard_overloaded: int = 0,
+) -> TerminalOutcomeEvidence:
+    return TerminalOutcomeEvidence(
         solved=False,
         termination_reason=TerminationReason.REDISPATCH_VALIDATED,
-        assessment=_assessment(overloaded=1),
+        assessment=_assessment(overloaded=1, hard_overloaded=hard_overloaded),
         redispatch_status=RedispatchStatus.VALIDATED,
-        topology_utility=0.35,
+        topology_utility=topology_utility,
         redispatch_assessment=_assessment(overloaded=0),
     )
 
-    assert terminal_utility_from_outcome(
-        False,
-        TerminationReason.REDISPATCH_VALIDATED,
-        evidence=evidence,
-    ) == (0.35, "redispatch_validated")
+
+def test_validated_redispatch_uses_pre_redispatch_topology_utility() -> None:
+    evidence = _validated_evidence(topology_utility=0.35)
+
+    assert topology_utility_from_evidence(evidence) == pytest.approx(0.35)
 
 
 def test_redispatch_status_does_not_change_primary_topology_utility() -> None:
     assessment = _assessment(overloaded=1)
-    handoff = TerminalOutcomeEvidence(
+    requested = TerminalOutcomeEvidence(
         solved=False,
-        termination_reason=TerminationReason.HANDOFF_TO_REDISPATCH_TEACHER,
+        termination_reason=TerminationReason.MAX_STEPS_REACHED,
         assessment=assessment,
         redispatch_status=RedispatchStatus.REQUESTED,
         topology_utility=0.35,
     )
-    validated = TerminalOutcomeEvidence(
-        solved=False,
-        termination_reason=TerminationReason.REDISPATCH_VALIDATED,
-        assessment=assessment,
-        redispatch_status=RedispatchStatus.VALIDATED,
-        topology_utility=0.35,
-        redispatch_assessment=_assessment(overloaded=0),
-    )
+    validated = _validated_evidence(topology_utility=0.35)
 
-    handoff_value, _ = terminal_utility_from_outcome(
-        False,
-        handoff.termination_reason,
-        evidence=handoff,
-    )
-    validated_value, _ = terminal_utility_from_outcome(
-        False,
-        validated.termination_reason,
-        evidence=validated,
-    )
-
-    assert handoff_value == pytest.approx(0.35)
-    assert validated_value == pytest.approx(0.35)
+    assert topology_utility_from_evidence(requested) == pytest.approx(0.35)
+    assert topology_utility_from_evidence(validated) == pytest.approx(0.35)
 
 
 def test_validated_redispatch_rejects_unsafe_result() -> None:
@@ -137,33 +94,41 @@ def test_validated_redispatch_rejects_unsafe_result() -> None:
         )
 
 
-def test_validated_redispatch_rejects_hard_overload_handoff() -> None:
-    with pytest.raises(ValueError, match="hard-overload-free"):
-        TerminalOutcomeEvidence(
-            solved=False,
-            termination_reason=TerminationReason.REDISPATCH_VALIDATED,
-            assessment=_assessment(
-                overloaded=1,
-                hard_overloaded=1,
-            ),
-            redispatch_status=RedispatchStatus.VALIDATED,
-            topology_utility=-0.5,
-            redispatch_assessment=_assessment(overloaded=0),
-        )
-
-
-def test_utility_rejects_mismatched_evidence() -> None:
-    evidence = TerminalOutcomeEvidence(
-        solved=False,
-        termination_reason=TerminationReason.MAX_STEPS_REACHED,
-        assessment=_assessment(overloaded=1),
-        redispatch_status=RedispatchStatus.NOT_REQUESTED,
-        topology_utility=0.2,
+def test_validated_redispatch_accepts_hard_overloaded_pre_redispatch_state() -> None:
+    evidence = _validated_evidence(
+        topology_utility=-0.5,
+        hard_overloaded=1,
     )
 
-    with pytest.raises(ValueError, match="termination_reason"):
-        terminal_utility_from_outcome(
-            False,
-            TerminationReason.POWER_FLOW_FAILED,
-            evidence=evidence,
-        )
+    assert evidence.assessment is not None
+    assert evidence.assessment.hard_overload_free is False
+    assert evidence.redispatch_status is RedispatchStatus.VALIDATED
+    assert evidence.redispatch_assessment is not None
+    assert evidence.redispatch_assessment.physically_secure is True
+    assert topology_utility_from_evidence(evidence) == pytest.approx(-0.5)
+
+
+def test_validated_evidence_maps_to_redispatch_teacher_outcome() -> None:
+    evidence = _validated_evidence(topology_utility=0.2, hard_overloaded=1)
+    row = {
+        "solved": False,
+        "teacher_outcome": TeacherOutcome.REDISPATCH.value,
+        "terminal_outcome_evidence_json": evidence.to_json(),
+    }
+
+    parsed = terminal_evidence_from_row(row, context="validated row")
+
+    assert parsed == evidence
+    assert parsed.redispatch_status is RedispatchStatus.VALIDATED
+
+
+def test_validated_evidence_rejects_wrong_semantic_outcome() -> None:
+    evidence = _validated_evidence(topology_utility=0.2)
+    row = {
+        "solved": False,
+        "teacher_outcome": TeacherOutcome.MAX_STEPS_REACHED.value,
+        "terminal_outcome_evidence_json": evidence.to_json(),
+    }
+
+    with pytest.raises(ValueError, match="contradicts terminal evidence"):
+        terminal_evidence_from_row(row, context="validated row")

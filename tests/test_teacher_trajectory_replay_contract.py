@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import inspect
 from types import SimpleNamespace
 
 import numpy as np
 import pytest
 
 import grid_topology_ai.teacher_runtime as teacher
+from grid_topology_ai.termination import TerminationReason
 
 
 def _teacher_args(**overrides):
@@ -14,6 +16,7 @@ def _teacher_args(**overrides):
         "beam_width": 10,
         "candidate_pool": 80,
         "top_k": 30,
+        "redispatch_candidates_per_switch_count": 5,
         "gamma": 1.0,
         "pf_alg": 3,
         "pf_max_iter": 30,
@@ -23,11 +26,6 @@ def _teacher_args(**overrides):
         "use_soft_root_policy": False,
         "allow_hard_count_increase": False,
         "disable_cache": False,
-        "power_flow_failure_penalty": 1_000_000.0,
-        "min_continue_improvement_with_hard": 100.0,
-        "min_continue_improvement_without_hard": 150.0,
-        "max_loading_increase_limit": 5.0,
-        "add_handoff_example": False,
         "use_lodf_screening": False,
         "lodf_screen_top_k": 0,
         "lodf_min_candidate_count": 8,
@@ -36,48 +34,21 @@ def _teacher_args(**overrides):
     return SimpleNamespace(**values)
 
 
-def test_teacher_replay_keeps_temporarily_worse_selected_step() -> None:
-    state_before = SimpleNamespace(
-        metrics={
-            "num_hard_overloaded_branches": 0,
-            "max_loading_percent": 105.0,
-        }
-    )
-    state_after = SimpleNamespace(
-        metrics={
-            "num_hard_overloaded_branches": 1,
-            "max_loading_percent": 125.0,
-        }
-    )
-    task = {
-        "allow_hard_count_increase": False,
-        "min_continue_improvement_with_hard": 100.0,
-        "min_continue_improvement_without_hard": 150.0,
-        "max_loading_increase_limit": 5.0,
-    }
+def test_teacher_replay_keeps_beam_selected_steps_without_legacy_gates() -> None:
+    source = inspect.getsource(teacher._generate_scenario)
 
-    continue_action, reason, improvement = teacher._selected_teacher_replay_decision(
-        safety_before=100.0,
-        safety_after=140.0,
-        state_before=state_before,
-        state_after=state_after,
-        task=task,
-    )
-
-    assert continue_action is True
-    assert reason == "selected_by_beam_search"
-    assert improvement == pytest.approx(-40.0)
+    assert 'continue_reason = "selected_by_beam_search"' in source
+    assert "step_improvement = float(safety_before - safety_after)" in source
+    assert "_selected_teacher_replay_decision" not in source
+    assert "min_continue_improvement" not in source
+    assert "max_loading_increase_limit" not in source
 
 
 def test_teacher_replay_rejects_power_flow_divergence() -> None:
-    with pytest.raises(RuntimeError, match="power-flow failure during replay"):
-        teacher._selected_teacher_replay_decision(
-            safety_before=100.0,
-            safety_after=1_000_100.0,
-            state_before=object(),
-            state_after=None,
-            task={},
-        )
+    source = inspect.getsource(teacher._generate_scenario)
+
+    assert "if next_state is None:" in source
+    assert "power-flow failure during replay" in source
 
 
 def test_teacher_replay_rejects_invalid_selected_action() -> None:
@@ -89,6 +60,43 @@ def test_teacher_replay_rejects_invalid_selected_action() -> None:
     assert teacher._selected_teacher_action_is_valid(mask, 2) is True
 
 
+@pytest.mark.parametrize(
+    ("solved", "reason", "decision_reason"),
+    [
+        (True, TerminationReason.SOLVED, "initial_topology_solved"),
+        (
+            False,
+            TerminationReason.MAX_STEPS_REACHED,
+            "terminal_redispatch_unavailable",
+        ),
+    ],
+)
+def test_zero_action_terminal_row_preserves_terminal_semantics(
+    solved: bool,
+    reason: TerminationReason,
+    decision_reason: str,
+) -> None:
+    row = teacher.make_terminal_step_item(
+        step_idx=0,
+        state_before=object(),
+        action_mask=np.array([False, True], dtype=bool),
+        safety_before=10.0,
+        solved=solved,
+        termination_reason=reason,
+        reason=decision_reason,
+    )
+
+    assert row["selected_action_id"] == 0
+    assert row["selected_branch_id"] is None
+    assert row["action_mask"].tolist() == [True, True]
+    assert row["policy_target"] == {0: 1.0}
+    assert row["visit_counts"] == {0: 1}
+    assert row["done_after_step"] is True
+    assert row["solved_after_step"] is solved
+    assert row["termination_reason_after_step"] is reason
+    assert row["teacher_decision_reason"] == decision_reason
+
+
 def test_teacher_search_depth_cannot_exceed_replay_horizon() -> None:
     config = teacher.make_task_config(
         _teacher_args(depth=6, max_teacher_steps=4)
@@ -96,11 +104,19 @@ def test_teacher_search_depth_cannot_exceed_replay_horizon() -> None:
 
     assert config["depth"] == 4
     assert config["max_teacher_steps"] == 4
+    assert config["redispatch_candidates_per_switch_count"] == 5
 
 
 def test_teacher_search_depth_validation_rejects_empty_replay_horizon() -> None:
     with pytest.raises(ValueError, match="must be positive"):
         teacher.make_task_config(_teacher_args(max_teacher_steps=0))
+
+
+def test_teacher_redispatch_archive_size_must_be_positive() -> None:
+    with pytest.raises(ValueError, match="redispatch_candidates_per_switch_count"):
+        teacher.make_task_config(
+            _teacher_args(redispatch_candidates_per_switch_count=0)
+        )
 
 
 def test_worker_batch_calls_canonical_scenario_generator_directly(
@@ -113,7 +129,7 @@ def test_worker_batch_calls_canonical_scenario_generator_directly(
         return {
             "ok": False,
             "scenario_id": int(scenario_id),
-            "reason": "no_teacher_action_found",
+            "reason": "test_failure",
         }
 
     monkeypatch.setattr(teacher, "process_one_scenario_fast", fake_process)

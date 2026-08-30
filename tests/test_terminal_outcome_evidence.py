@@ -39,6 +39,14 @@ def _assessment(**overrides: object):
     return assess_physical_state(_metrics(**overrides))
 
 
+def _insecure_assessment():
+    return _assessment(
+        max_loading_percent=110.0,
+        num_overloaded_branches=1,
+        total_thermal_overload_mva=4.0,
+    )
+
+
 def test_solved_evidence_round_trips_without_schema_metadata() -> None:
     evidence = TerminalOutcomeEvidence(
         solved=True,
@@ -59,18 +67,22 @@ def test_solved_evidence_round_trips_without_schema_metadata() -> None:
         TerminationReason.HANDOFF_TO_REDISPATCH_TEACHER,
     ],
 )
-def test_safe_handoff_requires_requested_redispatch(reason) -> None:
+@pytest.mark.parametrize(
+    "status",
+    [RedispatchStatus.NOT_REQUESTED, RedispatchStatus.REQUESTED],
+)
+def test_handoff_diagnostic_does_not_force_redispatch_status(
+    reason: TerminationReason,
+    status: RedispatchStatus,
+) -> None:
     evidence = TerminalOutcomeEvidence(
         solved=False,
         termination_reason=reason,
-        assessment=_assessment(
-            max_loading_percent=110.0,
-            num_overloaded_branches=1,
-            total_thermal_overload_mva=4.0,
-        ),
-        redispatch_status=RedispatchStatus.REQUESTED,
+        assessment=_insecure_assessment(),
+        redispatch_status=status,
         topology_utility=-1.0,
     )
+    assert evidence.redispatch_status is status
     assert evidence.assessment is not None
     assert evidence.assessment.hard_overload_free is True
 
@@ -151,42 +163,23 @@ def test_hard_overload_reason_rejects_safe_assessment() -> None:
         TerminalOutcomeEvidence(
             solved=False,
             termination_reason=TerminationReason.UNSAFE_STOP_WITH_HARD_OVERLOAD,
-            assessment=_assessment(
-                max_loading_percent=110.0,
-                num_overloaded_branches=1,
-                total_thermal_overload_mva=4.0,
-            ),
+            assessment=_insecure_assessment(),
             redispatch_status=RedispatchStatus.NOT_REQUESTED,
             topology_utility=-1.0,
         )
 
 
-@pytest.mark.parametrize(
-    "reason, status",
-    [
-        (
-            TerminationReason.HANDOFF_TO_REDISPATCH,
-            RedispatchStatus.NOT_REQUESTED,
-        ),
-        (
-            TerminationReason.MAX_STEPS_REACHED,
-            RedispatchStatus.REQUESTED,
-        ),
-    ],
-)
-def test_redispatch_status_must_match_reason(reason, status) -> None:
-    with pytest.raises(ValueError, match="redispatch_status"):
-        TerminalOutcomeEvidence(
-            solved=False,
-            termination_reason=reason,
-            assessment=_assessment(
-                max_loading_percent=110.0,
-                num_overloaded_branches=1,
-                total_thermal_overload_mva=4.0,
-            ),
-            redispatch_status=status,
-            topology_utility=-1.0,
-        )
+def test_max_steps_allows_requested_redispatch_status() -> None:
+    evidence = TerminalOutcomeEvidence(
+        solved=False,
+        termination_reason=TerminationReason.MAX_STEPS_REACHED,
+        assessment=_insecure_assessment(),
+        redispatch_status=RedispatchStatus.REQUESTED,
+        topology_utility=-0.25,
+    )
+
+    assert evidence.redispatch_status is RedispatchStatus.REQUESTED
+    assert evidence.termination_reason is TerminationReason.MAX_STEPS_REACHED
 
 
 def test_non_failure_reason_requires_assessment() -> None:
@@ -205,11 +198,7 @@ def test_converged_assessment_rejected_for_power_flow_failure() -> None:
         TerminalOutcomeEvidence(
             solved=False,
             termination_reason=TerminationReason.POWER_FLOW_FAILED,
-            assessment=_assessment(
-                max_loading_percent=110.0,
-                num_overloaded_branches=1,
-                total_thermal_overload_mva=4.0,
-            ),
+            assessment=_insecure_assessment(),
             redispatch_status=RedispatchStatus.NOT_REQUESTED,
             topology_utility=-1.0,
         )
@@ -229,11 +218,7 @@ def test_mapping_rejects_unknown_fields() -> None:
 
 
 def test_mapping_rejects_inconsistent_derived_flags() -> None:
-    assessment = _assessment(
-        max_loading_percent=110.0,
-        num_overloaded_branches=1,
-        total_thermal_overload_mva=4.0,
-    )
+    assessment = _insecure_assessment()
     payload = TerminalOutcomeEvidence(
         solved=False,
         termination_reason=TerminationReason.MAX_STEPS_REACHED,
@@ -249,11 +234,7 @@ def test_mapping_rejects_inconsistent_derived_flags() -> None:
 
 
 def test_direct_assessment_rejects_inconsistent_flags() -> None:
-    assessment = _assessment(
-        max_loading_percent=110.0,
-        num_overloaded_branches=1,
-        total_thermal_overload_mva=4.0,
-    )
+    assessment = _insecure_assessment()
     inconsistent = replace(assessment, hard_overload_free=False)
     with pytest.raises(ValueError, match="hard_overload_free"):
         TerminalOutcomeEvidence(

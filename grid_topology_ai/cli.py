@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 
 
@@ -309,6 +310,19 @@ def _train(args: argparse.Namespace) -> int:
     return 0
 
 
+_TEACHER_DIFFICULTIES = ("simple", "medium", "hard")
+_TEACHER_PROFILE_FIELDS = (
+    "depth",
+    "beam_width",
+    "candidate_pool",
+    "top_k",
+    "lodf_top_k",
+    "max_steps",
+    "max_teacher_steps",
+    "batch_size",
+)
+
+
 def _add_teacher(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("raw_dir")
     parser.add_argument(
@@ -320,17 +334,26 @@ def _add_teacher(parser: argparse.ArgumentParser) -> None:
         ),
     )
     parser.add_argument(
+        "--profiles",
+        help="Required JSON difficulty profile for transitions directory mode.",
+    )
+    parser.add_argument(
         "--output",
         required=True,
         help=(
             "Teacher output directory. Directory input writes train/ and val/ "
-            "subdirectories with independent crash-safe checkpoints."
+            "difficulty subdirectories with independent crash-safe checkpoints."
         ),
     )
     parser.add_argument("--depth", type=int, default=4)
     parser.add_argument("--beam-width", type=int, default=10)
     parser.add_argument("--candidate-pool", type=int, default=80)
     parser.add_argument("--top-k", type=int, default=30)
+    parser.add_argument(
+        "--redispatch-candidates-per-switch-count",
+        type=int,
+        default=5,
+    )
     parser.add_argument("--gamma", type=float, default=1.0)
     parser.add_argument("--pf-alg", type=int, choices=[1, 2, 3, 4], default=3)
     parser.add_argument("--pf-max-iter", type=int, default=30)
@@ -340,15 +363,6 @@ def _add_teacher(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--use-soft-root-policy", action="store_true")
     parser.add_argument("--allow-hard-count-increase", action="store_true")
     parser.add_argument("--disable-cache", action="store_true")
-    parser.add_argument("--power-flow-failure-penalty", type=float, default=1e6)
-    parser.add_argument(
-        "--min-continue-improvement-with-hard", type=float, default=100.0
-    )
-    parser.add_argument(
-        "--min-continue-improvement-without-hard", type=float, default=150.0
-    )
-    parser.add_argument("--max-loading-increase-limit", type=float, default=5.0)
-    parser.add_argument("--add-handoff-example", action="store_true")
     parser.add_argument("--workers", type=int, default=2)
     parser.add_argument("--batch-size", type=int, default=10)
     parser.add_argument("--limit", type=int)
@@ -359,10 +373,113 @@ def _add_teacher(parser: argparse.ArgumentParser) -> None:
     parser.set_defaults(handler=_teacher)
 
 
+def _load_teacher_profiles(path: Path) -> dict[str, dict[str, int]]:
+    if not path.exists():
+        raise FileNotFoundError(f"Teacher profile not found: {path}")
+
+    with path.open("r", encoding="utf-8") as profile_file:
+        profiles = json.load(profile_file)
+
+    if not isinstance(profiles, dict):
+        raise ValueError("Teacher profile JSON must contain an object.")
+
+    missing_classes = [name for name in _TEACHER_DIFFICULTIES if name not in profiles]
+    if missing_classes:
+        raise ValueError(
+            "Teacher profile is missing difficulty classes: "
+            + ", ".join(missing_classes)
+        )
+
+    validated: dict[str, dict[str, int]] = {}
+    for difficulty in _TEACHER_DIFFICULTIES:
+        profile = profiles[difficulty]
+        if not isinstance(profile, dict):
+            raise ValueError(f"Teacher profile {difficulty!r} must contain an object.")
+
+        missing_fields = [name for name in _TEACHER_PROFILE_FIELDS if name not in profile]
+        if missing_fields:
+            raise ValueError(
+                f"Teacher profile {difficulty!r} is missing fields: "
+                + ", ".join(missing_fields)
+            )
+
+        values: dict[str, int] = {}
+        for name in _TEACHER_PROFILE_FIELDS:
+            value = profile[name]
+            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                raise ValueError(
+                    f"Teacher profile {difficulty!r}.{name} must be a positive integer."
+                )
+            values[name] = int(value)
+
+        if values["top_k"] > values["candidate_pool"]:
+            raise ValueError(
+                f"Teacher profile {difficulty!r}.top_k cannot exceed candidate_pool."
+            )
+        if values["lodf_top_k"] > values["candidate_pool"]:
+            raise ValueError(
+                f"Teacher profile {difficulty!r}.lodf_top_k cannot exceed candidate_pool."
+            )
+        if values["max_teacher_steps"] > values["max_steps"]:
+            raise ValueError(
+                f"Teacher profile {difficulty!r}.max_teacher_steps cannot exceed max_steps."
+            )
+        validated[difficulty] = values
+
+    return validated
+
+
+def _merge_teacher_split_examples(output_dir: Path, split_name: str) -> Path:
+    import pandas as pd
+    from grid_topology_ai.self_play.example_validation import validate_examples_dataframe
+
+    parts: list[pd.DataFrame] = []
+    for difficulty in _TEACHER_DIFFICULTIES:
+        source_path = output_dir / split_name / difficulty / "examples.csv"
+        frame = pd.read_csv(source_path)
+        validate_examples_dataframe(frame, source_path=source_path)
+        frame = frame.copy()
+
+        if "difficulty_class" in frame.columns:
+            values = set(
+                frame["difficulty_class"].astype(str).str.strip().str.lower()
+            )
+            if values != {difficulty}:
+                raise ValueError(
+                    f"Unexpected difficulty_class values in {source_path}: {values}"
+                )
+        else:
+            frame["difficulty_class"] = difficulty
+
+        frame["teacher_split"] = split_name
+        frame["source_examples_csv"] = str(source_path)
+        parts.append(frame)
+
+    merged = pd.concat(parts, ignore_index=True, sort=False)
+    if "state_id" in merged.columns and merged["state_id"].duplicated().any():
+        raise ValueError(f"Duplicate state_id values found while merging {split_name}.")
+    if "step" in merged.columns and merged.duplicated(
+        subset=["scenario_id", "step"], keep=False
+    ).any():
+        raise ValueError(
+            f"Duplicate (scenario_id, step) rows found while merging {split_name}."
+        )
+
+    output_path = output_dir / f"examples_{split_name}.csv"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    temp_path = output_path.with_name(output_path.name + ".tmp")
+    merged.to_csv(temp_path, index=False)
+    temp_path.replace(output_path)
+    return output_path
+
+
 def _teacher_argv(
     args: argparse.Namespace,
     transitions: Path,
     output_dir: Path,
+    *,
+    difficulty_class: str | None = None,
+    profile: dict[str, int] | None = None,
 ) -> list[str]:
     argv = [
         args.raw_dir,
@@ -371,24 +488,32 @@ def _teacher_argv(
         "--output-dir",
         str(output_dir),
     ]
+    if difficulty_class is not None:
+        argv.extend(["--difficulty-class", difficulty_class])
+
     values = {
-        "depth": args.depth,
-        "beam-width": args.beam_width,
-        "candidate-pool": args.candidate_pool,
-        "top-k": args.top_k,
+        "depth": profile["depth"] if profile else args.depth,
+        "beam-width": profile["beam_width"] if profile else args.beam_width,
+        "candidate-pool": (
+            profile["candidate_pool"] if profile else args.candidate_pool
+        ),
+        "top-k": profile["top_k"] if profile else args.top_k,
+        "redispatch-candidates-per-switch-count": (
+            args.redispatch_candidates_per_switch_count
+        ),
         "gamma": args.gamma,
         "pf-alg": args.pf_alg,
         "pf-max-iter": args.pf_max_iter,
-        "max-steps": args.max_steps,
-        "max-teacher-steps": args.max_teacher_steps,
+        "max-steps": profile["max_steps"] if profile else args.max_steps,
+        "max-teacher-steps": (
+            profile["max_teacher_steps"] if profile else args.max_teacher_steps
+        ),
         "soft-policy-temperature": args.soft_policy_temperature,
-        "power-flow-failure-penalty": args.power_flow_failure_penalty,
-        "min-continue-improvement-with-hard": args.min_continue_improvement_with_hard,
-        "min-continue-improvement-without-hard": args.min_continue_improvement_without_hard,
-        "max-loading-increase-limit": args.max_loading_increase_limit,
         "num-workers": args.workers,
-        "batch-size": args.batch_size,
-        "lodf-screen-top-k": args.lodf_screen_top_k,
+        "batch-size": profile["batch_size"] if profile else args.batch_size,
+        "lodf-screen-top-k": (
+            profile["lodf_top_k"] if profile else args.lodf_screen_top_k
+        ),
         "lodf-min-candidate-count": args.lodf_min_candidate_count,
     }
     if args.limit is not None:
@@ -399,7 +524,6 @@ def _teacher_argv(
         ("use-soft-root-policy", args.use_soft_root_policy),
         ("allow-hard-count-increase", args.allow_hard_count_increase),
         ("disable-cache", args.disable_cache),
-        ("add-handoff-example", args.add_handoff_example),
         ("quiet-success", args.quiet),
         ("use-lodf-screening", args.use_lodf_screening),
     ):
@@ -417,6 +541,11 @@ def _teacher(args: argparse.Namespace) -> int:
     if not transitions.is_dir():
         return int(teacher_main(_teacher_argv(args, transitions, output_dir)) or 0)
 
+    if not args.profiles:
+        raise ValueError("--profiles is required when --transitions is a directory.")
+    profile_path = Path(args.profiles)
+    profiles = _load_teacher_profiles(profile_path)
+
     split_inputs = (
         ("train", transitions / "transitions_train.csv"),
         ("val", transitions / "transitions_val.csv"),
@@ -428,25 +557,43 @@ def _teacher(args: argparse.Namespace) -> int:
             + ", ".join(missing)
         )
 
+    merged_paths: dict[str, Path] = {}
     for split_name, split_path in split_inputs:
-        split_output = output_dir / split_name
-        print(f"\nTeacher {split_name}: {split_path} -> {split_output}")
-        result = int(
-            teacher_main(
-                _teacher_argv(
-                    args,
-                    split_path,
-                    split_output,
-                )
+        for difficulty in _TEACHER_DIFFICULTIES:
+            class_output = output_dir / split_name / difficulty
+            print(
+                f"\nTeacher {split_name}/{difficulty}: "
+                f"{split_path} -> {class_output}"
             )
-            or 0
-        )
-        if result:
-            return result
+            result = int(
+                teacher_main(
+                    _teacher_argv(
+                        args,
+                        split_path,
+                        class_output,
+                        difficulty_class=difficulty,
+                        profile=profiles[difficulty],
+                    )
+                )
+                or 0
+            )
+            if result:
+                return result
 
-    print("\nTeacher train/validation generation complete.")
-    print(f"Train examples:      {output_dir / 'train' / 'examples.csv'}")
-    print(f"Validation examples: {output_dir / 'val' / 'examples.csv'}")
+        merged_paths[split_name] = _merge_teacher_split_examples(
+            output_dir,
+            split_name,
+        )
+
+    profile_snapshot = output_dir / "teacher_profile.json"
+    profile_temp = profile_snapshot.with_name(profile_snapshot.name + ".tmp")
+    profile_temp.write_bytes(profile_path.read_bytes())
+    profile_temp.replace(profile_snapshot)
+
+    print("\nTeacher train/validation difficulty generation complete.")
+    print(f"Train examples:      {merged_paths['train']}")
+    print(f"Validation examples: {merged_paths['val']}")
+    print(f"Teacher profile:     {profile_snapshot}")
     return 0
 
 

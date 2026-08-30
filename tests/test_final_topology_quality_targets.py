@@ -10,10 +10,10 @@ from grid_topology_ai.physics.utility import state_security_penalty, state_utili
 from grid_topology_ai.value_targets import (
     TERMINAL_UTILITY_GAMMA,
     VALUE_TARGET_MODE,
-    terminal_utility_from_outcome,
+    add_outcome_value_targets_to_rows,
+    topology_utility_from_evidence,
 )
-from grid_topology_ai.termination import TerminationReason
-from grid_topology_ai.value_targets import add_outcome_value_targets_to_rows
+from grid_topology_ai.termination import TeacherOutcome, TerminationReason
 
 
 def _state(
@@ -98,41 +98,27 @@ def test_strictly_solved_topology_has_exact_unit_utility() -> None:
         TerminationReason.SOLVED,
         redispatch_status=RedispatchStatus.NOT_REQUESTED,
     )
-    assert terminal_utility_from_outcome(
-        True,
-        TerminationReason.SOLVED,
-        evidence=evidence,
-    )[0] == pytest.approx(1.0)
+    assert topology_utility_from_evidence(evidence) == pytest.approx(1.0)
 
 
 def test_better_unsolved_topology_receives_higher_utility() -> None:
     better = _state(loading=108.0)
     worse = _state(loading=140.0)
 
-    better_utility = state_utility(better)
-    worse_utility = state_utility(worse)
-    assert -1.0 < worse_utility < better_utility < 1.0
-
     better_evidence = _evidence(
         better,
         TerminationReason.MAX_STEPS_REACHED,
-        redispatch_status=RedispatchStatus.NOT_REQUESTED,
+        redispatch_status=RedispatchStatus.REQUESTED,
     )
     worse_evidence = _evidence(
         worse,
         TerminationReason.MAX_STEPS_REACHED,
-        redispatch_status=RedispatchStatus.NOT_REQUESTED,
+        redispatch_status=RedispatchStatus.REQUESTED,
     )
 
-    assert terminal_utility_from_outcome(
-        False,
-        TerminationReason.MAX_STEPS_REACHED,
-        evidence=better_evidence,
-    )[0] > terminal_utility_from_outcome(
-        False,
-        TerminationReason.MAX_STEPS_REACHED,
-        evidence=worse_evidence,
-    )[0]
+    better_utility = topology_utility_from_evidence(better_evidence)
+    worse_utility = topology_utility_from_evidence(worse_evidence)
+    assert -1.0 < worse_utility < better_utility < 1.0
 
 
 def test_primary_topology_utility_is_independent_of_redispatch_result() -> None:
@@ -141,9 +127,9 @@ def test_primary_topology_utility_is_independent_of_redispatch_result() -> None:
     assessment = assess_physical_state(topology.metrics)
     redispatch_assessment = assess_physical_state(_state().metrics)
 
-    handoff = TerminalOutcomeEvidence(
+    requested = TerminalOutcomeEvidence(
         solved=False,
-        termination_reason=TerminationReason.HANDOFF_TO_REDISPATCH_TEACHER,
+        termination_reason=TerminationReason.MAX_STEPS_REACHED,
         assessment=assessment,
         redispatch_status=RedispatchStatus.REQUESTED,
         topology_utility=topology_utility,
@@ -157,19 +143,8 @@ def test_primary_topology_utility_is_independent_of_redispatch_result() -> None:
         redispatch_assessment=redispatch_assessment,
     )
 
-    handoff_value, _ = terminal_utility_from_outcome(
-        False,
-        handoff.termination_reason,
-        evidence=handoff,
-    )
-    validated_value, _ = terminal_utility_from_outcome(
-        False,
-        validated.termination_reason,
-        evidence=validated,
-    )
-
-    assert handoff_value == pytest.approx(topology_utility)
-    assert validated_value == pytest.approx(topology_utility)
+    assert topology_utility_from_evidence(requested) == pytest.approx(topology_utility)
+    assert topology_utility_from_evidence(validated) == pytest.approx(topology_utility)
 
 
 def test_multistep_rows_all_receive_final_topology_utility() -> None:
@@ -177,7 +152,7 @@ def test_multistep_rows_all_receive_final_topology_utility() -> None:
     evidence = _evidence(
         final_state,
         TerminationReason.MAX_STEPS_REACHED,
-        redispatch_status=RedispatchStatus.NOT_REQUESTED,
+        redispatch_status=RedispatchStatus.REQUESTED,
     )
     evidence_json = evidence.to_json()
 
@@ -191,7 +166,7 @@ def test_multistep_rows_all_receive_final_topology_utility() -> None:
             "step_reward": step_reward,
             "solved": False,
             "done": True,
-            "termination_reason": TerminationReason.MAX_STEPS_REACHED.value,
+            "teacher_outcome": TeacherOutcome.MAX_STEPS_REACHED.value,
             "terminal_outcome_evidence_json": evidence_json,
         }
         for step, step_reward in enumerate((-25.0, 60.0, 15.0))
@@ -206,6 +181,10 @@ def test_multistep_rows_all_receive_final_topology_utility() -> None:
     assert [row["outcome_steps_to_terminal"] for row in rows] == [3, 2, 1]
     assert all(
         row["outcome_value_target"] == pytest.approx(expected)
+        for row in rows
+    )
+    assert all(
+        row["outcome_class"] == TeacherOutcome.MAX_STEPS_REACHED.value
         for row in rows
     )
     assert all(

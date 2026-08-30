@@ -471,7 +471,6 @@ def dataset_contract_payload(args: argparse.Namespace) -> dict[str, Any]:
         "hard_min_loading": float(args.hard_min_loading),
         "hard_min_hard": int(args.hard_min_hard),
         "canonical_physics_fingerprint": DEFAULT_PHYSICS_CONFIG.fingerprint(),
-        "gridfm_command_template": str(args.gridfm_command_template),
     }
 
 
@@ -1993,7 +1992,6 @@ def main() -> None:
     parser.add_argument("--max-chunks", type=int, default=30)
     parser.add_argument("--seed-start", type=int, default=1000)
     parser.add_argument("--num-processes", type=int, default=4)
-    parser.add_argument("--gridfm-command-template", type=str, required=True)
     parser.add_argument(
         "--gridfm-retries",
         type=int,

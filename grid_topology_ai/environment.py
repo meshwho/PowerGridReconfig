@@ -9,8 +9,8 @@ from grid_topology_ai.state import GridFMState
 from grid_topology_ai.physics.utility import state_utility
 from grid_topology_ai.physics.objective import (
     TERMINAL_OUTCOME_EVIDENCE_SCHEMA_VERSION,
+    RedispatchStatus,
     TerminalOutcomeEvidence,
-    redispatch_status_for_reason,
 )
 from grid_topology_ai.power_flow.backend import (
     GridFMPowerFlowBackend,
@@ -365,9 +365,7 @@ class TopologySwitchingEnv:
             solved=bool(solved),
             termination_reason=termination_reason,
             assessment=assessment,
-            redispatch_status=redispatch_status_for_reason(
-                termination_reason
-            ),
+            redispatch_status=RedispatchStatus.NOT_REQUESTED,
             topology_utility=topology_value,
         )
         self.done = True

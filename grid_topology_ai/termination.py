@@ -3,6 +3,24 @@ from __future__ import annotations
 from enum import StrEnum
 
 
+class TeacherOutcome(StrEnum):
+    SOLVED = "solved"
+    REDISPATCH = "redispatch"
+    MAX_STEPS_REACHED = "max_steps_reached"
+
+
+def classify_teacher_outcome(
+    *,
+    topology_solved: bool,
+    redispatch_validated: bool,
+) -> TeacherOutcome:
+    if topology_solved:
+        return TeacherOutcome.SOLVED
+    if redispatch_validated:
+        return TeacherOutcome.REDISPATCH
+    return TeacherOutcome.MAX_STEPS_REACHED
+
+
 class TerminationReason(StrEnum):
     SOLVED = "solved"
     REDISPATCH_VALIDATED = "redispatch_validated"
