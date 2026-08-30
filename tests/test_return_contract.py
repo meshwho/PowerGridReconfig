@@ -59,7 +59,6 @@ def test_teacher_outcome_is_separate_from_diagnostic_reason() -> None:
     for reason in (
         TerminationReason.HANDOFF_TO_REDISPATCH,
         TerminationReason.HANDOFF_TO_REDISPATCH_TEACHER,
-        TerminationReason.POWER_FLOW_FAILED,
         TerminationReason.MAX_STEPS_REACHED,
     ):
         evidence = terminal_evidence(reason, topology_utility=-0.4)
@@ -71,6 +70,13 @@ def test_teacher_outcome_is_separate_from_diagnostic_reason() -> None:
         )
         assert outcome is TeacherOutcome.MAX_STEPS_REACHED
         assert topology_utility_from_evidence(evidence) == pytest.approx(-0.4)
+
+    power_flow_failure = terminal_evidence(TerminationReason.POWER_FLOW_FAILED)
+    assert classify_teacher_outcome(
+        topology_solved=False,
+        redispatch_validated=False,
+    ) is TeacherOutcome.MAX_STEPS_REACHED
+    assert topology_utility_from_evidence(power_flow_failure) == pytest.approx(-1.0)
 
     validated = terminal_evidence(
         TerminationReason.REDISPATCH_VALIDATED,
