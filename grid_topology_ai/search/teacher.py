@@ -292,7 +292,8 @@ class ImpactBeamSearchConfig:
         Discount factor for cumulative impact score.
 
     include_stop_action:
-        Whether do_nothing/stop may be considered when hard overload is gone.
+        Legacy compatibility field. Stop/handoff is never explored by Beam;
+        action 0 is reserved for terminal teacher handoff.
 
     allow_hard_count_increase:
         If False, the planner filters out actions that increase the number of
@@ -441,9 +442,6 @@ class ImpactBeamSearchPlanner:
 
         if candidate_limit <= 0:
             return None
-
-        if self.config.include_stop_action:
-            candidate_limit += 1
 
         return candidate_limit
 
@@ -764,16 +762,9 @@ class ImpactBeamSearchPlanner:
         if state is None:
             return []
 
-        valid_actions = env.valid_actions()
-        num_hard = int(
-            state.metrics.get(
-                "num_hard_overloaded_branches",
-                0,
-            )
-        )
-
-        stop_actions = [action for action in valid_actions if action.kind == "stop"]
-        topology_actions = [action for action in valid_actions if action.kind != "stop"]
+        topology_actions = [
+            action for action in env.valid_actions() if action.kind != "stop"
+        ]
 
         loading_priorities: dict[int, float] = {}
         always_keep: list[GridFMAction] = []
@@ -805,15 +796,7 @@ class ImpactBeamSearchPlanner:
         if self.config.candidate_pool_size > 0:
             loading_actions = loading_actions[: self.config.candidate_pool_size]
 
-        selected: list[GridFMAction] = []
-
-        if self.config.include_stop_action and num_hard == 0:
-            selected.extend(stop_actions)
-
-        selected.extend(loading_actions)
-        selected.extend(always_keep)
-
-        return selected
+        return [*loading_actions, *always_keep]
 
     def _expand_node(
         self,
