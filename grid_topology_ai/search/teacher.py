@@ -291,10 +291,6 @@ class ImpactBeamSearchConfig:
     gamma:
         Discount factor for cumulative impact score.
 
-    include_stop_action:
-        Legacy compatibility field. Stop/handoff is never explored by Beam;
-        action 0 is reserved for terminal teacher handoff.
-
     allow_hard_count_increase:
         If False, the planner filters out actions that increase the number of
         hard-overloaded branches whenever at least one non-worsening action exists.
@@ -316,7 +312,6 @@ class ImpactBeamSearchConfig:
     redispatch_candidates_per_switch_count: int = 5
     gamma: float = 0.95
 
-    include_stop_action: bool = True
     allow_hard_count_increase: bool = False
 
     switch_penalty: float = 5.0
@@ -1014,9 +1009,6 @@ class LODFScreenedImpactBeamSearchPlanner(ImpactBeamSearchPlanner):
         if self.lodf_screen_top_k <= 0 or env.current_state is None:
             return base_actions
 
-        stop_actions = [
-            action for action in base_actions if action.action_type == "do_nothing"
-        ]
         switch_actions = [
             action
             for action in base_actions
@@ -1037,7 +1029,7 @@ class LODFScreenedImpactBeamSearchPlanner(ImpactBeamSearchPlanner):
             )
         except Exception:
             ranked = switch_actions
-        return [*stop_actions, *ranked[: self.lodf_screen_top_k]]
+        return ranked[: self.lodf_screen_top_k]
 
 
 def make_one_hot_policy(action_id: int) -> dict[int, float]:
