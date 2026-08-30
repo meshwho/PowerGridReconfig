@@ -768,13 +768,23 @@ def make_task_config(args: argparse.Namespace) -> dict[str, Any]:
     )
     depth = int(args.depth)
     max_teacher_steps = int(args.max_teacher_steps)
+    redispatch_candidates_per_switch_count = int(
+        args.redispatch_candidates_per_switch_count
+    )
     if depth <= 0 or max_teacher_steps <= 0:
         raise ValueError("Teacher depth and max_teacher_steps must be positive.")
+    if redispatch_candidates_per_switch_count <= 0:
+        raise ValueError(
+            "redispatch_candidates_per_switch_count must be positive."
+        )
     return {
         "depth": min(depth, max_teacher_steps),
         "beam_width": int(args.beam_width),
         "candidate_pool": int(args.candidate_pool),
         "top_k": int(args.top_k),
+        "redispatch_candidates_per_switch_count": (
+            redispatch_candidates_per_switch_count
+        ),
         "gamma": float(args.gamma),
         "pf_alg": int(args.pf_alg),
         "pf_max_iter": physics_config.max_iterations,
@@ -978,6 +988,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--candidate-pool", type=int, default=80)
     parser.add_argument("--top-k", type=int, default=30)
     parser.add_argument(
+        "--redispatch-candidates-per-switch-count",
+        type=int,
+        default=5,
+        help=(
+            "Keep this many lowest-J topology candidates for each switch count "
+            "before terminal redispatch."
+        ),
+    )
+    parser.add_argument(
         "--gamma",
         type=float,
         default=1.0,
@@ -1110,6 +1129,10 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Beam width:           {args.beam_width}")
     print(f"Candidate pool:       {args.candidate_pool}")
     print(f"Top-K actions:        {args.top_k}")
+    print(
+        "Redispatch candidates/switch count: "
+        f"{args.redispatch_candidates_per_switch_count}"
+    )
     print(f"Gamma:                {args.gamma}")
     print(f"PF algorithm:         {args.pf_alg}")
     print(f"PF max iter:          {args.pf_max_iter}")
