@@ -8,8 +8,8 @@ import numpy as np
 import pandas as pd
 
 from grid_topology_ai.physics.objective import (
+    RedispatchStatus,
     TerminalOutcomeEvidence,
-    parse_terminal_outcome_fields,
 )
 from grid_topology_ai.config import PhysicsConfig
 from grid_topology_ai.state import GridFMState
@@ -19,8 +19,8 @@ from grid_topology_ai.physics.utility import (
     state_utility,
 )
 from grid_topology_ai.termination import (
-    TerminationReason,
-    validate_outcome_invariants,
+    TeacherOutcome,
+    classify_teacher_outcome,
 )
 
 
@@ -60,50 +60,6 @@ def topology_utility_from_evidence(
     )
 
 
-def terminal_utility_from_outcome(
-    solved: bool,
-    termination_reason: TerminationReason | str | None,
-    *,
-    evidence: TerminalOutcomeEvidence | None = None,
-) -> tuple[float, str]:
-    """Map one terminal episode outcome to the primary topology utility.
-
-    Current training artifacts carry terminal evidence. Their target is the
-    canonical utility of the final pre-redispatch topology state. Redispatch
-    success, failure, and magnitude do not change that primary value.
-    """
-    if not isinstance(solved, bool):
-        raise ValueError(f"solved must be a boolean, got {solved!r}")
-    reason = validate_outcome_invariants(
-        solved=solved,
-        termination_reason=termination_reason,
-    )
-
-    if evidence is not None:
-        if evidence.solved is not solved:
-            raise ValueError(
-                "Terminal outcome evidence contradicts solved."
-            )
-        if evidence.termination_reason is not reason:
-            raise ValueError(
-                "Terminal outcome evidence contradicts termination_reason."
-            )
-        return (
-            topology_utility_from_evidence(evidence),
-            evidence.termination_reason.value,
-        )
-
-    if reason is TerminationReason.SOLVED:
-        return 1.0, TerminationReason.SOLVED.value
-
-    if reason is TerminationReason.REDISPATCH_VALIDATED:
-        raise ValueError(
-            "redispatch_validated requires terminal outcome evidence."
-        )
-
-    return -1.0, "unsolved_terminal" if reason is None else reason.value
-
-
 def heuristic_terminal_utility_estimate(
     state: GridFMState,
     *,
@@ -120,6 +76,7 @@ def heuristic_terminal_utility_estimate(
         estimate,
         context="heuristic terminal utility estimate",
     )
+
 
 _IDENTITY_FIELDS = (
     "run_id",
@@ -149,6 +106,27 @@ def _require_gamma(value: object) -> float:
     return gamma
 
 
+def teacher_outcome_from_row(
+    row: Mapping[str, object],
+    *,
+    context: str,
+) -> TeacherOutcome:
+    value = row.get("teacher_outcome")
+    if isinstance(value, TeacherOutcome):
+        return value
+    if not isinstance(value, str):
+        raise ValueError(
+            f"{context}: teacher_outcome must be a string, got {value!r}"
+        )
+    try:
+        return TeacherOutcome(value.strip())
+    except ValueError as exc:
+        allowed = ", ".join(outcome.value for outcome in TeacherOutcome)
+        raise ValueError(
+            f"{context}: unknown teacher_outcome {value!r}; expected one of: {allowed}"
+        ) from exc
+
+
 def terminal_evidence_from_row(
     row: Mapping[str, object],
     *,
@@ -156,15 +134,11 @@ def terminal_evidence_from_row(
 ) -> TerminalOutcomeEvidence:
     """Parse and validate terminal evidence stored on one example row."""
 
-    try:
-        solved, reason = parse_terminal_outcome_fields(
-            solved=row.get("solved"),
-            termination_reason=row.get("termination_reason"),
-        )
-    except (TypeError, ValueError) as exc:
-        raise ValueError(
-            f"{context}: invalid terminal outcome: {exc}"
-        ) from exc
+    solved = _require_bool(
+        row.get("solved"),
+        field=f"{context}.solved",
+    )
+    outcome = teacher_outcome_from_row(row, context=context)
 
     try:
         evidence = TerminalOutcomeEvidence.from_json(
@@ -175,13 +149,21 @@ def terminal_evidence_from_row(
             f"{context}: invalid terminal outcome evidence: {exc}"
         ) from exc
 
-    if (
-        evidence.solved is not solved
-        or evidence.termination_reason is not reason
-    ):
+    if evidence.solved is not solved:
         raise ValueError(
-            f"{context}: terminal outcome evidence contradicts "
-            "solved or termination_reason."
+            f"{context}: terminal outcome evidence contradicts solved."
+        )
+
+    expected_outcome = classify_teacher_outcome(
+        topology_solved=evidence.solved,
+        redispatch_validated=(
+            evidence.redispatch_status is RedispatchStatus.VALIDATED
+        ),
+    )
+    if outcome is not expected_outcome:
+        raise ValueError(
+            f"{context}: teacher_outcome={outcome.value!r} contradicts "
+            f"terminal evidence; expected {expected_outcome.value!r}."
         )
 
     return evidence
@@ -339,7 +321,7 @@ def add_outcome_value_targets_to_rows(
                 )
 
         expected_solved: bool | None = None
-        expected_reason: TerminationReason | None = None
+        expected_outcome: TeacherOutcome | None = None
         expected_evidence: TerminalOutcomeEvidence | None = None
 
         for _, row in indexed_rows:
@@ -358,15 +340,18 @@ def add_outcome_value_targets_to_rows(
                 context=f"episode group {key!r}",
             )
             solved = evidence.solved
-            reason = evidence.termination_reason
+            outcome = teacher_outcome_from_row(
+                row,
+                context=f"episode group {key!r}",
+            )
 
             if expected_solved is None:
                 expected_solved = solved
-                expected_reason = reason
+                expected_outcome = outcome
                 expected_evidence = evidence
             elif (
                 solved != expected_solved
-                or reason is not expected_reason
+                or outcome is not expected_outcome
                 or evidence != expected_evidence
             ):
                 raise ValueError(
@@ -376,20 +361,15 @@ def add_outcome_value_targets_to_rows(
 
         if (
             expected_solved is None
-            or expected_reason is None
+            or expected_outcome is None
             or expected_evidence is None
         ):
             raise RuntimeError(
                 f"Episode group {key!r} unexpectedly has no rows"
             )
 
-        terminal_utility, outcome_class = (
-            terminal_utility_from_outcome(
-                expected_solved,
-                expected_reason,
-                evidence=expected_evidence,
-            )
-        )
+        terminal_utility = topology_utility_from_evidence(expected_evidence)
+        outcome_class = expected_outcome.value
         total = len(indexed_rows)
 
         for position, (_, row) in enumerate(indexed_rows):
