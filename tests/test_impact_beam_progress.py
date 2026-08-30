@@ -73,14 +73,13 @@ def test_lodf_progress_estimate_uses_screened_candidate_limit() -> None:
         max_depth=5,
         beam_width=20,
         candidate_pool_size=160,
-        include_stop_action=True,
     )
     planner = LODFScreenedImpactBeamSearchPlanner(
         config=config,
         lodf_screen_top_k=70,
     )
 
-    assert planner._estimated_progress_total() == 71 * (1 + 20 * 4)
+    assert planner._estimated_progress_total() == 70 * (1 + 20 * 4)
 
 
 def test_unscreened_progress_estimate_keeps_full_candidate_pool() -> None:
@@ -88,8 +87,7 @@ def test_unscreened_progress_estimate_keeps_full_candidate_pool() -> None:
         max_depth=5,
         beam_width=20,
         candidate_pool_size=160,
-        include_stop_action=True,
     )
     planner = ImpactBeamSearchPlanner(config)
 
-    assert planner._estimated_progress_total() == 161 * (1 + 20 * 4)
+    assert planner._estimated_progress_total() == 160 * (1 + 20 * 4)
