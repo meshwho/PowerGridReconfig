@@ -134,6 +134,13 @@ class FakeRootPlanner(FakePlanner):
         )
 
 
+class FakeWorseJPlanner(FakePlanner):
+    def search(self, *, env, scenario_id):
+        result = super().search(env=env, scenario_id=scenario_id)
+        result.best_node.safety_score = 120.0
+        return result
+
+
 def _task_config() -> dict[str, object]:
     return {
         "max_steps": 5,
@@ -145,11 +152,9 @@ def _task_config() -> dict[str, object]:
         "gamma": 1.0,
         "allow_hard_count_increase": False,
         "use_lodf_screening": False,
-        "min_safety_improvement": 0.0,
         "soft_policy_temperature": 0.0,
         "max_teacher_steps": 4,
         "use_soft_root_policy": False,
-        "add_handoff_example": False,
     }
 
 
@@ -257,6 +262,28 @@ def test_zero_switch_terminal_selection_is_saved_as_action_zero_handoff(
     assert result["summary"]["first_action"] == 0
     assert result["summary"]["first_branch"] is None
     assert result["summary"]["handoff_added"] is True
+    assert result["summary"]["handoff_reason"] == "terminal_redispatch_selected"
+
+
+def test_terminal_redispatch_selection_is_not_rejected_when_selected_j_is_worse(
+    monkeypatch,
+) -> None:
+    state_store = FakeStateStore()
+    _install_runtime(monkeypatch, state_store)
+    monkeypatch.setattr(runtime, "ImpactBeamSearchPlanner", FakeWorseJPlanner)
+    monkeypatch.setattr(
+        runtime,
+        "run_minimal_ac_redispatch",
+        lambda backend, state: _failed_redispatch(),
+    )
+
+    result = runtime._generate_scenario(29)
+    runtime._SELECTION_PROVENANCE_BY_SCENARIO.pop(29, None)
+
+    assert result["ok"] is True
+    assert result["summary"]["teacher_final_safety"] == 120.0
+    assert result["summary"]["total_safety_improvement"] == -20.0
+    assert [row["selected_action_id"] for row in result["rows"]] == [1, 0]
     assert result["summary"]["handoff_reason"] == "terminal_redispatch_selected"
 
 
