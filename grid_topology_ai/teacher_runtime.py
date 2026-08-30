@@ -80,9 +80,9 @@ from grid_topology_ai.config import DEFAULT_PHYSICS_CONFIG
 from grid_topology_ai.environment import TopologySwitchingEnv
 from grid_topology_ai.physics.lodf import LODFStructureCache
 from grid_topology_ai.physics.objective import (
+    RedispatchStatus,
     TerminalOutcomeEvidence,
     assess_physical_state,
-    redispatch_status_for_reason,
 )
 from grid_topology_ai.physics.redispatch import (
     MinimalRedispatchResult,
@@ -927,7 +927,7 @@ def run_sequential(
         scenario_ids=scenario_ids,
         memory_registry=None,
     )
-    rows: list[dict[str,Any]] = []
+    rows: list[dict[str, Any]] = []
     total_saved = 0
     total_skipped = 0
     iterator = scenario_batches
@@ -1348,12 +1348,11 @@ def _replay_terminal_evidence(
     topology_value = state_utility(final_state, physics_config=ctx["physics_config"])
 
     if assessment.physically_secure:
-        solved_reason = TerminationReason.SOLVED
         return TerminalOutcomeEvidence(
             solved=True,
-            termination_reason=solved_reason,
+            termination_reason=TerminationReason.SOLVED,
             assessment=assessment,
-            redispatch_status=redispatch_status_for_reason(solved_reason),
+            redispatch_status=RedispatchStatus.NOT_REQUESTED,
             topology_utility=topology_value,
         )
 
@@ -1362,12 +1361,11 @@ def _replay_terminal_evidence(
 
     if redispatch_result.validated:
         assert redispatch_result.assessment is not None
-        validated_reason = TerminationReason.REDISPATCH_VALIDATED
         return TerminalOutcomeEvidence(
             solved=False,
-            termination_reason=validated_reason,
+            termination_reason=TerminationReason.REDISPATCH_VALIDATED,
             assessment=assessment,
-            redispatch_status=redispatch_status_for_reason(validated_reason),
+            redispatch_status=RedispatchStatus.VALIDATED,
             topology_utility=topology_value,
             redispatch_assessment=redispatch_result.assessment,
         )
@@ -1381,7 +1379,7 @@ def _replay_terminal_evidence(
         solved=False,
         termination_reason=recorded_reason,
         assessment=assessment,
-        redispatch_status=redispatch_status_for_reason(recorded_reason),
+        redispatch_status=RedispatchStatus.REQUESTED,
         topology_utility=topology_value,
     )
 
