@@ -67,14 +67,22 @@ def test_solved_evidence_round_trips_without_schema_metadata() -> None:
         TerminationReason.HANDOFF_TO_REDISPATCH_TEACHER,
     ],
 )
-def test_safe_handoff_requires_requested_redispatch(reason) -> None:
+@pytest.mark.parametrize(
+    "status",
+    [RedispatchStatus.NOT_REQUESTED, RedispatchStatus.REQUESTED],
+)
+def test_handoff_diagnostic_does_not_force_redispatch_status(
+    reason: TerminationReason,
+    status: RedispatchStatus,
+) -> None:
     evidence = TerminalOutcomeEvidence(
         solved=False,
         termination_reason=reason,
         assessment=_insecure_assessment(),
-        redispatch_status=RedispatchStatus.REQUESTED,
+        redispatch_status=status,
         topology_utility=-1.0,
     )
+    assert evidence.redispatch_status is status
     assert evidence.assessment is not None
     assert evidence.assessment.hard_overload_free is True
 
@@ -155,17 +163,6 @@ def test_hard_overload_reason_rejects_safe_assessment() -> None:
         TerminalOutcomeEvidence(
             solved=False,
             termination_reason=TerminationReason.UNSAFE_STOP_WITH_HARD_OVERLOAD,
-            assessment=_insecure_assessment(),
-            redispatch_status=RedispatchStatus.NOT_REQUESTED,
-            topology_utility=-1.0,
-        )
-
-
-def test_handoff_requires_requested_redispatch_status() -> None:
-    with pytest.raises(ValueError, match="redispatch_status"):
-        TerminalOutcomeEvidence(
-            solved=False,
-            termination_reason=TerminationReason.HANDOFF_TO_REDISPATCH,
             assessment=_insecure_assessment(),
             redispatch_status=RedispatchStatus.NOT_REQUESTED,
             topology_utility=-1.0,
