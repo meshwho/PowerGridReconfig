@@ -14,7 +14,9 @@ from grid_topology_ai.physics.objective import TerminalOutcomeEvidence
 from grid_topology_ai.value_targets import (
     TERMINAL_UTILITY_GAMMA,
     VALUE_TARGET_MODE,
-    terminal_utility_from_outcome,
+    teacher_outcome_from_row,
+    terminal_evidence_from_row,
+    topology_utility_from_evidence,
 )
 from grid_topology_ai.state import validate_state_npz_schema_arrays
 from grid_topology_ai.actions import (
@@ -25,7 +27,6 @@ from grid_topology_ai.actions import (
     build_branch_action_slots,
     require_branch_status_policy_layout,
 )
-from grid_topology_ai.value_targets import terminal_evidence_from_row
 
 
 _BASE_OUTCOME_COLUMNS: tuple[str, ...] = (
@@ -33,6 +34,7 @@ _BASE_OUTCOME_COLUMNS: tuple[str, ...] = (
     "solved",
     "done",
     "termination_reason",
+    "teacher_outcome",
     "outcome_class",
     "outcome_steps_to_terminal",
     "outcome_value_target_mode",
@@ -639,11 +641,11 @@ def _validate_outcome(
             f"at row {index}. File: {source}"
         )
 
+    row_mapping = row.to_dict()
     evidence = terminal_evidence_from_row(
-        row.to_dict(),
+        row_mapping,
         context=f"{source} row {index}",
     )
-    reason = evidence.termination_reason
     if evidence.solved is not solved:
         raise ValueError(
             "terminal outcome evidence contradicts solved at row "
@@ -686,11 +688,11 @@ def _validate_outcome(
             f"{index}. File: {source}"
         )
 
-    terminal_value, expected_class = terminal_utility_from_outcome(
-        solved=solved,
-        termination_reason=reason,
-        evidence=evidence,
-    )
+    terminal_value = topology_utility_from_evidence(evidence)
+    expected_class = teacher_outcome_from_row(
+        row_mapping,
+        context=f"{source} row {index}",
+    ).value
     if not math.isclose(
         actual_target,
         terminal_value,
@@ -877,7 +879,6 @@ def _load_state_metadata(state_path: Path) -> Mapping[str, object]:
         raise ValueError(
             f"Could not read NPZ state: {state_path}"
         ) from exc
-
     if raw_metadata.size != 1:
         raise ValueError(
             "State metadata_json must contain one JSON object: "
