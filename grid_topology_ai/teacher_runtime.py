@@ -279,7 +279,6 @@ def _generate_scenario(scenario_id: int) -> dict[str, Any]:
                 task["redispatch_candidates_per_switch_count"]
             ),
             gamma=float(task["gamma"]),
-            include_stop_action=True,
             allow_hard_count_increase=bool(task["allow_hard_count_increase"]),
             show_progress=False,
             progress_update_every=10,
