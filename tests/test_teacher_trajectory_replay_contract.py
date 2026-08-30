@@ -7,6 +7,7 @@ import numpy as np
 import pytest
 
 import grid_topology_ai.teacher_runtime as teacher
+from grid_topology_ai.termination import TerminationReason
 
 
 def _teacher_args(**overrides):
@@ -57,6 +58,43 @@ def test_teacher_replay_rejects_invalid_selected_action() -> None:
         teacher._selected_teacher_action_is_valid(mask, 1)
 
     assert teacher._selected_teacher_action_is_valid(mask, 2) is True
+
+
+@pytest.mark.parametrize(
+    ("solved", "reason", "decision_reason"),
+    [
+        (True, TerminationReason.SOLVED, "initial_topology_solved"),
+        (
+            False,
+            TerminationReason.MAX_STEPS_REACHED,
+            "terminal_redispatch_unavailable",
+        ),
+    ],
+)
+def test_zero_action_terminal_row_preserves_terminal_semantics(
+    solved: bool,
+    reason: TerminationReason,
+    decision_reason: str,
+) -> None:
+    row = teacher.make_terminal_step_item(
+        step_idx=0,
+        state_before=object(),
+        action_mask=np.array([False, True], dtype=bool),
+        safety_before=10.0,
+        solved=solved,
+        termination_reason=reason,
+        reason=decision_reason,
+    )
+
+    assert row["selected_action_id"] == 0
+    assert row["selected_branch_id"] is None
+    assert row["action_mask"].tolist() == [True, True]
+    assert row["policy_target"] == {0: 1.0}
+    assert row["visit_counts"] == {0: 1}
+    assert row["done_after_step"] is True
+    assert row["solved_after_step"] is solved
+    assert row["termination_reason_after_step"] is reason
+    assert row["teacher_decision_reason"] == decision_reason
 
 
 def test_teacher_search_depth_cannot_exceed_replay_horizon() -> None:
