@@ -76,7 +76,11 @@ def test_episode_uses_operational_action_mask(monkeypatch: pytest.MonkeyPatch, t
         reset_rng=lambda seed: None,
         search_from_env=lambda env: SimpleNamespace(
             best_action_id=1, best_branch_id=10, policy={1: 1.0}, visit_counts={1: 2},
-            root=SimpleNamespace(actions_by_id={1: SimpleNamespace(branch_id=10)}),
+            root=SimpleNamespace(
+                actions_by_id={1: SimpleNamespace(branch_id=10)},
+                action_scores={},
+                neural_value=None,
+            ),
         ),
     )
     request = _request(tmp_path / "raw", tmp_path / "t.csv", tmp_path / "out")
