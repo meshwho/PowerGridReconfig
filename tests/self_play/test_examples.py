@@ -9,6 +9,7 @@ import pandas as pd
 import pytest
 
 from grid_topology_ai.config import DEFAULT_PHYSICS_CONFIG
+from grid_topology_ai.state import BRANCH_FEATURE_COLUMNS
 from grid_topology_ai.value_targets import VALUE_TARGET_MODE
 from grid_topology_ai.self_play.examples import ExampleWriter, SelfPlayExample
 from grid_topology_ai.termination import TerminationReason
@@ -25,8 +26,34 @@ def _writer(tmp_path: Path) -> ExampleWriter:
 
 
 def _state() -> SimpleNamespace:
+    branch_features = np.zeros(
+        (2, len(BRANCH_FEATURE_COLUMNS)),
+        dtype=np.float32,
+    )
+    branch_features[
+        :, BRANCH_FEATURE_COLUMNS.index("br_status")
+    ] = 1.0
+    branch_features[
+        :, BRANCH_FEATURE_COLUMNS.index("loading_percent")
+    ] = 90.0
     return SimpleNamespace(
         branch_ids=np.asarray([3, 4], dtype=np.int64),
+        branch_features=branch_features,
+        metrics={
+            "power_flow_converged": True,
+            "all_values_finite": True,
+            "topology_connected": True,
+            "max_loading_percent": 90.0,
+            "num_overloaded_branches": 0,
+            "num_hard_overloaded_branches": 0,
+            "total_voltage_violation": 0.0,
+            "num_generator_p_violations": 0,
+            "total_generator_p_violation_mw": 0.0,
+            "num_generator_q_violations": 0,
+            "total_generator_q_violation_mvar": 0.0,
+            "num_angle_difference_violations": 0,
+            "total_angle_difference_violation_degrees": 0.0,
+        },
     )
 
 
