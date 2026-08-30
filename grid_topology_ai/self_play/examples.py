@@ -62,6 +62,7 @@ class SelfPlayExample:
     action_layout_fingerprint: str
     visit_counts_json: str
     mcts_policy_json: str
+    teacher_outcome: str | None = None
     outcome_value_target: float | None = None
     outcome_class: str | None = None
     outcome_steps_to_terminal: int | None = None
@@ -377,6 +378,7 @@ class ExampleWriter:
 
         if outcome_fields is not None:
             for name in (
+                "teacher_outcome",
                 "outcome_value_target",
                 "outcome_class",
                 "outcome_steps_to_terminal",
@@ -447,6 +449,10 @@ class ExampleWriter:
                     str(action_id): float(probability)
                     for action_id, probability in normalized_policy.items()
                 }
+            ),
+            teacher_outcome=self._optional_str(
+                outcome_fields,
+                "teacher_outcome",
             ),
             outcome_value_target=self._optional_float(
                 outcome_fields,
