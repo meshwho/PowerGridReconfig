@@ -142,11 +142,27 @@ class TopologySwitchingEnv:
         self._require_active_episode()
         assert self.current_state is not None
 
-        all_actions = self.action_space.build_all_actions(self.current_state)
-        if action_id < 0 or action_id >= len(all_actions):
+        num_branches = len(self.current_state.branch_ids)
+        if action_id < 0 or action_id > num_branches:
             raise ValueError(f"Invalid action_id: {action_id}")
 
-        action = all_actions[action_id]
+        if action_id == 0:
+            action = GridFMAction(
+                action_id=0,
+                action_type="do_nothing",
+            )
+        else:
+            branch_pos = action_id - 1
+            branch_id = int(self.current_state.branch_ids[branch_pos])
+            active = bool(self.current_state.branch_status[branch_pos] > 0)
+            action = GridFMAction(
+                action_id=action_id,
+                action_type=("switch_off_branch" if active else "switch_on_branch"),
+                branch_id=branch_id,
+                branch_pos=branch_pos,
+                target_status=0 if active else 1,
+            )
+
         mask = self.action_space.operational_action_mask(self.current_state)
         if not bool(mask[action_id]):
             raise ValueError(
