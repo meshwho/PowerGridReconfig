@@ -216,7 +216,7 @@ def _install_runtime(monkeypatch, state_store: FakeStateStore) -> None:
     monkeypatch.setattr(
         runtime,
         "_redispatch_aware_selection",
-        lambda result, task_config: (result, {}),
+        lambda result, task_config, initial_redispatch_result=None: (result, {}),
     )
     monkeypatch.setattr(runtime, "_selection_provenance", lambda result, diagnostics: {})
     monkeypatch.setattr(

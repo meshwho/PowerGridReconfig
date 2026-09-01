@@ -339,6 +339,7 @@ def _generate_scenario(scenario_id: int) -> dict[str, Any]:
         result, selection_diagnostics = _redispatch_aware_selection(
             result,
             task_config=task,
+            initial_redispatch_result=initial_redispatch_result,
         )
         _SELECTION_PROVENANCE_BY_SCENARIO[scenario_id] = _selection_provenance(
             result,

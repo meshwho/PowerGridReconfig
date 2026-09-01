@@ -14,7 +14,10 @@ from grid_topology_ai.actions import GridFMAction
 from grid_topology_ai.config import DEFAULT_PHYSICS_CONFIG, PhysicsConfig
 from grid_topology_ai.environment import TopologyStepResult, TopologySwitchingEnv
 from grid_topology_ai.physics.objective import assess_physical_state
-from grid_topology_ai.physics.redispatch import run_minimal_ac_redispatch
+from grid_topology_ai.physics.redispatch import (
+    MinimalRedispatchResult,
+    run_minimal_ac_redispatch,
+)
 from grid_topology_ai.physics.utility import state_security_penalty
 from grid_topology_ai.state import BRANCH_FEATURE_COLUMNS, GridFMState
 from grid_topology_ai.termination import TerminationReason
@@ -1196,7 +1199,11 @@ def _with_handoff(node: Any) -> Any:
     )
 
 
-def _terminal_candidate(node: Any) -> _TerminalCandidate | None:
+def _terminal_candidate(
+    node: Any,
+    *,
+    redispatch_result: MinimalRedispatchResult | None = None,
+) -> _TerminalCandidate | None:
     state = node.env.current_state
     if state is None:
         return None
@@ -1204,7 +1211,8 @@ def _terminal_candidate(node: Any) -> _TerminalCandidate | None:
     if assessment.physically_secure:
         return _TerminalCandidate(node=node, redispatch_l1_mw=0.0)
 
-    redispatch_result = run_minimal_ac_redispatch(node.env.backend, state)
+    if redispatch_result is None:
+        redispatch_result = run_minimal_ac_redispatch(node.env.backend, state)
     if not redispatch_result.validated or redispatch_result.redispatch_l1_mw is None:
         return None
     redispatch_l1_mw = float(redispatch_result.redispatch_l1_mw)
@@ -1244,12 +1252,19 @@ def _redispatch_aware_selection(
     result,
     *,
     task_config: dict[str, Any],
+    initial_redispatch_result: MinimalRedispatchResult | None = None,
 ) -> tuple[Any, dict[str, object]]:
-    terminal_candidates = [
-        candidate
-        for node in result.redispatch_candidates
-        if (candidate := _terminal_candidate(node)) is not None
-    ]
+    terminal_candidates: list[_TerminalCandidate] = []
+    for node in result.redispatch_candidates:
+        candidate = _terminal_candidate(
+            node,
+            redispatch_result=(
+                initial_redispatch_result if not node.action_ids else None
+            ),
+        )
+        if candidate is not None:
+            terminal_candidates.append(candidate)
+
     diagnostics: dict[str, object] = {
         "terminal_redispatch_relative_epsilon": float(
             task_config["terminal_redispatch_relative_epsilon"]

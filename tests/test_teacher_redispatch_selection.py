@@ -7,6 +7,7 @@ from typing import Any
 import pytest
 
 import grid_topology_ai.search.teacher as teacher
+from grid_topology_ai.physics.redispatch import MinimalRedispatchResult
 from grid_topology_ai.termination import TerminationReason
 
 
@@ -133,6 +134,30 @@ def test_hard_overloaded_root_runs_redispatch_and_can_win(monkeypatch) -> None:
     assert teacher.switch_count(selected.best_node) == 0
     assert diagnostics["teacher_terminal_selection_applied"] is True
     assert diagnostics["teacher_selected_redispatch_l1_mw"] == pytest.approx(12.0)
+
+
+def test_precomputed_initial_redispatch_is_reused_for_root(monkeypatch) -> None:
+    root = node("root", 100.0, [], hard=2)
+    topology = node("topology", 50.0, [11], hard=1)
+    calls: list[str] = []
+    install_assessment(monkeypatch)
+    install_redispatch(monkeypatch, {"topology": (True, 1.0)}, calls)
+    initial_redispatch = MinimalRedispatchResult(
+        opf_success=True,
+        assessment=SimpleNamespace(physically_secure=True),
+        message="validated",
+        redispatch_l1_mw=12.0,
+    )
+
+    selected, diagnostics = teacher._redispatch_aware_selection(
+        result(root, topology),
+        task_config=task_config(),
+        initial_redispatch_result=initial_redispatch,
+    )
+
+    assert calls == ["topology"]
+    assert selected.best_node.action_ids == [11, 0]
+    assert diagnostics["teacher_terminal_candidate_count"] == 2
 
 
 def test_hard_overloaded_candidate_is_rejected_when_redispatch_is_not_validated(
