@@ -13,7 +13,7 @@ from pypower.idx_brch import (
     RATE_A,
     T_BUS,
 )
-from pypower.idx_bus import BUS_I, VM, VMAX, VMIN
+from pypower.idx_bus import BUS_I, PD, QD, VM, VMAX, VMIN
 from pypower.idx_gen import (
     GEN_BUS,
     GEN_STATUS,
@@ -128,6 +128,29 @@ def test_valid_input_and_result_satisfy_strict_contract() -> None:
         input_ppc=ppc,
         context="test result",
     )
+
+
+def test_result_contract_accepts_q_limit_demand_roundoff() -> None:
+    ppc = _valid_ppc()
+    input_bus = np.asarray(ppc["bus"])
+    input_bus[0, PD] = 82.3
+    input_bus[0, QD] = 31.7
+    result = _valid_result(ppc)
+    result_bus = np.asarray(result["bus"])
+    result_bus[0, PD] = np.nextafter(result_bus[0, PD], np.inf)
+    result_bus[0, QD] = np.nextafter(result_bus[0, QD], -np.inf)
+
+    validate_pypower_result(result, PhysicsConfig(), input_ppc=ppc)
+
+
+def test_result_contract_rejects_material_demand_change() -> None:
+    ppc = _valid_ppc()
+    np.asarray(ppc["bus"])[0, PD] = 82.3
+    result = _valid_result(ppc)
+    np.asarray(result["bus"])[0, PD] += 1e-6
+
+    with pytest.raises(InvalidPhysicalState, match="bus demand data"):
+        validate_pypower_result(result, PhysicsConfig(), input_ppc=ppc)
 
 
 def test_result_contract_requires_a_mapping() -> None:
@@ -267,7 +290,7 @@ def test_result_contract_rejects_missing_matrix(matrix_name: str) -> None:
     result = _valid_result(ppc)
     result.pop(matrix_name)
 
-    with pytest.raises(InvalidPhysicalState, match=f"{matrix_name} result"):
+    with pytest.raises(InvalidPhysicalState, match=f"required {matrix_name}"):
         validate_pypower_result(result, PhysicsConfig(), input_ppc=ppc)
 
 
@@ -286,7 +309,7 @@ def test_result_contract_rejects_non_numeric_matrix() -> None:
     result = _valid_result(ppc)
     result["gen"] = [["not-a-number"] * (PMIN + 1)]
 
-    with pytest.raises(InvalidPhysicalState, match="gen result is not numeric"):
+    with pytest.raises(InvalidPhysicalState, match="gen is not numeric"):
         validate_pypower_result(result, PhysicsConfig(), input_ppc=ppc)
 
 
@@ -294,7 +317,7 @@ def test_result_contract_rejects_missing_flow_columns() -> None:
     ppc = _valid_ppc()
     result = copy.deepcopy(ppc)
 
-    with pytest.raises(InvalidPhysicalState, match="lacks flow columns"):
+    with pytest.raises(InvalidPhysicalState, match="branch must be 2D"):
         validate_pypower_result(result, PhysicsConfig(), input_ppc=ppc)
 
 
