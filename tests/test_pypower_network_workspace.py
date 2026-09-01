@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 from pypower.api import case9, case118, ppoption, runpf as stock_runpf
 from pypower.idx_brch import BR_STATUS, SHIFT, TAP
-from pypower.idx_bus import BUS_I, BUS_TYPE, PQ, REF, VA
+from pypower.idx_bus import BUS_I, BUS_TYPE, PD, PQ, REF, VA
 from pypower.idx_gen import GEN_BUS, GEN_STATUS, QG, QMAX, QMIN
 
 from grid_topology_ai.power_flow import solver as compat
@@ -131,6 +131,79 @@ def test_prepared_network_rejects_changed_physical_network() -> None:
         )
 
 
+def test_q_limit_runs_reuse_admittance_for_same_network(monkeypatch) -> None:
+    first_case = case9()
+    second_case = deepcopy(first_case)
+    second_case["bus"][4, PD] += 1.0
+
+    original = workspace.makeYbus
+    calls = 0
+
+    def counted_make_ybus(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(workspace, "makeYbus", counted_make_ybus)
+    compat.clear_prepared_network_cache()
+
+    first, first_success = compat.runpf(
+        deepcopy(first_case),
+        _options(qlim=1),
+    )
+    cached, cached_success = compat.runpf(
+        deepcopy(second_case),
+        _options(qlim=1),
+    )
+
+    assert bool(first_success)
+    assert bool(cached_success)
+    assert calls == 1
+    assert compat.get_prepared_network_cache_info()["entries"] == 1
+
+    compat.clear_prepared_network_cache()
+    uncached, uncached_success = compat.runpf(
+        deepcopy(second_case),
+        _options(qlim=1),
+    )
+
+    assert bool(uncached_success)
+    assert calls == 2
+    _assert_same_solution(cached, uncached)
+    assert not np.array_equal(first["bus"], cached["bus"])
+
+
+def test_prepared_network_cache_rebuilds_for_network_change(monkeypatch) -> None:
+    first_case = case9()
+    changed_case = deepcopy(first_case)
+    changed_case["branch"][0, TAP] = 1.05
+
+    original = workspace.makeYbus
+    calls = 0
+
+    def counted_make_ybus(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(workspace, "makeYbus", counted_make_ybus)
+    compat.clear_prepared_network_cache()
+
+    _first, first_success = compat.runpf(
+        deepcopy(first_case),
+        _options(qlim=1),
+    )
+    _changed, changed_success = compat.runpf(
+        deepcopy(changed_case),
+        _options(qlim=1),
+    )
+
+    assert bool(first_success)
+    assert bool(changed_success)
+    assert calls == 2
+    assert compat.get_prepared_network_cache_info()["entries"] == 2
+
+
 def test_q_limit_sequence_builds_admittance_once(monkeypatch) -> None:
     ppc = case9()
     baseline = _stock_plain(ppc)
@@ -146,6 +219,7 @@ def test_q_limit_sequence_builds_admittance_once(monkeypatch) -> None:
         return original(*args, **kwargs)
 
     monkeypatch.setattr(workspace, "makeYbus", counted_make_ybus)
+    compat.clear_prepared_network_cache()
     compat.reset_power_flow_workload_counters()
 
     result, success = compat.runpf(
