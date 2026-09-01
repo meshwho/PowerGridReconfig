@@ -9,6 +9,7 @@ from pypower.idx_bus import VA, VM
 from pypower.idx_cost import COST, MODEL, NCOST, SHUTDOWN, STARTUP
 from pypower.idx_gen import GEN_STATUS, PG, QG
 
+from grid_topology_ai.cache import solver_invocation_fingerprint
 from grid_topology_ai.state import GridFMState
 from grid_topology_ai.physics.constraints import (
     calculate_physical_metrics_from_result,
@@ -59,6 +60,11 @@ class MinimalRedispatchResult:
             ),
             "redispatch_message": self.message,
         }
+
+
+_REDISPATCH_MEMO: dict[bytes, MinimalRedispatchResult] = {}
+_REDISPATCH_MEMO_BACKEND: object | None = None
+_REDISPATCH_MEMO_SCENARIO_ID: int | None = None
 
 
 def empty_redispatch_diagnostics() -> dict[str, object]:
@@ -154,19 +160,55 @@ def run_minimal_ac_redispatch(
 ) -> MinimalRedispatchResult:
     """Run one terminal AC OPF that minimizes deviation from handoff dispatch."""
 
-    context = f"minimal redispatch scenario={int(state.scenario_id)}"
+    global _REDISPATCH_MEMO_BACKEND, _REDISPATCH_MEMO_SCENARIO_ID
+
+    scenario_id = int(state.scenario_id)
+    context = f"minimal redispatch scenario={scenario_id}"
 
     try:
         ppc, _ = backend._build_ppc_from_state(state)
-        baseline_result, _ = backend._solve_ppc(
-            ppc,
-            context=f"{context} baseline",
-        )
     except (InvalidPhysicalState, PowerFlowNotConverged) as exc:
         return MinimalRedispatchResult(
             opf_success=False,
             assessment=None,
             message=f"Could not reconstruct handoff dispatch: {exc}",
+        )
+
+    cache_key: bytes | None = None
+    if bool(getattr(backend, "enable_cache", False)):
+        if (
+            backend is not _REDISPATCH_MEMO_BACKEND
+            or scenario_id != _REDISPATCH_MEMO_SCENARIO_ID
+        ):
+            _REDISPATCH_MEMO.clear()
+            _REDISPATCH_MEMO_BACKEND = backend
+            _REDISPATCH_MEMO_SCENARIO_ID = scenario_id
+
+        cache_key = solver_invocation_fingerprint(
+            backend._problem_from_ppc(ppc),
+            physics_fingerprint=backend.physics_config.fingerprint(),
+        )
+        cached = _REDISPATCH_MEMO.get(cache_key)
+        if cached is not None:
+            return cached
+
+    def remember(result: MinimalRedispatchResult) -> MinimalRedispatchResult:
+        if cache_key is not None:
+            _REDISPATCH_MEMO[cache_key] = result
+        return result
+
+    try:
+        baseline_result, _ = backend._solve_ppc(
+            ppc,
+            context=f"{context} baseline",
+        )
+    except (InvalidPhysicalState, PowerFlowNotConverged) as exc:
+        return remember(
+            MinimalRedispatchResult(
+                opf_success=False,
+                assessment=None,
+                message=f"Could not reconstruct handoff dispatch: {exc}",
+            )
         )
 
     opf_case = _opf_case_from_baseline(ppc, baseline_result)
@@ -179,17 +221,21 @@ def run_minimal_ac_redispatch(
     try:
         result_ppc = runopf(opf_case, backend._build_pp_options())
     except Exception as exc:
-        return MinimalRedispatchResult(
-            opf_success=False,
-            assessment=None,
-            message=f"PYPOWER AC OPF failed: {type(exc).__name__}: {exc}",
+        return remember(
+            MinimalRedispatchResult(
+                opf_success=False,
+                assessment=None,
+                message=f"PYPOWER AC OPF failed: {type(exc).__name__}: {exc}",
+            )
         )
 
     if not isinstance(result_ppc, dict) or not bool(result_ppc.get("success", False)):
-        return MinimalRedispatchResult(
-            opf_success=False,
-            assessment=None,
-            message="PYPOWER AC OPF did not find a feasible solution.",
+        return remember(
+            MinimalRedispatchResult(
+                opf_success=False,
+                assessment=None,
+                message="PYPOWER AC OPF did not find a feasible solution.",
+            )
         )
 
     try:
@@ -206,10 +252,12 @@ def run_minimal_ac_redispatch(
         )
         assessment = assess_physical_state(metrics)
     except InvalidPhysicalState as exc:
-        return MinimalRedispatchResult(
-            opf_success=True,
-            assessment=None,
-            message=f"AC OPF returned an invalid physical result: {exc}",
+        return remember(
+            MinimalRedispatchResult(
+                opf_success=True,
+                assessment=None,
+                message=f"AC OPF returned an invalid physical result: {exc}",
+            )
         )
 
     l1_mw, up_mw, down_mw, max_delta_mw = _redispatch_magnitudes(
@@ -222,12 +270,14 @@ def run_minimal_ac_redispatch(
         if assessment.physically_secure
         else "AC OPF converged but the strict physical contract is not satisfied."
     )
-    return MinimalRedispatchResult(
-        opf_success=True,
-        assessment=assessment,
-        message=message,
-        redispatch_l1_mw=l1_mw,
-        redispatch_up_mw=up_mw,
-        redispatch_down_mw=down_mw,
-        redispatch_max_generator_delta_mw=max_delta_mw,
+    return remember(
+        MinimalRedispatchResult(
+            opf_success=True,
+            assessment=assessment,
+            message=message,
+            redispatch_l1_mw=l1_mw,
+            redispatch_up_mw=up_mw,
+            redispatch_down_mw=down_mw,
+            redispatch_max_generator_delta_mw=max_delta_mw,
+        )
     )
