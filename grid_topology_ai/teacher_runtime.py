@@ -345,10 +345,11 @@ def _generate_scenario(scenario_id: int) -> dict[str, Any]:
             "_selected_redispatch_result",
             None,
         )
-        _SELECTION_PROVENANCE_BY_SCENARIO[scenario_id] = _selection_provenance(
+        selection_provenance = _selection_provenance(
             result,
             selection_diagnostics,
         )
+        _SELECTION_PROVENANCE_BY_SCENARIO[scenario_id] = selection_provenance
 
         print(
             f"[worker {os.getpid()}] scenario {scenario_id}: "
@@ -591,71 +592,107 @@ def _generate_scenario(scenario_id: int) -> dict[str, Any]:
             recorded_reason=episode_reason,
             redispatch_result=selected_redispatch_result,
         )
+        redispatch_diagnostics = (
+            empty_redispatch_diagnostics()
+            if terminal_redispatch_result is None
+            else terminal_redispatch_result.diagnostics()
+        )
+        teacher_outcome_value = classify_teacher_outcome(
+            topology_solved=terminal_evidence.solved,
+            redispatch_validated=bool(redispatch_diagnostics["redispatch_validated"]),
+        ).value
+        run_id = _worker_run_id()
+        iteration = 1
+        episode_id = f"{run_id}_scenario_{scenario_id:06d}"
+        diagnostic_reason_value = terminal_evidence.termination_reason.value
+        evidence_mapping = terminal_evidence.to_dict()
 
         rows: list[dict[str, Any]] = []
         final_return = float(returns[0]) if returns else float(total_safety_improvement)
 
         for item, return_from_step in zip(step_items, returns):
             step_idx = int(item["step"])
+            state = item["state"]
             state_id = f"impact_teacher_scenario_{scenario_id:06d}_step_{step_idx:03d}"
+            layout = build_branch_action_slots(
+                np.asarray(state.branch_ids, dtype=np.int64)
+            )
+            action_data = {
+                "topology_action_config": action_space.config.to_contract_dict(),
+                "action_layout": action_layout_to_list(layout),
+                "action_layout_fingerprint": action_layout_fingerprint(layout),
+            }
+            step_diagnostic_reason = termination_reason_value(
+                parse_termination_reason(item.get("termination_reason_after_step"))
+            )
+            if int(item["selected_action_id"]) == 0:
+                step_diagnostic_reason = diagnostic_reason_value
+
+            state_metadata = {
+                "physics_config": physics_config.to_dict(),
+                "source": "impact_beam_teacher_multistep_fast",
+                "scenario_id": int(scenario_id),
+                "step": int(step_idx),
+                "initial_safety": float(initial_safety),
+                **initial_redispatch,
+                "teacher_final_safety": float(final_teacher_safety),
+                "replay_final_safety": float(final_safety),
+                "total_safety_improvement": float(total_safety_improvement),
+                "safety_before": float(item["safety_before"]),
+                "safety_after": float(item["safety_after"]),
+                "step_safety_improvement": float(item["step_reward"]),
+                "env_reward": float(item["env_reward"]),
+                "selected_action_id": int(item["selected_action_id"]),
+                "selected_branch_id": item["selected_branch_id"],
+                "teacher_decision_reason": item.get("teacher_decision_reason"),
+                "handoff_added": bool(handoff_added),
+                "handoff_reason": handoff_reason,
+                "episode_done": True,
+                "episode_solved": terminal_evidence.solved,
+                "episode_teacher_outcome": teacher_outcome_value,
+                "episode_diagnostic_termination_reason": diagnostic_reason_value,
+                "terminal_outcome_evidence": evidence_mapping,
+                **selection_provenance,
+                **redispatch_diagnostics,
+                **action_data,
+                "step_done": bool(item.get("done_after_step", False)),
+                "step_solved": bool(item.get("solved_after_step", False)),
+                "best_sequence_action_ids": [int(x) for x in best.action_ids],
+                "best_sequence_branch_ids": [
+                    None if x is None else int(x) for x in best.branch_ids
+                ],
+                "best_max_loading_percent": float(best.max_loading_percent),
+                "best_num_hard_overloaded": int(best.num_hard_overloaded),
+                "best_num_overloaded": int(best.num_overloaded),
+                "best_total_hard_overload": float(best.total_hard_overload),
+                "best_squared_hard_overload": float(best.squared_hard_overload),
+                "best_total_overload": float(best.total_overload),
+                "replay_final_max_loading_percent": float(final_max_loading),
+                "replay_final_num_hard_overloaded": int(final_num_hard),
+                "replay_final_num_overloaded": int(final_num_overloaded),
+                "beam_depth": int(task["depth"]),
+                "beam_width": int(task["beam_width"]),
+                "candidate_pool": int(task["candidate_pool"]),
+                "top_k": int(task["top_k"]),
+                "soft_policy_temperature": float(task["soft_policy_temperature"]),
+                "use_soft_root_policy": bool(task["use_soft_root_policy"]),
+                "use_lodf_screening": bool(task.get("use_lodf_screening", False)),
+                "lodf_screen_top_k": int(task.get("lodf_screen_top_k", 0)),
+                "evaluated_actions": int(result.evaluated_actions),
+                "run_id": run_id,
+                "iteration": iteration,
+                "episode_id": episode_id,
+            }
+            if step_diagnostic_reason is not None:
+                state_metadata["step_diagnostic_termination_reason"] = (
+                    step_diagnostic_reason
+                )
+
             state_path = state_store.save_state(
-                state=item["state"],
+                state=state,
                 state_id=state_id,
                 action_mask=item["action_mask"],
-                extra_metadata={
-                    "physics_config": physics_config.to_dict(),
-                    "source": "impact_beam_teacher_multistep_fast",
-                    "scenario_id": int(scenario_id),
-                    "step": int(step_idx),
-                    "initial_safety": float(initial_safety),
-                    **initial_redispatch,
-                    "teacher_final_safety": float(final_teacher_safety),
-                    "replay_final_safety": float(final_safety),
-                    "total_safety_improvement": float(total_safety_improvement),
-                    "safety_before": float(item["safety_before"]),
-                    "safety_after": float(item["safety_after"]),
-                    "step_safety_improvement": float(item["step_reward"]),
-                    "env_reward": float(item["env_reward"]),
-                    "selected_action_id": int(item["selected_action_id"]),
-                    "selected_branch_id": item["selected_branch_id"],
-                    "teacher_decision_reason": item.get("teacher_decision_reason"),
-                    "handoff_added": bool(handoff_added),
-                    "handoff_reason": handoff_reason,
-                    "episode_done": bool(episode_done),
-                    "episode_solved": bool(episode_solved),
-                    "episode_termination_reason": termination_reason_value(
-                        episode_reason
-                    ),
-                    "step_done": bool(item.get("done_after_step", False)),
-                    "step_solved": bool(item.get("solved_after_step", False)),
-                    "step_termination_reason": termination_reason_value(
-                        parse_termination_reason(
-                            item.get("termination_reason_after_step")
-                        )
-                    ),
-                    "best_sequence_action_ids": [int(x) for x in best.action_ids],
-                    "best_sequence_branch_ids": [
-                        None if x is None else int(x) for x in best.branch_ids
-                    ],
-                    "best_max_loading_percent": float(best.max_loading_percent),
-                    "best_num_hard_overloaded": int(best.num_hard_overloaded),
-                    "best_num_overloaded": int(best.num_overloaded),
-                    "best_total_hard_overload": float(best.total_hard_overload),
-                    "best_squared_hard_overload": float(best.squared_hard_overload),
-                    "best_total_overload": float(best.total_overload),
-                    "replay_final_max_loading_percent": float(final_max_loading),
-                    "replay_final_num_hard_overloaded": int(final_num_hard),
-                    "replay_final_num_overloaded": int(final_num_overloaded),
-                    "beam_depth": int(task["depth"]),
-                    "beam_width": int(task["beam_width"]),
-                    "candidate_pool": int(task["candidate_pool"]),
-                    "top_k": int(task["top_k"]),
-                    "soft_policy_temperature": float(task["soft_policy_temperature"]),
-                    "use_soft_root_policy": bool(task["use_soft_root_policy"]),
-                    "use_lodf_screening": bool(task.get("use_lodf_screening", False)),
-                    "lodf_screen_top_k": int(task.get("lodf_screen_top_k", 0)),
-                    "evaluated_actions": int(result.evaluated_actions),
-                },
+                extra_metadata=state_metadata,
             )
             rows.append(
                 {
@@ -688,6 +725,12 @@ def _generate_scenario(scenario_id: int) -> dict[str, Any]:
                     "mcts_policy_json": json.dumps(
                         {str(k): float(v) for k, v in item["policy_target"].items()}
                     ),
+                    **{
+                        key: json.dumps(value, sort_keys=True, separators=(",", ":"))
+                        if key != "action_layout_fingerprint"
+                        else value
+                        for key, value in action_data.items()
+                    },
                 }
             )
 
@@ -1280,16 +1323,6 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-_REDISPATCH_ROW_FIELDS = (
-    "redispatch_attempted",
-    "redispatch_opf_success",
-    "redispatch_validated",
-    "redispatch_l1_mw",
-    "redispatch_up_mw",
-    "redispatch_down_mw",
-    "redispatch_max_generator_delta_mw",
-    "redispatch_message",
-)
 _SELECTION_PROVENANCE_BY_SCENARIO: dict[int, dict[str, object]] = {}
 
 
@@ -1379,38 +1412,6 @@ def _terminal_evidence_from_state(
     )
 
 
-def _load_state_file(path: Path) -> tuple[dict[str, np.ndarray], dict[str, Any]]:
-    with np.load(path, allow_pickle=False) as data:
-        arrays = {name: np.array(data[name], copy=True) for name in data.files}
-    if "metadata_json" not in arrays:
-        raise ValueError(f"State file is missing metadata_json: {path}")
-    metadata = json.loads(str(np.asarray(arrays["metadata_json"]).item()))
-    if not isinstance(metadata, dict):
-        raise ValueError(f"State metadata_json must contain an object: {path}")
-    return arrays, metadata
-
-
-def _write_state_metadata(
-    path: Path,
-    arrays: dict[str, np.ndarray],
-    metadata: dict[str, Any],
-) -> None:
-    arrays["metadata_json"] = np.array(
-        json.dumps(
-            metadata,
-            ensure_ascii=False,
-            separators=(",", ":"),
-            allow_nan=False,
-        )
-    )
-    temp_path = path.with_name(path.name + ".tmp.npz")
-    try:
-        np.savez_compressed(temp_path, **arrays)
-        temp_path.replace(path)
-    finally:
-        temp_path.unlink(missing_ok=True)
-
-
 def _json_feature_columns(row: dict[str, Any]) -> None:
     for field in ("bus_feature_columns", "branch_feature_columns"):
         value = row.get(field)
@@ -1453,20 +1454,8 @@ def _finalize_success_result(result: dict[str, Any]) -> dict[str, Any]:
     episode_id = f"{run_id}_scenario_{scenario_id:06d}"
     diagnostic_reason_value = evidence.termination_reason.value
     evidence_json = evidence.to_json()
-    evidence_mapping = evidence.to_dict()
-    ctx = _require_worker_context()
 
     for row in rows:
-        state_path = Path(str(row["state_path"]))
-        arrays, metadata = _load_state_file(state_path)
-        branch_ids = np.asarray(arrays["branch_ids"], dtype=np.int64)
-        layout = build_branch_action_slots(branch_ids)
-        action_data = {
-            "topology_action_config": ctx["action_space"].config.to_contract_dict(),
-            "action_layout": action_layout_to_list(layout),
-            "action_layout_fingerprint": action_layout_fingerprint(layout),
-        }
-
         step_diagnostic_reason = row.pop("step_termination_reason", None)
         if int(row["selected_action_id"]) == 0:
             step_diagnostic_reason = diagnostic_reason_value
@@ -1482,39 +1471,12 @@ def _finalize_success_result(result: dict[str, Any]) -> dict[str, Any]:
                 "diagnostic_termination_reason": diagnostic_reason_value,
                 "terminal_outcome_evidence_json": evidence_json,
                 **selection_provenance,
-                **{
-                    key: json.dumps(value, sort_keys=True, separators=(",", ":"))
-                    if key != "action_layout_fingerprint"
-                    else value
-                    for key, value in action_data.items()
-                },
             }
         )
         row.pop("termination_reason", None)
         if step_diagnostic_reason is not None:
             row["step_diagnostic_termination_reason"] = step_diagnostic_reason
         _json_feature_columns(row)
-
-        metadata.pop("episode_termination_reason", None)
-        metadata.pop("step_termination_reason", None)
-        metadata.update(
-            {
-                "run_id": run_id,
-                "iteration": iteration,
-                "episode_id": episode_id,
-                "episode_done": True,
-                "episode_solved": evidence.solved,
-                "episode_teacher_outcome": teacher_outcome_value,
-                "episode_diagnostic_termination_reason": diagnostic_reason_value,
-                "terminal_outcome_evidence": evidence_mapping,
-                **selection_provenance,
-                **{field: row.get(field) for field in _REDISPATCH_ROW_FIELDS},
-                **action_data,
-            }
-        )
-        if step_diagnostic_reason is not None:
-            metadata["step_diagnostic_termination_reason"] = step_diagnostic_reason
-        _write_state_metadata(state_path, arrays, metadata)
     return result
 
 
