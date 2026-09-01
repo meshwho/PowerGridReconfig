@@ -1632,27 +1632,6 @@ def init_worker_context(
     )
 
 
-def _partition_batches(
-    scenario_batches: Sequence[Sequence[int]],
-    worker_count: int,
-) -> list[list[list[int]]]:
-    workers = max(int(worker_count), 1)
-    shards: list[list[list[int]]] = [[] for _ in range(workers)]
-
-    for index, batch in enumerate(scenario_batches):
-        shards[index % workers].append([int(value) for value in batch])
-
-    return [shard for shard in shards if shard]
-
-
-def _shard_scenario_ids(
-    shard_batches: Sequence[Sequence[int]],
-) -> tuple[int, ...]:
-    return tuple(
-        sorted({int(scenario_id) for batch in shard_batches for scenario_id in batch})
-    )
-
-
 def _handle_batch_results(
     batch_results: Sequence[dict[str, Any]],
     *,
@@ -1729,25 +1708,21 @@ def run_parallel(
     runtime_task_config[_RUNTIME_SCENARIO_STORE_DIR] = str(store_dir)
 
     print(f"Memory-mapped runtime store: {store_dir}")
-
     print(
         "Exact L1 PF cache:          "
         f"{DEFAULT_EXACT_POWER_FLOW_CACHE_BYTES / (1024.0 * 1024.0):.1f} "
         "MiB / worker"
     )
-
     print(f"Native math threads:       {_native_math_thread_summary()}")
 
     workers = min(
         max(int(num_workers), 1),
         len(scenario_batches),
     )
-
     init_concurrency = min(
         _worker_init_concurrency(),
         workers,
     )
-
     print(f"Worker init concurrency: {init_concurrency}")
 
     if init_concurrency < workers:
@@ -1755,53 +1730,37 @@ def run_parallel(
             init_concurrency
         )
 
-    shards = _partition_batches(
-        scenario_batches,
-        workers,
-    )
+    worker_scenario_ids = tuple(int(value) for value in scenario_ids)
 
-    workers = len(shards)
-
-    shard_sizes = [_shard_scenario_ids(shard) for shard in shards]
-
-    print(f"\nParallel sharded mode: {workers} workers")
+    print(f"\nParallel dynamic mode: {workers} workers")
     print(f"Batches:                {len(scenario_batches)}")
 
-    executors: list[ProcessPoolExecutor] = []
-    futures = []
     rows: list[dict[str, Any]] = []
     total_saved = 0
     total_skipped = 0
     completed_batches = 0
 
+    executor = ProcessPoolExecutor(
+        max_workers=workers,
+        initializer=init_worker_context,
+        initargs=(
+            str(raw_dir),
+            str(states_dir),
+            runtime_task_config,
+            worker_scenario_ids,
+            None,
+        ),
+    )
+    futures = [
+        executor.submit(
+            _run_timed_batch,
+            process_scenario_batch,
+            batch,
+        )
+        for batch in scenario_batches
+    ]
+
     try:
-        for shard_batches, shard_scenarios in zip(
-            shards,
-            shard_sizes,
-        ):
-            executor = ProcessPoolExecutor(
-                max_workers=1,
-                initializer=init_worker_context,
-                initargs=(
-                    str(raw_dir),
-                    str(states_dir),
-                    runtime_task_config,
-                    shard_scenarios,
-                    None,
-                ),
-            )
-
-            executors.append(executor)
-
-            for batch in shard_batches:
-                futures.append(
-                    executor.submit(
-                        _run_timed_batch,
-                        process_scenario_batch,
-                        batch,
-                    )
-                )
-
         progress_bar = None
         iterator = as_completed(futures)
 
@@ -1855,14 +1814,10 @@ def run_parallel(
                     flush=True,
                 )
     finally:
-        for executor in executors:
-            try:
-                executor.shutdown(
-                    wait=False,
-                    cancel_futures=True,
-                )
-            except Exception:
-                pass
+        executor.shutdown(
+            wait=False,
+            cancel_futures=True,
+        )
 
     return rows, total_saved, total_skipped
 
