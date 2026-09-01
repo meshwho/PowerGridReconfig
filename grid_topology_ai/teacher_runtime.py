@@ -341,6 +341,10 @@ def _generate_scenario(scenario_id: int) -> dict[str, Any]:
             task_config=task,
             initial_redispatch_result=initial_redispatch_result,
         )
+        selected_redispatch_result = selection_diagnostics.pop(
+            "_selected_redispatch_result",
+            None,
+        )
         _SELECTION_PROVENANCE_BY_SCENARIO[scenario_id] = _selection_provenance(
             result,
             selection_diagnostics,
@@ -692,6 +696,7 @@ def _generate_scenario(scenario_id: int) -> dict[str, Any]:
             "ok": True,
             "scenario_id": int(scenario_id),
             "rows": rows,
+            "_selected_redispatch_result": selected_redispatch_result,
             "summary": {
                 "num_examples": int(len(rows)),
                 "first_action": first_action,
@@ -1307,6 +1312,7 @@ def _set_redispatch_diagnostics(
 def _replay_terminal_evidence(
     scenario_id: int,
     rows: list[dict[str, Any]],
+    redispatch_result: MinimalRedispatchResult | None = None,
 ) -> TerminalOutcomeEvidence:
     reasons = {
         parse_termination_reason(row.get("termination_reason"), allow_none=False)
@@ -1389,7 +1395,8 @@ def _replay_terminal_evidence(
             topology_utility=topology_value,
         )
 
-    redispatch_result = run_minimal_ac_redispatch(ctx["backend"], final_state)
+    if redispatch_result is None:
+        redispatch_result = run_minimal_ac_redispatch(ctx["backend"], final_state)
     _set_redispatch_diagnostics(rows, redispatch_result)
 
     if redispatch_result.validated:
@@ -1473,7 +1480,12 @@ def _finalize_success_result(result: dict[str, Any]) -> dict[str, Any]:
             f"Teacher scenario {scenario_id} is missing trajectory selection provenance."
         )
 
-    evidence = _replay_terminal_evidence(scenario_id, rows)
+    selected_redispatch_result = result.pop("_selected_redispatch_result", None)
+    evidence = _replay_terminal_evidence(
+        scenario_id,
+        rows,
+        redispatch_result=selected_redispatch_result,
+    )
     redispatch_validated = bool(rows[0].get("redispatch_validated", False))
     teacher_outcome = classify_teacher_outcome(
         topology_solved=evidence.solved,

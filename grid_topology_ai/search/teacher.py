@@ -1110,6 +1110,7 @@ _TOLERANCE = 1e-9
 class _TerminalCandidate:
     node: Any
     redispatch_l1_mw: float
+    redispatch_result: MinimalRedispatchResult | None = None
 
 
 def _terminal_action_key(node: Any) -> tuple[int, ...]:
@@ -1221,6 +1222,7 @@ def _terminal_candidate(
     return _TerminalCandidate(
         node=_with_handoff(node),
         redispatch_l1_mw=redispatch_l1_mw,
+        redispatch_result=redispatch_result,
     )
 
 
@@ -1293,6 +1295,7 @@ def _redispatch_aware_selection(
     diagnostics["teacher_selected_redispatch_l1_mw"] = float(
         selected.redispatch_l1_mw
     )
+    diagnostics["_selected_redispatch_result"] = selected.redispatch_result
 
     updated = replace(
         result,
