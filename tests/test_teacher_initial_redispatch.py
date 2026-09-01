@@ -52,6 +52,8 @@ class FakeStateStore:
 
 
 class FakeActionSpace:
+    config = SimpleNamespace(to_contract_dict=lambda: {"test": True})
+
     @staticmethod
     def operational_action_mask(state):
         del state
@@ -61,6 +63,7 @@ class FakeActionSpace:
 class FakeEnv:
     initial_state = SimpleNamespace(
         safety=100.0,
+        branch_ids=np.array([1], dtype=np.int64),
         metrics=_metrics(
             max_loading=140.0,
             overloaded=3,
@@ -69,6 +72,7 @@ class FakeEnv:
     )
     after_state = SimpleNamespace(
         safety=50.0,
+        branch_ids=np.array([1], dtype=np.int64),
         metrics=_metrics(
             max_loading=110.0,
             overloaded=1,
@@ -208,6 +212,7 @@ def _install_runtime(monkeypatch, state_store: FakeStateStore) -> None:
     monkeypatch.setattr(runtime, "_WORKER_CONTEXT", context)
     monkeypatch.setattr(runtime, "TopologySwitchingEnv", FakeEnv)
     monkeypatch.setattr(runtime, "ImpactBeamSearchPlanner", FakePlanner)
+    monkeypatch.setattr(runtime, "_worker_run_id", lambda: "test-run")
     monkeypatch.setattr(
         runtime,
         "safety_score",
@@ -264,7 +269,7 @@ def test_initial_redispatch_failure_stays_missing_in_rows_and_state_metadata(
     runtime._SELECTION_PROVENANCE_BY_SCENARIO.pop(17, None)
 
     assert result["ok"] is True
-    assert calls == [FakeEnv.initial_state]
+    assert calls == [FakeEnv.initial_state, FakeEnv.after_state]
     assert len(result["rows"]) == 2
     assert len(state_store.metadata) == 2
 
@@ -322,6 +327,7 @@ def test_zero_switch_secure_root_is_saved_as_solved_terminal_target(
     _install_runtime(monkeypatch, state_store)
     secure_root = SimpleNamespace(
         safety=0.0,
+        branch_ids=np.array([1], dtype=np.int64),
         metrics=_metrics(
             max_loading=90.0,
             overloaded=0,
