@@ -220,6 +220,11 @@ def _install_runtime(monkeypatch, state_store: FakeStateStore) -> None:
     )
     monkeypatch.setattr(
         runtime,
+        "state_utility",
+        lambda state, physics_config=None: 0.0,
+    )
+    monkeypatch.setattr(
+        runtime,
         "_redispatch_aware_selection",
         lambda result, task_config, initial_redispatch_result=None: (result, {}),
     )
