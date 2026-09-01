@@ -551,15 +551,14 @@ def _generate_scenario(scenario_id: int) -> dict[str, Any]:
         final_state = replay_env.current_state
 
         if final_state is None:
-            final_safety = float("inf")
-            final_max_loading = float("inf")
-            final_num_hard = 10**9
-            final_num_overloaded = 10**9
-        else:
-            final_safety = safety_score(final_state, physics_config=physics_config)
-            final_max_loading = float(final_state.metrics["max_loading_percent"])
-            final_num_hard = int(final_state.metrics["num_hard_overloaded_branches"])
-            final_num_overloaded = int(final_state.metrics["num_overloaded_branches"])
+            raise RuntimeError(
+                "Selected teacher trajectory has no final replay state."
+            )
+
+        final_safety = safety_score(final_state, physics_config=physics_config)
+        final_max_loading = float(final_state.metrics["max_loading_percent"])
+        final_num_hard = int(final_state.metrics["num_hard_overloaded_branches"])
+        final_num_overloaded = int(final_state.metrics["num_overloaded_branches"])
 
         if zero_action_episode_reason is not None:
             episode_done = True
@@ -584,6 +583,13 @@ def _generate_scenario(scenario_id: int) -> dict[str, Any]:
         validate_outcome_invariants(
             solved=episode_solved,
             termination_reason=episode_reason,
+        )
+
+        terminal_evidence, terminal_redispatch_result = _terminal_evidence_from_state(
+            final_state,
+            recorded_solved=episode_solved,
+            recorded_reason=episode_reason,
+            redispatch_result=selected_redispatch_result,
         )
 
         rows: list[dict[str, Any]] = []
@@ -685,6 +691,7 @@ def _generate_scenario(scenario_id: int) -> dict[str, Any]:
                 }
             )
 
+        _set_redispatch_diagnostics(rows, terminal_redispatch_result)
         clear_worker_caches_if_needed()
         first_action = int(best.action_ids[0]) if best.action_ids else 0
         first_branch = (
@@ -696,7 +703,7 @@ def _generate_scenario(scenario_id: int) -> dict[str, Any]:
             "ok": True,
             "scenario_id": int(scenario_id),
             "rows": rows,
-            "_selected_redispatch_result": selected_redispatch_result,
+            "_terminal_outcome_evidence": terminal_evidence,
             "summary": {
                 "num_examples": int(len(rows)),
                 "first_action": first_action,
@@ -1309,118 +1316,66 @@ def _set_redispatch_diagnostics(
         row.update(diagnostics)
 
 
-def _replay_terminal_evidence(
-    scenario_id: int,
-    rows: list[dict[str, Any]],
+def _terminal_evidence_from_state(
+    final_state,
+    *,
+    recorded_solved: bool,
+    recorded_reason: TerminationReason,
     redispatch_result: MinimalRedispatchResult | None = None,
-) -> TerminalOutcomeEvidence:
-    reasons = {
-        parse_termination_reason(row.get("termination_reason"), allow_none=False)
-        for row in rows
-    }
-    if reasons == {TerminationReason.HANDOFF_TO_REDISPATCH}:
-        for row in rows:
-            row["termination_reason"] = (
-                TerminationReason.HANDOFF_TO_REDISPATCH_TEACHER.value
-            )
-
+) -> tuple[TerminalOutcomeEvidence, MinimalRedispatchResult | None]:
     ctx = _require_worker_context()
-    _set_redispatch_diagnostics(rows, None)
-    ordered_rows = sorted(rows, key=lambda row: int(row["step"]))
-    steps = [int(row["step"]) for row in ordered_rows]
-    if steps != list(range(len(steps))):
-        raise ValueError(
-            f"Teacher scenario {scenario_id} has non-contiguous steps: {steps}."
-        )
-
-    solved_values = {bool(row["solved"]) for row in ordered_rows}
-    reason_values = {
-        parse_termination_reason(row.get("termination_reason"), allow_none=False)
-        for row in ordered_rows
-    }
-    if len(solved_values) != 1 or len(reason_values) != 1:
-        raise ValueError(
-            f"Teacher scenario {scenario_id} contains mixed terminal outcomes."
-        )
-
-    recorded_solved = solved_values.pop()
-    recorded_reason = reason_values.pop()
-    assert recorded_reason is not None
-
-    env = TopologySwitchingEnv(
-        adapter=ctx["adapter"],
-        backend=ctx["backend"],
-        action_space=ctx["action_space"],
-        reward_fn=ctx["reward_fn"],
-        max_steps=int(ctx["task_config"]["max_steps"]),
-    )
-    env.reset(int(scenario_id))
-
-    for row in ordered_rows:
-        action_id = int(row["selected_action_id"])
-        if action_id == 0:
-            break
-        if env.done:
-            raise ValueError(
-                f"Teacher scenario {scenario_id} contains an action after termination."
-            )
-        step_result = env.step(action_id)
-        if not step_result.power_flow_success:
-            raise ValueError(
-                f"Teacher scenario {scenario_id} replay hit a power-flow failure."
-            )
-
-    if (
-        env.done
-        and env.terminal_outcome_evidence is not None
-        and env.terminal_outcome_evidence.solved
-    ):
-        return env.terminal_outcome_evidence
-
-    final_state = env.current_state
-    if final_state is None:
-        raise ValueError(
-            f"Teacher scenario {scenario_id} has no terminal state for provenance."
-        )
-
     assessment = assess_physical_state(final_state.metrics)
-    topology_value = state_utility(final_state, physics_config=ctx["physics_config"])
+    topology_value = state_utility(
+        final_state,
+        physics_config=ctx["physics_config"],
+    )
 
     if assessment.physically_secure:
-        return TerminalOutcomeEvidence(
-            solved=True,
-            termination_reason=TerminationReason.SOLVED,
-            assessment=assessment,
-            redispatch_status=RedispatchStatus.NOT_REQUESTED,
-            topology_utility=topology_value,
+        return (
+            TerminalOutcomeEvidence(
+                solved=True,
+                termination_reason=TerminationReason.SOLVED,
+                assessment=assessment,
+                redispatch_status=RedispatchStatus.NOT_REQUESTED,
+                topology_utility=topology_value,
+            ),
+            None,
         )
 
     if redispatch_result is None:
-        redispatch_result = run_minimal_ac_redispatch(ctx["backend"], final_state)
-    _set_redispatch_diagnostics(rows, redispatch_result)
+        redispatch_result = run_minimal_ac_redispatch(
+            ctx["backend"],
+            final_state,
+        )
 
     if redispatch_result.validated:
         assert redispatch_result.assessment is not None
-        return TerminalOutcomeEvidence(
-            solved=False,
-            termination_reason=TerminationReason.REDISPATCH_VALIDATED,
-            assessment=assessment,
-            redispatch_status=RedispatchStatus.VALIDATED,
-            topology_utility=topology_value,
-            redispatch_assessment=redispatch_result.assessment,
+        return (
+            TerminalOutcomeEvidence(
+                solved=False,
+                termination_reason=TerminationReason.REDISPATCH_VALIDATED,
+                assessment=assessment,
+                redispatch_status=RedispatchStatus.VALIDATED,
+                topology_utility=topology_value,
+                redispatch_assessment=redispatch_result.assessment,
+            ),
+            redispatch_result,
         )
 
     if recorded_solved:
         raise ValueError(
-            f"Teacher scenario {scenario_id} was recorded solved but replay is insecure."
+            "Teacher trajectory was recorded solved but its final state is insecure."
         )
 
-    return TerminalOutcomeEvidence(
-        solved=False,
-        termination_reason=recorded_reason,
-        assessment=assessment,
-        redispatch_status=RedispatchStatus.REQUESTED,
-        topology_utility=topology_value,
+    return (
+        TerminalOutcomeEvidence(
+            solved=False,
+            termination_reason=recorded_reason,
+            assessment=assessment,
+            redispatch_status=RedispatchStatus.REQUESTED,
+            topology_utility=topology_value,
+        ),
+        redispatch_result,
     )
 
 
@@ -1480,12 +1435,12 @@ def _finalize_success_result(result: dict[str, Any]) -> dict[str, Any]:
             f"Teacher scenario {scenario_id} is missing trajectory selection provenance."
         )
 
-    selected_redispatch_result = result.pop("_selected_redispatch_result", None)
-    evidence = _replay_terminal_evidence(
-        scenario_id,
-        rows,
-        redispatch_result=selected_redispatch_result,
-    )
+    evidence = result.pop("_terminal_outcome_evidence", None)
+    if not isinstance(evidence, TerminalOutcomeEvidence):
+        raise RuntimeError(
+            f"Teacher scenario {scenario_id} is missing terminal outcome evidence."
+        )
+
     redispatch_validated = bool(rows[0].get("redispatch_validated", False))
     teacher_outcome = classify_teacher_outcome(
         topology_solved=evidence.solved,
