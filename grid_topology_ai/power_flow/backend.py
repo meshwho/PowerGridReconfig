@@ -930,7 +930,6 @@ class GridFMPowerFlowBackend:
 
         bus_res = result_ppc["bus"]
         branch_res = result_ppc["branch"]
-        gen_res = result_ppc["gen"]
         if physical_metrics is None:
             physical_metrics = calculate_physical_metrics_from_result(
                 result_ppc,
@@ -940,38 +939,11 @@ class GridFMPowerFlowBackend:
 
         bus_features = previous_state.bus_features.copy()
         branch_features = previous_state.branch_features.copy()
-        bus_col = {
-            name: idx for idx, name in enumerate(BUS_FEATURE_COLUMNS)
-        }
-        branch_col = {
-            name: idx for idx, name in enumerate(BRANCH_FEATURE_COLUMNS)
-        }
 
         vm = bus_res[:, VM].astype(np.float32)
         va = bus_res[:, VA].astype(np.float32)
-        bus_features[:, bus_col["Vm"]] = vm
-        bus_features[:, bus_col["Va"]] = va
-
-        pg_by_bus = np.zeros(bus_features.shape[0], dtype=np.float32)
-        qg_by_bus = np.zeros(bus_features.shape[0], dtype=np.float32)
-        bus_df = original_frames["bus"]
-        gen_df = original_frames["gen"]
-        bus_id_to_pos = {
-            int(bus_id): pos
-            for pos, bus_id in enumerate(
-                bus_df["bus"].to_numpy(dtype=int)
-            )
-        }
-        for gen_pos, bus_id in enumerate(
-            gen_df["bus"].to_numpy(dtype=int)
-        ):
-            bus_pos = bus_id_to_pos.get(int(bus_id))
-            if bus_pos is None:
-                continue
-            pg_by_bus[bus_pos] += float(gen_res[gen_pos, PG])
-            qg_by_bus[bus_pos] += float(gen_res[gen_pos, QG])
-        bus_features[:, bus_col["Pg"]] = pg_by_bus
-        bus_features[:, bus_col["Qg"]] = qg_by_bus
+        bus_features[:, _BUS_COL["Vm"]] = vm
+        bus_features[:, _BUS_COL["Va"]] = va
 
         pf64 = np.asarray(branch_res[:, PF], dtype=np.float64)
         qf64 = np.asarray(branch_res[:, QF], dtype=np.float64)
@@ -1072,16 +1044,16 @@ class GridFMPowerFlowBackend:
                 "Branch features cannot be represented finitely."
             )
 
-        branch_features[:, branch_col["pf"]] = pf
-        branch_features[:, branch_col["qf"]] = qf
-        branch_features[:, branch_col["pt"]] = pt
-        branch_features[:, branch_col["qt"]] = qt
-        branch_features[:, branch_col["rate_a"]] = rate_a
-        branch_features[:, branch_col["br_status"]] = br_status
-        branch_features[:, branch_col["s_from_mva"]] = s_from
-        branch_features[:, branch_col["s_to_mva"]] = s_to
-        branch_features[:, branch_col["s_max_mva"]] = s_max
-        branch_features[:, branch_col["loading_percent"]] = loading
+        branch_features[:, _BRANCH_COL["pf"]] = pf
+        branch_features[:, _BRANCH_COL["qf"]] = qf
+        branch_features[:, _BRANCH_COL["pt"]] = pt
+        branch_features[:, _BRANCH_COL["qt"]] = qt
+        branch_features[:, _BRANCH_COL["rate_a"]] = rate_a
+        branch_features[:, _BRANCH_COL["br_status"]] = br_status
+        branch_features[:, _BRANCH_COL["s_from_mva"]] = s_from
+        branch_features[:, _BRANCH_COL["s_to_mva"]] = s_to
+        branch_features[:, _BRANCH_COL["s_max_mva"]] = s_max
+        branch_features[:, _BRANCH_COL["loading_percent"]] = loading
 
         active_loading = loading[active]
         mean_loading = (
