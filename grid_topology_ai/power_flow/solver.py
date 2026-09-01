@@ -7,7 +7,17 @@ from typing import Any
 
 import numpy as np
 from pypower.api import case9, runpf as _runpf
-from pypower.idx_bus import BUS_I, BUS_TYPE, PD, QD, VA, PV, PQ, REF
+from pypower.idx_brch import (
+    BR_B,
+    BR_R,
+    BR_STATUS,
+    BR_X,
+    F_BUS,
+    SHIFT,
+    TAP,
+    T_BUS,
+)
+from pypower.idx_bus import BS, BUS_I, BUS_TYPE, GS, NONE, PD, QD, VA, PV, PQ, REF
 from pypower.idx_gen import (
     GEN_BUS,
     GEN_STATUS,
@@ -21,6 +31,7 @@ from pypower.ppoption import ppoption
 from pypower.printpf import printpf
 from pypower.savecase import savecase
 
+from grid_topology_ai.cache import ByteLRUCache
 from grid_topology_ai.power_flow.workspace import (
     PreparedACNetwork,
     solve_newton_power_flow,
@@ -37,6 +48,23 @@ _WORKLOAD_COUNTERS = {
     "q_limit_bookkeeping_seconds": 0.0,
 }
 _Q_LIMIT_RESOLVE_HISTOGRAM: dict[int, int] = {}
+
+_PREPARED_NETWORK_CACHE_BYTES = 16 * 1024 * 1024
+_PREPARED_BUS_COLUMNS = (BUS_I, GS, BS)
+_PREPARED_BRANCH_COLUMNS = (
+    F_BUS,
+    T_BUS,
+    BR_R,
+    BR_X,
+    BR_B,
+    TAP,
+    SHIFT,
+    BR_STATUS,
+)
+_PreparedNetworkKey = tuple[float, int, int, bytes, bytes, bytes]
+_PREPARED_NETWORK_CACHE: ByteLRUCache[
+    _PreparedNetworkKey, PreparedACNetwork
+] = ByteLRUCache(max_bytes=_PREPARED_NETWORK_CACHE_BYTES)
 
 
 def get_power_flow_workload_counters() -> dict[str, object]:
@@ -67,6 +95,77 @@ def reset_power_flow_workload_counters() -> None:
     _WORKLOAD_COUNTERS["stock_runpf_seconds"] = 0.0
     _WORKLOAD_COUNTERS["q_limit_bookkeeping_seconds"] = 0.0
     _Q_LIMIT_RESOLVE_HISTOGRAM.clear()
+
+
+def clear_prepared_network_cache() -> None:
+    """Discard process-local admittance workspaces."""
+
+    _PREPARED_NETWORK_CACHE.clear(reset_evictions=True)
+
+
+def get_prepared_network_cache_info() -> dict[str, int]:
+    """Return process-local prepared-network cache occupancy."""
+
+    info = _PREPARED_NETWORK_CACHE.info()
+    return {
+        "entries": int(info.entries),
+        "bytes": int(info.bytes),
+        "max_bytes": int(info.max_bytes),
+        "evictions": int(info.evictions),
+    }
+
+
+def _prepared_network_key(case: dict[str, Any]) -> _PreparedNetworkKey:
+    bus = np.asarray(case["bus"], dtype=np.float64)
+    branch = np.asarray(case["branch"], dtype=np.float64)
+    bus_network = np.ascontiguousarray(
+        bus[:, _PREPARED_BUS_COLUMNS],
+        dtype=np.float64,
+    )
+    bus_present = np.ascontiguousarray(
+        bus[:, BUS_TYPE] != NONE,
+        dtype=np.bool_,
+    )
+    branch_network = np.ascontiguousarray(
+        branch[:, _PREPARED_BRANCH_COLUMNS],
+        dtype=np.float64,
+    )
+    return (
+        float(case["baseMVA"]),
+        int(bus.shape[0]),
+        int(branch.shape[0]),
+        bus_network.tobytes(),
+        bus_present.tobytes(),
+        branch_network.tobytes(),
+    )
+
+
+def _sparse_owned_bytes(matrix: Any) -> int:
+    return sum(
+        int(np.asarray(getattr(matrix, name)).nbytes)
+        for name in ("data", "indices", "indptr")
+    )
+
+
+def _prepared_network_entry_bytes(
+    key: _PreparedNetworkKey,
+    prepared: PreparedACNetwork,
+) -> int:
+    key_bytes = sum(len(part) for part in key[3:])
+    derivatives = prepared.derivatives
+    return int(
+        key_bytes
+        + prepared.bus_network.nbytes
+        + prepared.branch_network.nbytes
+        + _sparse_owned_bytes(prepared.ybus)
+        + _sparse_owned_bytes(prepared.yf)
+        + _sparse_owned_bytes(prepared.yt)
+        + _sparse_owned_bytes(derivatives.ybus)
+        + derivatives.rows.nbytes
+        + derivatives.columns.nbytes
+        + derivatives.diagonal_positions.nbytes
+        + 256
+    )
 
 
 def _record_stock_runpf(
@@ -420,7 +519,16 @@ def _run_with_q_limits(
     fixed_qg = np.full(ng, np.nan, dtype=float)
     limited: list[int] = []
     original_order = None
+    prepared_key: _PreparedNetworkKey | None = None
     prepared_network: PreparedACNetwork | None = None
+    cache_prepared_network = False
+    if (
+        int(solver_options["PF_ALG"]) == 1
+        and not bool(solver_options["PF_DC"])
+    ):
+        prepared_key = _prepared_network_key(case)
+        prepared_network = _PREPARED_NETWORK_CACHE.get(prepared_key)
+        cache_prepared_network = prepared_network is None
     elapsed = 0.0
     working = case
 
@@ -467,6 +575,21 @@ def _run_with_q_limits(
                 q_limit_resolve=iteration > 0,
                 elapsed_seconds=solve_seconds,
             )
+
+        if (
+            cache_prepared_network
+            and prepared_key is not None
+            and prepared_network is not None
+        ):
+            _PREPARED_NETWORK_CACHE.put(
+                prepared_key,
+                prepared_network,
+                size_bytes=_prepared_network_entry_bytes(
+                    prepared_key,
+                    prepared_network,
+                ),
+            )
+            cache_prepared_network = False
 
         elapsed += float(result.get("et", 0.0))
 
