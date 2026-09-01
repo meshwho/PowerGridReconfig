@@ -74,6 +74,7 @@ class TopologySwitchingEnv:
         self.applied_actions: list[GridFMAction] = []
         self.termination_reason: TerminationReason | None = None
         self.terminal_outcome_evidence: TerminalOutcomeEvidence | None = None
+        self._valid_actions_by_id: dict[int, GridFMAction] | None = None
 
     def reset(self, scenario_id: int) -> GridFMState:
         """Reset through the canonical AC power-flow backend."""
@@ -89,6 +90,7 @@ class TopologySwitchingEnv:
         self.applied_actions = []
         self.termination_reason = None
         self.terminal_outcome_evidence = None
+        self._valid_actions_by_id = None
 
         initial_result = self.backend.run_power_flow(
             scenario_id=scenario_id,
@@ -123,10 +125,20 @@ class TopologySwitchingEnv:
 
         return self.current_state
 
-    def valid_actions(self) -> list[GridFMAction]:
+    def _valid_actions_for_current_state(self) -> dict[int, GridFMAction]:
         self._require_active_episode()
         assert self.current_state is not None
-        return self.action_space.valid_actions(self.current_state)
+
+        if self._valid_actions_by_id is None:
+            actions = self.action_space.valid_actions(self.current_state)
+            self._valid_actions_by_id = {
+                int(action.action_id): action
+                for action in actions
+            }
+        return self._valid_actions_by_id
+
+    def valid_actions(self) -> list[GridFMAction]:
+        return list(self._valid_actions_for_current_state().values())
 
     def structural_action_mask(self):
         self._require_active_episode()
@@ -146,25 +158,8 @@ class TopologySwitchingEnv:
         if action_id < 0 or action_id > num_branches:
             raise ValueError(f"Invalid action_id: {action_id}")
 
-        if action_id == 0:
-            action = GridFMAction(
-                action_id=0,
-                action_type="do_nothing",
-            )
-        else:
-            branch_pos = action_id - 1
-            branch_id = int(self.current_state.branch_ids[branch_pos])
-            active = bool(self.current_state.branch_status[branch_pos] > 0)
-            action = GridFMAction(
-                action_id=action_id,
-                action_type=("switch_off_branch" if active else "switch_on_branch"),
-                branch_id=branch_id,
-                branch_pos=branch_pos,
-                target_status=0 if active else 1,
-            )
-
-        mask = self.action_space.operational_action_mask(self.current_state)
-        if not bool(mask[action_id]):
+        action = self._valid_actions_for_current_state().get(int(action_id))
+        if action is None:
             raise ValueError(
                 f"Action {action_id} is not valid in current state."
             )
@@ -224,6 +219,11 @@ class TopologySwitchingEnv:
         cloned.applied_actions = list(self.applied_actions)
         cloned.termination_reason = self.termination_reason
         cloned.terminal_outcome_evidence = self.terminal_outcome_evidence
+        cloned._valid_actions_by_id = (
+            None
+            if self._valid_actions_by_id is None
+            else dict(self._valid_actions_by_id)
+        )
         return cloned
 
     def terminate_no_legal_action(self) -> TerminalOutcomeEvidence:
@@ -314,6 +314,7 @@ class TopologySwitchingEnv:
             )
 
         self.current_state = power_flow_result.next_state
+        self._valid_actions_by_id = None
         assessment = assess_physical_state(self.current_state.metrics)
 
         if assessment.physically_secure:
