@@ -18,7 +18,7 @@ from pypower.idx_brch import (
     RATE_A,
     T_BUS,
 )
-from pypower.idx_bus import BUS_I, BUS_TYPE, VA, VM, VMAX, VMIN
+from pypower.idx_bus import BUS_I, BUS_TYPE, PD, QD, VA, VM, VMAX, VMIN
 from pypower.idx_gen import (
     GEN_BUS,
     GEN_STATUS,
@@ -208,11 +208,12 @@ def validate_pypower_result(result_ppc: dict[str, Any], physics_config: PhysicsC
                 f"{context}: {name} result has fewer columns than input."
             )
 
+    bus_roundoff = {PD, QD}
     bus_dynamic = {BUS_TYPE, VM, VA}
     bus_static = [
         column
         for column in range(source["bus"].shape[1])
-        if column not in bus_dynamic
+        if column not in bus_dynamic | bus_roundoff
     ]
     if not np.array_equal(
         result["bus"][:, bus_static],
@@ -220,6 +221,18 @@ def validate_pypower_result(result_ppc: dict[str, Any], physics_config: PhysicsC
     ):
         raise InvalidPhysicalState(
             f"{context}: solver changed immutable bus data."
+        )
+
+    source_demand = source["bus"][:, [PD, QD]]
+    result_demand = result["bus"][:, [PD, QD]]
+    demand_scale = np.maximum(
+        1.0,
+        np.maximum(np.abs(source_demand), np.abs(result_demand)),
+    )
+    demand_tolerance = 32.0 * np.finfo(np.float64).eps * demand_scale
+    if np.any(np.abs(result_demand - source_demand) > demand_tolerance):
+        raise InvalidPhysicalState(
+            f"{context}: solver changed immutable bus demand data."
         )
 
     branch_dynamic = {PF, QF, PT, QT}
