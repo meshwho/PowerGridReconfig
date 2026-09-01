@@ -197,19 +197,22 @@ def run_minimal_ac_redispatch(
             _REDISPATCH_MEMO[cache_key] = result
         return result
 
-    try:
-        baseline_result, _ = backend._solve_ppc(
-            ppc,
-            context=f"{context} baseline",
-        )
-    except (InvalidPhysicalState, PowerFlowNotConverged) as exc:
-        return remember(
-            MinimalRedispatchResult(
-                opf_success=False,
-                assessment=None,
-                message=f"Could not reconstruct handoff dispatch: {exc}",
+    if getattr(state, "generator_ids", None) is not None:
+        baseline_result = ppc
+    else:
+        try:
+            baseline_result, _ = backend._solve_ppc(
+                ppc,
+                context=f"{context} baseline",
             )
-        )
+        except (InvalidPhysicalState, PowerFlowNotConverged) as exc:
+            return remember(
+                MinimalRedispatchResult(
+                    opf_success=False,
+                    assessment=None,
+                    message=f"Could not reconstruct handoff dispatch: {exc}",
+                )
+            )
 
     opf_case = _opf_case_from_baseline(ppc, baseline_result)
     validate_ppc_input(
