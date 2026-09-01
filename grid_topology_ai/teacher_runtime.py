@@ -1632,6 +1632,22 @@ def init_worker_context(
     )
 
 
+def _multiprocessing_entrypoints() -> tuple[
+    Callable[..., None],
+    Callable[..., tuple[list[dict[str, Any]], float]],
+    Callable[[list[int]], list[dict[str, Any]]],
+]:
+    """Return worker callables from their stable importable module path."""
+
+    from grid_topology_ai import teacher_runtime as runtime_module
+
+    return (
+        runtime_module.init_worker_context,
+        runtime_module._run_timed_batch,
+        runtime_module.process_scenario_batch,
+    )
+
+
 def _handle_batch_results(
     batch_results: Sequence[dict[str, Any]],
     *,
@@ -1731,6 +1747,9 @@ def run_parallel(
         )
 
     worker_scenario_ids = tuple(int(value) for value in scenario_ids)
+    worker_initializer, worker_batch_runner, worker_batch_processor = (
+        _multiprocessing_entrypoints()
+    )
 
     print(f"\nParallel dynamic mode: {workers} workers")
     print(f"Batches:                {len(scenario_batches)}")
@@ -1742,7 +1761,7 @@ def run_parallel(
 
     executor = ProcessPoolExecutor(
         max_workers=workers,
-        initializer=init_worker_context,
+        initializer=worker_initializer,
         initargs=(
             str(raw_dir),
             str(states_dir),
@@ -1753,8 +1772,8 @@ def run_parallel(
     )
     futures = [
         executor.submit(
-            _run_timed_batch,
-            process_scenario_batch,
+            worker_batch_runner,
+            worker_batch_processor,
             batch,
         )
         for batch in scenario_batches
