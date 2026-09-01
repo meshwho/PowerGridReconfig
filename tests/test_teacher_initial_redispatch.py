@@ -221,7 +221,11 @@ def _install_runtime(monkeypatch, state_store: FakeStateStore) -> None:
     monkeypatch.setattr(
         runtime,
         "state_utility",
-        lambda state, physics_config=None: 0.0,
+        lambda state, physics_config=None: (
+            1.0
+            if runtime.assess_physical_state(state.metrics).physically_secure
+            else 0.0
+        ),
     )
     monkeypatch.setattr(
         runtime,
@@ -247,7 +251,13 @@ def _failed_redispatch() -> MinimalRedispatchResult:
 def _validated_redispatch() -> MinimalRedispatchResult:
     return MinimalRedispatchResult(
         opf_success=True,
-        assessment=SimpleNamespace(physically_secure=True),
+        assessment=runtime.assess_physical_state(
+            _metrics(
+                max_loading=90.0,
+                overloaded=0,
+                hard_overloaded=0,
+            )
+        ),
         message="validated",
         redispatch_l1_mw=12.5,
         redispatch_up_mw=6.4,
