@@ -58,9 +58,11 @@ from pypower.idx_gen import (
 
 from grid_topology_ai.cache import (
     DEFAULT_EXACT_POWER_FLOW_CACHE_BYTES,
+    ByteLRUCache,
     CachedPowerFlowFailure,
     CachedPowerFlowSuccess,
     ExactPowerFlowCache,
+    PowerFlowCacheKey,
 )
 from grid_topology_ai.config import (
     DEFAULT_PHYSICS_CONFIG,
@@ -133,6 +135,8 @@ _GENERATOR_COLUMNS = (
     "min_q_mvar",
     "max_q_mvar",
 )
+_MAX_PHYSICAL_METRICS_CACHE_BYTES = 8 * 1024 * 1024
+_PHYSICAL_METRICS_ENTRY_BYTES = 4096
 
 
 @dataclass(frozen=True)
@@ -171,9 +175,17 @@ class GridFMPowerFlowBackend:
             physics_config=self.physics_config,
             result_metrics_calculator=calculate_physical_metrics_from_result,
         )
+        exact_cache_max_bytes = int(exact_cache_max_bytes)
         self._exact_power_flow_cache = ExactPowerFlowCache(
-            max_bytes=int(exact_cache_max_bytes)
+            max_bytes=exact_cache_max_bytes
         )
+        metrics_cache_max_bytes = min(
+            max(exact_cache_max_bytes // 8, 0),
+            _MAX_PHYSICAL_METRICS_CACHE_BYTES,
+        )
+        self._physical_metrics_cache: ByteLRUCache[
+            bytes, dict[str, object]
+        ] = ByteLRUCache(max_bytes=metrics_cache_max_bytes)
         self._active_problem_template: ScenarioPowerFlowTemplate | None = None
         self._active_problem_frames: dict[str, pd.DataFrame] | None = None
         self.stock_runpf_calls = 0
@@ -226,6 +238,38 @@ class GridFMPowerFlowBackend:
         """Discard exact cached solutions while keeping scenario templates."""
 
         self._exact_power_flow_cache.clear(reset_counters=True)
+        self._physical_metrics_cache.clear(reset_evictions=True)
+
+    @staticmethod
+    def _positive_cache_key(key: PowerFlowCacheKey | bytes) -> bytes:
+        return key.positive if isinstance(key, PowerFlowCacheKey) else key
+
+    def _cached_physical_metrics(
+        self,
+        key: PowerFlowCacheKey | bytes,
+    ) -> dict[str, object] | None:
+        metrics = self._physical_metrics_cache.get(
+            self._positive_cache_key(key)
+        )
+        return None if metrics is None else dict(metrics)
+
+    def _store_physical_metrics(
+        self,
+        key: PowerFlowCacheKey | bytes,
+        metrics: dict[str, object],
+    ) -> None:
+        positive_key = self._positive_cache_key(key)
+        self._physical_metrics_cache.put(
+            positive_key,
+            dict(metrics),
+            size_bytes=_PHYSICAL_METRICS_ENTRY_BYTES + len(positive_key),
+        )
+
+    def _discard_physical_metrics(
+        self,
+        key: PowerFlowCacheKey | bytes,
+    ) -> None:
+        self._physical_metrics_cache.discard(self._positive_cache_key(key))
 
     @staticmethod
     def _require_matching_physics_contract(
@@ -693,7 +737,7 @@ class GridFMPowerFlowBackend:
             )
             problem = self._problem_from_ppc(ppc)
 
-            cache_key: bytes | None = None
+            cache_key: PowerFlowCacheKey | None = None
             cached = None
             if self.enable_cache:
                 cache_key, cached = self._exact_power_flow_cache.lookup(
@@ -715,16 +759,20 @@ class GridFMPowerFlowBackend:
                 )
 
             if isinstance(cached, CachedPowerFlowSuccess):
+                assert cache_key is not None
                 cached_ppc = cached.to_ppc(
                     base_mva=problem.base_mva,
                     copy_arrays=bool(self.store_raw_result),
                 )
                 try:
-                    metrics = calculate_physical_metrics_from_result(
-                        cached_ppc,
-                        power_flow_converged=True,
-                        physics_config=self.physics_config,
-                    )
+                    metrics = self._cached_physical_metrics(cache_key)
+                    if metrics is None:
+                        metrics = calculate_physical_metrics_from_result(
+                            cached_ppc,
+                            power_flow_converged=True,
+                            physics_config=self.physics_config,
+                        )
+                        self._store_physical_metrics(cache_key, metrics)
                     next_state = self._state_from_solved_ppc(
                         state=state,
                         result_ppc=cached_ppc,
@@ -732,8 +780,8 @@ class GridFMPowerFlowBackend:
                         metrics=metrics,
                     )
                 except InvalidPhysicalState:
-                    assert cache_key is not None
                     self._exact_power_flow_cache.discard(cache_key)
+                    self._discard_physical_metrics(cache_key)
                 else:
                     return GridFMPowerFlowResult(
                         success=True,
@@ -776,10 +824,12 @@ class GridFMPowerFlowBackend:
             )
 
             if self.enable_cache and cache_key is not None:
-                self._exact_power_flow_cache.store_success(
+                stored = self._exact_power_flow_cache.store_success(
                     cache_key,
                     result_ppc,
                 )
+                if stored:
+                    self._store_physical_metrics(cache_key, metrics)
 
             return GridFMPowerFlowResult(
                 success=True,
