@@ -80,7 +80,7 @@ def test_worker_init_installs_bounded_runtime_policy(monkeypatch) -> None:
         teacher._WORKER_CONTEXT = previous_context
 
 
-def test_parallel_workers_use_persistent_shards_without_recycling(
+def test_parallel_workers_use_persistent_pool_without_recycling(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
@@ -124,7 +124,10 @@ def test_parallel_workers_use_persistent_shards_without_recycling(
     )
 
     assert result == ([], 0, 0)
-    assert len(executors) == 2
-    assert all(executor.kwargs["max_workers"] == 1 for executor in executors)
-    assert all("max_tasks_per_child" not in executor.kwargs for executor in executors)
-    assert all(executor.kwargs["initargs"][-1] is None for executor in executors)
+    assert len(executors) == 1
+
+    executor = executors[0]
+    assert executor.kwargs["max_workers"] == 2
+    assert "max_tasks_per_child" not in executor.kwargs
+    assert executor.kwargs["initargs"][3] == (1, 2)
+    assert executor.kwargs["initargs"][-1] is None
