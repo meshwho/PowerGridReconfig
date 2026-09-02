@@ -41,7 +41,6 @@ class SelfPlayExample:
     """One on-policy AlphaZero-style self-play example."""
 
     state_id: str
-    state_path: str
     run_id: str
     iteration: int
     episode_id: str
@@ -96,6 +95,7 @@ class ExampleWriter:
             if self.examples_path.exists()
             else pd.DataFrame()
         )
+        self._drop_legacy_state_path_column()
         self.action_space_config = action_space_config
         self.run_id = str(run_id or self._existing_run_id())
         self._episode_ids: dict[int, str] = {}
@@ -116,6 +116,23 @@ class ExampleWriter:
                 f"solve={100.0 * self._solved_episodes / self._saved_episodes:.1f}%",
                 flush=True,
             )
+
+    def _drop_legacy_state_path_column(self) -> None:
+        if "state_path" not in self._existing_frame.columns:
+            return
+        frame = self._existing_frame.drop(columns=["state_path"])
+        self._write_examples_frame(frame)
+        self._existing_frame = frame
+
+    def _write_examples_frame(self, frame: pd.DataFrame) -> None:
+        temporary_path = self.examples_path.with_name(
+            f"{self.examples_path.name}.tmp"
+        )
+        try:
+            frame.to_csv(temporary_path, index=False)
+            temporary_path.replace(self.examples_path)
+        finally:
+            temporary_path.unlink(missing_ok=True)
 
     def _existing_run_id(self) -> str:
         if self._existing_frame.empty or "run_id" not in self._existing_frame:
@@ -154,10 +171,7 @@ class ExampleWriter:
             evidence=terminal_outcome_evidence,
         )
 
-        scenario_ids = {
-            int(item["scenario_id"])
-            for item in pending_examples
-        }
+        scenario_ids = {int(item["scenario_id"]) for item in pending_examples}
         if len(scenario_ids) != 1:
             raise ValueError("One episode cannot contain multiple scenario IDs.")
         scenario_id = scenario_ids.pop()
@@ -210,10 +224,8 @@ class ExampleWriter:
                 target_rows,
                 returns_from_step,
             ):
-                state_path = self.states_dir / (
-                    f"{episode_id}_step_{int(item['step']):03d}.npz"
-                )
-                created_paths.append(state_path)
+                state_id = f"{episode_id}_step_{int(item['step']):03d}"
+                created_paths.append(self.states_dir / f"{state_id}.npz")
                 self._store_example(
                     state=item["state"],
                     action_mask=item["action_mask"],
@@ -387,7 +399,7 @@ class ExampleWriter:
             ):
                 metadata[name] = outcome_fields[name]
 
-        state_path = self.state_store.save_state(
+        self.state_store.save_state(
             state=state,
             state_id=state_id,
             action_mask=action_mask,
@@ -396,7 +408,6 @@ class ExampleWriter:
 
         example = SelfPlayExample(
             state_id=state_id,
-            state_path=str(state_path),
             run_id=self.run_id,
             iteration=iteration,
             episode_id=episode_id,
@@ -518,15 +529,7 @@ class ExampleWriter:
                 [self._existing_frame, frame], ignore_index=True
             )[columns]
 
-        temporary_path = self.examples_path.with_name(
-            f"{self.examples_path.name}.tmp"
-        )
-        try:
-            frame.to_csv(temporary_path, index=False)
-            temporary_path.replace(self.examples_path)
-            self._existing_frame = frame
-            self.examples.clear()
-        finally:
-            temporary_path.unlink(missing_ok=True)
-
+        self._write_examples_frame(frame)
+        self._existing_frame = frame
+        self.examples.clear()
         return self.examples_path

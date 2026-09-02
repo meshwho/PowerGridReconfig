@@ -40,7 +40,6 @@ _BASE_OUTCOME_COLUMNS: tuple[str, ...] = (
     "outcome_gamma",
 )
 _BASE_EXAMPLE_COLUMNS: tuple[str, ...] = (
-    "state_path",
     "mcts_policy_json",
     "scenario_id",
     "step",
@@ -81,6 +80,18 @@ class _GraphDimensions(NamedTuple):
     num_bus_features: int
     num_branch_features: int
     num_actions: int
+
+
+def _state_path_for_example(examples_csv: str | Path, state_id: object) -> Path:
+    state_id_text = str(state_id).strip()
+    if (
+        not state_id_text
+        or state_id_text in {".", ".."}
+        or "/" in state_id_text
+        or "\\" in state_id_text
+    ):
+        raise ValueError("state_id must be a non-empty filename-safe identifier.")
+    return Path(examples_csv).parent / "states" / f"{state_id_text}.npz"
 
 
 def _json_value(value: object, *, name: str, source: str) -> object:
@@ -165,7 +176,13 @@ def load_and_validate_examples_csv(path: str | Path) -> pd.DataFrame:
             f"Examples CSV has no readable columns: {path}"
         ) from exc
     validate_examples_dataframe(examples, source_path=path)
-    return examples
+
+    runtime_examples = examples.drop(columns=["state_path"], errors="ignore").copy()
+    runtime_examples["state_path"] = [
+        str(_state_path_for_example(path, state_id))
+        for state_id in runtime_examples["state_id"]
+    ]
+    return runtime_examples
 
 
 def validate_example_topology_action_contracts(
@@ -330,7 +347,7 @@ def validate_examples_dataframe(
             index=index,
             source=source,
         )
-        state_path = Path(str(row["state_path"]).strip())
+        state_path = _state_path_for_example(source, row["state_id"])
         if not state_path.exists():
             raise FileNotFoundError(
                 f"State file not found: {state_path}. File: {source}"

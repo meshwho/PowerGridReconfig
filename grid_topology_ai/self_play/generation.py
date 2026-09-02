@@ -8,7 +8,7 @@ import uuid
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 import numpy as np
 import pandas as pd
@@ -22,6 +22,7 @@ from grid_topology_ai.search.mcts import (
     require_action_in_policy_support,
     select_policy_action,
 )
+from grid_topology_ai.self_play.artifacts import file_content_identity
 
 _RUNTIME_DEPENDENCIES_LOADED = False
 
@@ -568,18 +569,7 @@ def _generate_scenario(scenario_id: int) -> _ScenarioResult:
 
 
 def _source_identity(path: Path | None) -> dict[str, object] | None:
-    if path is None:
-        return None
-    resolved = path.resolve()
-    try:
-        stat = resolved.stat()
-    except FileNotFoundError:
-        return {"path": str(resolved), "size": None, "mtime_ns": None}
-    return {
-        "path": str(resolved),
-        "size": int(stat.st_size),
-        "mtime_ns": int(stat.st_mtime_ns),
-    }
+    return file_content_identity(path)
 
 
 _RAW_SOURCE_FILES = (
@@ -631,6 +621,54 @@ def _resume_identity(
     }
 
 
+def _legacy_file_identity_matches(existing: object, current: object) -> bool:
+    if existing == current:
+        return True
+    if existing is None or current is None:
+        return existing is current
+    if not isinstance(existing, Mapping) or not isinstance(current, Mapping):
+        return False
+    try:
+        return int(existing["size"]) == int(current["size"])
+    except (KeyError, TypeError, ValueError):
+        return False
+
+
+def _resume_identity_matches(existing: object, current: object) -> bool:
+    if existing == current:
+        return True
+    if not isinstance(existing, Mapping) or not isinstance(current, Mapping):
+        return False
+
+    source_keys = {"raw_source", "transitions", "checkpoint"}
+    for key, value in current.items():
+        if key in source_keys:
+            continue
+        if existing.get(key) != value:
+            return False
+
+    existing_raw = existing.get("raw_source")
+    current_raw = current.get("raw_source")
+    if not isinstance(existing_raw, Mapping) or not isinstance(current_raw, Mapping):
+        return False
+    if set(existing_raw) != set(current_raw):
+        return False
+    if any(
+        not _legacy_file_identity_matches(existing_raw[name], current_raw[name])
+        for name in current_raw
+    ):
+        return False
+
+    return (
+        _legacy_file_identity_matches(
+            existing.get("transitions"), current.get("transitions")
+        )
+        and _legacy_file_identity_matches(
+            existing.get("checkpoint"), current.get("checkpoint")
+        )
+    )
+
+
 def _atomic_json(path: Path, value: dict[str, object]) -> None:
     temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     try:
@@ -654,8 +692,14 @@ def _load_generation_progress(
                 f"Cannot resume without progress file: {progress_path}"
             )
         progress = json.loads(progress_path.read_text(encoding="utf-8"))
-        if progress.get("identity") != identity:
+        if not isinstance(progress, dict):
+            raise ValueError("Self-play progress file must contain a JSON object.")
+        saved_identity = progress.get("identity")
+        if not _resume_identity_matches(saved_identity, identity):
             raise ValueError("Self-play resume identity does not match this request.")
+        if saved_identity != identity:
+            progress["identity"] = identity
+            _atomic_json(progress_path, progress)
         raw_run_id = progress.get("run_id")
         if not isinstance(raw_run_id, str) or not raw_run_id.strip():
             raise ValueError("progress.json run_id must be a non-empty string.")

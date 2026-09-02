@@ -38,22 +38,11 @@ _REQUIRED_GRIDFM_DATASETS = (
 )
 
 
-# ======================================================================================
-# Helpers
-# ======================================================================================
-
-
 def configure_utf8_stdio() -> None:
-    """Force UTF-8 for redirected stdout/stderr on Windows."""
-
     for stream in (sys.stdout, sys.stderr):
         reconfigure = getattr(stream, "reconfigure", None)
-
         if callable(reconfigure):
-            reconfigure(
-                encoding="utf-8",
-                errors="replace",
-            )
+            reconfigure(encoding="utf-8", errors="replace")
 
 
 def now() -> float:
@@ -61,8 +50,7 @@ def now() -> float:
 
 
 def print_time(label: str, start: float) -> None:
-    elapsed = time.perf_counter() - start
-    print(f"{label}: {elapsed:.2f} s")
+    print(f"{label}: {time.perf_counter() - start:.2f} s")
 
 
 def read_parquet_columns(
@@ -70,33 +58,25 @@ def read_parquet_columns(
     required_columns: list[str],
     optional_columns: list[str] | None = None,
 ) -> pd.DataFrame:
-    """Read only required and optional columns from a parquet file."""
-
     optional_columns = optional_columns or []
-
     if not path.exists():
         raise FileNotFoundError(f"Parquet file not found: {path}")
 
     columns = list(dict.fromkeys(required_columns + optional_columns))
-
     try:
         return pd.read_parquet(path, columns=columns)
     except Exception:
         df = pd.read_parquet(path)
         missing_required = set(required_columns) - set(df.columns)
-
         if missing_required:
             raise ValueError(
                 f"{path} is missing required columns: {sorted(missing_required)}"
             )
-
-        available = [col for col in columns if col in df.columns]
+        available = [column for column in columns if column in df.columns]
         return df[available].copy()
 
 
 def compute_branch_summary(branch_df: pd.DataFrame) -> pd.DataFrame:
-    """Build the vectorized branch summary for each scenario."""
-
     df = branch_df.copy()
     required = {
         "scenario",
@@ -109,13 +89,11 @@ def compute_branch_summary(branch_df: pd.DataFrame) -> pd.DataFrame:
         "rate_a",
     }
     missing = required - set(df.columns)
-
     if missing:
         raise ValueError(f"branch_data.parquet missing columns: {sorted(missing)}")
 
     df["scenario"] = df["scenario"].astype(np.int64)
     df["idx"] = df["idx"].astype(np.int64)
-
     br_status = df["br_status"].to_numpy(dtype=np.float32)
     in_service = br_status > 0.0
     pf = df["pf"].to_numpy(dtype=np.float64)
@@ -127,7 +105,6 @@ def compute_branch_summary(branch_df: pd.DataFrame) -> pd.DataFrame:
     s_from = np.sqrt(pf * pf + qf * qf)
     s_to = np.sqrt(pt * pt + qt * qt)
     s_max = np.maximum(s_from, s_to)
-
     loading = s_max / rate_a * 100.0
     loading = np.where(in_service, loading, 0.0)
     loading = np.nan_to_num(loading, nan=0.0, posinf=0.0, neginf=0.0)
@@ -152,7 +129,6 @@ def compute_branch_summary(branch_df: pd.DataFrame) -> pd.DataFrame:
     )
 
     outaged = df[df["is_outaged"]][["scenario", "idx"]].copy()
-
     if outaged.empty:
         outaged_ids = pd.Series(
             data=[[] for _ in range(len(count_summary))],
@@ -161,7 +137,7 @@ def compute_branch_summary(branch_df: pd.DataFrame) -> pd.DataFrame:
         )
     else:
         outaged_ids = outaged.groupby("scenario", sort=False)["idx"].apply(
-            lambda s: [int(x) for x in s.to_numpy()]
+            lambda values: [int(value) for value in values.to_numpy()]
         )
         outaged_ids.name = "outaged_branch_ids"
 
@@ -177,41 +153,29 @@ def compute_branch_summary(branch_df: pd.DataFrame) -> pd.DataFrame:
     ].astype(int)
     summary["num_outaged_branches"] = summary["num_outaged_branches"].astype(int)
     summary["outaged_branch_ids"] = summary["outaged_branch_ids"].apply(
-        lambda x: x if isinstance(x, list) else []
+        lambda value: value if isinstance(value, list) else []
     )
-
     return summary.reset_index()
 
 
 def compute_bus_summary(bus_df: pd.DataFrame) -> pd.DataFrame:
-    """Build the vectorized bus summary for each scenario."""
-
     df = bus_df.copy()
-    required = {
-        "scenario",
-        "load_scenario_idx",
-        "Vm",
-    }
+    required = {"scenario", "load_scenario_idx", "Vm"}
     missing = required - set(df.columns)
-
     if missing:
         raise ValueError(f"bus_data.parquet missing columns: {sorted(missing)}")
 
     df["scenario"] = df["scenario"].astype(np.int64)
-
     if "min_vm_pu" not in df.columns:
         df["min_vm_pu"] = 0.94
-
     if "max_vm_pu" not in df.columns:
         df["max_vm_pu"] = 1.06
 
     vm = df["Vm"].to_numpy(dtype=np.float64)
     vmin = df["min_vm_pu"].to_numpy(dtype=np.float64)
     vmax = df["max_vm_pu"].to_numpy(dtype=np.float64)
-
     low_violation = np.maximum(vmin - vm, 0.0)
     high_violation = np.maximum(vm - vmax, 0.0)
-
     df["low_voltage_violation"] = low_violation.astype(np.float32)
     df["high_voltage_violation"] = high_violation.astype(np.float32)
     df["total_voltage_violation_part"] = (
@@ -232,13 +196,10 @@ def compute_bus_summary(bus_df: pd.DataFrame) -> pd.DataFrame:
     )
     summary["num_low_voltage_buses"] = summary["num_low_voltage_buses"].astype(int)
     summary["num_high_voltage_buses"] = summary["num_high_voltage_buses"].astype(int)
-
     return summary.reset_index()
 
 
 def add_seriousness_score(summary: pd.DataFrame) -> pd.DataFrame:
-    """Add the existing emergency-scenario ranking score."""
-
     df = summary.copy()
     df["seriousness_score"] = (
         2000.0 * df["num_hard_overloaded_branches"].astype(float)
@@ -254,12 +215,9 @@ def build_fast_summary(
     raw_dir: Path,
     show_progress: bool = True,
 ) -> pd.DataFrame:
-    """Build the existing vectorized GridFM scenario summary."""
-
     bus_path = raw_dir / "bus_data.parquet"
     branch_path = raw_dir / "branch_data.parquet"
     progress = None
-
     if show_progress and tqdm is not None:
         progress = tqdm(
             total=6,
@@ -276,24 +234,17 @@ def build_fast_summary(
     try:
         t0 = now()
         bus_df = read_parquet_columns(
-            path=bus_path,
-            required_columns=[
-                "scenario",
-                "load_scenario_idx",
-                "Vm",
-            ],
-            optional_columns=[
-                "min_vm_pu",
-                "max_vm_pu",
-            ],
+            bus_path,
+            ["scenario", "load_scenario_idx", "Vm"],
+            ["min_vm_pu", "max_vm_pu"],
         )
         print_time("Read bus_data.parquet", t0)
         update_progress("bus parquet read")
 
         t0 = now()
         branch_df = read_parquet_columns(
-            path=branch_path,
-            required_columns=[
+            branch_path,
+            [
                 "scenario",
                 "idx",
                 "from_bus",
@@ -345,8 +296,6 @@ def build_fast_summary(
 
 
 def make_output(selected: pd.DataFrame) -> pd.DataFrame:
-    """Convert selected summary rows into the existing transitions format."""
-
     return pd.DataFrame(
         {
             "scenario_id": selected["scenario"].astype(int),
@@ -390,17 +339,11 @@ def save_json_atomic(path: Path, payload: dict[str, Any]) -> None:
 def load_json(path: Path) -> dict[str, Any] | None:
     if not path.exists():
         return None
-
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         return None
-
     return value if isinstance(value, dict) else None
-
-
-def read_text(path: Path) -> str:
-    return path.read_text(encoding="utf-8")
 
 
 def write_text(path: Path, text: str) -> None:
@@ -427,8 +370,6 @@ def _fingerprint_mapping(payload: dict[str, Any]) -> str:
 
 
 def dataset_contract_payload(args: argparse.Namespace) -> dict[str, Any]:
-    """Inputs that determine the semantics of every generated chunk."""
-
     return {
         "contract_version": _GRIDFM_CHUNK_CONTRACT_VERSION,
         "gridfm_datakit_version": _package_version("gridfm-datakit"),
@@ -486,11 +427,9 @@ def _completion_marker_matches(
     chunk_index: int,
 ) -> bool:
     marker = load_json(path)
-    if marker is None:
-        return False
-
-    return (
-        marker.get("stage") == stage
+    return bool(
+        marker is not None
+        and marker.get("stage") == stage
         and marker.get("contract_fingerprint") == contract_fingerprint
         and marker.get("chunk_index") == int(chunk_index)
     )
@@ -532,16 +471,13 @@ def _dataset_path_has_data(path: Path) -> bool:
 def gridfm_raw_artifacts_are_usable(raw_dir: Path) -> bool:
     if not raw_dir.exists():
         return False
-
     if not all(
         _dataset_path_has_data(raw_dir / name)
         for name in _REQUIRED_GRIDFM_DATASETS
     ):
         return False
-
-    n_scenarios_path = raw_dir / "n_scenarios.txt"
     try:
-        return int(n_scenarios_path.read_text(encoding="utf-8").strip()) > 0
+        return int((raw_dir / "n_scenarios.txt").read_text(encoding="utf-8").strip()) > 0
     except Exception:
         return False
 
@@ -574,31 +510,23 @@ def candidate_manifest_is_current(
 ) -> bool:
     if not path.exists():
         return False
-
     try:
         columns = set(pd.read_csv(path, nrows=0).columns)
     except Exception:
         return False
-
-    required_columns = {
-        "canonical_pf_ok",
-        "gridfm_difficulty_class",
-    }
-    if not required_columns.issubset(columns):
+    if not {"canonical_pf_ok", "gridfm_difficulty_class"}.issubset(columns):
         return False
 
     marker = load_json(candidate_completion_marker_path(path))
     if marker is None or marker.get("stage") != "canonical_candidates":
         return False
-
-    if expected_contract_fingerprint is not None:
-        if marker.get("contract_fingerprint") != expected_contract_fingerprint:
-            return False
-
-    if chunk_index is not None:
-        if marker.get("chunk_index") != int(chunk_index):
-            return False
-
+    if (
+        expected_contract_fingerprint is not None
+        and marker.get("contract_fingerprint") != expected_contract_fingerprint
+    ):
+        return False
+    if chunk_index is not None and marker.get("chunk_index") != int(chunk_index):
+        return False
     return True
 
 
@@ -619,16 +547,9 @@ def _latest_activity_timestamp(paths: Sequence[Path]) -> float | None:
 def _terminate_process_tree(process: subprocess.Popen[Any]) -> None:
     if process.poll() is not None:
         return
-
     if os.name == "nt":
         subprocess.run(
-            [
-                "taskkill",
-                "/PID",
-                str(process.pid),
-                "/T",
-                "/F",
-            ],
+            ["taskkill", "/PID", str(process.pid), "/T", "/F"],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             check=False,
@@ -642,7 +563,6 @@ def _terminate_process_tree(process: subprocess.Popen[Any]) -> None:
                 os.killpg(process.pid, signal.SIGKILL)
             except Exception:
                 process.kill()
-
     try:
         process.wait(timeout=10)
     except Exception:
@@ -656,25 +576,15 @@ def run_command(
     activity_paths: Sequence[Path] = (),
     inactivity_timeout_sec: float = 0.0,
 ) -> None:
-    """Run GridFM with inherited output and a filesystem-activity watchdog."""
-
     ensure_dir(log_path.parent)
     command_list = [str(argument) for argument in command]
     printable_command = subprocess.list2cmdline(command_list)
-
     print("Running command:", flush=True)
     print(printable_command, flush=True)
     print("GridFM output is streamed live below.", flush=True)
-    print(f"Runner log: {log_path}", flush=True)
 
-    log_path.write_text(
-        f"command: {printable_command}\n",
-        encoding="utf-8",
-    )
-
-    popen_kwargs: dict[str, Any] = {
-        "shell": False,
-    }
+    log_path.write_text("runtime command omitted\n", encoding="utf-8")
+    popen_kwargs: dict[str, Any] = {"shell": False}
     if os.name == "nt":
         popen_kwargs["creationflags"] = getattr(
             subprocess,
@@ -695,20 +605,14 @@ def run_command(
             break
 
         current_timestamp = _latest_activity_timestamp(activity_paths)
-        if (
-            current_timestamp is not None
-            and (
-                last_timestamp is None
-                or current_timestamp > last_timestamp
-            )
+        if current_timestamp is not None and (
+            last_timestamp is None or current_timestamp > last_timestamp
         ):
             last_timestamp = current_timestamp
             last_activity = time.monotonic()
 
-        if (
-            inactivity_timeout_sec > 0.0
-            and time.monotonic() - last_activity
-            >= float(inactivity_timeout_sec)
+        if inactivity_timeout_sec > 0.0 and (
+            time.monotonic() - last_activity >= float(inactivity_timeout_sec)
         ):
             message = (
                 "GridFM produced no progress-file activity for "
@@ -720,7 +624,6 @@ def run_command(
                 log_file.write(f"watchdog: {message}\n")
             _terminate_process_tree(process)
             raise RuntimeError(message)
-
         time.sleep(1.0)
 
     elapsed = time.monotonic() - started
@@ -730,15 +633,9 @@ def run_command(
 
     if return_code != 0:
         raise RuntimeError(
-            f"Command failed with exit code {return_code}: "
-            f"{printable_command}. "
+            f"Command failed with exit code {return_code}. "
             "See the live console output and GridFM raw/error logs."
         )
-
-
-# ======================================================================================
-# Config
-# ======================================================================================
 
 
 @dataclass(frozen=True)
@@ -758,20 +655,12 @@ def compute_class_targets(
     medium_fraction: float,
     hard_fraction: float,
 ) -> ClassTargets:
-    target_total = int(target_total)
-
-    simple = int(round(target_total * float(simple_fraction)))
-    hard = int(round(target_total * float(hard_fraction)))
-    medium = target_total - simple - hard
-
+    simple = int(round(int(target_total) * float(simple_fraction)))
+    hard = int(round(int(target_total) * float(hard_fraction)))
+    medium = int(target_total) - simple - hard
     if medium < 0:
         raise ValueError("Class fractions are invalid: medium target became negative.")
-
-    return ClassTargets(
-        simple=int(simple),
-        medium=int(medium),
-        hard=int(hard),
-    )
+    return ClassTargets(simple=simple, medium=medium, hard=hard)
 
 
 def make_generation_perturbation_text(
@@ -779,33 +668,25 @@ def make_generation_perturbation_text(
     sigma: float,
 ) -> str:
     perturbation_type = str(perturbation_type).strip().lower()
-
     if perturbation_type == "none":
-        return """generation_perturbation:
-  type: "none"
-"""
-
+        return 'generation_perturbation:\n  type: "none"\n'
     if perturbation_type == "cost_permutation":
-        return """generation_perturbation:
-  type: "cost_permutation"
-"""
-
+        return 'generation_perturbation:\n  type: "cost_permutation"\n'
     if perturbation_type == "cost_perturbation":
         if float(sigma) <= 0.0:
             raise ValueError(
                 "generation_perturbation_sigma must be > 0 "
                 "when generation_perturbation_type='cost_perturbation'."
             )
-
-        return f"""generation_perturbation:
-  type: "cost_perturbation"
-  sigma: {float(sigma)}
-"""
-
+        return (
+            'generation_perturbation:\n'
+            '  type: "cost_perturbation"\n'
+            f"  sigma: {float(sigma)}\n"
+        )
     raise ValueError(
         "Unsupported generation_perturbation_type: "
-        f"{perturbation_type}. "
-        "Expected one of: none, cost_permutation, cost_perturbation."
+        f"{perturbation_type}. Expected one of: none, cost_permutation, "
+        "cost_perturbation."
     )
 
 
@@ -814,28 +695,22 @@ def make_admittance_perturbation_text(
     sigma: float,
 ) -> str:
     perturbation_type = str(perturbation_type).strip().lower()
-
     if perturbation_type == "none":
-        return """admittance_perturbation:
-  type: "none"
-"""
-
+        return 'admittance_perturbation:\n  type: "none"\n'
     if perturbation_type == "random_perturbation":
         if float(sigma) <= 0.0:
             raise ValueError(
                 "admittance_perturbation_sigma must be > 0 "
                 "when admittance_perturbation_type='random_perturbation'."
             )
-
-        return f"""admittance_perturbation:
-  type: "random_perturbation"
-  sigma: {float(sigma)}
-"""
-
+        return (
+            'admittance_perturbation:\n'
+            '  type: "random_perturbation"\n'
+            f"  sigma: {float(sigma)}\n"
+        )
     raise ValueError(
         "Unsupported admittance_perturbation_type: "
-        f"{perturbation_type}. "
-        "Expected one of: none, random_perturbation."
+        f"{perturbation_type}. Expected one of: none, random_perturbation."
     )
 
 
@@ -860,30 +735,24 @@ def make_gridfm_config_text(
     admittance_perturbation_sigma: float,
 ) -> str:
     data_dir_str = str(data_dir).replace("\\", "/")
-
-    generation_perturbation_text = make_generation_perturbation_text(
-        perturbation_type=generation_perturbation_type,
-        sigma=generation_perturbation_sigma,
+    generation_text = make_generation_perturbation_text(
+        generation_perturbation_type,
+        generation_perturbation_sigma,
     )
-
-    admittance_perturbation_text = make_admittance_perturbation_text(
-        perturbation_type=admittance_perturbation_type,
-        sigma=admittance_perturbation_sigma,
+    admittance_text = make_admittance_perturbation_text(
+        admittance_perturbation_type,
+        admittance_perturbation_sigma,
     )
-
-    return f"""network:
-  name: "{str(network_name)}"
-  source: "{str(network_source)}"
+    return f'''network:
+  name: "{network_name}"
+  source: "{network_source}"
 
 load:
   generator: "agg_load_profile"
   agg_profile: "default"
-
   scenarios: {int(scenarios)}
-
   sigma: {float(sigma)}
   change_reactive_power: true
-
   global_range: {float(global_range)}
   max_scaling_factor: {float(max_scaling_factor)}
   step_size: {float(step_size)}
@@ -895,31 +764,21 @@ topology_perturbation:
   n_topology_variants: {int(topology_variants)}
   elements: [branch]
 
-{generation_perturbation_text}
-{admittance_perturbation_text}
-
+{generation_text}
+{admittance_text}
 settings:
   num_processes: {int(num_processes)}
   data_dir: "{data_dir_str}"
   large_chunk_size: 1000
   overwrite: true
-
   mode: "pf"
-
   include_dc_res: false
   enable_solver_logs: true
-
   pf_fast: true
   dcpf_fast: true
   max_iter: 200
-
   seed: {int(seed)}
-"""
-
-
-# ======================================================================================
-# Scenario classification and selection
-# ======================================================================================
+'''
 
 
 def classify_summary(
@@ -927,26 +786,21 @@ def classify_summary(
     args: argparse.Namespace,
 ) -> pd.DataFrame:
     df = summary.copy()
-
     df["difficulty_class"] = "unused"
-
     max_loading = df["max_loading_percent"].astype(float)
     overloaded = df["num_overloaded_branches"].astype(int)
     hard = df["num_hard_overloaded_branches"].astype(int)
     outaged = df["num_outaged_branches"].astype(int)
-
     base_valid = (
         (max_loading >= float(args.min_loading))
         & (max_loading <= float(args.max_loading))
         & (overloaded > 0)
         & (outaged > 0)
     )
-
     hard_mask = base_valid & (
         (max_loading >= float(args.hard_min_loading))
         | (hard >= int(args.hard_min_hard))
     )
-
     medium_mask = (
         base_valid
         & ~hard_mask
@@ -955,7 +809,6 @@ def classify_summary(
         & (hard <= int(args.medium_max_hard))
         & (overloaded <= int(args.medium_max_overloaded))
     )
-
     simple_mask = (
         base_valid
         & ~hard_mask
@@ -965,11 +818,9 @@ def classify_summary(
         & (hard <= int(args.simple_max_hard))
         & (overloaded <= int(args.simple_max_overloaded))
     )
-
     df.loc[simple_mask, "difficulty_class"] = "simple"
     df.loc[medium_mask, "difficulty_class"] = "medium"
     df.loc[hard_mask, "difficulty_class"] = "hard"
-
     return df
 
 
@@ -977,14 +828,11 @@ def add_source_columns(
     summary: pd.DataFrame,
     *,
     chunk_name: str,
-    raw_dir: Path,
 ) -> pd.DataFrame:
+    """Persist only a logical chunk identity, never a filesystem location."""
     df = summary.copy()
-
     df["source_chunk"] = str(chunk_name)
-    df["source_raw_dir"] = str(raw_dir)
     df["source_scenario_id"] = df["scenario"].astype(int)
-
     return df
 
 
@@ -1007,9 +855,8 @@ _CANONICAL_SUMMARY_COLUMNS = (
 def evaluate_canonical_candidates(
     candidates: pd.DataFrame,
     args: argparse.Namespace,
+    raw_dir: Path | str = Path("raw"),
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Validate and reclassify GridFM candidates through canonical physics."""
-
     if candidates.empty:
         evaluated = candidates.copy()
         evaluated["gridfm_difficulty_class"] = pd.Series(dtype=str)
@@ -1017,79 +864,51 @@ def evaluate_canonical_candidates(
         evaluated["canonical_failure_kind"] = pd.Series(dtype=str)
         return evaluated, evaluated.copy()
 
+    scenario_ids = sorted(candidates["source_scenario_id"].astype(int).unique())
+    adapter = GridFMAdapter(Path(raw_dir), scenario_ids=scenario_ids)
+    backend = GridFMPowerFlowBackend(adapter, enable_cache=False)
     evaluated_rows: list[dict[str, Any]] = []
 
     print(f"\nCanonical PF validation: {len(candidates)} candidates")
-
-    for raw_dir_str, group in candidates.groupby("source_raw_dir", sort=False):
-        raw_dir = Path(str(raw_dir_str))
-        scenario_ids = sorted(
-            group["source_scenario_id"].astype(int).unique()
+    for row in candidates.itertuples(index=False):
+        record = row._asdict()
+        record.pop("source_raw_dir", None)
+        record["gridfm_difficulty_class"] = str(record["difficulty_class"])
+        scenario_id = int(record["source_scenario_id"])
+        result = backend.run_power_flow(scenario_id, None)
+        record["canonical_pf_ok"] = bool(result.success)
+        record["canonical_failure_kind"] = (
+            str(result.failure_kind.value)
+            if result.failure_kind is not None
+            else ""
         )
-
-        adapter = GridFMAdapter(
-            raw_dir,
-            scenario_ids=scenario_ids,
-        )
-        backend = GridFMPowerFlowBackend(
-            adapter,
-            enable_cache=False,
-        )
-
-        for row in group.itertuples(index=False):
-            record = row._asdict()
-            record["gridfm_difficulty_class"] = str(
-                record["difficulty_class"]
-            )
-
-            scenario_id = int(record["source_scenario_id"])
-            result = backend.run_power_flow(scenario_id, None)
-
-            record["canonical_pf_ok"] = bool(result.success)
-            record["canonical_failure_kind"] = (
-                str(result.failure_kind.value)
-                if result.failure_kind is not None
-                else ""
-            )
-
-            if result.success and result.next_state is not None:
-                state = result.next_state
-
-                for column in _CANONICAL_SUMMARY_COLUMNS:
-                    if column in state.metrics:
-                        record[column] = state.metrics[column]
-
-                record["outaged_branch_ids"] = list(
-                    state.outaged_branch_ids
-                )
-
-            evaluated_rows.append(record)
+        if result.success and result.next_state is not None:
+            state = result.next_state
+            for column in _CANONICAL_SUMMARY_COLUMNS:
+                if column in state.metrics:
+                    record[column] = state.metrics[column]
+            record["outaged_branch_ids"] = list(state.outaged_branch_ids)
+        evaluated_rows.append(record)
 
     evaluated = pd.DataFrame(evaluated_rows)
     valid = evaluated[evaluated["canonical_pf_ok"]].copy()
-
     if not valid.empty:
         valid = classify_summary(valid, args)
         valid = add_seriousness_score(valid)
         valid = valid[
-            valid["difficulty_class"].isin(
-                ["simple", "medium", "hard"]
-            )
+            valid["difficulty_class"].isin(["simple", "medium", "hard"])
         ].copy()
-
     print(
         "Canonical PF accepted "
         f"{int(evaluated['canonical_pf_ok'].sum())}/{len(evaluated)} "
         "preclassified candidates."
     )
-
     return evaluated, valid
 
 
 def _normalize_outage_identity(value: Any) -> tuple[int, ...]:
     if isinstance(value, str):
         text = value.strip()
-
         try:
             parsed = json.loads(text)
         except json.JSONDecodeError:
@@ -1098,93 +917,48 @@ def _normalize_outage_identity(value: Any) -> tuple[int, ...]:
                 for part in text.strip("[]").split(",")
                 if part.strip()
             ]
-
         if not isinstance(parsed, (list, tuple)):
             parsed = [parsed]
-
     elif isinstance(value, (list, tuple, np.ndarray, pd.Series)):
         parsed = list(value)
-
     elif pd.isna(value):
         parsed = []
-
     else:
         parsed = [value]
-
-    return tuple(
-        sorted(int(branch_id) for branch_id in parsed)
-    )
+    return tuple(sorted(int(branch_id) for branch_id in parsed))
 
 
-def deduplicate_gridfm_variants(
-    candidates: pd.DataFrame,
-) -> pd.DataFrame:
-    """
-    Drop repeated topology variants for the same GridFM load scenario.
-
-    GridFM applies load, generation and admittance perturbations once for a
-    load scenario and then samples topology variants. If the random topology
-    generator selects the same outage more than once, those variants describe
-    the same physical state.
-    """
-
+def deduplicate_gridfm_variants(candidates: pd.DataFrame) -> pd.DataFrame:
     if candidates.empty:
         return candidates.copy()
-
-    required = {
-        "source_chunk",
-        "load_scenario_idx",
-        "outaged_branch_ids",
-    }
-
+    required = {"source_chunk", "load_scenario_idx", "outaged_branch_ids"}
     missing = required - set(candidates.columns)
-
     if missing:
         raise ValueError(
             "Cannot deduplicate GridFM candidates; missing columns: "
             f"{sorted(missing)}"
         )
 
-    df = candidates.copy()
-
+    df = candidates.drop(columns=["source_raw_dir"], errors="ignore").copy()
     load_scenario_idx = pd.to_numeric(
-        df["load_scenario_idx"],
-        errors="raise",
+        df["load_scenario_idx"], errors="raise"
     ).to_numpy(dtype=np.float64)
-
     if not np.isfinite(load_scenario_idx).all():
-        raise ValueError(
-            "load_scenario_idx must contain only finite values."
-        )
-
+        raise ValueError("load_scenario_idx must contain only finite values.")
     df["_dedup_load_scenario_idx"] = load_scenario_idx
-    df["_dedup_outage_ids"] = df[
-        "outaged_branch_ids"
-    ].map(_normalize_outage_identity)
-
+    df["_dedup_outage_ids"] = df["outaged_branch_ids"].map(
+        _normalize_outage_identity
+    )
     before = len(df)
-
     df = df.drop_duplicates(
-        subset=[
-            "source_chunk",
-            "_dedup_load_scenario_idx",
-            "_dedup_outage_ids",
-        ],
+        subset=["source_chunk", "_dedup_load_scenario_idx", "_dedup_outage_ids"],
         keep="first",
     ).copy()
-
     removed = before - len(df)
-
     if removed:
-        print(
-            f"Removed {removed} duplicate GridFM topology variants."
-        )
-
+        print(f"Removed {removed} duplicate GridFM topology variants.")
     return df.drop(
-        columns=[
-            "_dedup_load_scenario_idx",
-            "_dedup_outage_ids",
-        ],
+        columns=["_dedup_load_scenario_idx", "_dedup_outage_ids"],
         errors="ignore",
     ).reset_index(drop=True)
 
@@ -1196,35 +970,25 @@ def select_balanced_manifest(
 ) -> pd.DataFrame:
     if candidates.empty:
         return candidates.copy()
-
     df = deduplicate_gridfm_variants(candidates)
     df = df[df["difficulty_class"].isin(["simple", "medium", "hard"])].copy()
-
     if df.empty:
         return df
-
     df = df.drop_duplicates(
-        subset=["source_chunk", "source_scenario_id"],
-        keep="first",
+        subset=["source_chunk", "source_scenario_id"], keep="first"
     ).copy()
-
     rng = np.random.default_rng(int(seed))
     df["_random_tiebreak"] = rng.random(len(df))
-
     selected_parts: list[pd.DataFrame] = []
-
     class_to_target = {
         "simple": int(targets.simple),
         "medium": int(targets.medium),
         "hard": int(targets.hard),
     }
-
     for class_name, target_count in class_to_target.items():
         part = df[df["difficulty_class"] == class_name].copy()
-
         if part.empty or target_count <= 0:
             continue
-
         if class_name == "simple":
             sort_cols = [
                 "max_loading_percent",
@@ -1245,49 +1009,27 @@ def select_balanced_manifest(
                 "max_loading_percent",
                 "_random_tiebreak",
             ]
-
-        part = part.sort_values(
-            sort_cols,
-            ascending=[False for _ in sort_cols],
-        )
-
+        part = part.sort_values(sort_cols, ascending=[False] * len(sort_cols))
         selected_parts.append(part.head(target_count))
-
     if not selected_parts:
         return pd.DataFrame()
-
     selected = pd.concat(selected_parts, ignore_index=True)
-
-    class_order = {
-        "simple": 0,
-        "medium": 1,
-        "hard": 2,
-    }
-
-    selected["_class_order"] = selected["difficulty_class"].map(class_order).astype(int)
-
+    selected["_class_order"] = selected["difficulty_class"].map(
+        {"simple": 0, "medium": 1, "hard": 2}
+    ).astype(int)
     selected = selected.sort_values(
-        ["_class_order", "source_chunk", "source_scenario_id"],
-        ascending=[True, True, True],
+        ["_class_order", "source_chunk", "source_scenario_id"]
     ).reset_index(drop=True)
-
     selected["global_scenario_id"] = np.arange(len(selected), dtype=int)
-
-    selected = selected.drop(columns=["_class_order", "_random_tiebreak"], errors="ignore")
-
-    return selected
+    return selected.drop(
+        columns=["_class_order", "_random_tiebreak"], errors="ignore"
+    )
 
 
 def class_counts(df: pd.DataFrame) -> dict[str, int]:
     if df.empty or "difficulty_class" not in df.columns:
-        return {
-            "simple": 0,
-            "medium": 0,
-            "hard": 0,
-        }
-
+        return {"simple": 0, "medium": 0, "hard": 0}
     counts = df["difficulty_class"].value_counts().to_dict()
-
     return {
         "simple": int(counts.get("simple", 0)),
         "medium": int(counts.get("medium", 0)),
@@ -1306,51 +1048,37 @@ def compute_max_balanced_targets(
         "medium": float(medium_fraction),
         "hard": float(hard_fraction),
     }
-
     if any(value < 0.0 for value in fractions.values()):
         raise ValueError("Class fractions must be non-negative.")
-
     fraction_sum = sum(fractions.values())
-
     if not np.isclose(fraction_sum, 1.0, atol=1e-9):
         raise ValueError(
-            "Class fractions must sum to 1.0. "
-            f"Received sum={fraction_sum}"
+            f"Class fractions must sum to 1.0. Received sum={fraction_sum}"
         )
-
     available = class_counts(candidates)
-
-    total_limits = [
+    limits = [
         available[class_name] / fraction
         for class_name, fraction in fractions.items()
         if fraction > 0.0
     ]
-
-    if not total_limits:
-        return ClassTargets(simple=0, medium=0, hard=0)
-
-    maximum_total = int(np.floor(min(total_limits)))
-
+    if not limits:
+        return ClassTargets(0, 0, 0)
+    maximum_total = int(np.floor(min(limits)))
     while maximum_total > 0:
         targets = compute_class_targets(
-            target_total=maximum_total,
-            simple_fraction=fractions["simple"],
-            medium_fraction=fractions["medium"],
-            hard_fraction=fractions["hard"],
+            maximum_total,
+            fractions["simple"],
+            fractions["medium"],
+            fractions["hard"],
         )
-
-        fits_available = (
+        if (
             targets.simple <= available["simple"]
             and targets.medium <= available["medium"]
             and targets.hard <= available["hard"]
-        )
-
-        if fits_available:
+        ):
             return targets
-
         maximum_total -= 1
-
-    return ClassTargets(simple=0, medium=0, hard=0)
+    return ClassTargets(0, 0, 0)
 
 
 def compute_final_targets(
@@ -1362,18 +1090,16 @@ def compute_final_targets(
 ) -> ClassTargets:
     if quotas_met(candidates, requested):
         return requested
-
     return compute_max_balanced_targets(
-        candidates=candidates,
-        simple_fraction=simple_fraction,
-        medium_fraction=medium_fraction,
-        hard_fraction=hard_fraction,
+        candidates,
+        simple_fraction,
+        medium_fraction,
+        hard_fraction,
     )
 
 
 def quotas_met(selected: pd.DataFrame, targets: ClassTargets) -> bool:
     counts = class_counts(selected)
-
     return (
         counts["simple"] >= targets.simple
         and counts["medium"] >= targets.medium
@@ -1381,129 +1107,113 @@ def quotas_met(selected: pd.DataFrame, targets: ClassTargets) -> bool:
     )
 
 
-# ======================================================================================
-# Raw merge/remap
-# ======================================================================================
-
-
 def remap_scenario_column(
     df: pd.DataFrame,
     mapping: dict[int, int],
 ) -> pd.DataFrame:
     out = df.copy()
-
     out["scenario"] = out["scenario"].astype(int).map(mapping)
-
     if out["scenario"].isna().any():
         raise RuntimeError("Some scenario values were not remapped correctly.")
-
     out["scenario"] = out["scenario"].astype(int)
-
     return out
+
+
+def _chunk_raw_dir(
+    chunks_dir: Path,
+    source_chunk: object,
+    raw_network_dir_name: str,
+) -> Path:
+    chunk = str(source_chunk).strip()
+    if not chunk or chunk in {".", ".."} or "/" in chunk or "\\" in chunk:
+        raise ValueError(f"Invalid source_chunk: {source_chunk!r}")
+    return expected_raw_dir(chunks_dir / chunk, raw_network_dir_name)
 
 
 def merge_raw_parquet_files(
     selected: pd.DataFrame,
     output_raw_dir: Path,
+    *,
+    chunks_dir: Path | None = None,
+    raw_network_dir_name: str | None = None,
 ) -> None:
     ensure_dir(output_raw_dir)
-
     if selected.empty:
         raise RuntimeError("Cannot merge raw files: selected manifest is empty.")
 
-    grouped = selected.groupby("source_raw_dir", sort=False)
+    if chunks_dir is None or raw_network_dir_name is None:
+        legacy = selected.get("source_raw_dir")
+        if legacy is None:
+            raise ValueError(
+                "chunks_dir and raw_network_dir_name are required for portable manifests."
+            )
+        grouped = [
+            (Path(str(raw_dir)), group)
+            for raw_dir, group in selected.groupby("source_raw_dir", sort=False)
+        ]
+    else:
+        grouped = [
+            (
+                _chunk_raw_dir(chunks_dir, source_chunk, raw_network_dir_name),
+                group,
+            )
+            for source_chunk, group in selected.groupby("source_chunk", sort=False)
+        ]
 
-    first_raw_dir = Path(str(selected["source_raw_dir"].iloc[0]))
+    first_raw_dir = grouped[0][0]
     parquet_names = sorted(path.name for path in first_raw_dir.glob("*.parquet"))
-
     if not parquet_names:
         raise RuntimeError(f"No parquet files found in first raw dir: {first_raw_dir}")
 
     print("\nMerging raw parquet files...")
-
     for parquet_name in parquet_names:
         parts: list[pd.DataFrame] = []
         copied_static_file = False
-
         print(f"  {parquet_name}")
-
-        for raw_dir_str, group in grouped:
-            raw_dir = Path(str(raw_dir_str))
+        for raw_dir, group in grouped:
             src_path = raw_dir / parquet_name
-
             if not src_path.exists():
                 print(f"    missing in {raw_dir}, skipping")
                 continue
-
             df = pd.read_parquet(src_path)
-
             if "scenario" not in df.columns:
                 if not copied_static_file:
-                    dst_path = output_raw_dir / parquet_name
-                    df.to_parquet(dst_path, index=False)
+                    df.to_parquet(output_raw_dir / parquet_name, index=False)
                     copied_static_file = True
                 continue
-
-            source_ids = set(int(x) for x in group["source_scenario_id"].values)
-
+            source_ids = set(int(value) for value in group["source_scenario_id"].values)
             mapping = {
                 int(row.source_scenario_id): int(row.global_scenario_id)
                 for row in group.itertuples(index=False)
             }
-
             filtered = df[df["scenario"].astype(int).isin(source_ids)].copy()
-
             if filtered.empty:
                 continue
-
-            filtered = remap_scenario_column(filtered, mapping)
-            parts.append(filtered)
-
+            parts.append(remap_scenario_column(filtered, mapping))
         if parts:
             merged = pd.concat(parts, ignore_index=True)
             merged = merged.sort_values("scenario").reset_index(drop=True)
             merged.to_parquet(output_raw_dir / parquet_name, index=False)
 
-    for src in first_raw_dir.iterdir():
-        if not src.is_file():
-            continue
-
-        if src.suffix.lower() == ".parquet":
-            continue
-
-        if src.name == "n_scenarios.txt":
-            continue
-
-        try:
-            shutil.copy2(src, output_raw_dir / src.name)
-        except Exception:
-            pass
-
     (output_raw_dir / "n_scenarios.txt").write_text(
-        str(int(len(selected))),
-        encoding="utf-8",
+        str(int(len(selected))), encoding="utf-8"
     )
 
 
 def build_transitions_from_manifest(selected: pd.DataFrame) -> pd.DataFrame:
-    df = selected.copy()
+    df = selected.drop(columns=["source_raw_dir"], errors="ignore").copy()
     df["scenario"] = df["global_scenario_id"].astype(int)
-
     transitions = make_output(df)
     transitions["difficulty_class"] = df["difficulty_class"].values
     transitions["source_chunk"] = df["source_chunk"].values
     transitions["source_scenario_id"] = df["source_scenario_id"].astype(int).values
-
-    columns = list(transitions.columns)
     front = [
         "scenario_id",
         "difficulty_class",
         "source_chunk",
         "source_scenario_id",
     ]
-
-    rest = [col for col in columns if col not in front]
-
+    rest = [column for column in transitions.columns if column not in front]
     return transitions[front + rest].copy()
 
 
@@ -1514,50 +1224,33 @@ def stratified_split(
     seed: int,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     rng = np.random.default_rng(int(seed))
-
     train_parts: list[pd.DataFrame] = []
     val_parts: list[pd.DataFrame] = []
     self_play_parts: list[pd.DataFrame] = []
-
     for _, group in transitions.groupby("difficulty_class", sort=False):
-        group = group.copy()
-
-        order = rng.permutation(len(group))
-        group = group.iloc[order].reset_index(drop=True)
-
+        group = group.iloc[rng.permutation(len(group))].reset_index(drop=True)
         train_end = int(round(len(group) * float(train_fraction)))
         self_play_start = int(
             round(len(group) * (1.0 - float(self_play_fraction)))
         )
-
         train_parts.append(group.iloc[:train_end].copy())
         val_parts.append(group.iloc[train_end:self_play_start].copy())
         self_play_parts.append(group.iloc[self_play_start:].copy())
-
-    train = pd.concat(train_parts, ignore_index=True)
-    val = pd.concat(val_parts, ignore_index=True)
-    self_play = pd.concat(self_play_parts, ignore_index=True)
-
-    train = train.sort_values("scenario_id").reset_index(drop=True)
-    val = val.sort_values("scenario_id").reset_index(drop=True)
-    self_play = self_play.sort_values("scenario_id").reset_index(drop=True)
-
-    return train, val, self_play
-
-
-# ======================================================================================
-# Pipeline
-# ======================================================================================
+    train = pd.concat(train_parts, ignore_index=True).sort_values("scenario_id")
+    val = pd.concat(val_parts, ignore_index=True).sort_values("scenario_id")
+    self_play = pd.concat(self_play_parts, ignore_index=True).sort_values("scenario_id")
+    return (
+        train.reset_index(drop=True),
+        val.reset_index(drop=True),
+        self_play.reset_index(drop=True),
+    )
 
 
 def chunk_name(index: int) -> str:
     return f"chunk{int(index):02d}"
 
 
-def expected_raw_dir(
-    chunk_dir: Path,
-    raw_network_dir_name: str,
-) -> Path:
+def expected_raw_dir(chunk_dir: Path, raw_network_dir_name: str) -> Path:
     return chunk_dir / str(raw_network_dir_name) / "raw"
 
 
@@ -1573,13 +1266,43 @@ def _gridfm_activity_paths(raw_dir: Path) -> tuple[Path, ...]:
 
 def _read_generated_scenario_count(raw_dir: Path) -> int:
     try:
-        return int(
-            (raw_dir / "n_scenarios.txt")
-            .read_text(encoding="utf-8")
-            .strip()
-        )
+        return int((raw_dir / "n_scenarios.txt").read_text(encoding="utf-8").strip())
     except Exception:
         return 0
+
+
+def _drop_legacy_manifest_paths(manifest_dir: Path) -> None:
+    if not manifest_dir.is_dir():
+        return
+    for path in manifest_dir.glob("*.csv"):
+        try:
+            frame = pd.read_csv(path)
+        except Exception:
+            continue
+        if "source_raw_dir" not in frame.columns:
+            continue
+        frame = frame.drop(columns=["source_raw_dir"])
+        temp = path.with_name(path.name + ".tmp")
+        frame.to_csv(temp, index=False)
+        temp.replace(path)
+
+    summary_path = manifest_dir / "summary.json"
+    payload = load_json(summary_path)
+    if payload is not None and "paths" in payload:
+        payload.pop("paths", None)
+        save_json_atomic(summary_path, payload)
+
+
+def _remove_path_bearing_build_files(paths: dict[str, Path]) -> None:
+    for directory_key in ("configs_dir", "logs_dir"):
+        directory = paths[directory_key]
+        if directory.exists():
+            shutil.rmtree(directory)
+        ensure_dir(directory)
+    chunks_dir = paths["chunks_dir"]
+    if chunks_dir.is_dir():
+        for path in chunks_dir.rglob("*.log"):
+            path.unlink(missing_ok=True)
 
 
 def process_chunk(
@@ -1596,15 +1319,9 @@ def process_chunk(
         if args.raw_network_dir_name is not None
         else str(args.network_name)
     )
-
-    raw_dir = expected_raw_dir(
-        chunk_dir=chunk_dir,
-        raw_network_dir_name=raw_network_dir_name,
-    )
-
+    raw_dir = expected_raw_dir(chunk_dir, raw_network_dir_name)
     config_path = paths["configs_dir"] / f"{name}.yaml"
     log_path = paths["logs_dir"] / f"{name}.runner.log"
-
     config_text = make_gridfm_config_text(
         network_name=str(args.network_name),
         network_source=str(args.network_source),
@@ -1619,35 +1336,20 @@ def process_chunk(
         start_scaling_factor=float(args.start_scaling_factor),
         topology_variants=int(args.topology_variants),
         topology_k=int(args.topology_k),
-        generation_perturbation_type=str(
-            args.generation_perturbation_type
-        ),
-        generation_perturbation_sigma=float(
-            args.generation_perturbation_sigma
-        ),
-        admittance_perturbation_type=str(
-            args.admittance_perturbation_type
-        ),
-        admittance_perturbation_sigma=float(
-            args.admittance_perturbation_sigma
-        ),
+        generation_perturbation_type=str(args.generation_perturbation_type),
+        generation_perturbation_sigma=float(args.generation_perturbation_sigma),
+        admittance_perturbation_type=str(args.admittance_perturbation_type),
+        admittance_perturbation_sigma=float(args.admittance_perturbation_sigma),
     )
-
     write_text(config_path, config_text)
 
-    raw_current = (
-        bool(args.resume)
-        and raw_completion_is_current(
-            raw_dir,
-            contract_fingerprint=contract_fingerprint,
-            chunk_index=chunk_index,
-        )
+    raw_current = bool(args.resume) and raw_completion_is_current(
+        raw_dir,
+        contract_fingerprint=contract_fingerprint,
+        chunk_index=chunk_index,
     )
-
     if raw_current:
-        print(
-            f"\n{name}: verified completed GridFM raw chunk - reusing it"
-        )
+        print(f"\n{name}: verified completed GridFM raw chunk - reusing it")
     else:
         if chunk_dir.exists():
             reason = (
@@ -1657,7 +1359,6 @@ def process_chunk(
             )
             print(f"\n{name}: removing {reason}: {chunk_dir}")
             shutil.rmtree(chunk_dir)
-
         command = [
             sys.executable,
             "-m",
@@ -1665,25 +1366,13 @@ def process_chunk(
             "generate",
             str(config_path),
         ]
-
         attempts = 1 + max(int(args.gridfm_retries), 0)
         for attempt in range(1, attempts + 1):
             ensure_dir(chunk_dir)
             write_text(config_path, config_text)
-
             print("\n" + "=" * 100)
-            print(
-                f"Generating {name} | attempt {attempt}/{attempts}"
-            )
+            print(f"Generating {name} | attempt {attempt}/{attempts}")
             print("=" * 100)
-            print(f"Chunk dir: {chunk_dir}")
-            print(f"Raw dir:   {raw_dir}")
-            print(f"Config:    {config_path}")
-            print(
-                "Watchdog inactivity timeout: "
-                f"{float(args.gridfm_inactivity_timeout_sec):.0f} s"
-            )
-
             try:
                 run_command(
                     command,
@@ -1693,13 +1382,11 @@ def process_chunk(
                         args.gridfm_inactivity_timeout_sec
                     ),
                 )
-
                 if not gridfm_raw_artifacts_are_usable(raw_dir):
                     raise RuntimeError(
                         "GridFM exited successfully but required raw artifacts "
                         f"are incomplete: {raw_dir}"
                     )
-
                 _write_completion_marker(
                     raw_dir / _RAW_COMPLETION_MARKER,
                     stage="gridfm_raw",
@@ -1707,22 +1394,14 @@ def process_chunk(
                     chunk_index=chunk_index,
                     extra={
                         "requested_scenarios": int(args.chunk_size),
-                        "generated_scenarios": _read_generated_scenario_count(
-                            raw_dir
-                        ),
+                        "generated_scenarios": _read_generated_scenario_count(raw_dir),
                     },
                 )
                 break
             except Exception as exc:
                 if attempt >= attempts:
                     raise
-
-                print(
-                    f"\n{name}: GridFM attempt {attempt} failed: {exc}"
-                )
-                print(
-                    f"{name}: deleting partial output and retrying cleanly."
-                )
+                print(f"\n{name}: GridFM attempt {attempt} failed: {exc}")
                 if chunk_dir.exists():
                     shutil.rmtree(chunk_dir)
                 time.sleep(min(2.0 * attempt, 5.0))
@@ -1739,41 +1418,27 @@ def process_chunk(
     print("\n" + "=" * 100)
     print(f"Summarizing {name}")
     print("=" * 100)
-
     t0 = now()
     summary = build_fast_summary(raw_dir=raw_dir, show_progress=True)
     print_time(f"Build summary for {name}", t0)
-
-    summary = classify_summary(summary, args)
-    summary = add_source_columns(
-        summary,
-        chunk_name=name,
-        raw_dir=raw_dir,
-    )
-
+    summary = add_source_columns(classify_summary(summary, args), chunk_name=name)
     gridfm_candidates = summary[
-        summary["difficulty_class"].isin(
-            ["simple", "medium", "hard"]
-        )
+        summary["difficulty_class"].isin(["simple", "medium", "hard"])
     ].copy()
-
     evaluated, candidates = evaluate_canonical_candidates(
         gridfm_candidates,
         args,
+        raw_dir=raw_dir,
     )
-
     candidates = deduplicate_gridfm_variants(candidates)
 
     ensure_dir(paths["manifest_dir"])
-
     summary_path = paths["manifest_dir"] / f"{name}_summary.csv"
     canonical_path = paths["manifest_dir"] / f"{name}_canonical.csv"
     candidates_path = paths["manifest_dir"] / f"{name}_candidates.csv"
-
     summary.to_csv(summary_path, index=False)
     evaluated.to_csv(canonical_path, index=False)
     candidates.to_csv(candidates_path, index=False)
-
     _write_completion_marker(
         candidate_completion_marker_path(candidates_path),
         stage="canonical_candidates",
@@ -1785,24 +1450,23 @@ def process_chunk(
         },
     )
 
+    config_path.unlink(missing_ok=True)
+    log_path.unlink(missing_ok=True)
+    for path in raw_dir.rglob("*.log"):
+        path.unlink(missing_ok=True)
+
     gridfm_counts = class_counts(gridfm_candidates)
     counts = class_counts(candidates)
-
     print("\nChunk candidates:")
     print(
-        "  GridFM:    "
-        f"simple={gridfm_counts['simple']}, "
-        f"medium={gridfm_counts['medium']}, "
-        f"hard={gridfm_counts['hard']}"
+        f"  GridFM:    simple={gridfm_counts['simple']}, "
+        f"medium={gridfm_counts['medium']}, hard={gridfm_counts['hard']}"
     )
     print(
-        "  canonical: "
-        f"simple={counts['simple']}, "
-        f"medium={counts['medium']}, "
-        f"hard={counts['hard']}"
+        f"  canonical: simple={counts['simple']}, "
+        f"medium={counts['medium']}, hard={counts['hard']}"
     )
     print(f"  total canonical: {len(candidates)}")
-
     return candidates
 
 
@@ -1811,29 +1475,23 @@ def load_existing_candidates(
     *,
     contract_fingerprint: str,
 ) -> pd.DataFrame:
+    _drop_legacy_manifest_paths(manifest_dir)
     files: list[Path] = []
-
     for path in sorted(manifest_dir.glob("chunk*_candidates.csv")):
-        stem = path.stem
         try:
-            chunk_index = int(stem.split("_", 1)[0].replace("chunk", ""))
+            chunk_index = int(path.stem.split("_", 1)[0].replace("chunk", ""))
         except (TypeError, ValueError):
             continue
-
         if candidate_manifest_is_current(
             path,
             expected_contract_fingerprint=contract_fingerprint,
             chunk_index=chunk_index,
         ):
             files.append(path)
-
     if not files:
         return pd.DataFrame()
-
-    parts = [pd.read_csv(path) for path in files]
-
     return deduplicate_gridfm_variants(
-        pd.concat(parts, ignore_index=True)
+        pd.concat([pd.read_csv(path) for path in files], ignore_index=True)
     )
 
 
@@ -1859,64 +1517,55 @@ def write_outputs(
 ) -> None:
     ensure_dir(paths["manifest_dir"])
     ensure_dir(paths["transitions_dir"])
+    all_candidates = all_candidates.drop(columns=["source_raw_dir"], errors="ignore")
+    selected = selected.drop(columns=["source_raw_dir"], errors="ignore")
 
     all_candidates_path = paths["manifest_dir"] / "all_candidates.csv"
     selected_manifest_path = paths["manifest_dir"] / "selected_manifest.csv"
     class_summary_path = paths["manifest_dir"] / "class_summary.csv"
-
     all_candidates.to_csv(all_candidates_path, index=False)
     selected.to_csv(selected_manifest_path, index=False)
 
     transitions = build_transitions_from_manifest(selected)
-
     transitions_path = paths["transitions_dir"] / "transitions_balanced.csv"
     train_path = paths["transitions_dir"] / "transitions_train.csv"
     val_path = paths["transitions_dir"] / "transitions_val.csv"
     self_play_path = paths["transitions_dir"] / "transitions_self_play.csv"
-
     transitions.to_csv(transitions_path, index=False)
-
     train, val, self_play = stratified_split(
-        transitions=transitions,
-        train_fraction=float(args.train_fraction),
-        self_play_fraction=float(args.self_play_fraction),
-        seed=int(args.split_seed),
+        transitions,
+        float(args.train_fraction),
+        float(args.self_play_fraction),
+        int(args.split_seed),
     )
-
     train.to_csv(train_path, index=False)
     val.to_csv(val_path, index=False)
     self_play.to_csv(self_play_path, index=False)
 
     summary_rows = []
-
     for class_name in ["simple", "medium", "hard"]:
         available = int((all_candidates["difficulty_class"] == class_name).sum())
         selected_count = int((selected["difficulty_class"] == class_name).sum())
-
         target = {
             "simple": targets.simple,
             "medium": targets.medium,
             "hard": targets.hard,
         }[class_name]
-
         summary_rows.append(
             {
                 "difficulty_class": class_name,
                 "target": int(target),
-                "available": int(available),
-                "selected": int(selected_count),
+                "available": available,
+                "selected": selected_count,
                 "missing": int(max(target - selected_count, 0)),
             }
         )
-
     class_summary = pd.DataFrame(summary_rows)
     class_summary.to_csv(class_summary_path, index=False)
-
     print("\n" + "=" * 100)
     print("Balanced dataset summary")
     print("=" * 100)
     print(class_summary.to_string(index=False))
-
     print("\nTransitions:")
     print(f"  all:       {transitions_path} ({len(transitions)})")
     print(f"  train:     {train_path} ({len(train)})")
@@ -1936,78 +1585,29 @@ def write_outputs(
             },
             "selected": class_counts(selected),
             "available": class_counts(all_candidates),
-            "paths": {
-                "raw": str(paths["raw_dir"]),
-                "transitions": str(transitions_path),
-                "train": str(train_path),
-                "val": str(val_path),
-                "self_play": str(self_play_path),
-                "selected_manifest": str(selected_manifest_path),
-                "all_candidates": str(all_candidates_path),
-            },
         },
     )
 
 
-def main() -> None:
-    configure_utf8_stdio()
-
+def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Generate and build a balanced GridFM dataset."
     )
-
     parser.add_argument("--dataset-name", type=str, required=True)
     parser.add_argument("--output-root", type=str, required=True)
-
-    parser.add_argument(
-        "--network-name",
-        type=str,
-        required=True,
-        help="GridFM network name, for example case118_ieee, case39, case300_ieee.",
-    )
-
-    parser.add_argument(
-        "--network-source",
-        type=str,
-        default="pglib",
-        help="GridFM network source, for example pglib.",
-    )
-
-    parser.add_argument(
-        "--raw-network-dir-name",
-        type=str,
-        default=None,
-        help=(
-            "Directory name created by GridFM under each chunk directory. "
-            "If omitted, network-name is used."
-        ),
-    )
-
+    parser.add_argument("--network-name", type=str, required=True)
+    parser.add_argument("--network-source", type=str, default="pglib")
+    parser.add_argument("--raw-network-dir-name", type=str, default=None)
     parser.add_argument("--target-total", type=int, default=1000)
     parser.add_argument("--simple-fraction", type=float, default=0.25)
     parser.add_argument("--medium-fraction", type=float, default=0.50)
     parser.add_argument("--hard-fraction", type=float, default=0.25)
-
     parser.add_argument("--chunk-size", type=int, default=1000)
     parser.add_argument("--max-chunks", type=int, default=30)
     parser.add_argument("--seed-start", type=int, default=1000)
     parser.add_argument("--num-processes", type=int, default=4)
-    parser.add_argument(
-        "--gridfm-retries",
-        type=int,
-        default=2,
-        help="Clean retries for a failed or watchdog-terminated GridFM chunk.",
-    )
-    parser.add_argument(
-        "--gridfm-inactivity-timeout-sec",
-        type=float,
-        default=900.0,
-        help=(
-            "Kill the GridFM process tree when its progress/error/raw files "
-            "show no activity for this many seconds. Use 0 to disable."
-        ),
-    )
-
+    parser.add_argument("--gridfm-retries", type=int, default=2)
+    parser.add_argument("--gridfm-inactivity-timeout-sec", type=float, default=900.0)
     parser.add_argument("--sigma", type=float, default=0.2)
     parser.add_argument("--global-range", type=float, default=0.5)
     parser.add_argument("--max-scaling-factor", type=float, default=2.0)
@@ -2019,71 +1619,40 @@ def main() -> None:
         "--generation-perturbation-type",
         type=str,
         default="none",
-        choices=[
-            "none",
-            "cost_permutation",
-            "cost_perturbation",
-        ],
+        choices=["none", "cost_permutation", "cost_perturbation"],
     )
-
-    parser.add_argument(
-        "--generation-perturbation-sigma",
-        type=float,
-        default=0.0,
-    )
-
+    parser.add_argument("--generation-perturbation-sigma", type=float, default=0.0)
     parser.add_argument(
         "--admittance-perturbation-type",
         type=str,
         default="none",
-        choices=[
-            "none",
-            "random_perturbation",
-        ],
+        choices=["none", "random_perturbation"],
     )
-
-    parser.add_argument(
-        "--admittance-perturbation-sigma",
-        type=float,
-        default=0.0,
-    )
+    parser.add_argument("--admittance-perturbation-sigma", type=float, default=0.0)
     parser.add_argument("--min-loading", type=float, default=105.0)
     parser.add_argument("--max-loading", type=float, default=260.0)
-
     parser.add_argument("--simple-min-loading", type=float, default=105.0)
     parser.add_argument("--simple-max-loading", type=float, default=120.0)
     parser.add_argument("--simple-max-hard", type=int, default=0)
     parser.add_argument("--simple-max-overloaded", type=int, default=2)
-
     parser.add_argument("--medium-min-loading", type=float, default=120.0)
     parser.add_argument("--medium-max-loading", type=float, default=150.0)
     parser.add_argument("--medium-max-hard", type=int, default=1)
     parser.add_argument("--medium-max-overloaded", type=int, default=5)
-
     parser.add_argument("--hard-min-loading", type=float, default=150.0)
     parser.add_argument("--hard-min-hard", type=int, default=2)
-
     parser.add_argument("--train-fraction", type=float, default=0.7)
     parser.add_argument("--self-play-fraction", type=float, default=0.2)
     parser.add_argument("--split-seed", type=int, default=42)
+    parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--allow-partial", action="store_true")
+    return parser
 
-    parser.add_argument(
-        "--resume",
-        action="store_true",
-        help=(
-            "Reuse only chunks carrying a matching completion marker and "
-            "dataset-generation contract fingerprint."
-        ),
-    )
 
-    parser.add_argument(
-        "--allow-partial",
-        action="store_true",
-        help="Write partial dataset if max chunks are exhausted before quotas are met.",
-    )
-
+def main() -> None:
+    configure_utf8_stdio()
+    parser = _build_parser()
     args = parser.parse_args()
-
     if args.gridfm_retries < 0:
         parser.error("--gridfm-retries must be >= 0")
     if args.gridfm_inactivity_timeout_sec < 0.0:
@@ -2093,48 +1662,31 @@ def main() -> None:
     if not 0.0 <= args.self_play_fraction <= 1.0:
         parser.error("--self-play-fraction must be between 0 and 1")
     if args.train_fraction + args.self_play_fraction > 1.0:
-        parser.error(
-            "--train-fraction + --self-play-fraction must be <= 1"
-        )
+        parser.error("--train-fraction + --self-play-fraction must be <= 1")
 
     total_start = now()
-
     output_root = Path(args.output_root)
     paths = make_paths(output_root)
-
     for path in paths.values():
         ensure_dir(path)
+    _drop_legacy_manifest_paths(paths["manifest_dir"])
+    _remove_path_bearing_build_files(paths)
 
     targets = compute_class_targets(
-        target_total=int(args.target_total),
-        simple_fraction=float(args.simple_fraction),
-        medium_fraction=float(args.medium_fraction),
-        hard_fraction=float(args.hard_fraction),
+        int(args.target_total),
+        float(args.simple_fraction),
+        float(args.medium_fraction),
+        float(args.hard_fraction),
     )
     contract_fingerprint = dataset_contract_fingerprint(args)
-
     print("=" * 100)
     print("Balanced GridFM dataset builder")
     print("=" * 100)
     print(f"Dataset name: {args.dataset_name}")
     print(f"Network:      {args.network_name}")
     print(f"Source:       {args.network_source}")
-    print(
-        "Raw net dir:  "
-        f"{args.raw_network_dir_name if args.raw_network_dir_name is not None else args.network_name}"
-    )
     print(f"Output root:  {output_root}")
     print(f"Target total: {args.target_total}")
-    print(f"Targets:      simple={targets.simple}, medium={targets.medium}, hard={targets.hard}")
-    print(f"Chunk size:   {args.chunk_size}")
-    print(f"Max chunks:   {args.max_chunks}")
-    print(f"GridFM procs: {args.num_processes}")
-    print(f"GridFM retry: {args.gridfm_retries}")
-    print(
-        "GridFM stall: "
-        f"{float(args.gridfm_inactivity_timeout_sec):.0f} s"
-    )
-    print(f"Resume:       {args.resume}")
     print(f"Contract:     {contract_fingerprint}")
 
     all_candidates = (
@@ -2145,11 +1697,10 @@ def main() -> None:
         if args.resume
         else pd.DataFrame()
     )
-
     selected = select_balanced_manifest(
-        candidates=all_candidates,
-        targets=targets,
-        seed=int(args.split_seed),
+        all_candidates,
+        targets,
+        int(args.split_seed),
     )
 
     if quotas_met(selected, targets):
@@ -2157,18 +1708,11 @@ def main() -> None:
     else:
         for chunk_index in range(int(args.max_chunks)):
             name = chunk_name(chunk_index)
-
-            candidate_path = (
-                paths["manifest_dir"] / f"{name}_candidates.csv"
-            )
-
-            if (
-                args.resume
-                and candidate_manifest_is_current(
-                    candidate_path,
-                    expected_contract_fingerprint=contract_fingerprint,
-                    chunk_index=chunk_index,
-                )
+            candidate_path = paths["manifest_dir"] / f"{name}_candidates.csv"
+            if args.resume and candidate_manifest_is_current(
+                candidate_path,
+                expected_contract_fingerprint=contract_fingerprint,
+                chunk_index=chunk_index,
             ):
                 print(
                     f"\n{name}: verified canonical candidates already exist, "
@@ -2181,104 +1725,54 @@ def main() -> None:
                     paths=paths,
                     contract_fingerprint=contract_fingerprint,
                 )
-
-                if all_candidates.empty:
-                    all_candidates = chunk_candidates.copy()
-                else:
-                    all_candidates = pd.concat(
-                        [
-                            all_candidates,
-                            chunk_candidates,
-                        ],
-                        ignore_index=True,
+                all_candidates = (
+                    chunk_candidates.copy()
+                    if all_candidates.empty
+                    else pd.concat(
+                        [all_candidates, chunk_candidates], ignore_index=True
                     )
-
+                )
             if args.resume:
                 all_candidates = load_existing_candidates(
                     paths["manifest_dir"],
                     contract_fingerprint=contract_fingerprint,
                 )
-
             selected = select_balanced_manifest(
-                candidates=all_candidates,
-                targets=targets,
-                seed=int(args.split_seed),
+                all_candidates,
+                targets,
+                int(args.split_seed),
             )
-
-            counts_available = class_counts(all_candidates)
-            counts_selected = class_counts(selected)
-
-            print("\nCurrent accumulated canonical candidates:")
-            print(
-                f"  available simple={counts_available['simple']}, "
-                f"medium={counts_available['medium']}, "
-                f"hard={counts_available['hard']}"
-            )
-            print(
-                f"  target    simple={counts_selected['simple']}/"
-                f"{targets.simple}, "
-                f"medium={counts_selected['medium']}/"
-                f"{targets.medium}, "
-                f"hard={counts_selected['hard']}/"
-                f"{targets.hard}"
-            )
-
             if quotas_met(selected, targets):
                 print("\nCanonical class quotas are satisfied.")
                 break
 
     if all_candidates.empty:
         raise RuntimeError(
-            "GridFM generation produced no canonical classified candidates. "
-            "Check generated raw data, classification thresholds, "
-            "canonical power-flow failures, and chunk logs."
+            "GridFM generation produced no canonical classified candidates."
         )
-
     if not quotas_met(selected, targets) and not args.allow_partial:
-        counts_selected = class_counts(selected)
-        counts_available = class_counts(all_candidates)
-
         raise RuntimeError(
-            "Could not satisfy canonical balanced dataset quotas.\n"
-            f"Selected simple={counts_selected['simple']}/"
-            f"{targets.simple}, "
-            f"medium={counts_selected['medium']}/"
-            f"{targets.medium}, "
-            f"hard={counts_selected['hard']}/"
-            f"{targets.hard}.\n"
-            f"Available canonical candidates: {counts_available}.\n"
-            "Increase --max-chunks, increase --chunk-size, "
-            "or relax generation/class thresholds."
+            "Could not satisfy canonical balanced dataset quotas. "
+            "Increase --max-chunks, increase --chunk-size, or relax thresholds."
         )
 
     final_targets = compute_final_targets(
-        candidates=all_candidates,
-        requested=targets,
-        simple_fraction=float(args.simple_fraction),
-        medium_fraction=float(args.medium_fraction),
-        hard_fraction=float(args.hard_fraction),
+        all_candidates,
+        targets,
+        float(args.simple_fraction),
+        float(args.medium_fraction),
+        float(args.hard_fraction),
     )
-
     if final_targets.total <= 0:
         raise RuntimeError(
             "Could not build a proportional canonical dataset from "
             f"available candidates: {class_counts(all_candidates)}"
         )
-
-    print("\nFinal proportional selection:")
-    print(
-        f"  simple={final_targets.simple}, "
-        f"medium={final_targets.medium}, "
-        f"hard={final_targets.hard}, "
-        f"total={final_targets.total}"
-    )
-
     selected = select_balanced_manifest(
-        candidates=all_candidates,
-        targets=final_targets,
-        seed=int(args.split_seed),
+        all_candidates,
+        final_targets,
+        int(args.split_seed),
     )
-
     write_outputs(
         selected=selected,
         all_candidates=all_candidates,
@@ -2290,14 +1784,20 @@ def main() -> None:
     print("\n" + "=" * 100)
     print("Merging selected raw scenarios")
     print("=" * 100)
-
     if paths["raw_dir"].exists():
         shutil.rmtree(paths["raw_dir"])
-
-    merge_raw_parquet_files(
-        selected=selected,
-        output_raw_dir=paths["raw_dir"],
+    raw_network_dir_name = (
+        str(args.raw_network_dir_name)
+        if args.raw_network_dir_name is not None
+        else str(args.network_name)
     )
+    merge_raw_parquet_files(
+        selected,
+        paths["raw_dir"],
+        chunks_dir=paths["chunks_dir"],
+        raw_network_dir_name=raw_network_dir_name,
+    )
+    _remove_path_bearing_build_files(paths)
 
     print("\nFinal output:")
     print(f"  raw:          {paths['raw_dir']}")
@@ -2306,7 +1806,6 @@ def main() -> None:
     print(f"  val:          {paths['transitions_dir'] / 'transitions_val.csv'}")
     print(f"  self-play:    {paths['transitions_dir'] / 'transitions_self_play.csv'}")
     print(f"  manifest:     {paths['manifest_dir'] / 'selected_manifest.csv'}")
-
     print_time("\nTotal runtime", total_start)
     print("\nDone.")
 

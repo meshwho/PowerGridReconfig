@@ -18,6 +18,7 @@ from grid_topology_ai.dataset import (
     GraphSelfPlayDataset,
     collate_graph_samples,
 )
+from grid_topology_ai.self_play.artifacts import file_content_identity, sha256_file
 from grid_topology_ai.training.checkpoints import (
     NORMALIZATION_STAT_KEYS,
     atomic_save_checkpoint,
@@ -156,7 +157,7 @@ def train_one_epoch(
         optimizer.zero_grad(set_to_none=True)
         with torch.amp.autocast("cuda", enabled=use_amp):
             policy_logits, predicted_value = _forward_graph_model(
-                model,
+                model=model,
                 bus_features=bus_features,
                 branch_features=branch_features,
                 edge_index=edge_index,
@@ -350,28 +351,45 @@ def _normalization_provenance(
     return {
         "normalization_source": "init_checkpoint" if from_init else "training_dataset",
         "normalization_frozen_from_init_checkpoint": from_init,
-        "normalization_source_checkpoint": (
-            str(init_checkpoint) if init_checkpoint is not None else None
+        "normalization_source_checkpoint_sha256": (
+            sha256_file(init_checkpoint) if init_checkpoint is not None else None
         ),
     }
 
 
 def _training_source_identity(request: TrainingRequest) -> dict[str, object]:
-    def identity(path: Path | None) -> dict[str, object] | None:
-        if path is None:
-            return None
-        resolved = path.resolve()
-        stat = resolved.stat()
-        return {
-            "path": str(resolved),
-            "size": int(stat.st_size),
-            "mtime_ns": int(stat.st_mtime_ns),
-        }
-
     return {
-        "examples_csv": identity(request.examples_csv),
-        "validation_examples_csv": identity(request.validation_examples_csv),
+        "examples_csv": file_content_identity(request.examples_csv),
+        "validation_examples_csv": file_content_identity(
+            request.validation_examples_csv
+        ),
     }
+
+
+def _source_identity_matches(existing: object, current: object) -> bool:
+    if existing == current:
+        return True
+    if existing is None or current is None:
+        return existing is current
+    if not isinstance(existing, Mapping) or not isinstance(current, Mapping):
+        return False
+    try:
+        return int(existing["size"]) == int(current["size"])
+    except (KeyError, TypeError, ValueError):
+        return False
+
+
+def _training_source_identity_matches(existing: object, current: object) -> bool:
+    if existing == current:
+        return True
+    if not isinstance(existing, Mapping) or not isinstance(current, Mapping):
+        return False
+    return _source_identity_matches(
+        existing.get("examples_csv"), current.get("examples_csv")
+    ) and _source_identity_matches(
+        existing.get("validation_examples_csv"),
+        current.get("validation_examples_csv"),
+    )
 
 
 def _checkpoint_normalization_provenance(
@@ -382,8 +400,8 @@ def _checkpoint_normalization_provenance(
         "normalization_frozen_from_init_checkpoint": bool(
             payload.get("normalization_frozen_from_init_checkpoint", False)
         ),
-        "normalization_source_checkpoint": payload.get(
-            "normalization_source_checkpoint"
+        "normalization_source_checkpoint_sha256": payload.get(
+            "normalization_source_checkpoint_sha256"
         ),
     }
 
@@ -653,7 +671,7 @@ def train_graph_policy_value_model(request: TrainingRequest) -> Path:
                 )
         saved_identity = resume.get("training_source_identity")
         current_identity = _training_source_identity(request)
-        if saved_identity != current_identity:
+        if not _training_source_identity_matches(saved_identity, current_identity):
             raise ValueError(
                 "Resume training source identity mismatch: "
                 f"expected {current_identity!r}, checkpoint has {saved_identity!r}."

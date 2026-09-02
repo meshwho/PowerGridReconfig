@@ -125,11 +125,9 @@ def _source_fingerprint(raw_dir: Path) -> tuple[str, dict[str, dict[str, object]
         if not path.exists():
             raise FileNotFoundError(f"Required GridFM file not found: {path}")
         file_digest = _sha256_file(path)
-        stat = path.stat()
         details[name] = {
             "sha256": file_digest,
-            "size": int(stat.st_size),
-            "mtime_ns": int(stat.st_mtime_ns),
+            "size": int(path.stat().st_size),
         }
         digest.update(name.encode("utf-8"))
         digest.update(file_digest.encode("ascii"))
@@ -336,7 +334,6 @@ def ensure_runtime_scenario_store(
 
         manifest = {
             "schema_version": RUNTIME_SCENARIO_STORE_SCHEMA_VERSION,
-            "source_root": str(raw_dir),
             "source_fingerprint": source_fingerprint,
             "source_files": source_files,
             "scenario_ids": scenario_sets[0],
@@ -432,7 +429,6 @@ class MemoryMappedGridFMAdapter:
     ) -> None:
         self.store = MemoryMappedScenarioStore(store_dir)
         self.physics_config = physics_config or DEFAULT_PHYSICS_CONFIG
-        self.raw_dir = Path(str(self.store.manifest["source_root"]))
 
         available = set(self.store.scenario_ids())
         if scenario_ids is None:
@@ -1074,7 +1070,6 @@ class NumPyMemoryMappedGridFMAdapter:
     ) -> None:
         self.store = MemoryMappedScenarioStore(store_dir)
         self.physics_config = physics_config or DEFAULT_PHYSICS_CONFIG
-        self.raw_dir = Path(str(self.store.manifest["source_root"]))
 
         available = set(self.store.scenario_ids())
         if scenario_ids is None:

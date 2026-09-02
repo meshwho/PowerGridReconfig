@@ -147,8 +147,8 @@ def make_json_safe(value: Any) -> Any:
 
 
 def build_training_config_payload(request: "TrainingRequest") -> dict[str, Any]:
+    """Serialize only settings that affect training semantics."""
     return {
-        "examples_csv": make_json_safe(request.examples_csv),
         "seed": int(request.seed),
         "epochs": int(request.config.epochs),
         "lr": float(request.config.learning_rate),
@@ -162,15 +162,9 @@ def build_training_config_payload(request: "TrainingRequest") -> dict[str, Any]:
         "amp": bool(request.use_amp),
         "num_workers": int(request.config.num_workers),
         "no_normalize_features": bool(not request.normalize_features),
-        "output": make_json_safe(request.output_path),
-        "init_checkpoint": make_json_safe(request.init_checkpoint),
-        "resume_checkpoint": make_json_safe(request.resume_checkpoint),
-        "val_examples_csv": make_json_safe(request.validation_examples_csv),
         "save_best": bool(request.save_best),
-        "tensorboard_log_dir": make_json_safe(request.tensorboard_log_dir),
         "run_name": make_json_safe(request.run_name),
         "no_tensorboard": bool(request.config.no_tensorboard),
-        "metrics_csv": make_json_safe(request.metrics_csv),
     }
 
 
@@ -219,15 +213,9 @@ def make_checkpoint(
         "hidden_dim": int(request.config.hidden_dim),
         "num_layers": int(request.config.num_layers),
         "dropout": float(request.config.dropout),
-        "examples_csv": str(request.examples_csv),
         "training_seed": int(request.seed),
         "checkpoint_selection_metric": (
             "validation_loss" if validation_dataset is not None else "training_loss"
-        ),
-        "validation_examples_csv": (
-            None
-            if request.validation_examples_csv is None
-            else str(request.validation_examples_csv)
         ),
         "validation_examples_count": validation_examples_count,
         "validation_scenario_count": validation_scenario_count,
@@ -240,7 +228,6 @@ def make_checkpoint(
         "amp_used": bool(use_amp),
         "created_at": datetime.now().isoformat(timespec="seconds"),
         "git_commit": get_git_commit(repo_root),
-        "repo_root": str(repo_root),
         "training_config": build_training_config_payload(request),
         "value_target_diagnostics": value_target_diagnostics,
         "bus_feature_mean": normalization["bus_feature_mean"],
@@ -249,7 +236,7 @@ def make_checkpoint(
         "branch_feature_std": normalization["branch_feature_std"],
         "normalization_source": "training_dataset",
         "normalization_frozen_from_init_checkpoint": False,
-        "normalization_source_checkpoint": None,
+        "normalization_source_checkpoint_sha256": None,
     }
 
     if normalization_metadata is not None:

@@ -19,6 +19,7 @@ from grid_topology_ai.physics.redispatch import (
     run_minimal_ac_redispatch,
 )
 from grid_topology_ai.physics.utility import state_security_penalty
+from grid_topology_ai.self_play.artifacts import file_content_identity
 from grid_topology_ai.state import BRANCH_FEATURE_COLUMNS, GridFMState
 from grid_topology_ai.termination import TerminationReason
 
@@ -110,9 +111,7 @@ def update_top_j_candidate_archive(
 
 
 def _active_loadings(state: GridFMState) -> np.ndarray:
-    """
-    Return loading_percent values only for active branches.
-    """
+    """Return loading_percent values only for active branches."""
 
     status_idx = BRANCH_FEATURE_COLUMNS.index("br_status")
     loading_idx = BRANCH_FEATURE_COLUMNS.index("loading_percent")
@@ -128,13 +127,7 @@ def total_overload(
     limit: float | None = None,
     physics_config: PhysicsConfig | None = None,
 ) -> float:
-    """
-    Sum of overload above the normal limit.
-
-    Example:
-        loadings = [80, 105, 130]
-        total_overload = 0 + 5 + 30 = 35
-    """
+    """Sum of overload above the normal limit."""
 
     config = physics_config or DEFAULT_PHYSICS_CONFIG
     effective_limit = config.overload_limit_percent if limit is None else float(limit)
@@ -153,9 +146,7 @@ def total_hard_overload(
     hard_limit: float | None = None,
     physics_config: PhysicsConfig | None = None,
 ) -> float:
-    """
-    Sum of overload above the hard emergency limit.
-    """
+    """Sum of overload above the hard emergency limit."""
 
     config = physics_config or DEFAULT_PHYSICS_CONFIG
     effective_limit = (
@@ -176,20 +167,7 @@ def squared_hard_overload(
     hard_limit: float | None = None,
     physics_config: PhysicsConfig | None = None,
 ) -> float:
-    """
-    Squared hard overload.
-
-    This strongly penalizes one catastrophic overloaded branch.
-
-    Example:
-        215% loading:
-            hard excess = 215 - 120 = 95
-            squared = 9025
-
-        160% loading:
-            hard excess = 160 - 120 = 40
-            squared = 1600
-    """
+    """Squared hard overload."""
 
     config = physics_config or DEFAULT_PHYSICS_CONFIG
     effective_limit = (
@@ -210,9 +188,7 @@ def max_hard_excess(
     hard_limit: float | None = None,
     physics_config: PhysicsConfig | None = None,
 ) -> float:
-    """
-    Maximum excess above hard limit.
-    """
+    """Maximum excess above hard limit."""
 
     config = physics_config or DEFAULT_PHYSICS_CONFIG
     effective_limit = (
@@ -230,9 +206,7 @@ def max_overload_excess(
     limit: float | None = None,
     physics_config: PhysicsConfig | None = None,
 ) -> float:
-    """
-    Maximum excess above normal loading limit.
-    """
+    """Maximum excess above normal loading limit."""
 
     config = physics_config or DEFAULT_PHYSICS_CONFIG
     effective_limit = config.overload_limit_percent if limit is None else float(limit)
@@ -262,51 +236,7 @@ def safety_score(
 
 @dataclass(frozen=True)
 class ImpactBeamSearchConfig:
-    """
-    Configuration for impact-aware beam search.
-
-    This planner is intended as a physics-based teacher search.
-
-    It differs from simple beam search:
-    - simple beam search ranks candidate actions by current branch loading;
-    - this planner applies candidate actions, runs power flow, and ranks by
-      actual safety impact.
-
-    Parameters
-    ----------
-    max_depth:
-        Maximum number of topology switching steps.
-
-    beam_width:
-        Number of best partial trajectories kept after each depth.
-
-    candidate_pool_size:
-        Cheap prefilter size before expensive power-flow evaluation.
-        If 0, all valid switch actions are evaluated.
-
-    top_k_actions:
-        Number of impact-tested children kept per node.
-
-    redispatch_candidates_per_switch_count:
-        Number of lowest-J AC-valid trajectories retained independently for each
-        physical switch count for later terminal redispatch evaluation.
-
-    gamma:
-        Discount factor for cumulative impact score.
-
-    allow_hard_count_increase:
-        If False, the planner filters out actions that increase the number of
-        hard-overloaded branches whenever at least one non-worsening action exists.
-
-    switch_penalty:
-        Small search-score cost for each topology switching action.
-
-    failure_penalty:
-        Penalty for power-flow failure.
-
-    solved_bonus:
-        Bonus for fully removing all overloads.
-    """
+    """Configuration for impact-aware beam search."""
 
     max_depth: int = 4
     beam_width: int = 20
@@ -331,9 +261,7 @@ class ImpactBeamSearchConfig:
 
 @dataclass
 class ImpactBeamSearchNode:
-    """
-    One partial trajectory in impact-aware beam search.
-    """
+    """One partial trajectory in impact-aware beam search."""
 
     env: TopologySwitchingEnv
 
@@ -347,7 +275,6 @@ class ImpactBeamSearchNode:
     discounted_score: float = 0.0
 
     safety_score: float = 0.0
-
     max_loading_percent: float = 0.0
     num_overloaded: int = 0
     num_hard_overloaded: int = 0
@@ -391,21 +318,7 @@ class ImpactBeamSearchResult:
 
 
 class ImpactBeamSearchPlanner:
-    """
-    Impact-aware beam search planner.
-
-    This is not the final AlphaZero agent.
-    It is a reliable physics-based teacher used to bootstrap the neural policy.
-
-    Main idea:
-        At each state, candidate actions are actually simulated with power flow.
-        The planner then ranks actions by canonical physical-state improvement,
-        not by current branch loading.
-
-    Safety guard:
-        If hard overloads exist, the planner avoids actions that increase the
-        number of hard-overloaded branches whenever possible.
-    """
+    """Impact-aware beam search planner."""
 
     def __init__(
         self,
@@ -427,8 +340,6 @@ class ImpactBeamSearchPlanner:
         self._current_depth = 0
 
     def _estimated_actions_per_node(self) -> int | None:
-        """Estimate expensive evaluations for one expanded node."""
-
         candidate_limit = int(self.config.candidate_pool_size)
         screened_limit = getattr(self, "lodf_screen_top_k", None)
 
@@ -444,15 +355,6 @@ class ImpactBeamSearchPlanner:
         return candidate_limit
 
     def _estimated_progress_total(self) -> int | None:
-        """
-        Estimate the number of expensive action evaluations.
-
-        Depth 1 expands only the root node. Later depths expand up to beam_width
-        nodes. Screened planners expose their pre-AC limit through
-        lodf_screen_top_k, so the estimate follows the number of actions that can
-        actually reach env.step() instead of the larger cheap candidate pool.
-        """
-
         actions_per_node = self._estimated_actions_per_node()
 
         if actions_per_node is None:
@@ -642,10 +544,6 @@ class ImpactBeamSearchPlanner:
         finally:
             self._close_progress()
 
-    # ----------------------------------------------------------------------------------
-    # Node construction
-    # ----------------------------------------------------------------------------------
-
     def _make_node_from_state(
         self,
         env: TopologySwitchingEnv,
@@ -700,10 +598,6 @@ class ImpactBeamSearchPlanner:
             last_step_result=last_step_result,
         )
 
-    # ----------------------------------------------------------------------------------
-    # Expansion
-    # ----------------------------------------------------------------------------------
-
     def _expand_best_impact_actions(
         self,
         node: ImpactBeamSearchNode,
@@ -748,13 +642,6 @@ class ImpactBeamSearchPlanner:
         self,
         env: TopologySwitchingEnv,
     ) -> list[GridFMAction]:
-        """
-        Build the cheap candidate pool.
-
-        Loading-based prefiltering applies only to branch
-        openings. Other topology actions remain available for
-        the actual power-flow impact evaluation.
-        """
         state = env.current_state
 
         if state is None:
@@ -876,11 +763,9 @@ class ImpactBeamSearchPlanner:
         before_hard = int(before_state.metrics["num_hard_overloaded_branches"])
         after_hard = int(after_state.metrics["num_hard_overloaded_branches"])
 
-        # Strongly discourage increasing the number of hard-overloaded branches.
         if after_hard > before_hard:
             impact_score -= 500.0 * float(after_hard - before_hard)
 
-        # Mild bonus for reducing hard-overload count.
         if after_hard < before_hard:
             impact_score += 50.0 * float(before_hard - after_hard)
 
@@ -901,31 +786,11 @@ class ImpactBeamSearchPlanner:
             last_step_result=step_result,
         )
 
-    # ----------------------------------------------------------------------------------
-    # Safety guards and sorting
-    # ----------------------------------------------------------------------------------
-
     def _apply_safety_guards(
         self,
         parent: ImpactBeamSearchNode,
         children: list[ImpactBeamSearchNode],
     ) -> list[ImpactBeamSearchNode]:
-        """
-        Apply hard safety guards before sorting/pruning.
-
-        Rule 1:
-            If at least one child does not increase the hard-overload count
-            compared with the parent, discard children that do increase it.
-
-        Rule 2:
-            If the parent is already at or below the initial hard-overload count,
-            and at least one child remains at or below the initial count, discard
-            children that exceed the initial count.
-
-        These rules prevent the teacher from learning:
-            "reduce max loading by spreading hard overloads over more branches".
-        """
-
         if self.config.allow_hard_count_increase:
             return children
 
@@ -956,20 +821,6 @@ class ImpactBeamSearchPlanner:
         self,
         nodes: list[ImpactBeamSearchNode],
     ) -> list[ImpactBeamSearchNode]:
-        """
-        Sort nodes by canonical final physical-state quality during exploration.
-
-        Priority:
-        1. solved states;
-        2. avoid hard-overload count above initial state;
-        3. lower canonical physical-state penalty;
-        4. higher discounted improvement;
-        5. shorter sequence.
-
-        Final teacher selection is performed from the independent redispatch
-        candidate archive, so beam exploration remains focused on physical quality.
-        """
-
         return sorted(
             nodes,
             key=lambda node: (
@@ -1043,12 +894,6 @@ def make_policy_from_final_beam(
     result: ImpactBeamSearchResult,
     temperature: float,
 ) -> tuple[dict[int, float], dict[int, int]]:
-    """
-    Convert final beam into a policy over first actions.
-
-    For teacher generation we usually use temperature=0, meaning one-hot target.
-    """
-
     best_node = result.best_node
 
     if not best_node.action_ids:
@@ -1325,6 +1170,7 @@ def _selection_provenance(
 
 _RAW_SOURCE_FILES = ("bus_data.parquet", "branch_data.parquet", "gen_data.parquet")
 _RUNTIME_FIELDS = frozenset({"disable_cache"})
+_TEACHER_RUN_ID_CACHE: dict[tuple[str, str], str] = {}
 
 
 def _normalize(value: Any) -> Any:
@@ -1336,23 +1182,15 @@ def _normalize(value: Any) -> Any:
 def teacher_source_identity(
     raw_dir: str | Path, transitions_path: str | Path
 ) -> dict[str, Any]:
-    """Describe the current inputs without reading large source files."""
-    raw_dir = Path(raw_dir).resolve()
-    transitions_path = Path(transitions_path).resolve()
-    paths = [raw_dir / name for name in _RAW_SOURCE_FILES] + [transitions_path]
-    missing = [str(path) for path in paths if not path.is_file()]
-    if missing:
-        raise FileNotFoundError(f"Required teacher source file not found: {missing[0]}")
+    """Describe teacher inputs by content, independent of filesystem location."""
+    raw_root = Path(raw_dir)
+    transitions = Path(transitions_path)
     return {
-        "raw_dir": str(raw_dir),
-        "transitions_path": str(transitions_path),
-        "files": {
-            str(path): {
-                "size": path.stat().st_size,
-                "mtime_ns": path.stat().st_mtime_ns,
-            }
-            for path in paths
+        "raw_files": {
+            name: file_content_identity(raw_root / name)
+            for name in _RAW_SOURCE_FILES
         },
+        "transitions": file_content_identity(transitions),
     }
 
 
@@ -1366,10 +1204,80 @@ def semantic_teacher_task_config(task_config: Mapping[str, Any]) -> dict[str, An
     )
 
 
+def _legacy_teacher_source_matches(
+    existing: object,
+    current: object,
+) -> bool:
+    if existing == current:
+        return True
+    if not isinstance(existing, Mapping) or not isinstance(current, Mapping):
+        return False
+
+    legacy_files = existing.get("files")
+    current_raw = current.get("raw_files")
+    current_transitions = current.get("transitions")
+    if (
+        not isinstance(legacy_files, Mapping)
+        or not isinstance(current_raw, Mapping)
+        or not isinstance(current_transitions, Mapping)
+    ):
+        return False
+
+    legacy_raw_sizes: dict[str, int] = {}
+    legacy_other_sizes: list[int] = []
+    for raw_path, metadata in legacy_files.items():
+        if not isinstance(metadata, Mapping):
+            return False
+        try:
+            size = int(metadata["size"])
+        except (KeyError, TypeError, ValueError):
+            return False
+        name = str(raw_path).replace("\\", "/").rsplit("/", 1)[-1]
+        if name in _RAW_SOURCE_FILES:
+            if name in legacy_raw_sizes:
+                return False
+            legacy_raw_sizes[name] = size
+        else:
+            legacy_other_sizes.append(size)
+
+    try:
+        current_raw_sizes = {
+            name: int(current_raw[name]["size"])
+            for name in _RAW_SOURCE_FILES
+        }
+        transition_size = int(current_transitions["size"])
+    except (KeyError, TypeError, ValueError):
+        return False
+
+    return (
+        legacy_raw_sizes == current_raw_sizes
+        and legacy_other_sizes == [transition_size]
+    )
+
+
+def _write_teacher_checkpoint_identity(
+    config_path: Path,
+    identity: Mapping[str, Any],
+) -> None:
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = config_path.with_suffix(config_path.suffix + ".tmp")
+    temp_path.write_text(
+        json.dumps(
+            dict(identity),
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+            allow_nan=False,
+        ),
+        encoding="utf-8",
+    )
+    temp_path.replace(config_path)
+
+
 def ensure_teacher_checkpoint_config(
     config_path: Path, config: Mapping[str, Any]
 ) -> None:
-    """Persist the one current Light resume identity and reject mismatches."""
+    """Persist a portable resume identity and reject semantic mismatches."""
     task_config = config.get("task_config")
     if not isinstance(task_config, Mapping):
         raise ValueError("Teacher checkpoint config is missing task_config.")
@@ -1382,21 +1290,22 @@ def ensure_teacher_checkpoint_config(
     )
     if config_path.exists():
         existing = json.loads(config_path.read_text(encoding="utf-8"))
-        if existing != identity:
+        same_scenarios = existing.get("scenario_ids") == identity["scenario_ids"]
+        same_task = existing.get("task_config") == identity["task_config"]
+        same_source = _legacy_teacher_source_matches(
+            existing.get("source_identity"),
+            identity["source_identity"],
+        )
+        if not (same_scenarios and same_task and same_source):
             raise RuntimeError(
-                "Teacher checkpoint configuration does not match the current command. "
-                "Use the original semantic settings, a different --run-name, or --force."
+                "Teacher checkpoint configuration does not match the current "
+                "semantic inputs or settings. Use the original data/settings "
+                "or a different output directory."
             )
+        if existing != identity:
+            _write_teacher_checkpoint_identity(config_path, identity)
         return
-    config_path.parent.mkdir(parents=True, exist_ok=True)
-    temp_path = config_path.with_suffix(config_path.suffix + ".tmp")
-    temp_path.write_text(
-        json.dumps(
-            identity, ensure_ascii=False, indent=2, sort_keys=True, allow_nan=False
-        ),
-        encoding="utf-8",
-    )
-    temp_path.replace(config_path)
+    _write_teacher_checkpoint_identity(config_path, identity)
 
 
 def load_teacher_task_config(path: Path) -> dict[str, Any]:
@@ -1409,10 +1318,73 @@ def load_teacher_task_config(path: Path) -> dict[str, Any]:
     return dict(task_config)
 
 
+def _existing_teacher_run_id(output_dir: Path) -> str | None:
+    checkpoint_path = output_dir / "teacher_checkpoint.jsonl"
+    if not checkpoint_path.is_file():
+        return None
+
+    run_ids: set[str] = set()
+    with checkpoint_path.open("r", encoding="utf-8", errors="replace") as handle:
+        for raw_line in handle:
+            line = raw_line.strip()
+            if not line:
+                continue
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            rows = payload.get("rows")
+            if not isinstance(rows, list):
+                continue
+            for row in rows:
+                if not isinstance(row, Mapping):
+                    continue
+                value = row.get("run_id")
+                if isinstance(value, str) and value.strip():
+                    run_ids.add(value.strip())
+
+    if len(run_ids) > 1:
+        raise RuntimeError(
+            "Teacher checkpoint contains multiple run_id values and cannot be "
+            "resumed safely."
+        )
+    return next(iter(run_ids), None)
+
+
 def teacher_run_id(states_dir: str | Path, task_config: Mapping[str, Any]) -> str:
+    """Return a relocation-stable teacher run ID, preserving legacy resumes."""
+    output_dir = Path(states_dir).parent
+    semantic_task = semantic_teacher_task_config(task_config)
+    task_key = json.dumps(
+        semantic_task,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+    cache_key = (str(output_dir), task_key)
+    cached = _TEACHER_RUN_ID_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
+    existing = _existing_teacher_run_id(output_dir)
+    if existing is not None:
+        _TEACHER_RUN_ID_CACHE[cache_key] = existing
+        return existing
+
+    config_path = output_dir / "teacher_checkpoint_config.json"
+    source_identity = None
+    scenario_ids = None
+    if config_path.is_file():
+        checkpoint_config = json.loads(config_path.read_text(encoding="utf-8"))
+        if isinstance(checkpoint_config, Mapping):
+            source_identity = checkpoint_config.get("source_identity")
+            scenario_ids = checkpoint_config.get("scenario_ids")
+
     payload = {
-        "states_dir": str(Path(states_dir).resolve()),
-        "task_config": semantic_teacher_task_config(task_config),
+        "source_identity": source_identity,
+        "scenario_ids": scenario_ids,
+        "task_config": semantic_task,
     }
     encoded = json.dumps(
         payload,
@@ -1421,4 +1393,6 @@ def teacher_run_id(states_dir: str | Path, task_config: Mapping[str, Any]) -> st
         separators=(",", ":"),
         allow_nan=False,
     ).encode("utf-8")
-    return f"impact_teacher_{hashlib.sha256(encoded).hexdigest()[:24]}"
+    run_id = f"impact_teacher_{hashlib.sha256(encoded).hexdigest()[:24]}"
+    _TEACHER_RUN_ID_CACHE[cache_key] = run_id
+    return run_id

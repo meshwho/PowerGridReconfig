@@ -151,9 +151,7 @@ def discounted_returns(
     rewards: list[float],
     gamma: float,
 ) -> list[float]:
-    """
-    Compute discounted returns from every step.
-    """
+    """Compute discounted returns from every step."""
 
     returns = [0.0 for _ in rewards]
     running = 0.0
@@ -688,7 +686,7 @@ def _generate_scenario(scenario_id: int) -> dict[str, Any]:
                     step_diagnostic_reason
                 )
 
-            state_path = state_store.save_state(
+            state_store.save_state(
                 state=state,
                 state_id=state_id,
                 action_mask=item["action_mask"],
@@ -697,7 +695,6 @@ def _generate_scenario(scenario_id: int) -> dict[str, Any]:
             rows.append(
                 {
                     "state_id": state_id,
-                    "state_path": str(state_path),
                     "scenario_id": int(scenario_id),
                     "step": int(step_idx),
                     "selected_action_id": int(item["selected_action_id"]),
@@ -945,6 +942,29 @@ def append_scenario_checkpoint(
         os.fsync(checkpoint_file.fileno())
 
 
+def _drop_checkpoint_state_paths(rows: object) -> bool:
+    if not isinstance(rows, list):
+        return False
+
+    changed = False
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if "state_path" in row:
+            row.pop("state_path", None)
+            changed = True
+    return changed
+
+
+def _rewrite_checkpoint_lines(checkpoint_path: Path, lines: Sequence[str]) -> None:
+    temporary = checkpoint_path.with_suffix(checkpoint_path.suffix + ".tmp")
+    try:
+        temporary.write_text("".join(lines), encoding="utf-8")
+        temporary.replace(checkpoint_path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def load_scenario_checkpoints(
     checkpoint_path: Path,
     allowed_scenario_ids: Sequence[int],
@@ -954,40 +974,68 @@ def load_scenario_checkpoints(
     if not checkpoint_path.exists():
         return results
 
-    with checkpoint_path.open(
-        "r", encoding="utf-8", errors="replace"
-    ) as checkpoint_file:
-        for line_number, raw_line in enumerate(checkpoint_file, start=1):
-            line = raw_line.strip()
-            if not line:
-                continue
-            try:
-                payload = json.loads(line)
-                scenario_id = int(payload["scenario_id"])
-            except Exception:
-                print(
-                    "Warning: ignoring invalid checkpoint line "
-                    f"{line_number}: {checkpoint_path}",
-                    flush=True,
+    raw_lines = checkpoint_path.read_text(
+        encoding="utf-8",
+        errors="replace",
+    ).splitlines(keepends=True)
+    rewritten_lines: list[str] = []
+    migrated = False
+
+    for line_number, raw_line in enumerate(raw_lines, start=1):
+        line = raw_line.strip()
+        if not line:
+            rewritten_lines.append(raw_line)
+            continue
+        try:
+            payload = json.loads(line)
+            scenario_id = int(payload["scenario_id"])
+        except Exception:
+            print(
+                "Warning: ignoring invalid checkpoint line "
+                f"{line_number}: {checkpoint_path}",
+                flush=True,
+            )
+            rewritten_lines.append(raw_line)
+            continue
+
+        rows = payload.get("rows", [])
+        row_migrated = _drop_checkpoint_state_paths(rows)
+        if row_migrated:
+            migrated = True
+            rewritten_lines.append(
+                json.dumps(
+                    payload,
+                    ensure_ascii=False,
+                    allow_nan=False,
+                    separators=(",", ":"),
                 )
-                continue
-            if scenario_id not in allowed:
-                continue
-            ok = bool(payload.get("ok", False))
-            rows = payload.get("rows", [])
-            if ok and (not isinstance(rows, list) or not rows):
-                print(
-                    "Warning: ignoring incomplete successful "
-                    f"checkpoint for scenario {scenario_id}",
-                    flush=True,
-                )
-                continue
-            results[scenario_id] = {
-                "scenario_id": scenario_id,
-                "ok": ok,
-                "reason": payload.get("reason"),
-                "rows": rows if ok else [],
-            }
+                + "\n"
+            )
+        else:
+            rewritten_lines.append(
+                raw_line if raw_line.endswith("\n") else raw_line + "\n"
+            )
+
+        if scenario_id not in allowed:
+            continue
+        ok = bool(payload.get("ok", False))
+        if ok and (not isinstance(rows, list) or not rows):
+            print(
+                "Warning: ignoring incomplete successful "
+                f"checkpoint for scenario {scenario_id}",
+                flush=True,
+            )
+            continue
+        results[scenario_id] = {
+            "scenario_id": scenario_id,
+            "ok": ok,
+            "reason": payload.get("reason"),
+            "rows": rows if ok else [],
+        }
+
+    if migrated:
+        _rewrite_checkpoint_lines(checkpoint_path, rewritten_lines)
+
     return results
 
 
@@ -1456,6 +1504,7 @@ def _finalize_success_result(result: dict[str, Any]) -> dict[str, Any]:
     evidence_json = evidence.to_json()
 
     for row in rows:
+        row.pop("state_path", None)
         step_diagnostic_reason = row.pop("step_termination_reason", None)
         if int(row["selected_action_id"]) == 0:
             step_diagnostic_reason = diagnostic_reason_value
