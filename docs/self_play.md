@@ -1,17 +1,30 @@
 # Self-play pipeline
 
-## 1. Execution plan
+## Scope
 
-The loop reads a YAML configuration, resolves run directories, verifies artifact paths, and executes iterations in order. `--plan-only` prints the intended work; `--validate-only` validates references; normal execution runs generation, replay update, training, evaluation, and acceptance.
+The current Light runtime exposes self-play, training, and evaluation as direct,
+independent operations. There is no integrated arena, automatic checkpoint
+promotion, acceptance controller, replay orchestration loop, curriculum manager,
+or sealed final-test runner.
 
-## 2. Bootstrap initialization
+The implemented learned-control flow is:
 
-A run starts from a bootstrap checkpoint and bootstrap fixed-evaluation metrics. The metrics must include `pf_alg` provenance compatible with generation and evaluation settings. Both artifacts must also carry the current semantic contract versions. The bootstrap checkpoint must match the configured topology-action fingerprint and ordered action layout before it is copied to the canonical best path.
+```text
+GridFM raw scenario
+  -> canonical physical state
+  -> AC power flow
+  -> topology action space
+  -> MCTS self-play examples
+  -> GraphPolicyValueNetV2 training
+  -> explicit checkpoint evaluation
+```
 
-## 2.1 Physical success and episode termination
+Teacher generation is an optional deterministic bootstrap path and is not part
+of self-play control logic.
 
-`solved`, `TerminationReason.SOLVED`, positive solved bonuses, positive terminal
-outcome targets, and `solve_rate` all use one authoritative predicate:
+## Physical success contract
+
+`solved=True` means exactly `assessment.physically_secure=True`:
 
 ```text
 physically_secure =
@@ -25,80 +38,56 @@ physically_secure =
     and angle_difference_feasible
 ```
 
-The calculator uses the raw PYPOWER result before feature sanitization and the
-static GridFM/PYPOWER limits: `VM/VMIN/VMAX/VA`, branch status, `RATE_A`, angle
-limits, endpoints and terminal flows, plus each active generator's `PG/PMIN/PMAX`
-and `QG/QMIN/QMAX`. Bus IDs are mapped to array positions for angle checks.
-Disabled elements do not create violations. `RATE_A=0` and angle bounds at
-`-360/360` follow MATPOWER's unconstrained semantics. Invalid mandatory data,
-unknown active endpoints, NaN, and infinity fail closed.
+Thermal feasibility alone is diagnostic and never defines a solved episode.
+Initial GridFM states receive a no-op AC power flow because parquet input does
+not contain trustworthy convergence provenance.
 
-The related terms are deliberately different:
+The current canonical power-flow algorithm for generated research artifacts is
+`PF_ALG=3`. Generation and evaluation must use the same physical configuration.
 
-- `thermal_solved` / `thermal_feasible`: diagnostic only; no active rated branch is thermally overloaded.
-- `physically_secure`: all eight physical components above are simultaneously true; this is the exact definition of solved.
-- `done`: the control episode ended. Solved, PF failure, max steps, and explicit stop/handoff can all be done.
-- `handoff`: topology control stops and transfers the case to redispatch; it is terminal but never solved unless the state was already physically secure, in which case the reason is `SOLVED` rather than handoff.
+## Topology action contract
 
-`stop_policy=solved_only` exposes stop only for a physically secure state.
-Thermal-safe but voltage-, generator-, angle-, or connectivity-infeasible states
-continue when steps remain and no explicit stop was chosen. Initial GridFM
-states receive a no-op AC power flow because parquet input alone has no reliable
-convergence provenance.
+The graph policy layout is `stop_plus_branch_status_v1`:
 
-## 3. Pool metadata
-
-The pool describes fixed physical scenarios, transition rows, raw state references, scenario identifiers, and hashes used to audit reproducibility.
-
-## 4. Prioritized sampling
-
-Each iteration samples scenario ids from the fixed pool. Sampling may prioritize weak or unsolved scenarios while keeping the pool itself fixed.
-
-## 5. Generation request
-
-Generation uses the current accepted checkpoint, configured MCTS settings, raw states, and `PF_ALG`. The canonical pilot value is `PF_ALG=3`.
-
-### 5.1 Bidirectional topology-action configuration
-
-The graph policy layout is `stop_plus_branch_status_v1`. Policy index `0` is
-stop/handoff; policy index `1 + branch_pos` is the stable branch-status slot for
-`branch_ids[branch_pos]`. The slot identity does not change with the current
-status:
-
-- active branch -> `switch_off_branch`, `target_status=0`;
-- inactive branch -> `switch_on_branch`, `target_status=1`.
-
-A closure is legal only when the inactive branch ID is explicitly present in
-`closeable_branch_ids`. The generation block exposes the complete semantic
-action-space configuration:
-
-```yaml
-generation:
-  require_connected_after_switch: true
-  min_loading_for_switch_percent: 0.0
-  # Populate only with verified normally-open/tie branch IDs.
-  closeable_branch_ids: []
-```
+- policy index `0` is stop/handoff;
+- policy index `1 + branch_pos` is the stable action slot for
+  `branch_ids[branch_pos]`;
+- an active branch slot opens that branch;
+- an inactive branch slot closes it only when the branch ID is explicitly
+  present in `closeable_branch_ids`.
 
 `require_connected_after_switch` and `min_loading_for_switch_percent` constrain
-opening actions only. The loading threshold never filters an allowed closure.
-An empty `closeable_branch_ids` list preserves opening-only behavior. The list is
-canonicalized and becomes part of the topology-action fingerprint written to
-examples, replay, and checkpoints.
+opening actions. The loading threshold does not filter an explicitly allowed
+closure.
 
-Evaluation does not define an independent topology-action override. It loads the
-exact action configuration and ordered layout from the checkpoint, reconstructs
-the runtime action space from that provenance, and rejects a mismatch before an
-episode is evaluated.
+The complete topology-action configuration and ordered action layout are stored
+as artifact provenance. Evaluation reconstructs its runtime action space from
+the checkpoint and rejects mismatched or incomplete provenance.
 
-See [topology_action_contract.md](research/topology_action_contract.md) for the serialized
-layout, fingerprints, and artifact compatibility rules.
+See [topology_action_contract.md](research/topology_action_contract.md) for the
+serialized layout and fingerprints.
 
-### 5.2 Progressive widening
+## MCTS and value contract
 
-`top_k` is the initial number of switch actions exposed to PUCT, not a permanent pruning limit. Each node retains the complete neural/DC/loading ranking and activates more legal switch actions as its visit count grows.
+MCTS uses undiscounted terminal utility. `gamma` is exactly `1.0` throughout the
+current generation and evaluation API.
 
-The active switch width is:
+Dense environment rewards remain diagnostics. They do not enter the MCTS value
+backup or the policy-value target.
+
+Every state in a completed episode receives the terminal outcome value target
+associated with that episode. The current target is bounded to `[-1, 1]`, so no
+checkpoint `value_scale` field is used.
+
+The self-play policy target is the MCTS root visit distribution. The executed
+action is selected from that distribution according to the configured
+temperature schedule. Root Dirichlet noise and action-temperature sampling are
+independent sources of exploration.
+
+## Progressive widening
+
+`top_k` is the initial switch-action width, not a permanent pruning limit.
+Additional retained legal actions are activated as node visits grow:
 
 ```text
 top_k + floor(
@@ -107,319 +96,122 @@ top_k + floor(
 )
 ```
 
-The result is capped by the number of legal switch actions. Existing wider shortlists are never reduced, stop actions do not consume switch slots, and `widening_coefficient: 0` disables growth.
+The width is capped by the number of retained legal switch actions. Stop does
+not consume a switch-action slot.
 
-### 5.3 MCTS action coverage
+## Random streams
 
-Every root search reports two action-space coverage measures:
+Self-play keeps MCTS exploration and real-action sampling on independent random
+streams. Scenario-specific seeds are derived from the configured stream seed and
+scenario ID, so reordering scenarios does not reassign their random streams.
 
-- `action_coverage` is the fraction of legal root actions activated
-  for PUCT selection;
-- `visited_action_coverage` is the fraction of legal root actions
-  that received at least one simulation.
+## Generation inputs
 
-The denominator is the complete retained legal root action ranking.
-The considered count includes actions activated by the initial
-shortlist, progressive widening, and the off-prior exploration quota.
+A direct self-play invocation requires:
 
-Self-play stores the counts and coverage values with every generated
-example. Evaluation stores per-search counts in the episode CSV and
-aggregates mean and minimum coverage values in the metrics JSON.
+- a GridFM raw directory containing `bus_data.parquet`, `branch_data.parquet`,
+  and `gen_data.parquet`;
+- a transitions CSV containing the selected scenario IDs;
+- an output directory;
+- optionally, a current Graph V2 checkpoint for neural-guided MCTS.
 
-### 5.4 Action temperature schedule
-
-Root Dirichlet noise changes the MCTS search priors. Action
-temperature controls how the real self-play action is selected from
-the resulting root visit distribution. These are separate sources of
-exploration.
-
-A positive `selection_temperature` is used only when both conditions
-hold:
-
-- the one-based self-play iteration is not greater than
-  `temperature_iterations`;
-- the zero-based episode step is less than `temperature_steps`.
-
-After either cutoff, action selection uses temperature `0.0` and
-therefore deterministic argmax. Setting either cutoff to zero disables
-temperature-based sampling and preserves the previous behavior.
-
-### 5.5 Independent random streams
-
-Each self-play iteration expands the configured base seed and
-one-based iteration number through `numpy.random.SeedSequence`.
-Separate child streams are used for:
-
-- scenario sampling;
-- MCTS exploration and root noise;
-- action sampling from the behavior policy.
-
-Generation derives scenario-specific MCTS and action-sampling seeds
-from the corresponding stream seed and scenario ID. Reordering
-scenarios therefore does not change the random stream assigned to a
-particular scenario, and action sampling does not consume random values
-from MCTS.
-
-### 5.6 Exploration diagnostics
-
-Every production self-play example records the action-selection
-temperature and mode, policy-target entropy, normalized policy-target
-entropy, and MCTS root action coverage.
-
-Policy-target entropy is measured in nats. Normalized entropy divides
-the entropy by `log(k)`, where `k` is the number of actions with
-positive probability. It is defined as zero when `k <= 1`.
-
-At the end of each iteration, diagnostics are aggregated over the
-newly generated self-play steps. They are stored under
-`extra.self_play_exploration` in the iteration metadata and as
-`self_play_*` columns in `learning_curve.csv`.
-
-The aggregation uses current-iteration raw examples only. Replay
-examples from earlier iterations are not included.
-
-### 5.7 Terminal utility contract
-
-The policy-value model and MCTS use undiscounted terminal utility.
-
-Every state in one completed episode receives the same value target:
-
-- physically solved: `+1`;
-- executed and physically validated redispatch: `0`;
-- every other terminal outcome: `-1`.
-
-`outcome_gamma` is fixed at `1.0`. `outcome_steps_to_terminal` records
-the remaining number of transitions for diagnostics but does not scale the
-target. MCTS backs up the leaf utility unchanged across every traversed edge.
-Dense environment rewards and their accumulated return remain diagnostic and
-never enter the policy-value target or MCTS Q backup.
-
-All rows sharing one `episode_id` must carry the same terminal outcome,
-physical evidence, outcome class, target, gamma, and contract versions. CSV and
-replay validation reject mixed episode outcomes before loading or mutation.
-
-## 6. MCTS target versus executed action
-
-The policy target is the MCTS visit distribution. The real self-play action is selected from that distribution according to the configured temperature schedule. Continuation analysis is diagnostic only: it records allowed/recommended actions and whether the selected action agrees, but it does not override the executed action or rewrite the policy target.
-
-## 7. Replay buffer
-
-Generated examples are appended to replay. Replay accumulation allows later iterations to train on current and prior experience according to configured limits. Replay manifests and every replay row are checked against the current physical, outcome/value-target, physics-configuration, topology-action configuration, and ordered action-layout contracts before loading or mutation. Mixed topology configurations or layouts are rejected before the buffer is changed.
-
-## 8. Train/validation split
-
-Training batches are split by `scenario_id`. A scenario cannot appear in both train and validation files for the same candidate.
-
-## 9. Normalization contract
-
-Normalization arrays are part of the checkpoint contract. Fine-tuning from an initial checkpoint requires normalized features and reuses the parent checkpoint normalization statistics.
-
-## 10. Closed-loop checkpoint selection
-
-When `checkpoint_selection.enabled=true`, training must also set
-`training.save_multiple_best=true`. The trainer retains one best epoch for each
-of four validation objectives:
-
-- combined validation loss;
-- policy loss;
-- value loss;
-- value calibration error.
-
-`candidates_per_metric` is therefore fixed to `1`, and `max_candidates` cannot
-exceed `4`. The candidate pool is deduplicated by checkpoint SHA-256 before the
-arena runs.
-
-The validation pass records policy entropy and KL divergence, top-k target mass,
-value Brier score and calibration error, value bias and MAE, legal-action and
-target-support coverage, stop/switch fractions, and the same diagnostics split
-by `simple`, `medium`, `hard`, and `unknown` difficulty classes.
-
-The reduced closed-loop arena uses a separate tuning set. Preflight rejects
-scenario-ID or physical-lineage overlap between tuning and the self-play pool,
-regular evaluation set, or final test set. The winner is selected by
-`checkpoint_selection.metric`; `metric_direction` must be explicitly compatible
-with the metric and is either `maximize` or `minimize`.
-
-The arena metric always comes from the ungated policy mode: neural policy plus
-MCTS, without continuation-gate filtering. This is the same controller that
-produces the self-play behavior and policy targets. A candidate cannot win the
-arena only because the secondary constrained controller repairs its actions.
-
-Before evaluation, every selected candidate is copied to an immutable location
-under:
-
-```text
-iter_XXX/checkpoint_selection/candidates/
-```
-
-The arena evaluates those archived copies, not mutable training paths. Its full
-report is written to:
-
-```text
-iter_XXX/checkpoint_selection/checkpoint_selection.json
-```
-
-The winning archived checkpoint is copied into the canonical
-`candidate_checkpoint.pt` and annotated with
-`checkpoint_selection_metric=closed_loop_arena`, the arena metric, selected
-value, candidate count, and report path. Only that winner proceeds to regular
-fixed evaluation and the acceptance decision.
-
-The arena report, archived candidate hashes, selected checkpoint hash, tuning
-scenario IDs, validation metrics, closed-loop metrics, and arena configuration
-are retained for audit. The report path, hash, and selection summary are copied
-into iteration metadata and `learning_curve.csv`. The completion marker also
-seals the report hash. Resume validation rejects a missing or modified report,
-a modified archived candidate, or a selected checkpoint that no longer matches
-the report.
-
-## 11. Fixed evaluation
-
-Candidate checkpoints are evaluated on the fixed evaluation transitions and raw
-states. When continuation analysis is enabled, every checkpoint is evaluated in
-two explicitly different policy modes:
-
-- `ungated`: neural policy plus MCTS; this is the primary scientific policy and
-  matches self-play behavior;
-- `constrained`: neural policy plus MCTS followed by continuation-gate filtering;
-  this is a secondary hybrid-controller diagnostic.
-
-Top-level evaluation metrics, including `solve_rate` and
-`physically_secure_rate_requested`, always come from `ungated`. Both complete
-metric groups remain available under `mode_metrics.ungated` and
-`mode_metrics.constrained`. Evaluation also records
-`ungated_physically_secure_rate_requested`,
-`constrained_physically_secure_rate_requested`, and `continuation_gate_gain`,
-where the gain is constrained minus ungated physical-security rate. A positive
-gain measures the contribution of the external continuation gate; it is not
-credited to the learned policy.
-
-This keeps acceptance comparable across iterations. `solve_count` and
-`solve_rate` count only physically secure outcomes and therefore equal
-`physically_secure_count` and `physically_secure_rate`. Thermal feasibility
-remains a separate diagnostic rate. Evaluation also records counts/rates for PF
-convergence, finite values, topology connectivity, thermal, voltage, generator
-P/Q, and angle feasibility, plus violation diagnostics.
-
-Before workers are initialized, evaluation loads the checkpoint's exact
-topology-action configuration and ordered layout. Each worker constructs
-`GridFMActionSpace` from that configuration and validates the evaluator
-checkpoint against the same fingerprints. A checkpoint without topology
-action provenance, or with a different allowlist/layout, is rejected rather
-than evaluated under different semantics.
-
-The regular evaluation set is a selection set: it is used after each iteration
-to decide whether the arena winner is promoted. Promotion, paired confidence
-checks, and aggregate acceptance gates use the ungated rows and ungated
-headline metrics. Better constrained performance cannot promote a checkpoint
-whose ungated policy is worse.
-
-The final test set is independent and is never used for training, self-play
-generation, epoch selection, arena ranking, or promotion. It is reserved for
-one evaluation of the final best checkpoint after the loop has completed. Its
-headline metrics are ungated; constrained metrics remain a separately reported
-hybrid-controller result.
-
-## 12. PF_ALG provenance
-
-Generation config, evaluation config, checkpoint-arena config, evaluation
-requests, and fixed metrics must use exact integer `PF_ALG` values. Fractional
-or boolean values are rejected instead of rounded.
-
-## 13. Acceptance
-
-Acceptance compares the ungated candidate metrics with the ungated metrics of
-the best accepted checkpoint. The primary configured metric is usually
-`physically_secure_rate_requested`; thresholds and safety constraints decide
-whether the candidate replaces the best checkpoint. Constrained metrics and
-`continuation_gate_gain` are diagnostic only and cannot affect promotion.
-Candidate and best metrics must match the configured `PF_ALG`, current
-evaluation/physical semantic versions, topology-action configuration
-fingerprint, and ordered action-layout fingerprint. Historical metrics or
-checkpoints from different action semantics cannot influence promotion.
-
-## 14. Atomic completion marker
-
-An iteration is complete only when `iteration_complete.json` exists and is valid. This marker is written after all required artifacts for the iteration are complete. When closed-loop checkpoint selection is enabled, the marker also contains the SHA-256 of `checkpoint_selection.json`.
-
-## 15. Resume behavior
-
-`--resume` continues after the latest valid completed iteration. If a later iteration directory exists without a valid `iteration_complete.json`, the loop refuses to continue until the operator removes or repairs the incomplete directory. Resume also revalidates checkpoint-selection metadata, the arena report, the canonical winner, and every archived arena candidate.
-
-## 16. Artifact hashes
-
-Dataset and state references are hashed in metadata so a run can be audited against the inputs used to create checkpoints and metrics. Closed-loop selection adds hashes for the arena report, immutable candidate copies, and selected canonical checkpoint.
-
-## 17. Learning curve columns
-
-`learning_curve.csv` tracks iteration-level progress such as iteration index, candidate checkpoint, evaluation metrics, acceptance decision, and best metric state.
-It also records `self_play_*` exploration diagnostics so policy entropy
-and action coverage can be compared across iterations. Closed-loop runs record
-`checkpoint_selection_metric=closed_loop_arena`, the arena metric and selected
-value, candidate count, report path, and report SHA-256. Selection and
-acceptance columns refer to ungated metrics. Constrained results and
-`continuation_gate_gain` remain in the evaluation artifacts for separate
-hybrid-controller analysis.
-
-## 18. Failure recovery
-
-For config or artifact validation failures, fix the referenced paths or metadata and rerun validation. For incomplete iteration directories, inspect the partial artifacts and either delete the incomplete iteration or restart from a clean run directory.
-
-## 19. Pilot workflow
-
-A pilot workflow is: prepare bootstrap artifacts, set verified
-`closeable_branch_ids` in the pilot YAML when tie-line closing is intended, run
-`--validate-only`, run `--plan-only`, execute one iteration, inspect training,
-checkpoint-selection, and evaluation artifacts, then resume for additional
-iterations.
-
-## 20. Bootstrap metrics recalculation rules
-
-Recompute bootstrap metrics whenever the fixed evaluation set, raw states, checkpoint, `PF_ALG`, evaluation settings, topology-action configuration, ordered action layout, or metrics schema changes. Do not reuse metrics with missing, fractional, boolean, or mismatched `pf_alg` values or with incompatible topology provenance.
-
-## 21. Semantic artifact versions and regeneration
-
-The current exact contract versions are:
-
-| Contract | Version |
-| --- | ---: |
-| physical objective | `3` |
-| outcome objective | `1` |
-| outcome/value target | `5` |
-| checkpoint | `7` |
-| replay buffer schema | `6` |
-| evaluation metrics | `6` |
-| physics configuration | `1` |
-| topology action | `1` |
-
-The version boundaries are intentional. Former `solved` labels meant only
-thermal-feasible, and artifacts created before topology provenance did not
-record the exact branch identity/order or semantic action allowlist. Missing or
-old versions are rejected. `ensure_outcome_value_targets` refuses to stamp
-current targets onto legacy solved labels. User artifacts are not deleted
-automatically.
-
-Create a clean artifact chain in this order (replace angle-bracket paths):
+Example:
 
 ```bash
-# Fresh physical episodes, topology provenance, and versioned outcome targets.
-# Repeat --closeable-branch-id for each verified normally-open/tie branch.
-python -m grid_topology_ai.cli self-play <POOL_RAW_DIR> \
-  --transitions <POOL_TRANSITIONS.csv> \
-  --output <NEW_SELF_PLAY_DIR> \
+python -m grid_topology_ai.cli self-play RAW_DIR \
+  --transitions TRANSITIONS.csv \
+  --output data/self_play/run_001 \
+  --checkpoint CHECKPOINT.pt \
   --pf-alg 3 \
-  --require-connected-after-switch \
-  --min-loading-for-switch-percent 0.0
-
-# Fresh checkpoint, without a legacy --init-checkpoint.
-python -m grid_topology_ai.cli train <NEW_SELF_PLAY_DIR>/examples.csv --output <NEW_CHECKPOINT.pt> --device cpu
-
-# Fresh fixed evaluation and summary metrics. Evaluation uses checkpoint topology provenance.
-python -m grid_topology_ai.cli evaluate <EVAL_RAW_DIR> --transitions <EVAL_TRANSITIONS.csv> --checkpoint <NEW_CHECKPOINT.pt> --pf-alg 3 --output-csv <NEW_EVAL_RESULTS.csv> --output-json <NEW_EVAL_METRICS.json>
+  --gamma 1.0
 ```
 
-Archive the old replay/run directory, update `bootstrap_checkpoint` and
-`bootstrap_eval_metrics` in the YAML, and start a new run. Existing evaluation
-metrics cannot be compared across the version boundary, and a checkpoint trained
-on legacy targets or a different topology-action layout cannot be used as a
-compatible parent.
+Omit `--checkpoint` to use the non-neural evaluator path.
+
+## Self-play artifacts
+
+Generation writes `examples.csv`, state NPZ files under `states/`, and
+`progress.json`.
+
+Persisted examples identify states by `state_id`; persisted `state_path` is not a
+supported schema field. Runtime file paths are derived from the artifact
+location and `state_id`.
+
+Source identity used for resume is content-based. Raw GridFM files, transitions,
+and an optional checkpoint are identified by content rather than absolute file
+location. Moving an unchanged input set does not change its semantic identity.
+
+Existing artifacts are not migrated to the current schema. Missing, old, or
+mismatched required fields fail closed and must be regenerated.
+
+## Resume contract
+
+`--resume` requires an existing `progress.json` whose semantic identity exactly
+matches the current request. Existing `examples.csv` and referenced NPZ state
+files are validated against the current contract before generation continues.
+
+A non-resume run refuses to reuse an output directory containing existing
+progress or examples.
+
+## Training
+
+Training consumes current validated example CSVs and state NPZ files. Graph
+batches are packed without node or edge padding and use the physical
+`edge_active_mask` derived from branch status.
+
+A current Graph V2 checkpoint contains, among other required fields:
+
+- `model_type=graph_policy_value_net_v2`;
+- `topology_cardinality_independent=True`;
+- the model state dictionary and exact architecture dimensions;
+- feature normalization arrays;
+- physics configuration;
+- topology-action configuration and ordered action layout.
+
+Checkpoint loading is strict. Missing required Graph V2 fields are errors; they
+are not supplied from defaults or inferred from an older checkpoint format.
+
+## Evaluation
+
+Evaluation runs exactly one policy mode per invocation:
+
+- `ungated`: the learned-controller behavior, neural policy plus MCTS;
+- `constrained`: applies the current root-policy constraint analysis before
+  action selection.
+
+The mode is selected explicitly:
+
+```bash
+python -m grid_topology_ai.cli evaluate RAW_DIR \
+  --transitions EVAL.csv \
+  --checkpoint CHECKPOINT.pt \
+  --policy-mode constrained \
+  --min-hard-improvement 50 \
+  --min-soft-improvement 15 \
+  --min-constraint-visits 5 \
+  --min-constraint-visit-fraction 0.01 \
+  --pf-alg 3 \
+  --gamma 1.0
+```
+
+`--policy-mode ungated` is the default. The removed
+`--use-continuation-gate` flag is not part of the current CLI.
+
+Evaluation records canonical physical outcome fields and aggregate metrics for
+that single run. It does not automatically run paired modes or promote a
+checkpoint.
+
+## Reproducibility
+
+Reproducibility depends on explicit seeds, content-based source identities,
+strict artifact contracts, exact physical configuration, checkpoint provenance,
+and deterministic scenario selection for a fixed request.
+
+Useful validation commands are:
+
+```bash
+python -m compileall -q grid_topology_ai scripts tests
+python -m pytest -q
+python -m grid_topology_ai.cli self-play --help
+python -m grid_topology_ai.cli evaluate --help
+```

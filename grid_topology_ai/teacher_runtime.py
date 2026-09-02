@@ -97,7 +97,6 @@ from grid_topology_ai.search.teacher import (
     _TERMINAL_REDISPATCH_ABSOLUTE_EPSILON_MW,
     _TERMINAL_REDISPATCH_RELATIVE_EPSILON,
     _redispatch_aware_selection,
-    _safe_short_sequence,
     _selection_provenance,
     ImpactBeamSearchConfig,
     ImpactBeamSearchPlanner,
@@ -313,7 +312,7 @@ def _generate_scenario(scenario_id: int) -> dict[str, Any]:
             progress_update_every=10,
         )
 
-        if bool(task.get("use_lodf_screening", False)):
+        if bool(task["use_lodf_screening"]):
             planner = LODFScreenedImpactBeamSearchPlanner(
                 config=planner_config,
                 lodf_screen_top_k=int(task["lodf_screen_top_k"]),
@@ -674,8 +673,8 @@ def _generate_scenario(scenario_id: int) -> dict[str, Any]:
                 "top_k": int(task["top_k"]),
                 "soft_policy_temperature": float(task["soft_policy_temperature"]),
                 "use_soft_root_policy": bool(task["use_soft_root_policy"]),
-                "use_lodf_screening": bool(task.get("use_lodf_screening", False)),
-                "lodf_screen_top_k": int(task.get("lodf_screen_top_k", 0)),
+                "use_lodf_screening": bool(task["use_lodf_screening"]),
+                "lodf_screen_top_k": int(task["lodf_screen_top_k"]),
                 "evaluated_actions": int(result.evaluated_actions),
                 "run_id": run_id,
                 "iteration": iteration,
@@ -755,7 +754,7 @@ def _generate_scenario(scenario_id: int) -> dict[str, Any]:
                 "final_hard": int(final_num_hard),
                 "final_overloaded": int(final_num_overloaded),
                 "final_max_loading": float(final_max_loading),
-                "sequence": _safe_short_sequence(best),
+                "sequence": best.short_sequence(),
                 "evaluated_actions": int(result.evaluated_actions),
                 "handoff_added": bool(handoff_added),
                 "handoff_reason": handoff_reason,
@@ -880,8 +879,6 @@ def make_task_config(args: argparse.Namespace) -> dict[str, Any]:
             redispatch_candidates_per_switch_count
         ),
         "gamma": float(args.gamma),
-        "pf_alg": int(args.pf_alg),
-        "pf_max_iter": physics_config.max_iterations,
         "physics_config": physics_config.to_dict(),
         "max_steps": int(args.max_steps),
         "max_teacher_steps": max_teacher_steps,
@@ -911,12 +908,12 @@ def append_scenario_checkpoint(
     result: dict[str, Any],
 ) -> None:
     checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
-    ok = bool(result.get("ok", False))
+    ok = bool(result["ok"])
     payload = {
         "scenario_id": int(result["scenario_id"]),
         "ok": ok,
         "reason": result.get("reason"),
-        "rows": result.get("rows", []) if ok else [],
+        "rows": result["rows"] if ok else [],
     }
     encoded = (
         json.dumps(
@@ -942,29 +939,6 @@ def append_scenario_checkpoint(
         os.fsync(checkpoint_file.fileno())
 
 
-def _drop_checkpoint_state_paths(rows: object) -> bool:
-    if not isinstance(rows, list):
-        return False
-
-    changed = False
-    for row in rows:
-        if not isinstance(row, dict):
-            continue
-        if "state_path" in row:
-            row.pop("state_path", None)
-            changed = True
-    return changed
-
-
-def _rewrite_checkpoint_lines(checkpoint_path: Path, lines: Sequence[str]) -> None:
-    temporary = checkpoint_path.with_suffix(checkpoint_path.suffix + ".tmp")
-    try:
-        temporary.write_text("".join(lines), encoding="utf-8")
-        temporary.replace(checkpoint_path)
-    finally:
-        temporary.unlink(missing_ok=True)
-
-
 def load_scenario_checkpoints(
     checkpoint_path: Path,
     allowed_scenario_ids: Sequence[int],
@@ -974,17 +948,12 @@ def load_scenario_checkpoints(
     if not checkpoint_path.exists():
         return results
 
-    raw_lines = checkpoint_path.read_text(
-        encoding="utf-8",
-        errors="replace",
-    ).splitlines(keepends=True)
-    rewritten_lines: list[str] = []
-    migrated = False
-
-    for line_number, raw_line in enumerate(raw_lines, start=1):
+    for line_number, raw_line in enumerate(
+        checkpoint_path.read_text(encoding="utf-8", errors="replace").splitlines(),
+        start=1,
+    ):
         line = raw_line.strip()
         if not line:
-            rewritten_lines.append(raw_line)
             continue
         try:
             payload = json.loads(line)
@@ -995,30 +964,12 @@ def load_scenario_checkpoints(
                 f"{line_number}: {checkpoint_path}",
                 flush=True,
             )
-            rewritten_lines.append(raw_line)
             continue
-
-        rows = payload.get("rows", [])
-        row_migrated = _drop_checkpoint_state_paths(rows)
-        if row_migrated:
-            migrated = True
-            rewritten_lines.append(
-                json.dumps(
-                    payload,
-                    ensure_ascii=False,
-                    allow_nan=False,
-                    separators=(",", ":"),
-                )
-                + "\n"
-            )
-        else:
-            rewritten_lines.append(
-                raw_line if raw_line.endswith("\n") else raw_line + "\n"
-            )
 
         if scenario_id not in allowed:
             continue
-        ok = bool(payload.get("ok", False))
+        ok = bool(payload["ok"])
+        rows = payload["rows"]
         if ok and (not isinstance(rows, list) or not rows):
             print(
                 "Warning: ignoring incomplete successful "
@@ -1029,12 +980,9 @@ def load_scenario_checkpoints(
         results[scenario_id] = {
             "scenario_id": scenario_id,
             "ok": ok,
-            "reason": payload.get("reason"),
+            "reason": payload["reason"],
             "rows": rows if ok else [],
         }
-
-    if migrated:
-        _rewrite_checkpoint_lines(checkpoint_path, rewritten_lines)
 
     return results
 
@@ -1210,15 +1158,13 @@ def main(argv: list[str] | None = None) -> int:
     checkpoint_path = output_dir / "teacher_checkpoint.jsonl"
     checkpoint_config_path = output_dir / "teacher_checkpoint_config.json"
     checkpoint_config = {
-        "raw_dir": str(raw_dir.resolve()),
-        "transitions_path": str(transitions_path.resolve()),
-        "difficulty_class": args.difficulty_class,
+        "source_identity": teacher_source_identity(raw_dir, transitions_path),
         "scenario_ids": [int(scenario_id) for scenario_id in scenario_ids],
         "task_config": task_config,
     }
-    ensure_checkpoint_config(
-        config_path=checkpoint_config_path,
-        config=checkpoint_config,
+    ensure_teacher_checkpoint_config(
+        checkpoint_config_path,
+        checkpoint_config,
     )
     checkpoint_results = load_scenario_checkpoints(
         checkpoint_path=checkpoint_path,
@@ -1469,7 +1415,7 @@ def _json_feature_columns(row: dict[str, Any]) -> None:
 
 
 def _finalize_success_result(result: dict[str, Any]) -> dict[str, Any]:
-    rows = result.get("rows")
+    rows = result["rows"]
     if not isinstance(rows, list) or not rows:
         raise ValueError("Successful teacher result must contain rows.")
     scenario_id = int(result["scenario_id"])
@@ -1484,13 +1430,13 @@ def _finalize_success_result(result: dict[str, Any]) -> dict[str, Any]:
             f"Teacher scenario {scenario_id} is missing trajectory selection provenance."
         )
 
-    evidence = result.pop("_terminal_outcome_evidence", None)
+    evidence = result.pop("_terminal_outcome_evidence")
     if not isinstance(evidence, TerminalOutcomeEvidence):
         raise RuntimeError(
             f"Teacher scenario {scenario_id} is missing terminal outcome evidence."
         )
 
-    redispatch_validated = bool(rows[0].get("redispatch_validated", False))
+    redispatch_validated = bool(rows[0]["redispatch_validated"])
     teacher_outcome = classify_teacher_outcome(
         topology_solved=evidence.solved,
         redispatch_validated=redispatch_validated,
@@ -1504,8 +1450,7 @@ def _finalize_success_result(result: dict[str, Any]) -> dict[str, Any]:
     evidence_json = evidence.to_json()
 
     for row in rows:
-        row.pop("state_path", None)
-        step_diagnostic_reason = row.pop("step_termination_reason", None)
+        step_diagnostic_reason = row.pop("step_termination_reason")
         if int(row["selected_action_id"]) == 0:
             step_diagnostic_reason = diagnostic_reason_value
 
@@ -1522,7 +1467,7 @@ def _finalize_success_result(result: dict[str, Any]) -> dict[str, Any]:
                 **selection_provenance,
             }
         )
-        row.pop("termination_reason", None)
+        row.pop("termination_reason")
         if step_diagnostic_reason is not None:
             row["step_diagnostic_termination_reason"] = step_diagnostic_reason
         _json_feature_columns(row)
@@ -1536,7 +1481,7 @@ def process_scenario_batch(
     for scenario_id in scenario_ids:
         result = process_one_scenario_fast(int(scenario_id))
         scenario_id = int(result["scenario_id"])
-        if bool(result.get("ok", False)):
+        if bool(result["ok"]):
             result = _finalize_success_result(result)
         else:
             _SELECTION_PROVENANCE_BY_SCENARIO.pop(scenario_id, None)
@@ -1596,26 +1541,6 @@ def _worker_run_id() -> str:
     return teacher_run_id(states_dir, ctx["task_config"])
 
 
-def ensure_checkpoint_config(
-    config_path: Path,
-    config: dict[str, Any],
-) -> None:
-    bound_config = dict(config)
-    raw_dir = bound_config.get("raw_dir")
-    transitions_path = bound_config.get("transitions_path")
-
-    if raw_dir is None or transitions_path is None:
-        raise ValueError(
-            "Teacher checkpoint config requires raw_dir and transitions_path."
-        )
-
-    bound_config["source_identity"] = teacher_source_identity(
-        raw_dir,
-        transitions_path,
-    )
-    ensure_teacher_checkpoint_config(config_path, bound_config)
-
-
 def clear_worker_caches_if_needed() -> None:
     """Bounded caches and process lifetime replace global cache clearing."""
 
@@ -1671,12 +1596,7 @@ def init_worker_context(
 
     ctx[_RUNTIME_LODF_STRUCTURE_CACHE] = (
         None
-        if bool(
-            runtime_task_config.get(
-                "disable_cache",
-                False,
-            )
-        )
+        if bool(runtime_task_config["disable_cache"])
         else LODFStructureCache()
     )
 
@@ -1743,12 +1663,12 @@ def _scenario_runtime_line(
     result: dict[str, Any],
 ) -> str:
     scenario_id = int(result["scenario_id"])
-    seconds = float(result.get("runtime_seconds", 0.0))
+    seconds = float(result["runtime_seconds"])
 
-    if bool(result.get("ok", False)):
+    if bool(result["ok"]):
         status = "saved"
     else:
-        reason = result.get("reason")
+        reason = result["reason"]
         status = "skipped" if reason is None else f"skipped ({reason})"
 
     return f"scenario {scenario_id} | {seconds:.1f}s | {status}"

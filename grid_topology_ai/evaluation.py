@@ -24,7 +24,6 @@ from grid_topology_ai.config import (
     PhysicsConfig,
     physics_config_payload,
     require_physics_config_payload,
-    resolve_physics_config,
 )
 from grid_topology_ai.physics.objective import (
     STOP_POLICIES,
@@ -70,8 +69,8 @@ def _canonical_topology_quality_fields(
     effective_reason: TerminationReason | None,
     physics_config: PhysicsConfig | None,
 ) -> dict[str, float]:
-    initial_state = getattr(env, "initial_state", None)
-    final_state = getattr(env, "current_state", None)
+    initial_state = env.initial_state
+    final_state = env.current_state
 
     J0 = (
         float("nan")
@@ -85,7 +84,7 @@ def _canonical_topology_quality_fields(
     )
 
     if effective_reason is TerminationReason.POWER_FLOW_FAILED:
-        evidence = getattr(env, "terminal_outcome_evidence", None)
+        evidence = env.terminal_outcome_evidence
         final_utility = -1.0 if evidence is None else float(evidence.topology_utility)
         return {
             "J0": J0,
@@ -124,7 +123,7 @@ def _canonical_topology_quality_fields(
             physics_config=physics_config,
         )
     )
-    evidence = getattr(env, "terminal_outcome_evidence", None)
+    evidence = env.terminal_outcome_evidence
     if evidence is not None:
         evidence_utility = float(evidence.topology_utility)
         if not math.isclose(
@@ -178,7 +177,6 @@ def build_evaluation_episode_row(
         "scenario_id": int(scenario_id),
         "policy_mode": str(policy_mode),
         "steps": len(trace.actions),
-        "use_continuation_gate": policy_mode == "constrained",
         "actions": str(trace.actions),
         "branches": str(trace.branches),
         "rewards": str([round(value, 4) for value in trace.rewards]),
@@ -273,11 +271,9 @@ def _physical_result_fields(
         "physically_secure": assessment.physically_secure,
         "num_generator_p_violations": assessment.num_generator_p_violations,
         "num_generator_q_violations": assessment.num_generator_q_violations,
-        "num_angle_difference_violations": (assessment.num_angle_difference_violations),
-        "total_generator_p_violation_mw": (assessment.total_generator_p_violation_mw),
-        "total_generator_q_violation_mvar": (
-            assessment.total_generator_q_violation_mvar
-        ),
+        "num_angle_difference_violations": assessment.num_angle_difference_violations,
+        "total_generator_p_violation_mw": assessment.total_generator_p_violation_mw,
+        "total_generator_q_violation_mvar": assessment.total_generator_q_violation_mvar,
         "total_angle_difference_violation_degrees": (
             assessment.total_angle_difference_violation_degrees
         ),
@@ -298,18 +294,18 @@ def compute_safety_score(
 ) -> float:
     config = physics_config or DEFAULT_PHYSICS_CONFIG
     score = 0.0
-    reason = parse_termination_reason(row.get("termination_reason"))
-    solved = bool(row.get("solved", False))
-    physically_secure = bool(row.get("physically_secure", False))
+    reason = parse_termination_reason(row["termination_reason"])
+    solved = bool(row["solved"])
+    physically_secure = bool(row["physically_secure"])
     validate_outcome_invariants(
         solved=solved,
         termination_reason=reason,
         physically_secure=physically_secure,
     )
-    final_loading = float(row.get("final_max_loading_percent", 999.0))
-    overloaded = int(row.get("final_num_overloaded_branches", 99))
-    hard = int(row.get("final_num_hard_overloaded_branches", 99))
-    discounted_return = float(row.get("discounted_return", 0.0))
+    final_loading = float(row["final_max_loading_percent"])
+    overloaded = int(row["final_num_overloaded_branches"])
+    hard = int(row["final_num_hard_overloaded_branches"])
+    discounted_return = float(row["discounted_return"])
 
     if solved:
         score += 1000.0
@@ -366,10 +362,10 @@ def print_row(row: dict[str, Any]) -> None:
         f"final_loading={float(row['final_max_loading_percent']):.2f}% | "
         f"overloaded={row['final_num_overloaded_branches']} | "
         f"hard={row['final_num_hard_overloaded_branches']} | "
-        f"J0={float(row.get('J0', float('nan'))):.2f} | "
-        f"Jfinal={float(row.get('Jfinal', float('nan'))):.2f} | "
-        f"dJ={float(row.get('delta_J', float('nan'))):+.2f} | "
-        f"U={float(row.get('final_topology_utility', float('nan'))):+.3f} | "
+        f"J0={float(row['J0']):.2f} | "
+        f"Jfinal={float(row['Jfinal']):.2f} | "
+        f"dJ={float(row['delta_J']):+.2f} | "
+        f"U={float(row['final_topology_utility']):+.3f} | "
         f"R={float(row['discounted_return']):.2f} | "
         f"score={float(row['safety_score']):.2f}"
     )
@@ -387,23 +383,7 @@ def _safe_mean(series: pd.Series) -> float | None:
     return float(value)
 
 
-def _safe_min(
-    series: pd.Series,
-) -> float | None:
-    if len(series) == 0:
-        return None
-
-    value = series.min()
-
-    if pd.isna(value):
-        return None
-
-    return float(value)
-
-
 def _numeric_column(df: pd.DataFrame, name: str) -> pd.Series:
-    if name not in df.columns:
-        return pd.Series(dtype=float)
     return pd.to_numeric(df[name], errors="coerce")
 
 
@@ -421,7 +401,7 @@ def build_evaluation_metrics(
             "Evaluation rows violate the outcome contract: solved must equal "
             "physically_secure. Regenerate evaluation metrics."
         )
-    for index, row in df.iterrows():
+    for _, row in df.iterrows():
         validate_outcome_invariants(
             solved=bool(row["solved"]),
             termination_reason=row["termination_reason"],
@@ -490,36 +470,17 @@ def build_evaluation_metrics(
         "solve_count": solve_count,
         "solve_rate": rate(solve_count, evaluated_scenarios),
         "pf_alg": physics_config.pf_alg,
-        "evaluation_coverage_rate": rate(
-            evaluated_scenarios,
-            requested_count,
-        ),
-        "solve_rate_requested": rate(
-            solve_count,
-            requested_count,
-        ),
-        "failed_scenario_rate_requested": rate(
-            failed_scenarios,
-            requested_count,
-        ),
+        "evaluation_coverage_rate": rate(evaluated_scenarios, requested_count),
+        "solve_rate_requested": rate(solve_count, requested_count),
+        "failed_scenario_rate_requested": rate(failed_scenarios, requested_count),
         "hard_overload_free_count": hard_overload_free_count,
-        "hard_overload_free_rate": rate(
-            hard_overload_free_count,
-            evaluated_scenarios,
-        ),
+        "hard_overload_free_rate": rate(hard_overload_free_count, evaluated_scenarios),
         "voltage_feasible_count": voltage_feasible_count,
-        "voltage_feasible_rate": rate(
-            voltage_feasible_count,
-            evaluated_scenarios,
-        ),
+        "voltage_feasible_rate": rate(voltage_feasible_count, evaluated_scenarios),
         "physically_secure_count": physically_secure_count,
-        "physically_secure_rate": rate(
-            physically_secure_count,
-            evaluated_scenarios,
-        ),
+        "physically_secure_rate": rate(physically_secure_count, evaluated_scenarios),
         "physically_secure_rate_requested": rate(
-            physically_secure_count,
-            requested_count,
+            physically_secure_count, requested_count
         ),
         "safe_handoff_count": safe_handoff_count,
         "safe_handoff_rate": rate(safe_handoff_count, evaluated_scenarios),
@@ -528,19 +489,14 @@ def build_evaluation_metrics(
             unsafe_terminal_state_count, evaluated_scenarios
         ),
         "power_flow_failure_count": power_flow_failure_count,
-        "power_flow_failure_rate": rate(
-            power_flow_failure_count,
-            evaluated_scenarios,
-        ),
+        "power_flow_failure_rate": rate(power_flow_failure_count, evaluated_scenarios),
         "power_flow_failure_rate_requested": rate(
-            power_flow_failure_count,
-            requested_count,
+            power_flow_failure_count, requested_count
         ),
         "topology_quality_count": topology_quality_count,
         "topology_improved_count": topology_improved_count,
         "topology_improved_rate": rate(
-            topology_improved_count,
-            topology_quality_count,
+            topology_improved_count, topology_quality_count
         ),
         "avg_J0": _safe_mean(J0),
         "avg_Jfinal": _safe_mean(Jfinal),
@@ -564,19 +520,10 @@ def build_evaluation_metrics(
 
     for component, count in component_counts.items():
         metrics[f"{component}_count"] = count
-
-        metrics[f"{component}_rate"] = rate(
-            count,
-            evaluated_scenarios,
-        )
-
+        metrics[f"{component}_rate"] = rate(count, evaluated_scenarios)
         requested_rate_key = f"{component}_rate_requested"
-
         if requested_rate_key not in metrics:
-            metrics[requested_rate_key] = rate(
-                count,
-                requested_count,
-            )
+            metrics[requested_rate_key] = rate(count, requested_count)
 
     for measurement in (
         "num_low_voltage_buses",
@@ -667,24 +614,21 @@ def print_summary(
     print(
         f"  Avg hard overloaded:   {df['final_num_hard_overloaded_branches'].mean():.4f}"
     )
-    if "J0" in df.columns:
-        print(
-            f"  Avg J0:                {pd.to_numeric(df['J0'], errors='coerce').mean():.4f}"
-        )
-        print(
-            f"  Avg Jfinal:            {pd.to_numeric(df['Jfinal'], errors='coerce').mean():.4f}"
-        )
-        print(
-            f"  Avg delta J:           {pd.to_numeric(df['delta_J'], errors='coerce').mean():+.4f}"
-        )
-        print(
-            "  Avg relative J gain:   "
-            f"{100.0 * pd.to_numeric(df['relative_J_improvement'], errors='coerce').mean():+.2f}%"
-        )
-        print(
-            "  Avg topology utility:  "
-            f"{pd.to_numeric(df['final_topology_utility'], errors='coerce').mean():+.4f}"
-        )
+    print(f"  Avg J0:                {pd.to_numeric(df['J0'], errors='coerce').mean():.4f}")
+    print(
+        f"  Avg Jfinal:            {pd.to_numeric(df['Jfinal'], errors='coerce').mean():.4f}"
+    )
+    print(
+        f"  Avg delta J:           {pd.to_numeric(df['delta_J'], errors='coerce').mean():+.4f}"
+    )
+    print(
+        "  Avg relative J gain:   "
+        f"{100.0 * pd.to_numeric(df['relative_J_improvement'], errors='coerce').mean():+.2f}%"
+    )
+    print(
+        "  Avg topology utility:  "
+        f"{pd.to_numeric(df['final_topology_utility'], errors='coerce').mean():+.4f}"
+    )
     print(f"  Avg safety score:     {df['safety_score'].mean():.4f}")
     print(f"  Total safety score:   {df['safety_score'].sum():.4f}")
 
@@ -742,7 +686,7 @@ def _select_root_policy(
     search_result: Any,
     *,
     constrained: bool,
-    continuation_analysis: Any | None,
+    constraint_analysis: Any | None,
 ) -> _RootPolicyDecision:
     mode = "constrained" if constrained else "ungated"
     raw_policy = normalize_policy(
@@ -753,10 +697,10 @@ def _select_root_policy(
         policy = raw_policy
         allowed_action_ids = tuple(raw_policy)
     else:
-        if continuation_analysis is None:
-            raise ValueError("constrained evaluation requires continuation analysis")
+        if constraint_analysis is None:
+            raise ValueError("constrained evaluation requires root constraint analysis")
         allowed = {
-            int(action_id) for action_id in continuation_analysis.allowed_action_ids
+            int(action_id) for action_id in constraint_analysis.allowed_action_ids
         }
         if 0 in raw_policy:
             allowed.add(0)
@@ -829,19 +773,18 @@ class EvaluationRequest:
     transitions_csv: Path
     checkpoint: Path
     config: EvaluationConfig
-    physics_config: PhysicsConfig | None = None
+    physics_config: PhysicsConfig = DEFAULT_PHYSICS_CONFIG
     output_csv: Path | None = None
     output_json: Path | None = None
     limit: int | None = None
     scenario_ids: tuple[int, ...] | None = None
     quiet: bool = False
-    pf_alg: int | None = None
     disable_cache: bool = False
     stop_policy: str = "no_hard_overloads"
     min_hard_improvement: float = 50.0
     min_soft_improvement: float = 15.0
-    min_gate_visits: int = 5
-    min_gate_visit_fraction: float = 0.01
+    min_constraint_visits: int = 5
+    min_constraint_visit_fraction: float = 0.01
     clear_caches_every: int = 100
     use_dc_screening: bool = False
     dc_top_k: int = 30
@@ -852,16 +795,9 @@ class EvaluationRequest:
     dc_failure_penalty: float = 1_000_000_000.0
     dc_max_depth: int = 0
 
-    @property
-    def resolved_pf_alg(self) -> int:
-        return self.resolved_physics_config.pf_alg
-
-    @property
-    def resolved_physics_config(self) -> PhysicsConfig:
-        legacy = self.config.pf_alg if self.pf_alg is None else self.pf_alg
-        return resolve_physics_config(self.physics_config, legacy)
-
     def __post_init__(self) -> None:
+        if not isinstance(self.physics_config, PhysicsConfig):
+            raise TypeError("physics_config must be a PhysicsConfig.")
         if self.limit is not None and int(self.limit) <= 0:
             raise ValueError("limit must be None or > 0")
         if self.scenario_ids is not None:
@@ -878,13 +814,7 @@ class EvaluationRequest:
             if len(normalized_ids) != len(set(normalized_ids)):
                 raise ValueError("scenario_ids must not contain duplicates.")
 
-            object.__setattr__(
-                self,
-                "scenario_ids",
-                normalized_ids,
-            )
-        if self.resolved_pf_alg not in {1, 2, 3, 4}:
-            raise ValueError("resolved pf_alg must be one of 1, 2, 3, or 4")
+            object.__setattr__(self, "scenario_ids", normalized_ids)
         if self.stop_policy not in STOP_POLICIES:
             raise ValueError("Unsupported stop_policy")
         if (
@@ -894,30 +824,18 @@ class EvaluationRequest:
             )
             < 0
         ):
-            raise ValueError("continuation improvement thresholds must be >= 0")
-        if int(self.min_gate_visits) < 0:
-            raise ValueError("min_gate_visits must be >= 0")
-        if not 0 <= float(self.min_gate_visit_fraction) <= 1:
-            raise ValueError("min_gate_visit_fraction must be in [0, 1]")
+            raise ValueError("constraint improvement thresholds must be >= 0")
+        if int(self.min_constraint_visits) < 0:
+            raise ValueError("min_constraint_visits must be >= 0")
+        if not 0 <= float(self.min_constraint_visit_fraction) <= 1:
+            raise ValueError("min_constraint_visit_fraction must be in [0, 1]")
         if int(self.clear_caches_every) < 0:
             raise ValueError("clear_caches_every must be >= 0")
         if int(self.dc_top_k) <= 0:
             raise ValueError("dc_top_k must be > 0")
-        if (
-            min(
-                int(self.dc_keep_policy_actions),
-                int(self.dc_keep_loading_actions),
-            )
-            < 0
-        ):
+        if min(int(self.dc_keep_policy_actions), int(self.dc_keep_loading_actions)) < 0:
             raise ValueError("DC keep counts must be >= 0")
-        if (
-            min(
-                float(self.dc_policy_weight),
-                float(self.dc_failure_penalty),
-            )
-            < 0
-        ):
+        if min(float(self.dc_policy_weight), float(self.dc_failure_penalty)) < 0:
             raise ValueError("DC weights and penalties must be >= 0")
         if isinstance(self.dc_max_depth, bool) or not isinstance(
             self.dc_max_depth,
@@ -930,11 +848,7 @@ class EvaluationRequest:
         if dc_max_depth < -1:
             raise ValueError("dc_max_depth must be -1 or a non-negative integer.")
 
-        object.__setattr__(
-            self,
-            "dc_max_depth",
-            dc_max_depth,
-        )
+        object.__setattr__(self, "dc_max_depth", dc_max_depth)
 
 
 def _ensure_runtime_dependencies() -> None:
@@ -950,17 +864,11 @@ def _ensure_runtime_dependencies() -> None:
     from grid_topology_ai.actions import make_do_nothing_action as stop_action
     from grid_topology_ai.data import GridFMAdapter as Adapter
     from grid_topology_ai.environment import TopologySwitchingEnv as Env
-    from grid_topology_ai.evaluator import (
-        NeuralPolicyValueEvaluator as Evaluator,
-    )
+    from grid_topology_ai.evaluator import NeuralPolicyValueEvaluator as Evaluator
     from grid_topology_ai.physics.utility import GridFMReward as Reward
     from grid_topology_ai.power_flow.backend import GridFMPowerFlowBackend as Backend
-    from grid_topology_ai.search.mcts import (
-        MCTSConfig as SearchConfig,
-    )
-    from grid_topology_ai.search.mcts import (
-        MCTSPlanner as Planner,
-    )
+    from grid_topology_ai.search.mcts import MCTSConfig as SearchConfig
+    from grid_topology_ai.search.mcts import MCTSPlanner as Planner
     from grid_topology_ai.search.mcts import analyze_root_branches as analyze
 
     GridFMActionSpace, GridFMAdapter = ActionSpace, Adapter
@@ -974,10 +882,9 @@ def _ensure_runtime_dependencies() -> None:
 def _clear_context_caches(context: dict[str, Any] | None) -> None:
     if context is None:
         return
-    for name in ("backend", "action_space", "evaluator"):
-        clear = getattr(context.get(name), "clear_cache", None)
-        if clear is not None:
-            clear()
+    context["backend"].clear_cache()
+    context["action_space"].clear_cache()
+    context["evaluator"].clear_cache()
 
 
 def _release_worker_context() -> None:
@@ -1034,7 +941,7 @@ def init_worker_context(
     require_topology_action_payload(
         evaluator.checkpoint,
         source=str(checkpoint_path),
-        expected_action_space_config=(topology_action_config),
+        expected_action_space_config=topology_action_config,
         expected_action_layout=action_layout,
     )
 
@@ -1045,7 +952,7 @@ def init_worker_context(
         min_loading_for_switch_percent=(
             topology_action_config.min_loading_for_switch_percent
         ),
-        closeable_branch_ids=(topology_action_config.closeable_branch_ids),
+        closeable_branch_ids=topology_action_config.closeable_branch_ids,
         enable_cache=cache,
     )
 
@@ -1088,7 +995,7 @@ def init_worker_context(
             physics_config=physics,
         ),
         "physics_config": physics,
-        "topology_action_config": (topology_action_config),
+        "topology_action_config": topology_action_config,
         "action_layout": action_layout,
         "task_config": task_config,
         "processed_in_worker": 0,
@@ -1115,17 +1022,16 @@ def run_episode(
     max_steps: int,
     gamma: float,
     random_seed: int,
-    use_continuation_gate: bool,
+    policy_mode: str,
     min_hard_improvement: float,
     min_soft_improvement: float,
-    min_gate_visits: int,
-    min_gate_visit_fraction: float,
+    min_constraint_visits: int,
+    min_constraint_visit_fraction: float,
     allow_handoff_with_hard_overloads: bool = False,
     physics_config: PhysicsConfig | None = None,
-    policy_mode: str | None = None,
 ) -> dict[str, Any]:
     _ensure_runtime_dependencies()
-    mode = str(policy_mode or ("constrained" if use_continuation_gate else "ungated"))
+    mode = str(policy_mode)
     if mode not in {"ungated", "constrained"}:
         raise ValueError(f"Unsupported evaluation policy mode: {mode}")
     constrained = mode == "constrained"
@@ -1135,7 +1041,7 @@ def run_episode(
         action_space=action_space,
         reward_fn=reward_fn,
         max_steps=max_steps,
-        allow_handoff_with_hard_overloads=(allow_handoff_with_hard_overloads),
+        allow_handoff_with_hard_overloads=allow_handoff_with_hard_overloads,
     )
     env.reset(scenario_id)
     trace = EvaluationEpisodeTrace()
@@ -1153,26 +1059,25 @@ def run_episode(
         )
 
         planner.reset_rng(search_seed)
-
         result = planner.search_from_env(env)
 
         if result.best_action_id is None:
             break
 
-        analysis = None
+        constraint_analysis = None
         if constrained:
-            analysis = analyze_root_branches(
+            constraint_analysis = analyze_root_branches(
                 result=result,
                 min_hard_improvement=min_hard_improvement,
                 min_soft_improvement=min_soft_improvement,
-                min_visits=min_gate_visits,
-                min_visit_fraction=min_gate_visit_fraction,
+                min_visits=min_constraint_visits,
+                min_visit_fraction=min_constraint_visit_fraction,
                 physics_config=physics_config,
             )
         decision = _select_root_policy(
             result,
             constrained=constrained,
-            continuation_analysis=analysis,
+            constraint_analysis=constraint_analysis,
         )
         trace.constraint_changed_policy_steps += int(decision.constraint_changed_policy)
         if decision.empty_constrained_support:
@@ -1206,14 +1111,10 @@ def run_episode(
     )
 
 
-def run_episode_from_worker_context(
-    scenario_id: int,
-    policy_mode: str | None = None,
-) -> dict[str, Any]:
+def run_episode_from_worker_context(scenario_id: int) -> dict[str, Any]:
     context = _require_worker_context()
     task = context["task_config"]
-    mode = str(policy_mode or task["policy_mode"])
-    constrained = mode == "constrained"
+    mode = str(task["policy_mode"])
     try:
         row = run_episode(
             scenario_id=int(scenario_id),
@@ -1225,16 +1126,17 @@ def run_episode_from_worker_context(
             max_steps=int(task["max_steps"]),
             gamma=float(task["gamma"]),
             random_seed=int(task["random_seed"]),
-            use_continuation_gate=constrained,
+            policy_mode=mode,
             min_hard_improvement=float(task["min_hard_improvement"]),
             min_soft_improvement=float(task["min_soft_improvement"]),
-            min_gate_visits=int(task["min_gate_visits"]),
-            min_gate_visit_fraction=float(task["min_gate_visit_fraction"]),
+            min_constraint_visits=int(task["min_constraint_visits"]),
+            min_constraint_visit_fraction=float(
+                task["min_constraint_visit_fraction"]
+            ),
             allow_handoff_with_hard_overloads=bool(
                 task["allow_handoff_with_hard_overloads"]
             ),
             physics_config=context["physics_config"],
-            policy_mode=mode,
         )
         return {
             "ok": True,
@@ -1243,8 +1145,6 @@ def run_episode_from_worker_context(
             "row": row,
             "traceback": None,
         }
-    # Intentional process-worker boundary: serialize one evaluation-mode
-    # failure with its traceback without terminating the worker pool.
     except Exception:
         return {
             "ok": False,
@@ -1328,16 +1228,16 @@ def _make_task_config(request: EvaluationRequest) -> dict[str, Any]:
         "prior_exponent": float(config.prior_exponent),
         "stop_policy": str(request.stop_policy),
         "device": str(config.device),
-        "pf_alg": request.resolved_physics_config.pf_alg,
-        **physics_config_payload(request.resolved_physics_config),
+        **physics_config_payload(request.physics_config),
         **topology_provenance,
         "disable_cache": bool(request.disable_cache),
-        "use_continuation_gate": bool(config.use_continuation_gate),
-        "policy_mode": config.primary_policy_mode,
+        "policy_mode": config.policy_mode,
         "min_hard_improvement": float(request.min_hard_improvement),
         "min_soft_improvement": float(request.min_soft_improvement),
-        "min_gate_visits": int(request.min_gate_visits),
-        "min_gate_visit_fraction": float(request.min_gate_visit_fraction),
+        "min_constraint_visits": int(request.min_constraint_visits),
+        "min_constraint_visit_fraction": float(
+            request.min_constraint_visit_fraction
+        ),
         "allow_handoff_with_hard_overloads": bool(
             config.allow_handoff_with_hard_overloads
         ),
@@ -1351,7 +1251,7 @@ def _make_task_config(request: EvaluationRequest) -> dict[str, Any]:
         "dc_failure_penalty": float(request.dc_failure_penalty),
         "dc_max_depth": int(request.dc_max_depth),
         "reward_config": GridFMReward(
-            physics_config=request.resolved_physics_config,
+            physics_config=request.physics_config,
             discount_factor=config.gamma,
         ).config_dict(),
     }
@@ -1453,18 +1353,7 @@ def _prepare_results_frame(
     rows: list[dict[str, Any]],
     transitions_path: Path,
 ) -> pd.DataFrame:
-    df = pd.DataFrame(rows)
-    defaults = {
-        "policy_mode": "ungated",
-        "constraint_changed_policy": False,
-        "constraint_changed_policy_steps": 0,
-        "constraint_exhausted": False,
-        "empty_constrained_support_count": 0,
-    }
-    for column, default in defaults.items():
-        if column not in df.columns:
-            df[column] = default
-    df = df.sort_values(["scenario_id"]).reset_index(drop=True)
+    df = pd.DataFrame(rows).sort_values(["scenario_id"]).reset_index(drop=True)
     return attach_difficulty_metadata(
         df=df,
         transitions_path=transitions_path,
@@ -1485,14 +1374,9 @@ def _prepare_output_frame(
         for failure in failures:
             row: dict[str, object] = {
                 "scenario_id": int(failure["scenario_id"]),
-                "policy_mode": str(
-                    failure.get(
-                        "policy_mode",
-                        "ungated",
-                    )
-                ),
+                "policy_mode": str(failure["policy_mode"]),
                 "evaluation_failed": True,
-                "evaluation_error": str(failure.get("traceback") or ""),
+                "evaluation_error": str(failure["traceback"] or ""),
                 "solved": False,
             }
 
@@ -1502,10 +1386,7 @@ def _prepare_output_frame(
             failed_rows.append(row)
 
         output = pd.concat(
-            [
-                output,
-                pd.DataFrame(failed_rows),
-            ],
+            [output, pd.DataFrame(failed_rows)],
             ignore_index=True,
             sort=False,
         )
@@ -1579,26 +1460,17 @@ def evaluate_checkpoint(request: EvaluationRequest) -> dict[str, Any]:
             df=df,
             failed_results=failures,
             requested_scenarios=len(scenario_ids),
-            physics_config=request.resolved_physics_config,
+            physics_config=request.physics_config,
         )
 
         if request.output_csv is not None:
-            request.output_csv.parent.mkdir(
-                parents=True,
-                exist_ok=True,
-            )
+            request.output_csv.parent.mkdir(parents=True, exist_ok=True)
 
-            output_frame = _prepare_output_frame(
-                df,
-                failures,
-            )
+            output_frame = _prepare_output_frame(df, failures)
             temporary_csv = request.output_csv.with_name(
                 f".{request.output_csv.name}.tmp"
             )
-            output_frame.to_csv(
-                temporary_csv,
-                index=False,
-            )
+            output_frame.to_csv(temporary_csv, index=False)
             temporary_csv.replace(request.output_csv)
             print(f"\nSaved evaluation CSV: {request.output_csv}")
         if request.output_json is not None:

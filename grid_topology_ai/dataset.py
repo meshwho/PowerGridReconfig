@@ -216,6 +216,7 @@ class GraphSelfPlayDataset(Dataset):
 
     def __getitem__(self, idx: int) -> dict[str, Any]:
         row = self.examples.iloc[idx]
+        state_path = self._state_path(row["state_id"])
         data = self._load_npz_by_index(idx)
 
         bus_features = data["bus_features"].astype(np.float32)
@@ -235,7 +236,7 @@ class GraphSelfPlayDataset(Dataset):
             branch_status=branch_status,
             edge_active_mask=edge_active_mask,
             action_mask=action_mask,
-            state_path=Path(str(row["state_path"])),
+            state_path=state_path,
         )
 
         bus_features = self._normalize_bus_features(bus_features)
@@ -252,7 +253,6 @@ class GraphSelfPlayDataset(Dataset):
 
         # Strict v3 logic:
         # The value head is trained only on outcome_value_target.
-        # No fallback to discounted returns or scaled rewards.
         target_value = float(row["outcome_value_target"])
 
         return {
@@ -289,12 +289,15 @@ class GraphSelfPlayDataset(Dataset):
             "state_id": str(row["state_id"]),
         }
 
+    def _state_path(self, state_id: object) -> Path:
+        return self.examples_csv.parent / "states" / f"{str(state_id).strip()}.npz"
+
     def _load_npz_by_index(
         self,
         idx: int,
     ) -> dict[str, np.ndarray]:
         row = self.examples.iloc[idx]
-        state_path = Path(str(row["state_path"]))
+        state_path = self._state_path(row["state_id"])
 
         if not state_path.exists():
             raise FileNotFoundError(
@@ -564,12 +567,7 @@ def _normalize_edge_index(
     *,
     num_nodes: int,
 ) -> torch.Tensor:
-    """
-    Convert one graph's edge_index to zero-based node positions.
-
-    State artifacts normally use zero-based node positions. One-based indices
-    are also accepted for compatibility with the existing Graph V2 contract.
-    """
+    """Validate zero-based node positions used by the current graph contract."""
 
     if edge_index.ndim != 2:
         raise ValueError(
@@ -593,16 +591,13 @@ def _normalize_edge_index(
     minimum = int(edge_index.min().item())
     maximum = int(edge_index.max().item())
 
-    if minimum >= 0 and maximum < num_nodes:
-        return edge_index
+    if minimum < 0 or maximum >= num_nodes:
+        raise ValueError(
+            "edge_index contains node indices outside the graph: "
+            f"min={minimum}, max={maximum}, num_nodes={num_nodes}."
+        )
 
-    if minimum >= 1 and maximum <= num_nodes:
-        return edge_index - 1
-
-    raise ValueError(
-        "edge_index contains node indices outside the graph: "
-        f"min={minimum}, max={maximum}, num_nodes={num_nodes}."
-    )
+    return edge_index
 
 
 def _require_sample_fields(

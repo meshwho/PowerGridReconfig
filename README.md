@@ -6,7 +6,7 @@ PowerGridReconfig is a Python 3.11 research framework for emergency topology con
 
 The main learned-control path uses model-guided neural MCTS over a fixed physical scenario pool. Teacher generation remains available as an optional deterministic bootstrap path. Training and evaluation are separate explicit operations, and evaluation runs one selected policy behavior per invocation.
 
-For implementation details, see [docs/self_play.md](docs/self_play.md). The stable bidirectional branch-status policy and artifact compatibility rules are specified in [the topology-action contract](docs/research/topology_action_contract.md).
+For implementation details, see [docs/self_play.md](docs/self_play.md). The stable bidirectional branch-status policy and artifact contract rules are specified in [the topology-action contract](docs/research/topology_action_contract.md).
 
 ## Current implemented pipeline
 
@@ -40,8 +40,10 @@ power flow, and search remain focused subpackages.
 
 Evaluation runs exactly one policy mode per invocation. `EvaluationConfig.policy_mode` is the canonical selector:
 
-- `ungated` is the default learned-controller behavior: neural policy plus MCTS without continuation-gate filtering;
-- `constrained` applies continuation filtering to the root policy before action selection and is selected by CLI with `--use-continuation-gate`.
+- `ungated` is the default learned-controller behavior: neural policy plus MCTS without additional root-policy constraint filtering;
+- `constrained` applies root-policy constraint analysis before action selection and is selected with `--policy-mode constrained`.
+
+The current CLI has no `--use-continuation-gate` compatibility alias.
 
 Evaluation produces canonical per-scenario physical outcome fields and aggregate metrics for that single run. It does not automatically run paired ungated/constrained comparisons, bootstrap confidence intervals, checkpoint ranking, promotion, or acceptance gates.
 
@@ -51,6 +53,7 @@ Evaluation produces canonical per-scenario physical outcome fields and aggregate
   feasibility alone is never a solved episode.
 - Generation `PF_ALG` must equal evaluation `PF_ALG`.
 - The current canonical `PF_ALG` is `3`.
+- MCTS terminal utility is undiscounted and all MCTS-facing `gamma` values are exactly `1.0`.
 - The MCTS visit distribution is the self-play policy target.
 - Every branch has one stable policy slot. Its executable direction is state-dependent: active means open, inactive and explicitly allowed means close.
 - Self-play examples, checkpoints, and evaluation require exact topology-action configuration and ordered action-layout provenance.
@@ -178,9 +181,9 @@ statuses, and inverted voltage or generator limits.
 
 The exact schema version, ordered feature columns, schema fingerprint,
 `edge_index` semantics, and bus-ID semantics are stored in state NPZ files,
-self-play rows, replay metadata, and graph checkpoints.
+self-play rows, and graph checkpoints.
 
-## Artifact compatibility
+## Artifact contracts
 
 The current exact contract versions are:
 
@@ -191,27 +194,24 @@ The current exact contract versions are:
 | state feature schema | `3` |
 | evaluation metrics | `6` |
 | checkpoint | `7` |
-| replay buffer schema | `6` |
 | physics configuration | `1` |
 | topology action | `1` |
 
-State NPZ files, examples, replay rows, and checkpoints carry exact
-state-feature schema provenance, including the schema version, fingerprint,
-ordered bus and branch columns, contiguous `edge_index` semantics, and original
-bus-ID semantics.
+State NPZ files, examples, and checkpoints carry exact state-feature schema
+provenance, including the schema version, fingerprint, ordered bus and branch
+columns, contiguous `edge_index` semantics, and original bus-ID semantics.
 
-Examples and replay rows also carry physical, value-target,
-physics-configuration, and topology-action provenance. Checkpoints additionally
-carry the ordered `stop_plus_branch_status_v1` action layout and its
-fingerprint. Evaluation loads the topology-action configuration and layout from
-the checkpoint and requires an exact match before creating its runtime action
-space. Consumers fail closed on missing, old, reordered, or mismatched
-provenance.
+Examples also carry physical, value-target, physics-configuration, and
+topology-action provenance. Checkpoints additionally carry the ordered
+`stop_plus_branch_status_v1` action layout and its fingerprint. Evaluation loads
+the topology-action configuration and layout from the checkpoint and requires
+an exact match before creating its runtime action space. Consumers fail closed
+on missing, old, reordered, or mismatched provenance.
 
 Artifacts produced under former solved semantics, before topology-action
-provenance, or before state feature schema `v3` are scientifically
-incompatible. They are never relabeled or upgraded in place. Regenerate states,
-self-play examples, replay, and checkpoints in this order:
+provenance, or before state feature schema `v3` are scientifically incompatible.
+They are never relabeled or upgraded in place. Regenerate states, self-play
+examples, and checkpoints in this order:
 
 ```bash
 # 1. Fresh episodes and outcome targets.
@@ -220,14 +220,22 @@ python -m grid_topology_ai.cli self-play <POOL_RAW_DIR> \
   --transitions <POOL_TRANSITIONS.csv> \
   --output <NEW_SELF_PLAY_DIR> \
   --pf-alg 3 \
+  --gamma 1.0 \
   --require-connected-after-switch \
   --min-loading-for-switch-percent 0.0
 
-# 2. Fresh checkpoint; do not initialize from a legacy checkpoint.
+# 2. Fresh checkpoint; do not initialize from an incompatible old checkpoint.
 python -m grid_topology_ai.cli train <NEW_EXAMPLES_CSV> --output <NEW_CHECKPOINT.pt> --device cpu
 
 # 3. Fresh fixed-evaluation rows and metrics.
-python -m grid_topology_ai.cli evaluate <EVAL_RAW_DIR> --transitions <EVAL_TRANSITIONS.csv> --checkpoint <NEW_CHECKPOINT.pt> --pf-alg 3 --output-csv <NEW_EVAL_RESULTS.csv> --output-json <NEW_EVAL_METRICS.json>
+python -m grid_topology_ai.cli evaluate <EVAL_RAW_DIR> \
+  --transitions <EVAL_TRANSITIONS.csv> \
+  --checkpoint <NEW_CHECKPOINT.pt> \
+  --policy-mode ungated \
+  --pf-alg 3 \
+  --gamma 1.0 \
+  --output-csv <NEW_EVAL_RESULTS.csv> \
+  --output-json <NEW_EVAL_METRICS.json>
 ```
 
 Archive incompatible old artifacts and do not mix them with regenerated examples, checkpoints, or evaluation outputs.
@@ -296,7 +304,8 @@ checkpoint explicitly; omit `--checkpoint` to use the heuristic evaluator.
 python -m grid_topology_ai.cli self-play RAW_DIR \
   --transitions TRANSITIONS.csv \
   --output data/self_play/mcts_v0 \
-  --checkpoint CHECKPOINT.pt
+  --checkpoint CHECKPOINT.pt \
+  --gamma 1.0
 ```
 
 Generation writes self-play examples only. Training and evaluation are separate,
@@ -304,13 +313,14 @@ explicit operations; generation does not promote checkpoints or run a final test
 
 ## Package structure
 
-- `grid_topology_ai/config`: typed configuration and validation.
+- `grid_topology_ai/config.py`: typed configuration and validation.
 - `grid_topology_ai/self_play`: direct example generation, example contracts, and small artifact helpers.
 - `grid_topology_ai/training`: graph policy-value training, checkpoints, metrics, and splits.
 - `grid_topology_ai/evaluation.py`: checkpoint evaluation and metrics.
 - `grid_topology_ai/teacher_runtime.py`: deterministic teacher generation runtime.
 - `grid_topology_ai/search`: MCTS planning components.
-- `grid_topology_ai/models`: graph datasets and neural models.
+- `grid_topology_ai/model.py`: graph policy-value network.
+- `grid_topology_ai/dataset.py`: graph dataset construction.
 - `grid_topology_ai/cli.py`: the unified teacher, training, self-play, and evaluation CLI.
 - `tests`: unit, contract, and smoke tests.
 

@@ -1126,11 +1126,7 @@ class MCTSPlanner:
         """Evaluate a leaf under the shared terminal-utility contract."""
 
         if node.done:
-            evidence = getattr(
-                node.env,
-                "terminal_outcome_evidence",
-                None,
-            )
+            evidence = node.env.terminal_outcome_evidence
             if evidence is None:
                 raise RuntimeError(
                     "Terminal MCTS node is missing terminal outcome evidence."
@@ -1442,19 +1438,6 @@ class ContinuationDecision:
     best_improvement: float
     branches: list[BranchContinuation]
 
-    @property
-    def selected_action_id(self) -> int:
-        """Compatibility alias for legacy diagnostics and scripts."""
-        return 0 if self.recommended_action_id is None else self.recommended_action_id
-
-    @property
-    def selected_branch_id(self) -> int | None:
-        return self.recommended_branch_id
-
-    @property
-    def selected_reason(self) -> str:
-        return self.recommendation_reason
-
 
 def topology_penalty(
     state: GridFMState,
@@ -1557,8 +1540,8 @@ def _is_branch_allowed(
     min_hard_improvement: float,
     min_soft_improvement: float,
 ) -> tuple[bool, str]:
-    final_hard = int(best_final_metrics.get("num_hard_overloaded_branches", 999))
-    final_max = float(best_final_metrics.get("max_loading_percent", 999.0))
+    final_hard = int(best_final_metrics["num_hard_overloaded_branches"])
+    final_max = float(best_final_metrics["max_loading_percent"])
 
     if not confidence_ok:
         return False, "low_mcts_confidence"
@@ -1612,7 +1595,7 @@ def analyze_root_branches(
         )
 
     root_penalty = topology_penalty(root_state, physics_config=config)
-    root_num_hard = int(root_state.metrics.get("num_hard_overloaded_branches", 0))
+    root_num_hard = int(root_state.metrics["num_hard_overloaded_branches"])
     root_has_hard = root_num_hard > 0
     total_visits = max(sum(child.visit_count for child in root.children.values()), 1)
     branches: list[BranchContinuation] = []

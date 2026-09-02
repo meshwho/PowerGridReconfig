@@ -933,18 +933,6 @@ def make_policy_from_final_beam(
     return policy, counts_by_action
 
 
-def _safe_short_sequence(best_node) -> str:
-    if hasattr(best_node, "short_sequence"):
-        return str(best_node.short_sequence())
-
-    parts = []
-
-    for branch_id in getattr(best_node, "branch_ids", []):
-        parts.append("stop" if branch_id is None else str(branch_id))
-
-    return " -> ".join(parts) if parts else "(root)"
-
-
 _TEACHER_SELECTION_MODE = "top_j_per_switch_then_redispatch_pareto"
 _TERMINAL_REDISPATCH_RELATIVE_EPSILON = 0.01
 _TERMINAL_REDISPATCH_ABSOLUTE_EPSILON_MW = 1.0
@@ -1170,7 +1158,6 @@ def _selection_provenance(
 
 _RAW_SOURCE_FILES = ("bus_data.parquet", "branch_data.parquet", "gen_data.parquet")
 _RUNTIME_FIELDS = frozenset({"disable_cache"})
-_TEACHER_RUN_ID_CACHE: dict[tuple[str, str], str] = {}
 
 
 def _normalize(value: Any) -> Any:
@@ -1204,57 +1191,6 @@ def semantic_teacher_task_config(task_config: Mapping[str, Any]) -> dict[str, An
     )
 
 
-def _legacy_teacher_source_matches(
-    existing: object,
-    current: object,
-) -> bool:
-    if existing == current:
-        return True
-    if not isinstance(existing, Mapping) or not isinstance(current, Mapping):
-        return False
-
-    legacy_files = existing.get("files")
-    current_raw = current.get("raw_files")
-    current_transitions = current.get("transitions")
-    if (
-        not isinstance(legacy_files, Mapping)
-        or not isinstance(current_raw, Mapping)
-        or not isinstance(current_transitions, Mapping)
-    ):
-        return False
-
-    legacy_raw_sizes: dict[str, int] = {}
-    legacy_other_sizes: list[int] = []
-    for raw_path, metadata in legacy_files.items():
-        if not isinstance(metadata, Mapping):
-            return False
-        try:
-            size = int(metadata["size"])
-        except (KeyError, TypeError, ValueError):
-            return False
-        name = str(raw_path).replace("\\", "/").rsplit("/", 1)[-1]
-        if name in _RAW_SOURCE_FILES:
-            if name in legacy_raw_sizes:
-                return False
-            legacy_raw_sizes[name] = size
-        else:
-            legacy_other_sizes.append(size)
-
-    try:
-        current_raw_sizes = {
-            name: int(current_raw[name]["size"])
-            for name in _RAW_SOURCE_FILES
-        }
-        transition_size = int(current_transitions["size"])
-    except (KeyError, TypeError, ValueError):
-        return False
-
-    return (
-        legacy_raw_sizes == current_raw_sizes
-        and legacy_other_sizes == [transition_size]
-    )
-
-
 def _write_teacher_checkpoint_identity(
     config_path: Path,
     identity: Mapping[str, Any],
@@ -1277,33 +1213,25 @@ def _write_teacher_checkpoint_identity(
 def ensure_teacher_checkpoint_config(
     config_path: Path, config: Mapping[str, Any]
 ) -> None:
-    """Persist a portable resume identity and reject semantic mismatches."""
-    task_config = config.get("task_config")
+    """Persist the current portable resume identity and reject mismatches."""
+    task_config = config["task_config"]
     if not isinstance(task_config, Mapping):
-        raise ValueError("Teacher checkpoint config is missing task_config.")
+        raise ValueError("Teacher checkpoint task_config must be a mapping.")
     identity = _normalize(
         {
-            "source_identity": config.get("source_identity"),
-            "scenario_ids": config.get("scenario_ids"),
+            "source_identity": config["source_identity"],
+            "scenario_ids": config["scenario_ids"],
             "task_config": semantic_teacher_task_config(task_config),
         }
     )
     if config_path.exists():
         existing = json.loads(config_path.read_text(encoding="utf-8"))
-        same_scenarios = existing.get("scenario_ids") == identity["scenario_ids"]
-        same_task = existing.get("task_config") == identity["task_config"]
-        same_source = _legacy_teacher_source_matches(
-            existing.get("source_identity"),
-            identity["source_identity"],
-        )
-        if not (same_scenarios and same_task and same_source):
+        if existing != identity:
             raise RuntimeError(
                 "Teacher checkpoint configuration does not match the current "
                 "semantic inputs or settings. Use the original data/settings "
                 "or a different output directory."
             )
-        if existing != identity:
-            _write_teacher_checkpoint_identity(config_path, identity)
         return
     _write_teacher_checkpoint_identity(config_path, identity)
 
@@ -1312,79 +1240,23 @@ def load_teacher_task_config(path: Path) -> dict[str, Any]:
     payload = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
         raise ValueError(f"Teacher task config must contain a JSON object: {path}")
-    task_config = payload.get("task_config", payload)
+    task_config = payload["task_config"]
     if not isinstance(task_config, dict):
-        raise ValueError(f"Teacher task config must contain a JSON object: {path}")
+        raise ValueError(f"Teacher task_config must contain a JSON object: {path}")
     return dict(task_config)
 
 
-def _existing_teacher_run_id(output_dir: Path) -> str | None:
-    checkpoint_path = output_dir / "teacher_checkpoint.jsonl"
-    if not checkpoint_path.is_file():
-        return None
-
-    run_ids: set[str] = set()
-    with checkpoint_path.open("r", encoding="utf-8", errors="replace") as handle:
-        for raw_line in handle:
-            line = raw_line.strip()
-            if not line:
-                continue
-            try:
-                payload = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            rows = payload.get("rows")
-            if not isinstance(rows, list):
-                continue
-            for row in rows:
-                if not isinstance(row, Mapping):
-                    continue
-                value = row.get("run_id")
-                if isinstance(value, str) and value.strip():
-                    run_ids.add(value.strip())
-
-    if len(run_ids) > 1:
-        raise RuntimeError(
-            "Teacher checkpoint contains multiple run_id values and cannot be "
-            "resumed safely."
-        )
-    return next(iter(run_ids), None)
-
-
 def teacher_run_id(states_dir: str | Path, task_config: Mapping[str, Any]) -> str:
-    """Return a relocation-stable teacher run ID, preserving legacy resumes."""
-    output_dir = Path(states_dir).parent
-    semantic_task = semantic_teacher_task_config(task_config)
-    task_key = json.dumps(
-        semantic_task,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-        allow_nan=False,
-    )
-    cache_key = (str(output_dir), task_key)
-    cached = _TEACHER_RUN_ID_CACHE.get(cache_key)
-    if cached is not None:
-        return cached
-
-    existing = _existing_teacher_run_id(output_dir)
-    if existing is not None:
-        _TEACHER_RUN_ID_CACHE[cache_key] = existing
-        return existing
-
-    config_path = output_dir / "teacher_checkpoint_config.json"
-    source_identity = None
-    scenario_ids = None
-    if config_path.is_file():
-        checkpoint_config = json.loads(config_path.read_text(encoding="utf-8"))
-        if isinstance(checkpoint_config, Mapping):
-            source_identity = checkpoint_config.get("source_identity")
-            scenario_ids = checkpoint_config.get("scenario_ids")
+    """Return a teacher run ID derived only from semantic inputs and settings."""
+    config_path = Path(states_dir).parent / "teacher_checkpoint_config.json"
+    checkpoint_config = json.loads(config_path.read_text(encoding="utf-8"))
+    if not isinstance(checkpoint_config, Mapping):
+        raise ValueError(f"Teacher checkpoint config must be a JSON object: {config_path}")
 
     payload = {
-        "source_identity": source_identity,
-        "scenario_ids": scenario_ids,
-        "task_config": semantic_task,
+        "source_identity": checkpoint_config["source_identity"],
+        "scenario_ids": checkpoint_config["scenario_ids"],
+        "task_config": semantic_teacher_task_config(task_config),
     }
     encoded = json.dumps(
         payload,
@@ -1393,6 +1265,4 @@ def teacher_run_id(states_dir: str | Path, task_config: Mapping[str, Any]) -> st
         separators=(",", ":"),
         allow_nan=False,
     ).encode("utf-8")
-    run_id = f"impact_teacher_{hashlib.sha256(encoded).hexdigest()[:24]}"
-    _TEACHER_RUN_ID_CACHE[cache_key] = run_id
-    return run_id
+    return f"impact_teacher_{hashlib.sha256(encoded).hexdigest()[:24]}"

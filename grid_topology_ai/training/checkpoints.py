@@ -10,16 +10,14 @@ from typing import TYPE_CHECKING, Any, Mapping
 import numpy as np
 import torch
 
-from grid_topology_ai.config import PhysicsConfig
-from grid_topology_ai.evaluator import require_checkpoint_contracts
-from grid_topology_ai.dataset import (
-    GraphSelfPlayDataset,
-)
-from grid_topology_ai.training.metrics import build_value_target_diagnostics
 from grid_topology_ai.actions import (
     action_layout_to_list,
     require_topology_action_payload,
 )
+from grid_topology_ai.config import PhysicsConfig
+from grid_topology_ai.dataset import GraphSelfPlayDataset
+from grid_topology_ai.evaluator import require_checkpoint_contracts
+from grid_topology_ai.training.metrics import build_value_target_diagnostics
 
 _SELECTOR_METRIC_NAMES = {
     "val_loss": "validation_loss",
@@ -130,7 +128,6 @@ def get_git_commit(repo_root: Path) -> str | None:
         ).strip()
     except (OSError, subprocess.SubprocessError):
         return None
-
     return commit or None
 
 
@@ -140,14 +137,15 @@ def make_json_safe(value: Any) -> Any:
     if isinstance(value, (str, int, float, bool)) or value is None:
         return value
     if isinstance(value, dict):
-        return {str(k): make_json_safe(v) for k, v in value.items()}
+        return {str(key): make_json_safe(item) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
-        return [make_json_safe(v) for v in value]
+        return [make_json_safe(item) for item in value]
     return str(value)
 
 
 def build_training_config_payload(request: "TrainingRequest") -> dict[str, Any]:
     """Serialize only settings that affect training semantics."""
+
     return {
         "seed": int(request.seed),
         "epochs": int(request.config.epochs),
@@ -182,7 +180,6 @@ def make_checkpoint(
         key: value.detach().cpu().clone() for key, value in model.state_dict().items()
     }
     normalization = dataset.normalization_state_dict()
-    repo_root = request.project_root.resolve()
     validation_examples_count = (
         0 if validation_dataset is None else int(len(validation_dataset))
     )
@@ -190,14 +187,8 @@ def make_checkpoint(
         0
         if validation_dataset is None
         else int(validation_dataset.examples["scenario_id"].nunique())
-        if "scenario_id" in validation_dataset.examples.columns
-        else 0
     )
-    training_scenario_count = (
-        int(dataset.examples["scenario_id"].nunique())
-        if "scenario_id" in dataset.examples.columns
-        else 0
-    )
+    training_scenario_count = int(dataset.examples["scenario_id"].nunique())
     value_target_diagnostics = build_value_target_diagnostics(dataset=dataset)
 
     checkpoint = {
@@ -221,13 +212,12 @@ def make_checkpoint(
         "validation_scenario_count": validation_scenario_count,
         "training_scenario_count": training_scenario_count,
         "scenario_split_verified": bool(validation_dataset is not None),
-        "value_scale": 1.0,
         "value_target_mode": "outcome_value_target",
         "normalize_features": bool(request.normalize_features),
         "device_used_for_training": str(device),
         "amp_used": bool(use_amp),
         "created_at": datetime.now().isoformat(timespec="seconds"),
-        "git_commit": get_git_commit(repo_root),
+        "git_commit": get_git_commit(request.project_root.resolve()),
         "training_config": build_training_config_payload(request),
         "value_target_diagnostics": value_target_diagnostics,
         "bus_feature_mean": normalization["bus_feature_mean"],
@@ -238,10 +228,8 @@ def make_checkpoint(
         "normalization_frozen_from_init_checkpoint": False,
         "normalization_source_checkpoint_sha256": None,
     }
-
     if normalization_metadata is not None:
         checkpoint.update(make_json_safe(dict(normalization_metadata)))
-
     return checkpoint
 
 
@@ -292,18 +280,9 @@ def load_initial_checkpoint_into_model(
         expected_action_space_config=dataset.topology_action_config,
     )
 
-    if checkpoint.get("policy_layout") != dataset.policy_layout:
+    if checkpoint["policy_layout"] != dataset.policy_layout:
         raise ValueError(
             "Initial checkpoint policy layout does not match the dataset. "
-            f"Checkpoint: {checkpoint_path}"
-        )
-
-    expected_model_type = "graph_policy_value_net_v2"
-    actual_model_type = str(checkpoint.get("model_type", ""))
-    if actual_model_type != expected_model_type:
-        raise ValueError(
-            "Initial checkpoint model_type mismatch. "
-            f"Expected {expected_model_type!r}, got {actual_model_type!r}. "
             f"Checkpoint: {checkpoint_path}"
         )
 
@@ -313,12 +292,7 @@ def load_initial_checkpoint_into_model(
         "hidden_dim": int(hidden_dim),
         "num_layers": int(num_layers),
     }
-
     for key, expected_value in checks.items():
-        if key not in checkpoint:
-            raise KeyError(
-                f"Initial checkpoint is missing required key {key!r}: {checkpoint_path}"
-            )
         actual_value = int(checkpoint[key])
         if actual_value != expected_value:
             raise ValueError(
@@ -328,15 +302,13 @@ def load_initial_checkpoint_into_model(
             )
 
     expected_dropout = float(dropout)
-    if float(checkpoint.get("dropout", -1.0)) != expected_dropout:
+    actual_dropout = float(checkpoint["dropout"])
+    if actual_dropout != expected_dropout:
         raise ValueError(
             "Initial checkpoint dropout mismatch. "
-            f"Expected {expected_dropout}, got {checkpoint.get('dropout')}. "
+            f"Expected {expected_dropout}, got {actual_dropout}. "
             f"Checkpoint: {checkpoint_path}"
         )
-
-    if "model_state_dict" not in checkpoint:
-        raise KeyError(f"Initial checkpoint has no model_state_dict: {checkpoint_path}")
 
     model.load_state_dict(checkpoint["model_state_dict"])
 
@@ -345,7 +317,7 @@ def load_initial_checkpoint_into_model(
     print("INITIAL CHECKPOINT LOADED")
     print("=" * 100)
     print(f"Checkpoint:     {checkpoint_path}")
-    print(f"Model type:     {actual_model_type}")
+    print(f"Model type:     {checkpoint['model_type']}")
     print(f"Hidden dim:     {checkpoint['hidden_dim']}")
     print(f"Num layers:     {checkpoint['num_layers']}")
     print("Policy actions: dynamic per graph")

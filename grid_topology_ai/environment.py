@@ -362,20 +362,9 @@ class TopologySwitchingEnv:
                 raise RuntimeError(
                     "Terminal physical assessment requires a current state."
                 )
-            physics_config = getattr(
-                self.backend,
-                "physics_config",
-                None,
-            )
-            if physics_config is None:
-                physics_config = getattr(
-                    self.reward_fn,
-                    "physics_config",
-                    None,
-                )
             topology_value = state_utility(
                 self.current_state,
-                physics_config=physics_config,
+                physics_config=self.backend.physics_config,
             )
 
         evidence = TerminalOutcomeEvidence(

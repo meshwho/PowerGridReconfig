@@ -10,12 +10,8 @@ from typing import Any
 import numpy as np
 
 from grid_topology_ai.config import DEFAULT_PHYSICS_CONFIG, PhysicsConfig
+from grid_topology_ai.physics.objective import assess_physical_state
 from grid_topology_ai.state import BRANCH_FEATURE_COLUMNS, GridFMState
-from grid_topology_ai.physics.objective import (
-    HARD_OVERLOAD_LIMIT_PERCENT,
-    OVERLOAD_LIMIT_PERCENT,
-    assess_physical_state,
-)
 
 
 DEFAULT_STATE_UTILITY_SCALE = 500.0
@@ -55,9 +51,6 @@ class GridUtilityWeights:
 
 
 DEFAULT_GRID_UTILITY_WEIGHTS = GridUtilityWeights()
-
-# Preserve the established continuation-analysis ranking while keeping the
-# scoring implementation and its coefficients in one authoritative module.
 CONTINUATION_GRID_UTILITY_WEIGHTS = GridUtilityWeights(
     total_overload=4.0,
     hard_overload=30.0,
@@ -80,50 +73,19 @@ class GridUtilityBreakdown:
     voltage_violation: float
     max_loading_excess: float
     penalty: float
-    generator_p_violation_mw: float = 0.0
-    num_generator_p_violations: int = 0
-    generator_q_violation_mvar: float = 0.0
-    num_generator_q_violations: int = 0
-    angle_difference_violation_degrees: float = 0.0
-    num_angle_difference_violations: int = 0
-    invalid_physical_state_flags: int = 0
+    generator_p_violation_mw: float
+    num_generator_p_violations: int
+    generator_q_violation_mvar: float
+    num_generator_q_violations: int
+    angle_difference_violation_degrees: float
+    num_angle_difference_violations: int
+    invalid_physical_state_flags: int
 
 
-def _resolved_limits(
-    *,
-    physics_config: PhysicsConfig | None,
-    overload_limit_percent: float | None,
-    hard_overload_limit_percent: float | None,
-    thermal_tolerance_percent: float | None,
-) -> tuple[float, float, float]:
-    config = physics_config or DEFAULT_PHYSICS_CONFIG
-    overload_limit = (
-        config.overload_limit_percent
-        if overload_limit_percent is None
-        else float(overload_limit_percent)
-    )
-    hard_overload_limit = (
-        config.hard_overload_limit_percent
-        if hard_overload_limit_percent is None
-        else float(hard_overload_limit_percent)
-    )
-    tolerance = (
-        config.thermal_tolerance_percent
-        if thermal_tolerance_percent is None
-        else float(thermal_tolerance_percent)
-    )
-    if not all(
-        math.isfinite(value)
-        for value in (overload_limit, hard_overload_limit, tolerance)
-    ):
-        raise ValueError("Grid utility limits and tolerance must be finite.")
-    if overload_limit < 0.0 or hard_overload_limit < overload_limit:
-        raise ValueError(
-            "Expected 0 <= overload_limit_percent <= hard_overload_limit_percent."
-        )
-    if tolerance < 0.0:
-        raise ValueError("thermal_tolerance_percent must be non-negative.")
-    return overload_limit, hard_overload_limit, tolerance
+def _require_physics_config(physics_config: PhysicsConfig) -> PhysicsConfig:
+    if not isinstance(physics_config, PhysicsConfig):
+        raise TypeError("physics_config must be a PhysicsConfig.")
+    return physics_config
 
 
 def _require_discount_factor(value: object) -> float:
@@ -140,14 +102,14 @@ def _require_discount_factor(value: object) -> float:
 
 
 def _nonnegative_metric(state: GridFMState, key: str) -> float:
-    value = float(state.metrics.get(key, 0.0))
+    value = float(state.metrics[key])
     if not math.isfinite(value) or value < 0.0:
         raise ValueError(f"{key} must be finite and non-negative.")
     return value
 
 
 def _nonnegative_count(state: GridFMState, key: str) -> int:
-    raw = state.metrics.get(key, 0)
+    raw = state.metrics[key]
     if isinstance(raw, bool):
         raise ValueError(f"{key} must be a non-negative integer.")
     value = int(raw)
@@ -163,13 +125,10 @@ def _invalid_physical_state_flags(state: GridFMState) -> int:
         "all_values_finite",
         "topology_connected",
     ):
-        if key not in state.metrics:
-            continue
         value = state.metrics[key]
         if not isinstance(value, (bool, np.bool_)):
             raise ValueError(f"{key} must be a bool.")
-        if not bool(value):
-            count += 1
+        count += int(not bool(value))
     return count
 
 
@@ -189,21 +148,17 @@ def active_branch_loadings(state: GridFMState) -> np.ndarray:
 def grid_utility_breakdown(
     state: GridFMState,
     *,
-    physics_config: PhysicsConfig | None = None,
-    overload_limit_percent: float | None = None,
-    hard_overload_limit_percent: float | None = None,
-    thermal_tolerance_percent: float | None = None,
+    physics_config: PhysicsConfig = DEFAULT_PHYSICS_CONFIG,
     weights: GridUtilityWeights = DEFAULT_GRID_UTILITY_WEIGHTS,
 ) -> GridUtilityBreakdown:
     """Build the canonical physical penalty and all of its components."""
 
-    overload_limit, hard_limit, tolerance = _resolved_limits(
-        physics_config=physics_config,
-        overload_limit_percent=overload_limit_percent,
-        hard_overload_limit_percent=hard_overload_limit_percent,
-        thermal_tolerance_percent=thermal_tolerance_percent,
-    )
+    config = _require_physics_config(physics_config)
+    overload_limit = config.overload_limit_percent
+    hard_limit = config.hard_overload_limit_percent
+    tolerance = config.thermal_tolerance_percent
     loading = active_branch_loadings(state)
+
     total_overload = float(
         np.sum(
             np.where(
@@ -222,29 +177,15 @@ def grid_utility_breakdown(
             )
         )
     )
-    num_overloaded = int(state.metrics["num_overloaded_branches"])
-    num_hard_overloaded = int(state.metrics["num_hard_overloaded_branches"])
-    if num_overloaded < 0 or not 0 <= num_hard_overloaded <= num_overloaded:
+    num_overloaded = _nonnegative_count(state, "num_overloaded_branches")
+    num_hard_overloaded = _nonnegative_count(
+        state, "num_hard_overloaded_branches"
+    )
+    if num_hard_overloaded > num_overloaded:
         raise ValueError("Invalid overloaded-branch counts in state metrics.")
 
-    voltage_violation = float(
-        state.metrics.get(
-            "total_voltage_violation",
-            int(state.metrics.get("num_low_voltage_buses", 0))
-            + int(state.metrics.get("num_high_voltage_buses", 0)),
-        )
-    )
-    if not math.isfinite(voltage_violation) or voltage_violation < 0.0:
-        raise ValueError("total_voltage_violation must be finite and non-negative.")
-
-    max_loading = float(
-        state.metrics.get(
-            "max_loading_percent",
-            np.max(loading) if loading.size else 0.0,
-        )
-    )
-    if not math.isfinite(max_loading) or max_loading < 0.0:
-        raise ValueError("max_loading_percent must be finite and non-negative.")
+    voltage_violation = _nonnegative_metric(state, "total_voltage_violation")
+    max_loading = _nonnegative_metric(state, "max_loading_percent")
     max_loading_excess = (
         max_loading - overload_limit
         if max_loading > overload_limit + tolerance
@@ -252,28 +193,22 @@ def grid_utility_breakdown(
     )
 
     generator_p_violation_mw = _nonnegative_metric(
-        state,
-        "total_generator_p_violation_mw",
+        state, "total_generator_p_violation_mw"
     )
     num_generator_p_violations = _nonnegative_count(
-        state,
-        "num_generator_p_violations",
+        state, "num_generator_p_violations"
     )
     generator_q_violation_mvar = _nonnegative_metric(
-        state,
-        "total_generator_q_violation_mvar",
+        state, "total_generator_q_violation_mvar"
     )
     num_generator_q_violations = _nonnegative_count(
-        state,
-        "num_generator_q_violations",
+        state, "num_generator_q_violations"
     )
     angle_difference_violation_degrees = _nonnegative_metric(
-        state,
-        "total_angle_difference_violation_degrees",
+        state, "total_angle_difference_violation_degrees"
     )
     num_angle_difference_violations = _nonnegative_count(
-        state,
-        "num_angle_difference_violations",
+        state, "num_angle_difference_violations"
     )
     invalid_physical_state_flags = _invalid_physical_state_flags(state)
 
@@ -284,8 +219,7 @@ def grid_utility_breakdown(
         generator_q_violation_mvar + float(num_generator_q_violations)
     )
     angle_difference_violation = (
-        angle_difference_violation_degrees
-        + float(num_angle_difference_violations)
+        angle_difference_violation_degrees + float(num_angle_difference_violations)
     )
 
     penalty = (
@@ -324,10 +258,7 @@ def grid_utility_breakdown(
 def state_security_penalty(
     state: GridFMState,
     *,
-    physics_config: PhysicsConfig | None = None,
-    overload_limit_percent: float | None = None,
-    hard_overload_limit_percent: float | None = None,
-    thermal_tolerance_percent: float | None = None,
+    physics_config: PhysicsConfig = DEFAULT_PHYSICS_CONFIG,
     weights: GridUtilityWeights = DEFAULT_GRID_UTILITY_WEIGHTS,
 ) -> float:
     """Return the canonical lower-is-better grid security penalty."""
@@ -335,9 +266,6 @@ def state_security_penalty(
     return grid_utility_breakdown(
         state,
         physics_config=physics_config,
-        overload_limit_percent=overload_limit_percent,
-        hard_overload_limit_percent=hard_overload_limit_percent,
-        thermal_tolerance_percent=thermal_tolerance_percent,
         weights=weights,
     ).penalty
 
@@ -345,7 +273,7 @@ def state_security_penalty(
 def state_utility(
     state: GridFMState,
     *,
-    physics_config: PhysicsConfig | None = None,
+    physics_config: PhysicsConfig = DEFAULT_PHYSICS_CONFIG,
     utility_scale: float = DEFAULT_STATE_UTILITY_SCALE,
     weights: GridUtilityWeights = DEFAULT_GRID_UTILITY_WEIGHTS,
 ) -> float:
@@ -365,10 +293,7 @@ def state_utility(
 def state_potential(
     state: GridFMState,
     *,
-    physics_config: PhysicsConfig | None = None,
-    overload_limit_percent: float | None = None,
-    hard_overload_limit_percent: float | None = None,
-    thermal_tolerance_percent: float | None = None,
+    physics_config: PhysicsConfig = DEFAULT_PHYSICS_CONFIG,
     weights: GridUtilityWeights = DEFAULT_GRID_UTILITY_WEIGHTS,
 ) -> float:
     """Return the higher-is-better potential ``Phi(s) = -penalty(s)``."""
@@ -376,9 +301,6 @@ def state_potential(
     return -state_security_penalty(
         state,
         physics_config=physics_config,
-        overload_limit_percent=overload_limit_percent,
-        hard_overload_limit_percent=hard_overload_limit_percent,
-        thermal_tolerance_percent=thermal_tolerance_percent,
         weights=weights,
     )
 
@@ -388,10 +310,7 @@ def potential_shaping_reward(
     after_state: GridFMState,
     *,
     discount_factor: float,
-    physics_config: PhysicsConfig | None = None,
-    overload_limit_percent: float | None = None,
-    hard_overload_limit_percent: float | None = None,
-    thermal_tolerance_percent: float | None = None,
+    physics_config: PhysicsConfig = DEFAULT_PHYSICS_CONFIG,
     weights: GridUtilityWeights = DEFAULT_GRID_UTILITY_WEIGHTS,
 ) -> float:
     """Return policy-invariant potential shaping ``gamma*Phi(s') - Phi(s)``."""
@@ -400,17 +319,11 @@ def potential_shaping_reward(
     before_potential = state_potential(
         before_state,
         physics_config=physics_config,
-        overload_limit_percent=overload_limit_percent,
-        hard_overload_limit_percent=hard_overload_limit_percent,
-        thermal_tolerance_percent=thermal_tolerance_percent,
         weights=weights,
     )
     after_potential = state_potential(
         after_state,
         physics_config=physics_config,
-        overload_limit_percent=overload_limit_percent,
-        hard_overload_limit_percent=hard_overload_limit_percent,
-        thermal_tolerance_percent=thermal_tolerance_percent,
         weights=weights,
     )
     shaping = gamma * after_potential - before_potential
@@ -423,7 +336,6 @@ def potential_shaping_reward(
 class GridFMRewardBreakdown:
     """Detailed potential-shaping diagnostics for one transition."""
 
-    # Stable fields retained for environment and transition-table consumers.
     reward: float
     before_penalty: float
     after_penalty: float
@@ -442,57 +354,31 @@ class GridFMRewardBreakdown:
     done: bool
     success: bool
     message: str
-
-    # Explicit provenance for the diagnostic reward contract. Defaults preserve
-    # compatibility with lightweight test doubles built against the old schema.
-    potential_shaping: float = 0.0
-    discount_factor: float = 1.0
-    before_potential: float = 0.0
-    after_potential: float | None = None
-    reward_role: str = "diagnostic_potential_shaping"
+    potential_shaping: float
+    discount_factor: float
+    before_potential: float
+    after_potential: float | None
+    reward_role: str
 
 
 class GridFMReward:
-    """Policy-invariant potential shaping used only for diagnostics.
-
-    The optimized return is defined in :mod:`grid_topology_ai.value_targets`.
-    This class must not add switching costs, solved bonuses, or terminal failure
-    penalties because those terms are not potential based and would define a
-    second objective.
-    """
+    """Policy-invariant potential shaping used only for diagnostics."""
 
     CONTRACT = "potential_shaping_v1"
 
     def __init__(
         self,
         *,
-        physics_config: PhysicsConfig | None = None,
+        physics_config: PhysicsConfig = DEFAULT_PHYSICS_CONFIG,
         discount_factor: float = 0.95,
-        overload_limit_percent: float = OVERLOAD_LIMIT_PERCENT,
-        hard_overload_limit_percent: float = HARD_OVERLOAD_LIMIT_PERCENT,
         total_overload_weight: float = 2.0,
         hard_overload_weight: float = 5.0,
         num_overloaded_weight: float = 10.0,
         num_hard_overloaded_weight: float = 30.0,
         voltage_violation_weight: float = 500.0,
     ):
-        if physics_config is not None:
-            if (
-                overload_limit_percent != OVERLOAD_LIMIT_PERCENT
-                or hard_overload_limit_percent != HARD_OVERLOAD_LIMIT_PERCENT
-            ):
-                raise ValueError(
-                    "PhysicsConfig cannot be combined with explicit overload thresholds."
-                )
-            overload_limit_percent = physics_config.overload_limit_percent
-            hard_overload_limit_percent = physics_config.hard_overload_limit_percent
-
-        self.physics_config = physics_config
-        self.discount_factor = require_reward_discount_factor(
-            discount_factor
-        )
-        self.overload_limit_percent = float(overload_limit_percent)
-        self.hard_overload_limit_percent = float(hard_overload_limit_percent)
+        self.physics_config = _require_physics_config(physics_config)
+        self.discount_factor = require_reward_discount_factor(discount_factor)
         self.utility_weights = GridUtilityWeights(
             total_overload=total_overload_weight,
             hard_overload=hard_overload_weight,
@@ -506,6 +392,14 @@ class GridFMReward:
         self.num_overloaded_weight = self.utility_weights.num_overloaded
         self.num_hard_overloaded_weight = self.utility_weights.num_hard_overloaded
         self.voltage_violation_weight = self.utility_weights.voltage_violation
+
+    @property
+    def overload_limit_percent(self) -> float:
+        return self.physics_config.overload_limit_percent
+
+    @property
+    def hard_overload_limit_percent(self) -> float:
+        return self.physics_config.hard_overload_limit_percent
 
     def config_dict(self) -> dict[str, Any]:
         """Return reproducible shaping provenance."""
@@ -541,6 +435,7 @@ class GridFMReward:
                 discount_factor=self.discount_factor,
                 before_potential=before_potential,
                 after_potential=None,
+                reward_role="diagnostic_potential_shaping",
                 before_penalty=before.penalty,
                 after_penalty=float("inf"),
                 improvement=float("-inf"),
@@ -572,16 +467,6 @@ class GridFMReward:
             after_state,
             discount_factor=self.discount_factor,
             physics_config=self.physics_config,
-            overload_limit_percent=(
-                None
-                if self.physics_config is not None
-                else self.overload_limit_percent
-            ),
-            hard_overload_limit_percent=(
-                None
-                if self.physics_config is not None
-                else self.hard_overload_limit_percent
-            ),
             weights=self.utility_weights,
         )
         assessment = assess_physical_state(after_state.metrics)
@@ -592,6 +477,7 @@ class GridFMReward:
             discount_factor=self.discount_factor,
             before_potential=before_potential,
             after_potential=after_potential,
+            reward_role="diagnostic_potential_shaping",
             before_penalty=before.penalty,
             after_penalty=after.penalty,
             improvement=float(improvement),
@@ -615,23 +501,13 @@ class GridFMReward:
         return grid_utility_breakdown(
             state,
             physics_config=self.physics_config,
-            overload_limit_percent=(
-                None
-                if self.physics_config is not None
-                else self.overload_limit_percent
-            ),
-            hard_overload_limit_percent=(
-                None
-                if self.physics_config is not None
-                else self.hard_overload_limit_percent
-            ),
             weights=self.utility_weights,
         )
 
 
-
 def require_reward_discount_factor(value: object) -> float:
     """Validate the discount used by diagnostic reward accumulation."""
+
     if isinstance(value, bool) or not isinstance(value, Real):
         raise ValueError(
             f"gamma must be a finite real number in [0, 1], got {value!r}"

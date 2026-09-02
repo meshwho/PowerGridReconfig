@@ -514,7 +514,13 @@ def candidate_manifest_is_current(
         columns = set(pd.read_csv(path, nrows=0).columns)
     except Exception:
         return False
-    if not {"canonical_pf_ok", "gridfm_difficulty_class"}.issubset(columns):
+    required = {
+        "canonical_pf_ok",
+        "gridfm_difficulty_class",
+        "source_chunk",
+        "source_scenario_id",
+    }
+    if not required.issubset(columns):
         return False
 
     marker = load_json(candidate_completion_marker_path(path))
@@ -872,7 +878,6 @@ def evaluate_canonical_candidates(
     print(f"\nCanonical PF validation: {len(candidates)} candidates")
     for row in candidates.itertuples(index=False):
         record = row._asdict()
-        record.pop("source_raw_dir", None)
         record["gridfm_difficulty_class"] = str(record["difficulty_class"])
         scenario_id = int(record["source_scenario_id"])
         result = backend.run_power_flow(scenario_id, None)
@@ -939,7 +944,7 @@ def deduplicate_gridfm_variants(candidates: pd.DataFrame) -> pd.DataFrame:
             f"{sorted(missing)}"
         )
 
-    df = candidates.drop(columns=["source_raw_dir"], errors="ignore").copy()
+    df = candidates.copy()
     load_scenario_idx = pd.to_numeric(
         df["load_scenario_idx"], errors="raise"
     ).to_numpy(dtype=np.float64)
@@ -1134,31 +1139,20 @@ def merge_raw_parquet_files(
     selected: pd.DataFrame,
     output_raw_dir: Path,
     *,
-    chunks_dir: Path | None = None,
-    raw_network_dir_name: str | None = None,
+    chunks_dir: Path,
+    raw_network_dir_name: str,
 ) -> None:
     ensure_dir(output_raw_dir)
     if selected.empty:
         raise RuntimeError("Cannot merge raw files: selected manifest is empty.")
 
-    if chunks_dir is None or raw_network_dir_name is None:
-        legacy = selected.get("source_raw_dir")
-        if legacy is None:
-            raise ValueError(
-                "chunks_dir and raw_network_dir_name are required for portable manifests."
-            )
-        grouped = [
-            (Path(str(raw_dir)), group)
-            for raw_dir, group in selected.groupby("source_raw_dir", sort=False)
-        ]
-    else:
-        grouped = [
-            (
-                _chunk_raw_dir(chunks_dir, source_chunk, raw_network_dir_name),
-                group,
-            )
-            for source_chunk, group in selected.groupby("source_chunk", sort=False)
-        ]
+    grouped = [
+        (
+            _chunk_raw_dir(chunks_dir, source_chunk, raw_network_dir_name),
+            group,
+        )
+        for source_chunk, group in selected.groupby("source_chunk", sort=False)
+    ]
 
     first_raw_dir = grouped[0][0]
     parquet_names = sorted(path.name for path in first_raw_dir.glob("*.parquet"))
@@ -1201,7 +1195,7 @@ def merge_raw_parquet_files(
 
 
 def build_transitions_from_manifest(selected: pd.DataFrame) -> pd.DataFrame:
-    df = selected.drop(columns=["source_raw_dir"], errors="ignore").copy()
+    df = selected.copy()
     df["scenario"] = df["global_scenario_id"].astype(int)
     transitions = make_output(df)
     transitions["difficulty_class"] = df["difficulty_class"].values
@@ -1269,28 +1263,6 @@ def _read_generated_scenario_count(raw_dir: Path) -> int:
         return int((raw_dir / "n_scenarios.txt").read_text(encoding="utf-8").strip())
     except Exception:
         return 0
-
-
-def _drop_legacy_manifest_paths(manifest_dir: Path) -> None:
-    if not manifest_dir.is_dir():
-        return
-    for path in manifest_dir.glob("*.csv"):
-        try:
-            frame = pd.read_csv(path)
-        except Exception:
-            continue
-        if "source_raw_dir" not in frame.columns:
-            continue
-        frame = frame.drop(columns=["source_raw_dir"])
-        temp = path.with_name(path.name + ".tmp")
-        frame.to_csv(temp, index=False)
-        temp.replace(path)
-
-    summary_path = manifest_dir / "summary.json"
-    payload = load_json(summary_path)
-    if payload is not None and "paths" in payload:
-        payload.pop("paths", None)
-        save_json_atomic(summary_path, payload)
 
 
 def _remove_path_bearing_build_files(paths: dict[str, Path]) -> None:
@@ -1475,7 +1447,6 @@ def load_existing_candidates(
     *,
     contract_fingerprint: str,
 ) -> pd.DataFrame:
-    _drop_legacy_manifest_paths(manifest_dir)
     files: list[Path] = []
     for path in sorted(manifest_dir.glob("chunk*_candidates.csv")):
         try:
@@ -1517,8 +1488,6 @@ def write_outputs(
 ) -> None:
     ensure_dir(paths["manifest_dir"])
     ensure_dir(paths["transitions_dir"])
-    all_candidates = all_candidates.drop(columns=["source_raw_dir"], errors="ignore")
-    selected = selected.drop(columns=["source_raw_dir"], errors="ignore")
 
     all_candidates_path = paths["manifest_dir"] / "all_candidates.csv"
     selected_manifest_path = paths["manifest_dir"] / "selected_manifest.csv"
@@ -1669,7 +1638,6 @@ def main() -> None:
     paths = make_paths(output_root)
     for path in paths.values():
         ensure_dir(path)
-    _drop_legacy_manifest_paths(paths["manifest_dir"])
     _remove_path_bearing_build_files(paths)
 
     targets = compute_class_targets(

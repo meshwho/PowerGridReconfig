@@ -20,6 +20,7 @@ from grid_topology_ai.search.mcts import (
     normalize_policy,
     require_action_in_policy_support,
 )
+from grid_topology_ai.self_play.example_validation import load_and_validate_examples_csv
 from grid_topology_ai.state import GridFMStateStore
 from grid_topology_ai.termination import (
     TerminationReason,
@@ -91,11 +92,10 @@ class ExampleWriter:
         self.state_store = GridFMStateStore(self.states_dir)
         self.examples: list[SelfPlayExample] = []
         self._existing_frame = (
-            pd.read_csv(self.examples_path)
+            load_and_validate_examples_csv(self.examples_path)
             if self.examples_path.exists()
             else pd.DataFrame()
         )
-        self._drop_legacy_state_path_column()
         self.action_space_config = action_space_config
         self.run_id = str(run_id or self._existing_run_id())
         self._episode_ids: dict[int, str] = {}
@@ -107,7 +107,7 @@ class ExampleWriter:
         self._saved_episodes = len(episodes)
         self._solved_episodes = (
             int(episodes["solved"].astype(str).str.lower().eq("true").sum())
-            if "solved" in episodes
+            if self._saved_episodes
             else 0
         )
         if self._saved_episodes:
@@ -116,13 +116,6 @@ class ExampleWriter:
                 f"solve={100.0 * self._solved_episodes / self._saved_episodes:.1f}%",
                 flush=True,
             )
-
-    def _drop_legacy_state_path_column(self) -> None:
-        if "state_path" not in self._existing_frame.columns:
-            return
-        frame = self._existing_frame.drop(columns=["state_path"])
-        self._write_examples_frame(frame)
-        self._existing_frame = frame
 
     def _write_examples_frame(self, frame: pd.DataFrame) -> None:
         temporary_path = self.examples_path.with_name(
@@ -135,7 +128,7 @@ class ExampleWriter:
             temporary_path.unlink(missing_ok=True)
 
     def _existing_run_id(self) -> str:
-        if self._existing_frame.empty or "run_id" not in self._existing_frame:
+        if self._existing_frame.empty:
             return uuid.uuid4().hex
         values = self._existing_frame["run_id"].dropna().astype(str).unique()
         if len(values) != 1:
@@ -232,7 +225,7 @@ class ExampleWriter:
                     scenario_id=scenario_id,
                     step=int(item["step"]),
                     selected_action_id=int(item["selected_action_id"]),
-                    selected_branch_id=item.get("selected_branch_id"),
+                    selected_branch_id=item["selected_branch_id"],
                     step_reward=float(item["step_reward"]),
                     final_return=float(final_return),
                     discounted_return_from_step=float(return_from_step),

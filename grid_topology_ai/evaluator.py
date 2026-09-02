@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import hashlib
-from numbers import Integral
+import math
+from numbers import Integral, Real
 from pathlib import Path
 from typing import Mapping
 
@@ -22,20 +23,7 @@ from grid_topology_ai.actions import (
 )
 
 
-def require_graph_batching_checkpoint_contract(
-    payload: Mapping[str, object],
-    *,
-    source: str,
-) -> None:
-    model_type = str(payload.get("model_type", "")).strip()
-    if model_type != "graph_policy_value_net_v2":
-        return
-
-    if payload.get("topology_cardinality_independent") is not True:
-        raise ValueError(
-            "Graph V2 checkpoint must declare "
-            f"topology_cardinality_independent=True for {source}."
-        )
+_MODEL_TYPE = "graph_policy_value_net_v2"
 
 
 def _require_graph_checkpoint_feature_dimensions(
@@ -43,29 +31,20 @@ def _require_graph_checkpoint_feature_dimensions(
     *,
     source: str,
 ) -> None:
-    import numpy as np
-
     from grid_topology_ai.state import (
         BRANCH_FEATURE_COLUMNS,
         BUS_FEATURE_COLUMNS,
     )
-
-    model_type = str(payload.get("model_type", ""))
-    if model_type not in {
-        "graph_policy_value_net",
-        "graph_policy_value_net_v2",
-    }:
-        return
 
     expected_dimensions = {
         "num_bus_features": len(BUS_FEATURE_COLUMNS),
         "num_branch_features": len(BRANCH_FEATURE_COLUMNS),
     }
     for key, expected in expected_dimensions.items():
-        value = payload.get(key)
+        value = payload[key]
         if isinstance(value, bool) or not isinstance(value, Integral):
             raise ValueError(
-                f"Graph checkpoint {source} is missing exact integer {key}."
+                f"Graph checkpoint {source} must contain exact integer {key}."
             )
         if int(value) != expected:
             raise ValueError(
@@ -79,13 +58,13 @@ def _require_graph_checkpoint_feature_dimensions(
         ("branch_feature_mean", len(BRANCH_FEATURE_COLUMNS)),
         ("branch_feature_std", len(BRANCH_FEATURE_COLUMNS)),
     ):
-        value = payload.get(key)
+        value = payload[key]
         try:
             size = len(value)  # type: ignore[arg-type]
         except TypeError as exc:
             raise ValueError(
-                f"Graph checkpoint is missing normalization vector "
-                f"{key} for {source}."
+                f"Graph checkpoint normalization vector {key} is invalid "
+                f"for {source}."
             ) from exc
         if size != expected:
             raise ValueError(
@@ -109,24 +88,57 @@ def require_checkpoint_contracts(
     source: str,
     expected_physics_config: "PhysicsConfig | None" = None,
 ) -> "PhysicsConfig":
-    """Validate the semantic facts needed to reconstruct a current Graph V2."""
+    """Validate the complete current Graph V2 checkpoint contract."""
 
-    if payload.get("model_type") != "graph_policy_value_net_v2":
+    required = {
+        "model_type",
+        "topology_cardinality_independent",
+        "policy_layout",
+        "model_state_dict",
+        "hidden_dim",
+        "num_layers",
+        "dropout",
+        "num_bus_features",
+        "num_branch_features",
+        "bus_feature_mean",
+        "bus_feature_std",
+        "branch_feature_mean",
+        "branch_feature_std",
+        "topology_action_config",
+        "action_layout",
+        "physics_config",
+    }
+    missing = required - set(payload)
+    if missing:
+        raise ValueError(
+            f"Graph checkpoint is missing required fields {sorted(missing)} for {source}."
+        )
+
+    if payload["model_type"] != _MODEL_TYPE:
         raise ValueError(f"Unsupported graph checkpoint model_type for {source}.")
-    if payload.get("topology_cardinality_independent") is not True:
+    if payload["topology_cardinality_independent"] is not True:
         raise ValueError(
             f"Graph checkpoint must be topology-cardinality independent for {source}."
         )
-    if payload.get("policy_layout") != "stop_plus_branch_status_v1":
+    if payload["policy_layout"] != STOP_PLUS_BRANCH_STATUS_POLICY_LAYOUT:
         raise ValueError(f"Unsupported graph checkpoint policy_layout for {source}.")
-    if "model_state_dict" not in payload:
-        raise ValueError(f"Graph checkpoint is missing model_state_dict for {source}.")
+
     for key in ("hidden_dim", "num_layers"):
-        if int(payload.get(key, 0)) <= 0:
+        value = payload[key]
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, Integral)
+            or int(value) <= 0
+        ):
             raise ValueError(f"Graph checkpoint has invalid {key} for {source}.")
-    dropout = float(payload.get("dropout", -1.0))
-    if not 0.0 <= dropout < 1.0:
+
+    dropout_value = payload["dropout"]
+    if isinstance(dropout_value, bool) or not isinstance(dropout_value, Real):
         raise ValueError(f"Graph checkpoint has invalid dropout for {source}.")
+    dropout = float(dropout_value)
+    if not math.isfinite(dropout) or not 0.0 <= dropout < 1.0:
+        raise ValueError(f"Graph checkpoint has invalid dropout for {source}.")
+
     require_topology_action_payload(
         payload,
         source=source,
@@ -136,7 +148,6 @@ def require_checkpoint_contracts(
         source=source,
         expected_physics_config=expected_physics_config,
     )
-
     _require_graph_checkpoint_feature_dimensions(
         payload,
         source=source,
@@ -206,8 +217,6 @@ def physical_state_fingerprint(state: GridFMState) -> str:
 
     return digest.hexdigest()
 
-_MODEL_TYPE = "graph_policy_value_net_v2"
-
 
 class NeuralPolicyValueEvaluator:
     """Use a trained Graph V2 policy-value network inside MCTS."""
@@ -250,14 +259,14 @@ class NeuralPolicyValueEvaluator:
             source=str(self.checkpoint_path),
         )
 
-        self.policy_layout = str(checkpoint.get("policy_layout", ""))
+        self.policy_layout = str(checkpoint["policy_layout"])
         if self.policy_layout != STOP_PLUS_BRANCH_STATUS_POLICY_LAYOUT:
             raise ValueError(
                 "Unsupported checkpoint policy layout: "
                 f"{self.policy_layout!r}."
             )
 
-        self.model_type = str(checkpoint.get("model_type", ""))
+        self.model_type = str(checkpoint["model_type"])
         if self.model_type != _MODEL_TYPE:
             raise ValueError(
                 f"Unsupported checkpoint model_type={self.model_type!r}. "
@@ -268,7 +277,7 @@ class NeuralPolicyValueEvaluator:
         self.num_branch_features = int(checkpoint["num_branch_features"])
         hidden_dim = int(checkpoint["hidden_dim"])
         num_layers = int(checkpoint["num_layers"])
-        dropout = float(checkpoint.get("dropout", 0.0))
+        dropout = float(checkpoint["dropout"])
 
         self.bus_feature_mean = np.asarray(
             checkpoint["bus_feature_mean"], dtype=np.float32
