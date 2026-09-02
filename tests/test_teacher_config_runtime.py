@@ -106,6 +106,21 @@ def test_teacher_source_identity_tracks_current_input_files(tmp_path):
     assert changed_transitions != changed_raw
 
 
+def test_teacher_source_identity_is_location_independent(tmp_path):
+    first_raw, first_transitions = _source_files(tmp_path / "first")
+    second_root = tmp_path / "second"
+    second_raw = second_root / "raw"
+    second_raw.mkdir(parents=True)
+    for name in ("bus_data.parquet", "branch_data.parquet", "gen_data.parquet"):
+        (second_raw / name).write_bytes((first_raw / name).read_bytes())
+    second_transitions = second_root / "renamed.csv"
+    second_transitions.write_bytes(first_transitions.read_bytes())
+
+    assert teacher_source_identity(first_raw, first_transitions) == teacher_source_identity(
+        second_raw, second_transitions
+    )
+
+
 def test_checkpoint_rejects_changed_source_identity(tmp_path):
     raw_dir, transitions = _source_files(tmp_path)
     config_path = tmp_path / "teacher_checkpoint_config.json"
@@ -139,6 +154,21 @@ def test_run_id_depends_only_on_semantic_teacher_settings(tmp_path):
 
     assert first == second
     assert first != teacher_run_id(states_dir, _task_config(depth=6))
+
+
+def test_run_id_is_location_independent_for_same_checkpoint_identity(tmp_path):
+    config = _checkpoint_config(_task_config(), source_identity={"sha256": "same"})
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    for output_dir in (first, second):
+        (output_dir / "states").mkdir(parents=True)
+        ensure_teacher_checkpoint_config(
+            output_dir / "teacher_checkpoint_config.json", config
+        )
+
+    assert teacher_run_id(first / "states", _task_config()) == teacher_run_id(
+        second / "states", _task_config()
+    )
 
 
 def test_current_checkpoint_task_config_can_be_loaded(tmp_path):

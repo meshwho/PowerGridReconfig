@@ -120,6 +120,33 @@ def test_resume_restores_committed_work_and_ignores_incomplete_work(tmp_path) ->
     assert 5 not in restored
 
 
+def test_resume_drops_legacy_state_paths(tmp_path) -> None:
+    checkpoint_path = tmp_path / "teacher_checkpoint.jsonl"
+    checkpoint_path.write_text(
+        json.dumps(
+            {
+                "scenario_id": 4,
+                "ok": True,
+                "reason": None,
+                "rows": [
+                    {
+                        "state_id": "state-4",
+                        "state_path": r"D:\\old\\repo\\states\\state-4.npz",
+                    }
+                ],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    restored = teacher.load_scenario_checkpoints(checkpoint_path, [4])
+
+    assert "state_path" not in restored[4]["rows"][0]
+    persisted = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    assert "state_path" not in persisted["rows"][0]
+
+
 def test_resume_ignores_scenarios_outside_current_run(tmp_path) -> None:
     checkpoint_path = tmp_path / "teacher_checkpoint.jsonl"
     checkpoint_path.write_text(
@@ -153,13 +180,11 @@ def test_teacher_restart_completes_only_pending_scenarios(tmp_path) -> None:
         "source_identity": {"dataset": "restart-smoke"},
     }
 
-    # First run commits one scenario, then terminates while writing the next one.
     teacher.ensure_teacher_checkpoint_config(config_path, config)
     teacher.append_scenario_checkpoint(checkpoint_path, _completed_result(30))
     with checkpoint_path.open("ab") as checkpoint_file:
         checkpoint_file.write(b'{"scenario_id":10,"ok":true')
 
-    # A runtime-only option may change on restart, while semantic search settings may not.
     resumed_config = dict(config)
     resumed_config["task_config"] = dict(config["task_config"], disable_cache=True)
     teacher.ensure_teacher_checkpoint_config(config_path, resumed_config)
