@@ -26,13 +26,13 @@ def test_light_scientific_defaults_are_stable() -> None:
         generation.depth,
         generation.gamma,
         generation.use_root_noise,
-        generation.use_continuation_gate,
-    ) == (150, 4, 0.95, True, True)
+    ) == (150, 4, 1.0, True)
     assert (
         evaluation.random_seed,
         evaluation.num_workers,
+        evaluation.gamma,
         evaluation.policy_mode,
-    ) == (42, 1, "ungated")
+    ) == (42, 1, 1.0, "ungated")
     assert (
         training.batch_size,
         training.learning_rate,
@@ -45,24 +45,29 @@ def test_evaluation_policy_mode_is_the_single_configurable_policy_input() -> Non
     ungated = EvaluationConfig()
     constrained = EvaluationConfig(policy_mode="constrained")
 
-    assert ungated.primary_policy_mode == "ungated"
-    assert ungated.use_continuation_gate is False
-    assert constrained.primary_policy_mode == "constrained"
-    assert constrained.use_continuation_gate is True
+    assert ungated.policy_mode == "ungated"
+    assert constrained.policy_mode == "constrained"
 
     with pytest.raises(ValueError, match="policy_mode"):
-        EvaluationConfig(policy_mode="legacy")
+        EvaluationConfig(policy_mode="unsupported")
     with pytest.raises(TypeError):
         EvaluationConfig(primary_policy_mode="constrained")  # type: ignore[call-arg]
     with pytest.raises(TypeError):
         EvaluationConfig(use_continuation_gate=True)  # type: ignore[call-arg]
 
 
+def test_search_configs_require_undiscounted_terminal_utility() -> None:
+    with pytest.raises(ValueError, match="gamma must be exactly 1.0"):
+        GenerationConfig(gamma=0.95)
+    with pytest.raises(ValueError, match="gamma must be exactly 1.0"):
+        EvaluationConfig(gamma=0.95)
+
+
 def test_light_configs_reject_invalid_scientific_ranges() -> None:
     with pytest.raises(ValueError, match="hard_overload_limit_percent"):
         PhysicsConfig(overload_limit_percent=110.0, hard_overload_limit_percent=100.0)
     with pytest.raises(ValueError, match="stop_policy"):
-        GenerationConfig(stop_policy="legacy")
+        GenerationConfig(stop_policy="unsupported")
     with pytest.raises(ValueError, match="random_seed"):
         EvaluationConfig(random_seed=-1)
     with pytest.raises(ValueError, match="validation_fraction"):

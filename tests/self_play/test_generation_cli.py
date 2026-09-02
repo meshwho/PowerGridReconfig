@@ -17,11 +17,7 @@ def _capture(monkeypatch: pytest.MonkeyPatch, path: Path) -> list[GenerationRequ
         captured.append(request)
         return path
 
-    monkeypatch.setattr(
-        generation_runtime,
-        "generate_self_play_examples",
-        fake,
-    )
+    monkeypatch.setattr(generation_runtime, "generate_self_play_examples", fake)
     return captured
 
 
@@ -63,7 +59,7 @@ def test_cli_builds_current_generation_request(
     assert (request.mcts_seed, request.action_seed) == _expected_seeds(123, 4)
     assert request.raw_dir == raw and request.transitions_csv == transitions
     assert request.checkpoint == checkpoint and request.iteration == 4
-    assert request.device == "cuda" and request.enable_cache is False
+    assert request.config.device == "cuda" and request.enable_cache is False
     assert request.clear_cache_between_scenarios is True
     assert request.workers == 3 and request.resume is True
 
@@ -95,7 +91,8 @@ def test_cli_builds_generation_config(
         ]
     ) == 0
 
-    config = captured[0].config
+    request = captured[0]
+    config = request.config
     assert (config.simulations, config.depth, config.max_steps, config.top_k) == (
         17,
         2,
@@ -107,11 +104,12 @@ def test_cli_builds_generation_config(
     assert config.prior_exponent == 0.6
     assert config.selection_temperature == 0.25
     assert (config.temperature_steps, config.temperature_iterations) == (2, 5)
-    assert config.pf_alg == 2 and config.stop_policy == "solved_only"
+    assert request.physics_config.pf_alg == 2
+    assert config.stop_policy == "solved_only"
     assert config.use_root_noise is True
 
 
-def test_cli_help_exposes_light_parallel_resume_controls(
+def test_cli_help_exposes_only_current_self_play_controls(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     with pytest.raises(SystemExit) as exc:
@@ -121,3 +119,8 @@ def test_cli_help_exposes_light_parallel_resume_controls(
     output = capsys.readouterr().out
     assert "--workers" in output
     assert "--resume" in output
+    assert "--use-continuation-gate" not in output
+    assert "--min-hard-improvement" not in output
+    assert "--min-soft-improvement" not in output
+    assert "--min-gate-visits" not in output
+    assert "--min-gate-visit-fraction" not in output

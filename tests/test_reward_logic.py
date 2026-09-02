@@ -3,9 +3,9 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+from grid_topology_ai.config import PhysicsConfig
+from grid_topology_ai.physics.utility import GridFMReward, state_potential
 from grid_topology_ai.state import BRANCH_FEATURE_COLUMNS, BUS_FEATURE_COLUMNS, GridFMState
-from grid_topology_ai.physics.utility import state_potential
-from grid_topology_ai.physics.utility import GridFMReward
 
 
 def _state(
@@ -78,7 +78,6 @@ def test_reward_is_exact_potential_shaping() -> None:
     reward_fn = GridFMReward(discount_factor=0.95)
     before = _state(loadings=(130.0,))
     after = _state(loadings=(110.0,))
-
     result = reward_fn.compute(before, after, power_flow_success=True)
 
     expected = 0.95 * state_potential(after) - state_potential(before)
@@ -98,7 +97,6 @@ def test_worse_grid_has_negative_potential_shaping() -> None:
         _state(loadings=(130.0,)),
         power_flow_success=True,
     )
-
     assert result.reward < 0.0
     assert result.after_penalty > result.before_penalty
 
@@ -111,7 +109,6 @@ def test_solved_state_has_no_solved_bonus() -> None:
         after,
         power_flow_success=True,
     )
-
     assert result.reward == pytest.approx(
         0.95 * state_potential(after) - state_potential(before)
     )
@@ -125,7 +122,6 @@ def test_power_flow_failure_adds_no_second_terminal_penalty() -> None:
         None,
         power_flow_success=False,
     )
-
     assert result.reward == 0.0
     assert result.potential_shaping == 0.0
     assert result.after_potential is None
@@ -135,10 +131,13 @@ def test_power_flow_failure_adds_no_second_terminal_penalty() -> None:
 
 
 def test_reward_config_identifies_diagnostic_contract() -> None:
-    config = GridFMReward(
-        discount_factor=0.91,
+    physics = PhysicsConfig(
         overload_limit_percent=101.0,
         hard_overload_limit_percent=125.0,
+    )
+    config = GridFMReward(
+        physics_config=physics,
+        discount_factor=0.91,
         total_overload_weight=3.0,
         hard_overload_weight=6.0,
         num_overloaded_weight=11.0,

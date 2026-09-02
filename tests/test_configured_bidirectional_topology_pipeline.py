@@ -149,6 +149,10 @@ def test_self_play_constructs_action_space_from_typed_config(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     captured_kwargs: dict[str, object] = {}
+    raw_dir = tmp_path / "raw"
+    raw_dir.mkdir()
+    for name in ("bus_data.parquet", "branch_data.parquet", "gen_data.parquet"):
+        (raw_dir / name).write_bytes(name.encode("utf-8"))
     transitions_path = tmp_path / "transitions.csv"
     transitions_path.write_text("scenario_id\n1\n", encoding="utf-8")
 
@@ -168,7 +172,7 @@ def test_self_play_constructs_action_space_from_typed_config(
     monkeypatch.setattr(generation, "_preflight_generation_inputs", lambda request: None)
 
     request = GenerationRequest(
-        raw_dir=tmp_path / "raw",
+        raw_dir=raw_dir,
         transitions_csv=transitions_path,
         output_dir=tmp_path / "out",
         checkpoint=None,

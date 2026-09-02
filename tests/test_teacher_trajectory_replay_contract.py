@@ -34,14 +34,11 @@ def _teacher_args(**overrides):
     return SimpleNamespace(**values)
 
 
-def test_teacher_replay_keeps_beam_selected_steps_without_legacy_gates() -> None:
+def test_teacher_replay_keeps_beam_selected_steps() -> None:
     source = inspect.getsource(teacher._generate_scenario)
 
     assert 'continue_reason = "selected_by_beam_search"' in source
     assert "step_improvement = float(safety_before - safety_after)" in source
-    assert "_selected_teacher_replay_decision" not in source
-    assert "min_continue_improvement" not in source
-    assert "max_loading_increase_limit" not in source
 
 
 def test_teacher_replay_rejects_power_flow_divergence() -> None:

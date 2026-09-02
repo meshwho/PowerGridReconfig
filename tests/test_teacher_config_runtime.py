@@ -35,7 +35,7 @@ def _checkpoint_config(task_config, *, source_identity=None):
 
 def _source_files(tmp_path):
     raw_dir = tmp_path / "raw"
-    raw_dir.mkdir()
+    raw_dir.mkdir(parents=True)
     (raw_dir / "bus_data.parquet").write_bytes(b"bus-v1")
     (raw_dir / "branch_data.parquet").write_bytes(b"branch-v1")
     (raw_dir / "gen_data.parquet").write_bytes(b"gen-v1")

@@ -28,11 +28,16 @@ def test_generation_device_config_rejects_unsupported_values(device: str) -> Non
         GenerationConfig(device=device)
 
 
-def test_generation_request_keeps_runtime_device(tmp_path: Path) -> None:
+def test_generation_request_uses_config_device(tmp_path: Path) -> None:
     request = GenerationRequest(
-        raw_dir=tmp_path / "raw", transitions_csv=tmp_path / "transitions.csv",
-        output_dir=tmp_path / "out", checkpoint=None,
-        config=GenerationConfig(device="cuda"), mcts_seed=7, action_seed=8,
-        clear_cache_between_scenarios=False, device="cuda",
+        raw_dir=tmp_path / "raw",
+        transitions_csv=tmp_path / "transitions.csv",
+        output_dir=tmp_path / "out",
+        checkpoint=None,
+        config=GenerationConfig(device="cuda"),
+        mcts_seed=7,
+        action_seed=8,
+        clear_cache_between_scenarios=False,
     )
-    assert request.device == "cuda"
+    assert request.config.device == "cuda"
+    assert not hasattr(request, "device")

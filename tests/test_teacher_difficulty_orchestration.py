@@ -83,7 +83,7 @@ def test_load_scenario_ids_requires_requested_difficulty(tmp_path):
         teacher_runtime.load_scenario_ids(missing_class, None, "hard")
 
 
-def test_legacy_profile_matches_historical_search_budgets():
+def test_default_profile_matches_expected_search_budgets():
     profiles = cli._load_teacher_profiles(Path("profiles/teacher_ieee118.json"))
 
     assert profiles["simple"] == {
@@ -216,8 +216,6 @@ def test_directory_teacher_runs_both_splits_by_difficulty_and_merges(
     assert validation["difficulty_class"].tolist() == ["simple", "medium", "hard"]
     assert set(train["teacher_split"]) == {"train"}
     assert set(validation["teacher_split"]) == {"val"}
-    assert train["source_examples_csv"].str.endswith("examples.csv").all()
-    assert validation["source_examples_csv"].str.endswith("examples.csv").all()
     assert (output_dir / "teacher_profile.json").read_bytes() == profile_path.read_bytes()
 
 

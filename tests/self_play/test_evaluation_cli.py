@@ -20,11 +20,7 @@ def _run_cli(
         captured["request"] = request
         return {"solve_rate": 1.0}
 
-    monkeypatch.setattr(
-        evaluation_runtime,
-        "evaluate_checkpoint",
-        fake_evaluate,
-    )
+    monkeypatch.setattr(evaluation_runtime, "evaluate_checkpoint", fake_evaluate)
     args = [
         "evaluate",
         str(tmp_path / "raw"),
@@ -54,7 +50,6 @@ def test_cli_creates_input_and_output_paths(
             str(tmp_path / "eval.json"),
         ],
     )
-
     assert request.raw_dir == tmp_path / "raw"
     assert request.transitions_csv == tmp_path / "transitions.csv"
     assert request.checkpoint == tmp_path / "checkpoint.pt"
@@ -74,7 +69,7 @@ def test_cli_creates_evaluation_config(
             "--depth", "2",
             "--max-steps", "3",
             "--top-k", "11",
-            "--gamma", "0.91",
+            "--gamma", "1.0",
             "--c-puct", "1.7",
             "--prior-exponent", "0.6",
             "--workers", "4",
@@ -82,13 +77,12 @@ def test_cli_creates_evaluation_config(
             "--device", "cpu",
         ],
     )
-
     config = request.config
     assert config.simulations == 17
     assert config.depth == 2
     assert config.max_steps == 3
     assert config.top_k == 11
-    assert config.gamma == 0.91
+    assert config.gamma == 1.0
     assert config.c_puct == 1.7
     assert config.prior_exponent == 0.6
     assert config.num_workers == 4
@@ -104,9 +98,8 @@ def test_cli_selects_one_policy_mode(
     constrained_request = _run_cli(
         monkeypatch,
         tmp_path / "constrained",
-        ["--use-continuation-gate"],
+        ["--policy-mode", "constrained"],
     )
-
     assert default_request.config.policy_mode == "ungated"
     assert constrained_request.config.policy_mode == "constrained"
 
@@ -124,8 +117,8 @@ def test_cli_passes_request_only_settings(
             "--disable-cache",
             "--min-hard-improvement", "7.0",
             "--min-soft-improvement", "3.0",
-            "--min-gate-visits", "9",
-            "--min-gate-visit-fraction", "0.2",
+            "--min-constraint-visits", "9",
+            "--min-constraint-visit-fraction", "0.2",
             "--stop-policy", "solved_only",
             "--clear-caches-every", "8",
             "--use-dc-screening",
@@ -142,13 +135,12 @@ def test_cli_passes_request_only_settings(
     )
 
     assert request.config.allow_handoff_with_hard_overloads is True
-    assert request.config.pf_alg == 2
-    assert request.resolved_pf_alg == 2
+    assert request.physics_config.pf_alg == 2
     assert request.disable_cache is True
     assert request.min_hard_improvement == 7.0
     assert request.min_soft_improvement == 3.0
-    assert request.min_gate_visits == 9
-    assert request.min_gate_visit_fraction == 0.2
+    assert request.min_constraint_visits == 9
+    assert request.min_constraint_visit_fraction == 0.2
     assert request.stop_policy == "solved_only"
     assert request.clear_caches_every == 8
     assert request.use_dc_screening is True
@@ -163,7 +155,7 @@ def test_cli_passes_request_only_settings(
     assert request.quiet is True
 
 
-def test_cli_rejects_removed_leaf_penalty_weight() -> None:
+def test_cli_rejects_removed_continuation_gate_alias() -> None:
     with pytest.raises(SystemExit) as excinfo:
         light_cli.main(
             [
@@ -171,16 +163,17 @@ def test_cli_rejects_removed_leaf_penalty_weight() -> None:
                 "raw",
                 "--transitions", "transitions.csv",
                 "--checkpoint", "checkpoint.pt",
-                "--leaf-penalty-weight", "0.25",
+                "--use-continuation-gate",
             ]
         )
-
     assert excinfo.value.code == 2
 
 
 def test_cli_help_still_works(capsys: pytest.CaptureFixture[str]) -> None:
     with pytest.raises(SystemExit) as excinfo:
         light_cli.main(["evaluate", "--help"])
-
     assert excinfo.value.code == 0
-    assert "--checkpoint" in capsys.readouterr().out
+    output = capsys.readouterr().out
+    assert "--checkpoint" in output
+    assert "--policy-mode" in output
+    assert "--use-continuation-gate" not in output

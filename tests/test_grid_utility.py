@@ -6,18 +6,18 @@ import numpy as np
 import pytest
 
 from grid_topology_ai.config import PhysicsConfig
-from grid_topology_ai.state import BRANCH_FEATURE_COLUMNS, GridFMState
 from grid_topology_ai.physics.utility import (
     CONTINUATION_GRID_UTILITY_WEIGHTS,
     CONTINUATION_SWITCH_PENALTY,
+    GridFMReward,
     GridUtilityWeights,
     grid_utility_breakdown,
     potential_shaping_reward,
     state_potential,
     state_security_penalty,
 )
-from grid_topology_ai.physics.utility import GridFMReward
 from grid_topology_ai.search.mcts import topology_penalty
+from grid_topology_ai.state import BRANCH_FEATURE_COLUMNS, GridFMState
 
 
 def _state(
@@ -52,11 +52,18 @@ def _state(
             "num_overloaded_branches": num_overloaded,
             "num_hard_overloaded_branches": num_hard,
             "max_loading_percent": (
-                max(active, default=0.0)
-                if max_loading is None
-                else max_loading
+                max(active, default=0.0) if max_loading is None else max_loading
             ),
             "total_voltage_violation": voltage_violation,
+            "total_generator_p_violation_mw": 0.0,
+            "num_generator_p_violations": 0,
+            "total_generator_q_violation_mvar": 0.0,
+            "num_generator_q_violations": 0,
+            "total_angle_difference_violation_degrees": 0.0,
+            "num_angle_difference_violations": 0,
+            "power_flow_converged": True,
+            "all_values_finite": True,
+            "topology_connected": True,
         },
         outaged_branch_ids=[],
     )
@@ -105,20 +112,11 @@ def test_reward_uses_the_default_grid_utility() -> None:
 
 def test_potential_shaping_uses_exact_discounted_difference() -> None:
     before = _state(
-        [130.0],
-        [1.0],
-        num_overloaded=1,
-        num_hard=1,
-        voltage_violation=0.0,
+        [130.0], [1.0], num_overloaded=1, num_hard=1, voltage_violation=0.0
     )
     after = _state(
-        [110.0],
-        [1.0],
-        num_overloaded=1,
-        num_hard=0,
-        voltage_violation=0.0,
+        [110.0], [1.0], num_overloaded=1, num_hard=0, voltage_violation=0.0
     )
-
     assert potential_shaping_reward(
         before,
         after,
@@ -141,11 +139,7 @@ def test_discounted_potential_shaping_telescopes() -> None:
         )
         for index in range(len(states) - 1)
     ]
-    discounted_sum = sum(
-        gamma**index * value
-        for index, value in enumerate(rewards)
-    )
-
+    discounted_sum = sum(gamma**index * value for index, value in enumerate(rewards))
     assert discounted_sum == pytest.approx(
         gamma ** (len(states) - 1) * state_potential(states[-1])
         - state_potential(states[0])
@@ -155,11 +149,7 @@ def test_discounted_potential_shaping_telescopes() -> None:
 @pytest.mark.parametrize("gamma", [-0.1, 1.1, float("nan"), True])
 def test_potential_shaping_rejects_invalid_discount(gamma: object) -> None:
     state = _state(
-        [100.0],
-        [1.0],
-        num_overloaded=0,
-        num_hard=0,
-        voltage_violation=0.0,
+        [100.0], [1.0], num_overloaded=0, num_hard=0, voltage_violation=0.0
     )
     with pytest.raises(ValueError, match="discount_factor"):
         potential_shaping_reward(state, state, discount_factor=gamma)  # type: ignore[arg-type]
@@ -214,6 +204,15 @@ def test_tolerance_and_branch_status_are_applied_once() -> None:
     assert breakdown.total_hard_overload == 0.0
     assert breakdown.max_loading_excess == 0.0
     assert breakdown.penalty == 0.0
+
+
+def test_grid_utility_requires_current_physical_metrics() -> None:
+    state = _state(
+        [100.0], [1.0], num_overloaded=0, num_hard=0, voltage_violation=0.0
+    )
+    del state.metrics["total_generator_q_violation_mvar"]
+    with pytest.raises(KeyError, match="total_generator_q_violation_mvar"):
+        state_security_penalty(state)
 
 
 def test_grid_utility_rejects_invalid_weights() -> None:

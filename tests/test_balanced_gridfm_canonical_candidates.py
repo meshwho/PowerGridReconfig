@@ -86,7 +86,7 @@ def test_canonical_candidates_are_filtered_and_reclassified(monkeypatch) -> None
             {
                 "scenario": 1,
                 "difficulty_class": "hard",
-                "source_raw_dir": "raw",
+                "source_chunk": "chunk00",
                 "source_scenario_id": 1,
                 "max_loading_percent": 180.0,
                 "num_overloaded_branches": 3,
@@ -96,7 +96,7 @@ def test_canonical_candidates_are_filtered_and_reclassified(monkeypatch) -> None
             {
                 "scenario": 2,
                 "difficulty_class": "medium",
-                "source_raw_dir": "raw",
+                "source_chunk": "chunk00",
                 "source_scenario_id": 2,
                 "max_loading_percent": 130.0,
                 "num_overloaded_branches": 1,
@@ -106,7 +106,7 @@ def test_canonical_candidates_are_filtered_and_reclassified(monkeypatch) -> None
             {
                 "scenario": 3,
                 "difficulty_class": "medium",
-                "source_raw_dir": "raw",
+                "source_chunk": "chunk00",
                 "source_scenario_id": 3,
                 "max_loading_percent": 130.0,
                 "num_overloaded_branches": 1,
@@ -180,6 +180,7 @@ def test_completion_markers_guard_resume_artifacts(tmp_path: Path) -> None:
     pd.DataFrame(
         {
             "difficulty_class": ["simple"],
+            "source_chunk": ["chunk01"],
             "source_scenario_id": [1],
             "gridfm_difficulty_class": ["simple"],
             "canonical_pf_ok": [True],

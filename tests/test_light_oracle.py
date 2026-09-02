@@ -13,10 +13,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 
-# This is the behavior oracle for the Light migration. Keep the list focused on
-# scientific/runtime behavior that must survive the structural simplification;
-# do not add tests whose only purpose is preserving legacy module layout,
-# provenance schemas, reporting formats or persistent-L2 implementation details.
+# This is the behavior oracle for the current Light implementation. Keep the
+# list focused on scientific/runtime behavior rather than removed package
+# layouts, provenance formats, reporting formats, or cache implementations.
 ORACLE_TESTS: dict[str, tuple[str, ...]] = {
     "power_flow": (
         "tests/test_ac_numerical_fixtures.py",
@@ -92,8 +91,8 @@ REQUIRED_DOMAINS = frozenset(
 
 TEACHER_MODULE = "grid_topology_ai.teacher_runtime"
 
-# Fixed workload for Light timing. L1 remains enabled because --disable-cache
-# is not used; removed cache layers need no compatibility configuration.
+# Fixed workload for Light timing. The exact L1 cache remains enabled because
+# --disable-cache is not used.
 TEACHER_BENCHMARK_ARGS = (
     "--depth",
     "2",
@@ -115,11 +114,6 @@ TEACHER_BENCHMARK_ARGS = (
     "3",
     "--batch-size",
     "1",
-    "--value-target-mode",
-    "tanh_step_reward_discounted_average",
-    "--value-reward-scale",
-    "500",
-    "--add-handoff-example",
     "--use-lodf-screening",
     "--lodf-screen-top-k",
     "10",
@@ -298,8 +292,8 @@ def _run_teacher_benchmark(
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Run the canonical behavior/performance oracle used while reducing "
-            "PowerGridReconfig to the Light implementation."
+            "Run the canonical behavior/performance oracle for the current "
+            "PowerGridReconfig Light implementation."
         )
     )
     subparsers = parser.add_subparsers(dest="command")
@@ -318,7 +312,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     benchmark = subparsers.add_parser(
         "teacher-benchmark",
-        help="time a deterministic teacher workload with L1 enabled and L2 disabled",
+        help="time a deterministic teacher workload with the exact cache enabled",
     )
     benchmark.add_argument("raw_dir", type=Path)
     benchmark.add_argument("transitions", type=Path)
