@@ -55,13 +55,8 @@ class _Backend:
         return {}
 
 
-def _patch_validation(monkeypatch: pytest.MonkeyPatch, assessment) -> None:
+def _patch_physical_assessment(monkeypatch: pytest.MonkeyPatch, assessment) -> None:
     monkeypatch.setattr(redispatch, "validate_ppc_input", lambda *args, **kwargs: None)
-    monkeypatch.setattr(
-        redispatch,
-        "validate_pypower_result",
-        lambda *args, **kwargs: None,
-    )
     monkeypatch.setattr(
         redispatch,
         "calculate_physical_metrics_from_result",
@@ -79,7 +74,7 @@ def test_minimal_redispatch_uses_handoff_dispatch_and_reports_magnitude(
 ) -> None:
     secure = terminal_evidence(TerminationReason.SOLVED).assessment
     assert secure is not None
-    _patch_validation(monkeypatch, secure)
+    _patch_physical_assessment(monkeypatch, secure)
 
     captured: dict[str, object] = {}
 
@@ -120,7 +115,7 @@ def test_minimal_redispatch_keeps_infeasible_opf_unvalidated(
 ) -> None:
     secure = terminal_evidence(TerminationReason.SOLVED).assessment
     assert secure is not None
-    _patch_validation(monkeypatch, secure)
+    _patch_physical_assessment(monkeypatch, secure)
     monkeypatch.setattr(redispatch, "runopf", lambda case, options: {"success": False})
 
     result = redispatch.run_minimal_ac_redispatch(
@@ -140,7 +135,7 @@ def test_minimal_redispatch_requires_strict_physical_security(
         TerminationReason.HANDOFF_TO_REDISPATCH_TEACHER
     ).assessment
     assert unsafe is not None
-    _patch_validation(monkeypatch, unsafe)
+    _patch_physical_assessment(monkeypatch, unsafe)
 
     def fake_runopf(case, options):
         del options
