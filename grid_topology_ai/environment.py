@@ -293,6 +293,24 @@ class TopologySwitchingEnv:
             info=self._info(),
         )
 
+    def _run_branch_power_flow(
+        self,
+        *,
+        before_state: GridFMState,
+        action: GridFMAction,
+    ) -> GridFMPowerFlowResult:
+        backend_method = getattr(type(self.backend), "run_power_flow_from_state", None)
+        if backend_method is GridFMPowerFlowBackend.run_power_flow_from_state:
+            return self.backend.run_power_flow_from_state(
+                state=before_state,
+                action=action,
+                validated_action=True,
+            )
+        return self.backend.run_power_flow_from_state(
+            state=before_state,
+            action=action,
+        )
+
     def _step_branch_status(
         self,
         action: GridFMAction,
@@ -302,10 +320,9 @@ class TopologySwitchingEnv:
         assert self.current_state is not None
 
         before_state = self.current_state
-        power_flow_result = self.backend.run_power_flow_from_state(
-            state=before_state,
+        power_flow_result = self._run_branch_power_flow(
+            before_state=before_state,
             action=action,
-            validated_action=True,
         )
         reward_breakdown = (
             self.reward_fn.compute(
