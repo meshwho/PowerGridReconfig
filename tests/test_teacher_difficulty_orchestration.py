@@ -247,6 +247,12 @@ def test_single_csv_teacher_does_not_require_profile(tmp_path, monkeypatch):
 
     def fake_teacher_main(argv: list[str]) -> int:
         calls.append(list(argv))
+        output_dir = Path(_value(argv, "--output-dir"))
+        output_dir.mkdir(parents=True, exist_ok=True)
+        pd.DataFrame({"state_id": ["state_1"]}).to_csv(
+            output_dir / "examples.csv",
+            index=False,
+        )
         return 0
 
     monkeypatch.setattr(teacher_runtime, "main", fake_teacher_main)
