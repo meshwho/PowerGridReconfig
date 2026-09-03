@@ -122,8 +122,8 @@ def _install_deterministic_solver(backend, monkeypatch):
     solve_inputs: list[dict[str, np.ndarray]] = []
     state_inputs: list[dict[str, np.ndarray]] = []
 
-    def solve(ppc, *, context):
-        del context
+    def solve(ppc, *, context, validate_input=True):
+        del context, validate_input
         result = {
             "version": "2",
             "baseMVA": float(ppc["baseMVA"]),
