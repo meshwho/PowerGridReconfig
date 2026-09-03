@@ -138,6 +138,7 @@ class FakePlanner:
             total_hard_overload=0.0,
             squared_hard_overload=0.0,
             total_overload=10.0,
+            short_sequence=lambda: "1 -> 0",
         )
         return SimpleNamespace(
             best_node=best,
@@ -160,6 +161,7 @@ class FakeRootPlanner(FakePlanner):
             total_hard_overload=0.0,
             squared_hard_overload=0.0,
             total_overload=float(metrics["total_thermal_overload_mva"]),
+            short_sequence=lambda: "",
         )
         return SimpleNamespace(
             best_node=best,
@@ -283,7 +285,7 @@ def test_initial_redispatch_failure_stays_missing_in_rows_and_state_metadata(
     result = runtime._generate_scenario(17)
     runtime._SELECTION_PROVENANCE_BY_SCENARIO.pop(17, None)
 
-    assert result["ok"] is True
+    assert result["ok"] is True, result.get("traceback")
     assert calls == [FakeEnv.initial_state, FakeEnv.after_state]
     assert len(result["rows"]) == 2
     assert len(state_store.metadata) == 2
@@ -319,7 +321,7 @@ def test_zero_switch_failed_redispatch_is_saved_as_max_steps_terminal_target(
     result = runtime._generate_scenario(23)
     runtime._SELECTION_PROVENANCE_BY_SCENARIO.pop(23, None)
 
-    assert result["ok"] is True
+    assert result["ok"] is True, result.get("traceback")
     assert len(result["rows"]) == 1
     row = result["rows"][0]
     assert row["selected_action_id"] == 0
@@ -360,7 +362,7 @@ def test_zero_switch_secure_root_is_saved_as_solved_terminal_target(
     result = runtime._generate_scenario(24)
     runtime._SELECTION_PROVENANCE_BY_SCENARIO.pop(24, None)
 
-    assert result["ok"] is True
+    assert result["ok"] is True, result.get("traceback")
     assert len(result["rows"]) == 1
     row = result["rows"][0]
     assert row["selected_action_id"] == 0
@@ -394,7 +396,7 @@ def test_zero_switch_validated_redispatch_keeps_terminal_handoff(
     result = runtime._generate_scenario(25)
     runtime._SELECTION_PROVENANCE_BY_SCENARIO.pop(25, None)
 
-    assert result["ok"] is True
+    assert result["ok"] is True, result.get("traceback")
     assert len(result["rows"]) == 1
     row = result["rows"][0]
     assert row["selected_action_id"] == 0
@@ -424,7 +426,7 @@ def test_terminal_redispatch_selection_is_not_rejected_when_selected_j_is_worse(
     result = runtime._generate_scenario(29)
     runtime._SELECTION_PROVENANCE_BY_SCENARIO.pop(29, None)
 
-    assert result["ok"] is True
+    assert result["ok"] is True, result.get("traceback")
     assert result["summary"]["teacher_final_safety"] == 120.0
     assert result["summary"]["total_safety_improvement"] == -20.0
     assert [row["selected_action_id"] for row in result["rows"]] == [1, 0]
