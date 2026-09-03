@@ -73,6 +73,15 @@ _REQUIRED_STATE_ARRAYS = (
     "action_mask",
     "branch_ids",
 )
+_REQUIRED_STATE_METADATA = (
+    "physics_config",
+    "topology_action_config",
+    "action_layout",
+    "run_id",
+    "iteration",
+    "episode_id",
+    "terminal_outcome_evidence",
+)
 
 
 class _GraphDimensions(NamedTuple):
@@ -183,16 +192,14 @@ def validate_example_topology_action_contracts(
     for index, row in examples.iterrows():
         row_source = f"{source} row {index}"
         row_config = _action_config_from_value(
-            row.get("topology_action_config"),
+            row["topology_action_config"],
             source=row_source,
         )
         row_layout = _action_layout_from_value(
-            row.get("action_layout"),
+            row["action_layout"],
             source=row_source,
         )
-        row_fingerprint = str(
-            row.get("action_layout_fingerprint", "")
-        ).strip()
+        row_fingerprint = str(row["action_layout_fingerprint"]).strip()
         expected_fingerprint = action_layout_fingerprint(row_layout)
         if row_fingerprint != expected_fingerprint:
             raise ValueError(
@@ -235,7 +242,7 @@ def validate_example_contract_versions(
     observed: PhysicsConfig | None = None
     for index, row in examples.iterrows():
         row_config = _physics_config_from_value(
-            row.get("physics_config"),
+            row["physics_config"],
             source=f"{source} row {index}",
         )
         expected = expected_physics_config or observed
@@ -273,6 +280,14 @@ def validate_examples_dataframe(
     if examples.empty:
         raise ValueError(f"Examples CSV is empty: {source}")
 
+    for column in REQUIRED_EXAMPLE_COLUMNS:
+        for index, value in examples[column].items():
+            if _is_missing_required_value(value):
+                raise ValueError(
+                    f"Missing required value in column '{column}' "
+                    f"at row {index}. File: {source}"
+                )
+
     physics_config = validate_example_contract_versions(
         examples,
         source_path=source,
@@ -281,14 +296,6 @@ def validate_examples_dataframe(
         examples,
         source_path=source,
     )
-
-    for column in REQUIRED_EXAMPLE_COLUMNS:
-        for index, value in examples[column].items():
-            if _is_missing_required_value(value):
-                raise ValueError(
-                    f"Missing required value in column '{column}' "
-                    f"at row {index}. File: {source}"
-                )
 
     _validate_episode_identity(examples, source=source)
     validate_example_outcome_contracts(
@@ -331,14 +338,6 @@ def validate_examples_dataframe(
             source=source,
         )
         state_path = Path(str(row["state_path"]).strip())
-        if not state_path.exists():
-            raise FileNotFoundError(
-                f"State file not found: {state_path}. File: {source}"
-            )
-        if not state_path.is_file():
-            raise ValueError(
-                f"State path is not a file: {state_path}. File: {source}"
-            )
 
         row_layout = _action_layout_from_value(
             row["action_layout"],
@@ -893,6 +892,11 @@ def _load_state_metadata(state_path: Path) -> Mapping[str, object]:
         raise ValueError(
             f"State metadata_json must be an object: {state_path}"
         )
+    missing = sorted(set(_REQUIRED_STATE_METADATA) - set(metadata))
+    if missing:
+        raise ValueError(
+            f"State metadata is missing required fields {missing}: {state_path}"
+        )
     return metadata
 
 
@@ -906,7 +910,7 @@ def validate_state_physics_config_payload(
     state_path = Path(state_path)
     metadata = _load_state_metadata(state_path)
     observed = _physics_config_from_value(
-        metadata.get("physics_config"),
+        metadata["physics_config"],
         source=str(state_path),
     )
     if observed != expected_physics_config:
@@ -927,11 +931,11 @@ def validate_state_topology_action_payload(
     state_path = Path(state_path)
     metadata = _load_state_metadata(state_path)
     observed_config = _action_config_from_value(
-        metadata.get("topology_action_config"),
+        metadata["topology_action_config"],
         source=str(state_path),
     )
     observed_layout = _action_layout_from_value(
-        metadata.get("action_layout"),
+        metadata["action_layout"],
         source=str(state_path),
     )
     if not _same_action_config(
@@ -1113,16 +1117,16 @@ def _validate_state_terminal_evidence(
     metadata = _load_state_metadata(state_path)
 
     for field, expected in expected_identity.items():
-        if metadata.get(field) != expected:
+        if metadata[field] != expected:
             raise ValueError(
                 f"CSV {field} does not match state metadata at row "
                 f"{index}. File: {source}. State: {state_path}"
             )
 
-    raw_evidence = metadata.get("terminal_outcome_evidence")
+    raw_evidence = metadata["terminal_outcome_evidence"]
     if not isinstance(raw_evidence, Mapping):
         raise ValueError(
-            "State metadata is missing terminal_outcome_evidence "
+            "State metadata has invalid terminal_outcome_evidence "
             f"at row {index}. File: {source}. State: {state_path}"
         )
 

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import fields
 from types import SimpleNamespace
 
 import pytest
@@ -41,16 +40,8 @@ def _node(
     )
 
 
-def test_mcts_config_excludes_legacy_return_knobs() -> None:
-    field_names = {field.name for field in fields(MCTSConfig)}
-    assert {
-        "leaf_penalty_weight",
-        "terminal_unsolved_penalty",
-        "value_scale",
-    }.isdisjoint(field_names)
-
-
-def test_mcts_config_normalizes_diagnostic_gamma() -> None:
+def test_mcts_config_normalizes_terminal_utility_gamma() -> None:
+    assert MCTSConfig().gamma == TERMINAL_UTILITY_GAMMA
     assert MCTSConfig(gamma=0.95).gamma == TERMINAL_UTILITY_GAMMA
 
 
@@ -139,10 +130,6 @@ def test_value_targets_equal_mcts_undiscounted_terminal_backup() -> None:
     assert rows[1]["outcome_value_target"] == second.total_value
     assert rows[0]["outcome_steps_to_terminal"] == 2
     assert rows[1]["outcome_steps_to_terminal"] == 1
-    assert all(
-        "outcome_value_target_contract_version" not in row
-        for row in rows
-    )
 
 
 def test_neural_value_outside_terminal_utility_range_is_rejected() -> None:

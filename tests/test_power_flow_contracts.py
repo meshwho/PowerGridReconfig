@@ -54,7 +54,7 @@ def _valid_ppc() -> dict[str, object]:
     branch[0, ANGMIN] = -30.0
     branch[0, ANGMAX] = 30.0
 
-    gen = np.zeros((1, PMIN + 1), dtype=float)
+    gen = np.zeros((1, 21), dtype=float)
     gen[0, GEN_BUS] = 10
     gen[0, GEN_STATUS] = 1.0
     gen[0, PMIN] = 0.0
@@ -116,7 +116,7 @@ def _cache_state() -> GridFMState:
     )
 
 
-def test_valid_input_and_result_satisfy_strict_contract() -> None:
+def test_valid_input_and_result_satisfy_structural_contract() -> None:
     config = PhysicsConfig()
     ppc = _valid_ppc()
     result = _valid_result(ppc)
@@ -128,6 +128,20 @@ def test_valid_input_and_result_satisfy_strict_contract() -> None:
         input_ppc=ppc,
         context="test result",
     )
+
+
+def test_result_contract_accepts_solver_added_output_columns() -> None:
+    ppc = _valid_ppc()
+    ppc["bus"] = np.pad(np.asarray(ppc["bus"]), ((0, 0), (0, 4)))
+    ppc["branch"] = np.pad(np.asarray(ppc["branch"]), ((0, 0), (0, 8)))
+    ppc["gen"] = np.pad(np.asarray(ppc["gen"]), ((0, 0), (0, 4)))
+
+    result = copy.deepcopy(ppc)
+    np.asarray(result["bus"])[0, 13:] = [1.0, 2.0, 3.0, 4.0]
+    np.asarray(result["branch"])[0, 13:] = np.arange(1.0, 9.0)
+    np.asarray(result["gen"])[0, 21:] = [1.0, 2.0, 3.0, 4.0]
+
+    validate_pypower_result(result, PhysicsConfig(), input_ppc=ppc)
 
 
 def test_result_contract_requires_a_mapping() -> None:
@@ -267,17 +281,7 @@ def test_result_contract_rejects_missing_matrix(matrix_name: str) -> None:
     result = _valid_result(ppc)
     result.pop(matrix_name)
 
-    with pytest.raises(InvalidPhysicalState, match=f"{matrix_name} result"):
-        validate_pypower_result(result, PhysicsConfig(), input_ppc=ppc)
-
-
-@pytest.mark.parametrize("matrix_name", ["bus", "branch", "gen"])
-def test_result_contract_rejects_non_finite_matrix(matrix_name: str) -> None:
-    ppc = _valid_ppc()
-    result = _valid_result(ppc)
-    np.asarray(result[matrix_name])[0, 0] = np.nan
-
-    with pytest.raises(InvalidPhysicalState, match=f"{matrix_name} result"):
+    with pytest.raises(InvalidPhysicalState, match=f"required {matrix_name}"):
         validate_pypower_result(result, PhysicsConfig(), input_ppc=ppc)
 
 
@@ -286,7 +290,7 @@ def test_result_contract_rejects_non_numeric_matrix() -> None:
     result = _valid_result(ppc)
     result["gen"] = [["not-a-number"] * (PMIN + 1)]
 
-    with pytest.raises(InvalidPhysicalState, match="gen result is not numeric"):
+    with pytest.raises(InvalidPhysicalState, match="gen is not numeric"):
         validate_pypower_result(result, PhysicsConfig(), input_ppc=ppc)
 
 
@@ -294,7 +298,7 @@ def test_result_contract_rejects_missing_flow_columns() -> None:
     ppc = _valid_ppc()
     result = copy.deepcopy(ppc)
 
-    with pytest.raises(InvalidPhysicalState, match="lacks flow columns"):
+    with pytest.raises(InvalidPhysicalState, match="branch must be 2D"):
         validate_pypower_result(result, PhysicsConfig(), input_ppc=ppc)
 
 

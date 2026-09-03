@@ -162,7 +162,7 @@ def test_neural_ranking_retains_low_prior_tail() -> None:
         policy=policy,
     )
 
-    # The legacy loading backup extends the active neural top-3 to five
+    # The loading-based backup extends the active neural top-3 to five
     # actions. The remaining low-prior actions stay queued for widening.
     assert _action_ids(node.ranked_actions) == list(range(1, 11))
     assert list(node.actions_by_id) == [1, 2, 3, 4, 5]

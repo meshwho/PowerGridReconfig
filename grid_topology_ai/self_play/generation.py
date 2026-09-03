@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import inspect
 import json
 import multiprocessing
 import os
@@ -14,14 +13,15 @@ import numpy as np
 import pandas as pd
 
 from grid_topology_ai.config import (
+    DEFAULT_PHYSICS_CONFIG,
     GenerationConfig,
     PhysicsConfig,
-    resolve_physics_config,
 )
 from grid_topology_ai.search.mcts import (
     require_action_in_policy_support,
     select_policy_action,
 )
+from grid_topology_ai.self_play.artifacts import file_content_identity
 
 _RUNTIME_DEPENDENCIES_LOADED = False
 
@@ -48,20 +48,17 @@ class GenerationRequest:
     action_seed: int
     clear_cache_between_scenarios: bool
     iteration: int = 1
-    physics_config: PhysicsConfig | None = None
+    physics_config: PhysicsConfig = DEFAULT_PHYSICS_CONFIG
     scenario_ids: tuple[int, ...] | None = None
-    device: str = "cpu"
     enable_cache: bool = True
     root_dirichlet_alpha: float = 0.30
     root_exploration_fraction: float = 0.25
-    min_hard_improvement: float = 50.0
-    min_soft_improvement: float = 15.0
-    min_gate_visits: int = 5
-    min_gate_visit_fraction: float = 0.01
     workers: int = 1
     resume: bool = False
 
     def __post_init__(self) -> None:
+        if not isinstance(self.physics_config, PhysicsConfig):
+            raise TypeError("physics_config must be a PhysicsConfig.")
         for field_name in ("mcts_seed", "action_seed"):
             value = getattr(self, field_name)
             if isinstance(value, bool) or not isinstance(value, (int, np.integer)):
@@ -87,13 +84,6 @@ class GenerationRequest:
         ):
             raise ValueError("workers must be a positive integer.")
         object.__setattr__(self, "workers", int(self.workers))
-
-    @property
-    def resolved_physics_config(self) -> PhysicsConfig:
-        return resolve_physics_config(
-            self.physics_config,
-            self.config.pf_alg,
-        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -293,8 +283,8 @@ def _step_metadata(
         "mcts_widening_coefficient": float(request.config.widening_coefficient),
         "mcts_widening_exponent": float(request.config.widening_exponent),
         "mcts_exploration_quota": int(request.config.exploration_quota),
-        "pf_alg": request.resolved_physics_config.pf_alg,
-        "policy_target_source": ("temperature_adjusted_mcts_visit_distribution"),
+        "pf_alg": request.physics_config.pf_alg,
+        "policy_target_source": "temperature_adjusted_mcts_visit_distribution",
         "execution_action_source": "policy_target_sampling",
         "mcts_best_action_id": (
             None
@@ -303,7 +293,7 @@ def _step_metadata(
         ),
         "mcts_best_branch_id": (
             None
-            if getattr(search_result, "best_branch_id", None) is None
+            if search_result.best_branch_id is None
             else int(search_result.best_branch_id)
         ),
     }
@@ -357,22 +347,22 @@ def _build_runtime(request: GenerationRequest) -> dict[str, Any]:
     _ensure_runtime_dependencies()
     adapter = GridFMAdapter(
         request.raw_dir,
-        physics_config=request.resolved_physics_config,
+        physics_config=request.physics_config,
     )
     backend = GridFMPowerFlowBackend(
         adapter=adapter,
-        physics_config=request.resolved_physics_config,
+        physics_config=request.physics_config,
         enable_cache=request.enable_cache,
     )
     action_config = request.config.action_space_config
     action_space = GridFMActionSpace(
-        require_connected_after_switch=(action_config.require_connected_after_switch),
-        min_loading_for_switch_percent=(action_config.min_loading_for_switch_percent),
+        require_connected_after_switch=action_config.require_connected_after_switch,
+        min_loading_for_switch_percent=action_config.min_loading_for_switch_percent,
         closeable_branch_ids=action_config.closeable_branch_ids,
         enable_cache=request.enable_cache,
     )
     reward_fn = GridFMReward(
-        physics_config=request.resolved_physics_config,
+        physics_config=request.physics_config,
         discount_factor=request.config.gamma,
     )
     mcts_config = MCTSConfig(
@@ -396,9 +386,9 @@ def _build_runtime(request: GenerationRequest) -> dict[str, Any]:
     if request.checkpoint is not None:
         evaluator = NeuralPolicyValueEvaluator(
             checkpoint_path=request.checkpoint,
-            device=request.device,
+            device=request.config.device,
             enable_cache=request.enable_cache,
-            physics_config=request.resolved_physics_config,
+            physics_config=request.physics_config,
         )
         if (
             evaluator.topology_action_config.contract_fingerprint()
@@ -411,7 +401,7 @@ def _build_runtime(request: GenerationRequest) -> dict[str, Any]:
     planner = MCTSPlanner(
         config=mcts_config,
         evaluator=evaluator,
-        physics_config=request.resolved_physics_config,
+        physics_config=request.physics_config,
     )
     return {
         "request": request,
@@ -436,10 +426,10 @@ def _release_generation_worker_runtime() -> None:
     runtime = _WORKER_RUNTIME
     if runtime is None:
         return
-    evaluator = runtime.get("evaluator")
+    evaluator = runtime["evaluator"]
     uses_cuda = (
         evaluator is not None
-        and getattr(evaluator, "device", None) is not None
+        and evaluator.device is not None
         and evaluator.device.type == "cuda"
     )
     _WORKER_RUNTIME = None
@@ -568,18 +558,7 @@ def _generate_scenario(scenario_id: int) -> _ScenarioResult:
 
 
 def _source_identity(path: Path | None) -> dict[str, object] | None:
-    if path is None:
-        return None
-    resolved = path.resolve()
-    try:
-        stat = resolved.stat()
-    except FileNotFoundError:
-        return {"path": str(resolved), "size": None, "mtime_ns": None}
-    return {
-        "path": str(resolved),
-        "size": int(stat.st_size),
-        "mtime_ns": int(stat.st_mtime_ns),
-    }
+    return file_content_identity(path)
 
 
 _RAW_SOURCE_FILES = (
@@ -613,7 +592,6 @@ def _resume_identity(
 ) -> dict[str, object]:
     config = asdict(request.config)
     config["closeable_branch_ids"] = list(config["closeable_branch_ids"])
-    config.pop("use_continuation_gate", None)
     return {
         "raw_source": _raw_source_identity(request.raw_dir),
         "transitions": _source_identity(request.transitions_csv),
@@ -622,8 +600,7 @@ def _resume_identity(
         "iteration": request.iteration,
         "mcts_seed": request.mcts_seed,
         "action_seed": request.action_seed,
-        "device": str(request.device),
-        "physics_config": request.resolved_physics_config.to_dict(),
+        "physics_config": request.physics_config.to_dict(),
         "action_space_config": request.config.action_space_config.to_contract_dict(),
         "generation_config": config,
         "root_dirichlet_alpha": request.root_dirichlet_alpha,
@@ -654,14 +631,18 @@ def _load_generation_progress(
                 f"Cannot resume without progress file: {progress_path}"
             )
         progress = json.loads(progress_path.read_text(encoding="utf-8"))
-        if progress.get("identity") != identity:
+        if not isinstance(progress, dict):
+            raise ValueError("Self-play progress file must contain a JSON object.")
+        if progress["identity"] != identity:
             raise ValueError("Self-play resume identity does not match this request.")
-        raw_run_id = progress.get("run_id")
+        raw_run_id = progress["run_id"]
         if not isinstance(raw_run_id, str) or not raw_run_id.strip():
             raise ValueError("progress.json run_id must be a non-empty string.")
         run_id = raw_run_id
         requested = set(identity["scenario_ids"])
-        completed = {int(value) for value in progress.get("completed_scenario_ids", [])}
+        completed = {
+            int(value) for value in progress["completed_scenario_ids"]
+        }
         if not completed <= requested:
             raise ValueError(
                 "progress.json contains scenario IDs outside this request."
@@ -764,10 +745,6 @@ def generate_self_play_examples(request: GenerationRequest) -> Path:
     scenario_ids = _scenario_ids_from_request(request)
     identity = _resume_identity(request, scenario_ids)
 
-    # A fresh run must prove that the complete runtime is constructible before
-    # committing progress.  In particular, an existing but invalid checkpoint
-    # or an incompatible topology contract must not poison an otherwise reusable
-    # output directory with a progress.json file.
     runtime_prepared = False
     if not request.resume:
         _initialize_generation_worker(request)
@@ -780,13 +757,12 @@ def generate_self_play_examples(request: GenerationRequest) -> Path:
     remaining = [sid for sid in scenario_ids if sid not in completed]
 
     _ensure_runtime_dependencies()
-    writer_kwargs: dict[str, object] = {
-        "physics_config": request.resolved_physics_config,
-        "action_space_config": request.config.action_space_config,
-    }
-    if "run_id" in inspect.signature(ExampleWriter.__init__).parameters:
-        writer_kwargs["run_id"] = run_id
-    writer = ExampleWriter(request.output_dir, **writer_kwargs)
+    writer = ExampleWriter(
+        request.output_dir,
+        physics_config=request.physics_config,
+        action_space_config=request.config.action_space_config,
+        run_id=run_id,
+    )
 
     if request.workers == 1:
         if not runtime_prepared:

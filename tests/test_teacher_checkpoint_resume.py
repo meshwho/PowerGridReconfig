@@ -146,20 +146,16 @@ def test_teacher_restart_completes_only_pending_scenarios(tmp_path) -> None:
     checkpoint_path = tmp_path / "teacher_checkpoint.jsonl"
     config_path = tmp_path / "teacher_checkpoint_config.json"
     config = {
-        "raw_dir": "unused-by-this-checkpoint-smoke",
-        "transitions_path": "unused-by-this-checkpoint-smoke",
         "scenario_ids": scenario_ids,
         "task_config": {"depth": 1, "beam_width": 2, "disable_cache": False},
         "source_identity": {"dataset": "restart-smoke"},
     }
 
-    # First run commits one scenario, then terminates while writing the next one.
     teacher.ensure_teacher_checkpoint_config(config_path, config)
     teacher.append_scenario_checkpoint(checkpoint_path, _completed_result(30))
     with checkpoint_path.open("ab") as checkpoint_file:
         checkpoint_file.write(b'{"scenario_id":10,"ok":true')
 
-    # A runtime-only option may change on restart, while semantic search settings may not.
     resumed_config = dict(config)
     resumed_config["task_config"] = dict(config["task_config"], disable_cache=True)
     teacher.ensure_teacher_checkpoint_config(config_path, resumed_config)

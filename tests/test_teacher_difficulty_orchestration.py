@@ -83,7 +83,7 @@ def test_load_scenario_ids_requires_requested_difficulty(tmp_path):
         teacher_runtime.load_scenario_ids(missing_class, None, "hard")
 
 
-def test_legacy_profile_matches_historical_search_budgets():
+def test_default_profile_matches_expected_search_budgets():
     profiles = cli._load_teacher_profiles(Path("profiles/teacher_ieee118.json"))
 
     assert profiles["simple"] == {
@@ -216,8 +216,6 @@ def test_directory_teacher_runs_both_splits_by_difficulty_and_merges(
     assert validation["difficulty_class"].tolist() == ["simple", "medium", "hard"]
     assert set(train["teacher_split"]) == {"train"}
     assert set(validation["teacher_split"]) == {"val"}
-    assert train["source_examples_csv"].str.endswith("examples.csv").all()
-    assert validation["source_examples_csv"].str.endswith("examples.csv").all()
     assert (output_dir / "teacher_profile.json").read_bytes() == profile_path.read_bytes()
 
 
@@ -249,6 +247,12 @@ def test_single_csv_teacher_does_not_require_profile(tmp_path, monkeypatch):
 
     def fake_teacher_main(argv: list[str]) -> int:
         calls.append(list(argv))
+        output_dir = Path(_value(argv, "--output-dir"))
+        output_dir.mkdir(parents=True, exist_ok=True)
+        pd.DataFrame({"state_id": ["state_1"]}).to_csv(
+            output_dir / "examples.csv",
+            index=False,
+        )
         return 0
 
     monkeypatch.setattr(teacher_runtime, "main", fake_teacher_main)

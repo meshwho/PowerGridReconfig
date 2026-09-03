@@ -118,7 +118,8 @@ def test_invalid_solver_output_is_returned_as_typed_physical_failure(
     assert result.failure_kind is PowerFlowFailureKind.INVALID_PHYSICAL_STATE
     assert result.next_state is None
     assert result.raw_result is None
-    assert "nan" in result.message.lower() or "finite" in result.message.lower()
+    message = result.message.lower()
+    assert "nan" in message or "finite" in message or "represented" in message
 
 
 def test_unexpected_programming_error_is_not_converted_to_domain_failure(

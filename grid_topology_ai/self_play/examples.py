@@ -20,6 +20,7 @@ from grid_topology_ai.search.mcts import (
     normalize_policy,
     require_action_in_policy_support,
 )
+from grid_topology_ai.self_play.example_validation import load_and_validate_examples_csv
 from grid_topology_ai.state import GridFMStateStore
 from grid_topology_ai.termination import (
     TerminationReason,
@@ -92,7 +93,7 @@ class ExampleWriter:
         self.state_store = GridFMStateStore(self.states_dir)
         self.examples: list[SelfPlayExample] = []
         self._existing_frame = (
-            pd.read_csv(self.examples_path)
+            load_and_validate_examples_csv(self.examples_path)
             if self.examples_path.exists()
             else pd.DataFrame()
         )
@@ -107,7 +108,7 @@ class ExampleWriter:
         self._saved_episodes = len(episodes)
         self._solved_episodes = (
             int(episodes["solved"].astype(str).str.lower().eq("true").sum())
-            if "solved" in episodes
+            if self._saved_episodes
             else 0
         )
         if self._saved_episodes:
@@ -117,8 +118,18 @@ class ExampleWriter:
                 flush=True,
             )
 
+    def _write_examples_frame(self, frame: pd.DataFrame) -> None:
+        temporary_path = self.examples_path.with_name(
+            f"{self.examples_path.name}.tmp"
+        )
+        try:
+            frame.to_csv(temporary_path, index=False)
+            temporary_path.replace(self.examples_path)
+        finally:
+            temporary_path.unlink(missing_ok=True)
+
     def _existing_run_id(self) -> str:
-        if self._existing_frame.empty or "run_id" not in self._existing_frame:
+        if self._existing_frame.empty:
             return uuid.uuid4().hex
         values = self._existing_frame["run_id"].dropna().astype(str).unique()
         if len(values) != 1:
@@ -154,10 +165,7 @@ class ExampleWriter:
             evidence=terminal_outcome_evidence,
         )
 
-        scenario_ids = {
-            int(item["scenario_id"])
-            for item in pending_examples
-        }
+        scenario_ids = {int(item["scenario_id"]) for item in pending_examples}
         if len(scenario_ids) != 1:
             raise ValueError("One episode cannot contain multiple scenario IDs.")
         scenario_id = scenario_ids.pop()
@@ -210,17 +218,15 @@ class ExampleWriter:
                 target_rows,
                 returns_from_step,
             ):
-                state_path = self.states_dir / (
-                    f"{episode_id}_step_{int(item['step']):03d}.npz"
-                )
-                created_paths.append(state_path)
+                state_id = f"{episode_id}_step_{int(item['step']):03d}"
+                created_paths.append(self.states_dir / f"{state_id}.npz")
                 self._store_example(
                     state=item["state"],
                     action_mask=item["action_mask"],
                     scenario_id=scenario_id,
                     step=int(item["step"]),
                     selected_action_id=int(item["selected_action_id"]),
-                    selected_branch_id=item.get("selected_branch_id"),
+                    selected_branch_id=item["selected_branch_id"],
                     step_reward=float(item["step_reward"]),
                     final_return=float(final_return),
                     discounted_return_from_step=float(return_from_step),
@@ -518,15 +524,7 @@ class ExampleWriter:
                 [self._existing_frame, frame], ignore_index=True
             )[columns]
 
-        temporary_path = self.examples_path.with_name(
-            f"{self.examples_path.name}.tmp"
-        )
-        try:
-            frame.to_csv(temporary_path, index=False)
-            temporary_path.replace(self.examples_path)
-            self._existing_frame = frame
-            self.examples.clear()
-        finally:
-            temporary_path.unlink(missing_ok=True)
-
+        self._write_examples_frame(frame)
+        self._existing_frame = frame
+        self.examples.clear()
         return self.examples_path

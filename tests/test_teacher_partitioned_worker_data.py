@@ -5,29 +5,7 @@ from pathlib import Path
 import grid_topology_ai.teacher_runtime as teacher
 
 
-def test_partition_batches_keeps_each_scenario_in_one_worker_shard() -> None:
-    batches = [
-        [1, 2],
-        [3, 4],
-        [5, 6],
-        [7, 8],
-        [9, 10],
-        [11, 12],
-    ]
-
-    shards = teacher._partition_batches(batches, 3)
-
-    assert shards == [
-        [[1, 2], [7, 8]],
-        [[3, 4], [9, 10]],
-        [[5, 6], [11, 12]],
-    ]
-    assert teacher._shard_scenario_ids(shards[0]) == (1, 2, 7, 8)
-    assert teacher._shard_scenario_ids(shards[1]) == (3, 4, 9, 10)
-    assert teacher._shard_scenario_ids(shards[2]) == (5, 6, 11, 12)
-
-
-def test_parallel_runner_routes_batches_to_matching_adapter_shards(monkeypatch) -> None:
+def test_parallel_runner_submits_batches_to_shared_worker_pool(monkeypatch) -> None:
     batches = [
         [1, 2],
         [3, 4],
@@ -79,18 +57,10 @@ def test_parallel_runner_routes_batches_to_matching_adapter_shards(monkeypatch) 
     )
 
     assert result == ([], 0, 0)
-    assert len(executors) == 3
+    assert len(executors) == 1
 
-    expected = [
-        ((1, 2, 7, 8), [[1, 2], [7, 8]]),
-        ((3, 4, 9, 10), [[3, 4], [9, 10]]),
-        ((5, 6, 11, 12), [[5, 6], [11, 12]]),
-    ]
-
-    for executor, (scenario_ids, submitted) in zip(executors, expected):
-        assert executor.kwargs["max_workers"] == 1
-        assert "max_tasks_per_child" not in executor.kwargs
-        assert executor.kwargs["initargs"][3] == scenario_ids
-        assert executor.submitted == submitted
-        for batch in submitted:
-            assert set(batch) <= set(scenario_ids)
+    executor = executors[0]
+    assert executor.kwargs["max_workers"] == 3
+    assert "max_tasks_per_child" not in executor.kwargs
+    assert executor.kwargs["initargs"][3] == tuple(range(1, 13))
+    assert executor.submitted == batches

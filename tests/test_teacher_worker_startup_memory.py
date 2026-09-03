@@ -48,6 +48,7 @@ def test_worker_init_semaphore_wraps_heavy_context_initialization(monkeypatch) -
             states_dir_str="states",
             task_config={
                 "physics": "unchanged",
+                "disable_cache": False,
                 teacher._RUNTIME_WORKER_INIT_SEMAPHORE: semaphore,
             },
             scenario_ids=[1, 2],
@@ -111,10 +112,11 @@ def test_parallel_runtime_adds_init_semaphore_without_mutating_task_config(
 
     assert result == ([], 0, 0)
     assert task_config == {"physics_config_fingerprint": "stable"}
-    assert len(executors) == 2
-    for executor in executors:
-        runtime_config = executor.kwargs["initargs"][2]
-        assert runtime_config[teacher._RUNTIME_WORKER_INIT_SEMAPHORE] is sentinel
+    assert len(executors) == 1
+    executor = executors[0]
+    assert executor.kwargs["max_workers"] == 2
+    runtime_config = executor.kwargs["initargs"][2]
+    assert runtime_config[teacher._RUNTIME_WORKER_INIT_SEMAPHORE] is sentinel
 
 
 def test_parquet_reader_returns_loaded_frame_without_reset_copy(

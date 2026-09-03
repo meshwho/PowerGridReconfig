@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import inspect
+import pickle
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -36,6 +37,19 @@ def test_native_thread_defaults_are_applied_before_project_imports() -> None:
         assert f'"{name}"' in source
 
     assert 'os.environ.setdefault(name, "1")' in source
+
+
+def test_worker_entrypoints_are_importable_and_picklable() -> None:
+    entrypoints = teacher._multiprocessing_entrypoints()
+
+    assert entrypoints == (
+        teacher.init_worker_context,
+        teacher._run_timed_batch,
+        teacher.process_scenario_batch,
+    )
+    for entrypoint in entrypoints:
+        assert entrypoint.__module__ == "grid_topology_ai.teacher_runtime"
+        assert pickle.loads(pickle.dumps(entrypoint)) is entrypoint
 
 
 def test_worker_init_installs_bounded_runtime_policy(monkeypatch) -> None:
@@ -80,7 +94,7 @@ def test_worker_init_installs_bounded_runtime_policy(monkeypatch) -> None:
         teacher._WORKER_CONTEXT = previous_context
 
 
-def test_parallel_workers_use_persistent_shards_without_recycling(
+def test_parallel_workers_use_persistent_pool_without_recycling(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
@@ -97,6 +111,7 @@ def test_parallel_workers_use_persistent_shards_without_recycling(
 
         def submit(self, fn, process_batch, batch):
             assert fn is teacher._run_timed_batch
+            assert process_batch is teacher.process_scenario_batch
             return FakeFuture()
 
         def shutdown(self, *, wait, cancel_futures):
@@ -124,7 +139,11 @@ def test_parallel_workers_use_persistent_shards_without_recycling(
     )
 
     assert result == ([], 0, 0)
-    assert len(executors) == 2
-    assert all(executor.kwargs["max_workers"] == 1 for executor in executors)
-    assert all("max_tasks_per_child" not in executor.kwargs for executor in executors)
-    assert all(executor.kwargs["initargs"][-1] is None for executor in executors)
+    assert len(executors) == 1
+
+    executor = executors[0]
+    assert executor.kwargs["max_workers"] == 2
+    assert executor.kwargs["initializer"] is teacher.init_worker_context
+    assert "max_tasks_per_child" not in executor.kwargs
+    assert executor.kwargs["initargs"][3] == (1, 2)
+    assert executor.kwargs["initargs"][-1] is None

@@ -191,6 +191,7 @@ class _Writer:
         *,
         physics_config,
         action_space_config,
+        run_id: str | None = None,
     ) -> None:
         self.output_dir = Path(output_dir)
         self.states_dir = self.output_dir / "states"
@@ -368,10 +369,7 @@ def _request(tmp_path: Path, *, max_steps: int) -> GenerationRequest:
         transitions_csv=transitions,
         output_dir=tmp_path / "out",
         checkpoint=None,
-        config=GenerationConfig(
-            max_steps=max_steps,
-            use_continuation_gate=False,
-        ),
+        config=GenerationConfig(max_steps=max_steps),
         mcts_seed=7,
         action_seed=8,
         clear_cache_between_scenarios=False,

@@ -3,6 +3,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+from grid_topology_ai.config import DEFAULT_PHYSICS_CONFIG
 from grid_topology_ai.state import BRANCH_FEATURE_COLUMNS, GridFMState
 from grid_topology_ai.value_targets import (
     TERMINAL_UTILITY_GAMMA,
@@ -41,10 +42,22 @@ def _state(*, loading: float, overloaded: int, hard: int) -> GridFMState:
         branch_ids=np.array([1], dtype=np.int64),
         branch_status=np.array([1.0], dtype=np.float32),
         metrics={
+            "power_flow_converged": True,
+            "all_values_finite": True,
+            "topology_connected": True,
             "max_loading_percent": float(loading),
             "num_overloaded_branches": int(overloaded),
             "num_hard_overloaded_branches": int(hard),
+            "total_thermal_overload_mva": max(float(loading) - 100.0, 0.0),
+            "num_low_voltage_buses": 0,
+            "num_high_voltage_buses": 0,
             "total_voltage_violation": 0.0,
+            "num_generator_p_violations": 0,
+            "total_generator_p_violation_mw": 0.0,
+            "num_generator_q_violations": 0,
+            "total_generator_q_violation_mvar": 0.0,
+            "num_angle_difference_violations": 0,
+            "total_angle_difference_violation_degrees": 0.0,
         },
         outaged_branch_ids=[],
     )
@@ -115,13 +128,16 @@ def test_bounded_utility_rejects_mixed_return_scale() -> None:
 
 def test_heuristic_utility_is_bounded_and_monotonic() -> None:
     secure = heuristic_terminal_utility_estimate(
-        _state(loading=90.0, overloaded=0, hard=0)
+        _state(loading=90.0, overloaded=0, hard=0),
+        physics_config=DEFAULT_PHYSICS_CONFIG,
     )
     overloaded = heuristic_terminal_utility_estimate(
-        _state(loading=110.0, overloaded=1, hard=0)
+        _state(loading=110.0, overloaded=1, hard=0),
+        physics_config=DEFAULT_PHYSICS_CONFIG,
     )
     hard = heuristic_terminal_utility_estimate(
-        _state(loading=140.0, overloaded=1, hard=1)
+        _state(loading=140.0, overloaded=1, hard=1),
+        physics_config=DEFAULT_PHYSICS_CONFIG,
     )
 
     assert secure == 1.0

@@ -58,9 +58,11 @@ from pypower.idx_gen import (
 
 from grid_topology_ai.cache import (
     DEFAULT_EXACT_POWER_FLOW_CACHE_BYTES,
+    ByteLRUCache,
     CachedPowerFlowFailure,
     CachedPowerFlowSuccess,
     ExactPowerFlowCache,
+    PowerFlowCacheKey,
 )
 from grid_topology_ai.config import (
     DEFAULT_PHYSICS_CONFIG,
@@ -133,6 +135,8 @@ _GENERATOR_COLUMNS = (
     "min_q_mvar",
     "max_q_mvar",
 )
+_MAX_PHYSICAL_METRICS_CACHE_BYTES = 8 * 1024 * 1024
+_PHYSICAL_METRICS_ENTRY_BYTES = 4096
 
 
 @dataclass(frozen=True)
@@ -171,9 +175,17 @@ class GridFMPowerFlowBackend:
             physics_config=self.physics_config,
             result_metrics_calculator=calculate_physical_metrics_from_result,
         )
+        exact_cache_max_bytes = int(exact_cache_max_bytes)
         self._exact_power_flow_cache = ExactPowerFlowCache(
-            max_bytes=int(exact_cache_max_bytes)
+            max_bytes=exact_cache_max_bytes
         )
+        metrics_cache_max_bytes = min(
+            max(exact_cache_max_bytes // 8, 0),
+            _MAX_PHYSICAL_METRICS_CACHE_BYTES,
+        )
+        self._physical_metrics_cache: ByteLRUCache[
+            bytes, dict[str, object]
+        ] = ByteLRUCache(max_bytes=metrics_cache_max_bytes)
         self._active_problem_template: ScenarioPowerFlowTemplate | None = None
         self._active_problem_frames: dict[str, pd.DataFrame] | None = None
         self.stock_runpf_calls = 0
@@ -226,6 +238,38 @@ class GridFMPowerFlowBackend:
         """Discard exact cached solutions while keeping scenario templates."""
 
         self._exact_power_flow_cache.clear(reset_counters=True)
+        self._physical_metrics_cache.clear(reset_evictions=True)
+
+    @staticmethod
+    def _positive_cache_key(key: PowerFlowCacheKey | bytes) -> bytes:
+        return key.positive if isinstance(key, PowerFlowCacheKey) else key
+
+    def _cached_physical_metrics(
+        self,
+        key: PowerFlowCacheKey | bytes,
+    ) -> dict[str, object] | None:
+        metrics = self._physical_metrics_cache.get(
+            self._positive_cache_key(key)
+        )
+        return None if metrics is None else dict(metrics)
+
+    def _store_physical_metrics(
+        self,
+        key: PowerFlowCacheKey | bytes,
+        metrics: dict[str, object],
+    ) -> None:
+        positive_key = self._positive_cache_key(key)
+        self._physical_metrics_cache.put(
+            positive_key,
+            dict(metrics),
+            size_bytes=_PHYSICAL_METRICS_ENTRY_BYTES + len(positive_key),
+        )
+
+    def _discard_physical_metrics(
+        self,
+        key: PowerFlowCacheKey | bytes,
+    ) -> None:
+        self._physical_metrics_cache.discard(self._positive_cache_key(key))
 
     @staticmethod
     def _require_matching_physics_contract(
@@ -284,6 +328,12 @@ class GridFMPowerFlowBackend:
                 raise InvalidPhysicalState(
                     f"Power-flow result contains NaN or infinity in {name}."
                 )
+
+    @staticmethod
+    def _is_trusted_repeated_state(state: GridFMState) -> bool:
+        """Return whether the state was produced by this backend representation."""
+
+        return isinstance(state, _GeneratorOperatingPointState)
 
     @staticmethod
     def _resolve_branch_status_action(
@@ -619,12 +669,84 @@ class GridFMPowerFlowBackend:
         self._active_problem_frames = frames
         return template, frames
 
+    def _build_trusted_power_flow_problem(
+        self,
+        *,
+        template: ScenarioPowerFlowTemplate,
+        state: _GeneratorOperatingPointState,
+        action: GridFMAction | None,
+        switched_off_branch_id: int | None,
+    ) -> CanonicalPowerFlowProblem:
+        """Rebuild a backend-produced state without revalidating its invariants."""
+
+        bus = template.bus.copy()
+        branch = template.branch.copy()
+        gen = template.gen.copy()
+        bus_features = np.asarray(state.bus_features)
+        branch_features = np.asarray(state.branch_features)
+
+        bus[:, BUS_TYPE] = BUS_TYPE_PQ
+        pv = np.asarray(bus_features[:, _BUS_COL["PV"]], dtype=np.float64) > 0.5
+        ref = np.asarray(bus_features[:, _BUS_COL["REF"]], dtype=np.float64) > 0.5
+        bus[pv, BUS_TYPE] = BUS_TYPE_PV
+        bus[ref, BUS_TYPE] = BUS_TYPE_REF
+        bus[:, PD] = bus_features[:, _BUS_COL["Pd"]]
+        bus[:, QD] = bus_features[:, _BUS_COL["Qd"]]
+        bus[:, GS] = bus_features[:, _BUS_COL["GS"]] * template.base_mva
+        bus[:, BS] = bus_features[:, _BUS_COL["BS"]] * template.base_mva
+        bus[:, VM] = bus_features[:, _BUS_COL["Vm"]]
+        bus[:, VA] = bus_features[:, _BUS_COL["Va"]]
+        bus[:, BASE_KV] = bus_features[:, _BUS_COL["vn_kv"]]
+        bus[:, VMAX] = bus_features[:, _BUS_COL["max_vm_pu"]]
+        bus[:, VMIN] = bus_features[:, _BUS_COL["min_vm_pu"]]
+
+        branch[:, BR_R] = branch_features[:, _BRANCH_COL["r"]]
+        branch[:, BR_X] = branch_features[:, _BRANCH_COL["x"]]
+        branch[:, BR_B] = branch_features[:, _BRANCH_COL["b"]]
+        branch[:, TAP] = branch_features[:, _BRANCH_COL["tap"]]
+        branch[:, SHIFT] = branch_features[:, _BRANCH_COL["shift"]]
+        rate_a = branch_features[:, _BRANCH_COL["rate_a"]]
+        branch[:, RATE_A] = rate_a
+        branch[:, RATE_B] = rate_a
+        branch[:, RATE_C] = rate_a
+        branch[:, BR_STATUS] = branch_features[:, _BRANCH_COL["br_status"]]
+
+        if action is not None:
+            assert action.branch_pos is not None
+            assert action.target_status is not None
+            branch[int(action.branch_pos), BR_STATUS] = float(action.target_status)
+        elif switched_off_branch_id is not None:
+            positions = np.flatnonzero(
+                template.branch_ids == int(switched_off_branch_id)
+            )
+            if positions.size != 1:
+                raise ValueError(
+                    f"Expected exactly one branch id {switched_off_branch_id}, "
+                    f"found {positions.size}."
+                )
+            branch[int(positions[0]), BR_STATUS] = 0.0
+
+        assert state.generator_p_mw is not None
+        assert state.generator_q_mvar is not None
+        assert state.generator_status is not None
+        gen[:, PG] = state.generator_p_mw
+        gen[:, QG] = state.generator_q_mvar
+        gen[:, GEN_STATUS] = state.generator_status
+
+        return CanonicalPowerFlowProblem(
+            base_mva=float(template.base_mva),
+            bus=bus,
+            branch=branch,
+            gen=gen,
+        )
+
     def _build_ppc_from_state(
         self,
         state: GridFMState,
         switched_off_branch_id: int | None = None,
         *,
         action: GridFMAction | None = None,
+        validated_action: bool = False,
     ) -> tuple[dict[str, Any], dict[str, pd.DataFrame]]:
         """Build the repeated AC problem without pandas reconstruction."""
 
@@ -633,13 +755,23 @@ class GridFMPowerFlowBackend:
             switched_off_branch_id=switched_off_branch_id,
         )
         template, frames = self._scenario_problem_resources(int(state.scenario_id))
-        problem = build_power_flow_problem_from_state(
-            template=template,
-            state=state,
-            branch_id=branch_id,
-            target_status=target_status,
-            generator_operating_point=GeneratorOperatingPoint.from_state(state),
-        )
+
+        trusted_state = self._is_trusted_repeated_state(state)
+        if trusted_state and (action is None or validated_action):
+            problem = self._build_trusted_power_flow_problem(
+                template=template,
+                state=state,
+                action=action,
+                switched_off_branch_id=switched_off_branch_id,
+            )
+        else:
+            problem = build_power_flow_problem_from_state(
+                template=template,
+                state=state,
+                branch_id=branch_id,
+                target_status=target_status,
+                generator_operating_point=GeneratorOperatingPoint.from_state(state),
+            )
         return problem.to_ppc(), frames
 
     @staticmethod
@@ -675,6 +807,7 @@ class GridFMPowerFlowBackend:
         switched_off_branch_id: int | None = None,
         *,
         action: GridFMAction | None = None,
+        validated_action: bool = False,
     ) -> GridFMPowerFlowResult:
         """Run one transition, reusing only an exactly identical AC problem."""
 
@@ -684,16 +817,18 @@ class GridFMPowerFlowBackend:
         )
         effective_switched_off = branch_id if target_status == 0 else None
         context = f"scenario={state.scenario_id} from_state"
+        trusted_state = self._is_trusted_repeated_state(state)
 
         try:
             ppc, frames = self._build_ppc_from_state(
                 state=state,
                 action=action,
                 switched_off_branch_id=switched_off_branch_id,
+                validated_action=validated_action,
             )
             problem = self._problem_from_ppc(ppc)
 
-            cache_key: bytes | None = None
+            cache_key: PowerFlowCacheKey | None = None
             cached = None
             if self.enable_cache:
                 cache_key, cached = self._exact_power_flow_cache.lookup(
@@ -715,16 +850,20 @@ class GridFMPowerFlowBackend:
                 )
 
             if isinstance(cached, CachedPowerFlowSuccess):
+                assert cache_key is not None
                 cached_ppc = cached.to_ppc(
                     base_mva=problem.base_mva,
                     copy_arrays=bool(self.store_raw_result),
                 )
                 try:
-                    metrics = calculate_physical_metrics_from_result(
-                        cached_ppc,
-                        power_flow_converged=True,
-                        physics_config=self.physics_config,
-                    )
+                    metrics = self._cached_physical_metrics(cache_key)
+                    if metrics is None:
+                        metrics = calculate_physical_metrics_from_result(
+                            cached_ppc,
+                            power_flow_converged=True,
+                            physics_config=self.physics_config,
+                        )
+                        self._store_physical_metrics(cache_key, metrics)
                     next_state = self._state_from_solved_ppc(
                         state=state,
                         result_ppc=cached_ppc,
@@ -732,8 +871,8 @@ class GridFMPowerFlowBackend:
                         metrics=metrics,
                     )
                 except InvalidPhysicalState:
-                    assert cache_key is not None
                     self._exact_power_flow_cache.discard(cache_key)
+                    self._discard_physical_metrics(cache_key)
                 else:
                     return GridFMPowerFlowResult(
                         success=True,
@@ -749,7 +888,11 @@ class GridFMPowerFlowBackend:
                     )
 
             try:
-                result_ppc, metrics = self._solve_ppc(ppc, context=context)
+                result_ppc, metrics = self._solve_ppc(
+                    ppc,
+                    context=context,
+                    validate_input=not trusted_state,
+                )
             except PowerFlowNotConverged as exc:
                 if self.enable_cache and cache_key is not None:
                     self._exact_power_flow_cache.store_not_converged(
@@ -776,10 +919,12 @@ class GridFMPowerFlowBackend:
             )
 
             if self.enable_cache and cache_key is not None:
-                self._exact_power_flow_cache.store_success(
+                stored = self._exact_power_flow_cache.store_success(
                     cache_key,
                     result_ppc,
                 )
+                if stored:
+                    self._store_physical_metrics(cache_key, metrics)
 
             return GridFMPowerFlowResult(
                 success=True,
@@ -810,10 +955,12 @@ class GridFMPowerFlowBackend:
         ppc: dict[str, Any],
         *,
         context: str,
+        validate_input: bool = True,
     ) -> tuple[dict[str, Any], dict[str, object]]:
         """Solve through this module so monkeypatched runpf stays observable."""
 
-        validate_ppc_input(ppc, self.physics_config, context=context)
+        if validate_input:
+            validate_ppc_input(ppc, self.physics_config, context=context)
         before = get_power_flow_workload_counters()
 
         try:
@@ -880,7 +1027,6 @@ class GridFMPowerFlowBackend:
 
         bus_res = result_ppc["bus"]
         branch_res = result_ppc["branch"]
-        gen_res = result_ppc["gen"]
         if physical_metrics is None:
             physical_metrics = calculate_physical_metrics_from_result(
                 result_ppc,
@@ -890,38 +1036,11 @@ class GridFMPowerFlowBackend:
 
         bus_features = previous_state.bus_features.copy()
         branch_features = previous_state.branch_features.copy()
-        bus_col = {
-            name: idx for idx, name in enumerate(BUS_FEATURE_COLUMNS)
-        }
-        branch_col = {
-            name: idx for idx, name in enumerate(BRANCH_FEATURE_COLUMNS)
-        }
 
         vm = bus_res[:, VM].astype(np.float32)
         va = bus_res[:, VA].astype(np.float32)
-        bus_features[:, bus_col["Vm"]] = vm
-        bus_features[:, bus_col["Va"]] = va
-
-        pg_by_bus = np.zeros(bus_features.shape[0], dtype=np.float32)
-        qg_by_bus = np.zeros(bus_features.shape[0], dtype=np.float32)
-        bus_df = original_frames["bus"]
-        gen_df = original_frames["gen"]
-        bus_id_to_pos = {
-            int(bus_id): pos
-            for pos, bus_id in enumerate(
-                bus_df["bus"].to_numpy(dtype=int)
-            )
-        }
-        for gen_pos, bus_id in enumerate(
-            gen_df["bus"].to_numpy(dtype=int)
-        ):
-            bus_pos = bus_id_to_pos.get(int(bus_id))
-            if bus_pos is None:
-                continue
-            pg_by_bus[bus_pos] += float(gen_res[gen_pos, PG])
-            qg_by_bus[bus_pos] += float(gen_res[gen_pos, QG])
-        bus_features[:, bus_col["Pg"]] = pg_by_bus
-        bus_features[:, bus_col["Qg"]] = qg_by_bus
+        bus_features[:, _BUS_COL["Vm"]] = vm
+        bus_features[:, _BUS_COL["Va"]] = va
 
         pf64 = np.asarray(branch_res[:, PF], dtype=np.float64)
         qf64 = np.asarray(branch_res[:, QF], dtype=np.float64)
@@ -1022,16 +1141,16 @@ class GridFMPowerFlowBackend:
                 "Branch features cannot be represented finitely."
             )
 
-        branch_features[:, branch_col["pf"]] = pf
-        branch_features[:, branch_col["qf"]] = qf
-        branch_features[:, branch_col["pt"]] = pt
-        branch_features[:, branch_col["qt"]] = qt
-        branch_features[:, branch_col["rate_a"]] = rate_a
-        branch_features[:, branch_col["br_status"]] = br_status
-        branch_features[:, branch_col["s_from_mva"]] = s_from
-        branch_features[:, branch_col["s_to_mva"]] = s_to
-        branch_features[:, branch_col["s_max_mva"]] = s_max
-        branch_features[:, branch_col["loading_percent"]] = loading
+        branch_features[:, _BRANCH_COL["pf"]] = pf
+        branch_features[:, _BRANCH_COL["qf"]] = qf
+        branch_features[:, _BRANCH_COL["pt"]] = pt
+        branch_features[:, _BRANCH_COL["qt"]] = qt
+        branch_features[:, _BRANCH_COL["rate_a"]] = rate_a
+        branch_features[:, _BRANCH_COL["br_status"]] = br_status
+        branch_features[:, _BRANCH_COL["s_from_mva"]] = s_from
+        branch_features[:, _BRANCH_COL["s_to_mva"]] = s_to
+        branch_features[:, _BRANCH_COL["s_max_mva"]] = s_max
+        branch_features[:, _BRANCH_COL["loading_percent"]] = loading
 
         active_loading = loading[active]
         mean_loading = (

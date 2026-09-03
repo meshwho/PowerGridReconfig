@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import inspect
 from types import SimpleNamespace
 
 import numpy as np
@@ -348,6 +349,19 @@ def test_fast_builder_does_not_delegate_to_canonical_builder(monkeypatch) -> Non
         physical_metrics={"marker": 5.0},
     )
     assert fast.outaged_branch_ids == [9]
+
+
+def test_fast_builder_has_single_generator_aggregation_path() -> None:
+    source = inspect.getsource(
+        GridFMPowerFlowBackend._build_state_from_pypower_result_fast
+    )
+
+    assert source.count("_update_fast_generator_features(") == 1
+    assert "pg_by_bus" not in source
+    assert "qg_by_bus" not in source
+    assert "bus_id_to_pos" not in source
+    assert "enumerate(BUS_FEATURE_COLUMNS)" not in source
+    assert "enumerate(BRANCH_FEATURE_COLUMNS)" not in source
 
 
 def test_fast_builder_matches_canonical_on_second_topology_step() -> None:

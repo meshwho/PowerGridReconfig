@@ -160,27 +160,42 @@ def validate_ppc_input(ppc: dict[str, Any], physics_config: PhysicsConfig, *, co
 
 
 def validate_pypower_result(result_ppc: dict[str, Any], physics_config: PhysicsConfig, *, input_ppc: dict[str, Any], context: str = "result") -> None:
+    """Validate only the minimal result structure before physical assessment."""
     if not isinstance(result_ppc, dict):
         raise InvalidPhysicalState(f"{context}: result must be a mapping.")
-    for name in ("bus", "branch", "gen"):
-        if name not in result_ppc:
-            raise InvalidPhysicalState(f"{context}: {name} result contains non-finite values.")
-        try:
-            values = np.asarray(result_ppc[name], dtype=float)
-        except (TypeError, ValueError) as exc:
+    if result_ppc.get("version") not in {"2", 2}:
+        raise InvalidPhysicalState(f"{context}: unsupported MATPOWER version.")
+    try:
+        base_mva = float(result_ppc["baseMVA"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise InvalidPhysicalState(
+            f"{context}: baseMVA must be present and numeric."
+        ) from exc
+    if (
+        not np.isfinite(base_mva)
+        or not np.isclose(
+            base_mva,
+            physics_config.base_mva,
+            rtol=0.0,
+            atol=0.0,
+        )
+    ):
+        raise InvalidPhysicalState(
+            f"{context}: baseMVA disagrees with PhysicsConfig."
+        )
+
+    result = {
+        "bus": _matrix(result_ppc, "bus", VMIN + 1, context),
+        "branch": _matrix(result_ppc, "branch", QT + 1, context),
+        "gen": _matrix(result_ppc, "gen", PMIN + 1, context),
+    }
+
+    for name, values in result.items():
+        source_rows = len(input_ppc[name])
+        if values.shape[0] != source_rows:
             raise InvalidPhysicalState(
-                f"{context}: {name} result is not numeric."
-            ) from exc
-        if not np.isfinite(values).all():
-            raise InvalidPhysicalState(
-                f"{context}: {name} result contains non-finite values."
+                f"{context}: {name} row count differs from input."
             )
-    validate_ppc_input(result_ppc, physics_config, context=context)
-    for name in ("bus", "branch", "gen"):
-        if np.asarray(result_ppc[name]).shape[0] != np.asarray(input_ppc[name]).shape[0]:
-            raise InvalidPhysicalState(f"{context}: {name} row count differs from input.")
-    if np.asarray(result_ppc["branch"]).shape[1] < QT + 1:
-        raise InvalidPhysicalState(f"{context}: branch result lacks flow columns.")
 
 
 def _finite_sum(values: np.ndarray) -> float:

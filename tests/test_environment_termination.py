@@ -2,6 +2,7 @@ import numpy as np
 import pytest
 
 from grid_topology_ai.actions import GridFMAction
+from grid_topology_ai.config import DEFAULT_PHYSICS_CONFIG
 from grid_topology_ai.state import BRANCH_FEATURE_COLUMNS, GridFMState
 from grid_topology_ai.environment import TopologySwitchingEnv
 from grid_topology_ai.power_flow.backend import GridFMPowerFlowResult
@@ -87,6 +88,11 @@ def _reward_breakdown(done, reward=0.0):
         done=bool(done),
         success=True,
         message="fake reward",
+        potential_shaping=float(reward),
+        discount_factor=1.0,
+        before_potential=0.0,
+        after_potential=0.0,
+        reward_role="diagnostic_only",
     )
 
 
@@ -137,6 +143,8 @@ class FakeReward:
 
 
 class FakeBackend:
+    physics_config = DEFAULT_PHYSICS_CONFIG
+
     def __init__(self, initial_state, success=True, next_state=None):
         self.initial_state = initial_state
         self.success = bool(success)

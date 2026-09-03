@@ -18,6 +18,7 @@ from grid_topology_ai.dataset import (
     GraphSelfPlayDataset,
     collate_graph_samples,
 )
+from grid_topology_ai.self_play.artifacts import file_content_identity, sha256_file
 from grid_topology_ai.training.checkpoints import (
     NORMALIZATION_STAT_KEYS,
     atomic_save_checkpoint,
@@ -147,8 +148,8 @@ def train_one_epoch(
         branch_features = batch["branch_features"]
         edge_index = batch["edge_index"]
         edge_active_mask = batch["edge_active_mask"]
-        node_batch = batch.get("node_batch")
-        edge_batch = batch.get("edge_batch")
+        node_batch = batch["node_batch"]
+        edge_batch = batch["edge_batch"]
         action_mask = batch["action_mask"]
         target_policy = batch["target_policy"]
         target_value = batch["target_value"]
@@ -156,7 +157,7 @@ def train_one_epoch(
         optimizer.zero_grad(set_to_none=True)
         with torch.amp.autocast("cuda", enabled=use_amp):
             policy_logits, predicted_value = _forward_graph_model(
-                model,
+                model=model,
                 bus_features=bus_features,
                 branch_features=branch_features,
                 edge_index=edge_index,
@@ -350,41 +351,43 @@ def _normalization_provenance(
     return {
         "normalization_source": "init_checkpoint" if from_init else "training_dataset",
         "normalization_frozen_from_init_checkpoint": from_init,
-        "normalization_source_checkpoint": (
-            str(init_checkpoint) if init_checkpoint is not None else None
+        "normalization_source_checkpoint_sha256": (
+            sha256_file(init_checkpoint) if init_checkpoint is not None else None
         ),
     }
 
 
 def _training_source_identity(request: TrainingRequest) -> dict[str, object]:
-    def identity(path: Path | None) -> dict[str, object] | None:
-        if path is None:
-            return None
-        resolved = path.resolve()
-        stat = resolved.stat()
-        return {
-            "path": str(resolved),
-            "size": int(stat.st_size),
-            "mtime_ns": int(stat.st_mtime_ns),
-        }
-
     return {
-        "examples_csv": identity(request.examples_csv),
-        "validation_examples_csv": identity(request.validation_examples_csv),
+        "examples_csv": file_content_identity(request.examples_csv),
+        "validation_examples_csv": file_content_identity(
+            request.validation_examples_csv
+        ),
     }
 
 
 def _checkpoint_normalization_provenance(
     payload: Mapping[str, object],
 ) -> dict[str, object]:
+    required = {
+        "normalization_source",
+        "normalization_frozen_from_init_checkpoint",
+        "normalization_source_checkpoint_sha256",
+    }
+    missing = required - set(payload)
+    if missing:
+        raise ValueError(
+            "Checkpoint is missing normalization provenance fields: "
+            f"{sorted(missing)}."
+        )
     return {
-        "normalization_source": payload.get("normalization_source", "training_dataset"),
+        "normalization_source": payload["normalization_source"],
         "normalization_frozen_from_init_checkpoint": bool(
-            payload.get("normalization_frozen_from_init_checkpoint", False)
+            payload["normalization_frozen_from_init_checkpoint"]
         ),
-        "normalization_source_checkpoint": payload.get(
-            "normalization_source_checkpoint"
-        ),
+        "normalization_source_checkpoint_sha256": payload[
+            "normalization_source_checkpoint_sha256"
+        ],
     }
 
 
@@ -626,10 +629,31 @@ def train_graph_policy_value_model(request: TrainingRequest) -> Path:
     if request.resume_checkpoint is not None:
         resume = init_checkpoint_payload
         assert resume is not None
-        saved_config = resume.get("training_config")
+        required_resume_fields = {
+            "training_config",
+            "training_source_identity",
+            "optimizer_state_dict",
+            "scaler_state_dict",
+            "completed_epoch",
+            "best_metric",
+            "best_epoch",
+            "rng_state",
+            "train_generator_state",
+        }
+        if request.save_best:
+            required_resume_fields.add("best_model_state_dict")
+        missing_resume_fields = required_resume_fields - set(resume)
+        if missing_resume_fields:
+            raise ValueError(
+                "Resume checkpoint is missing required fields "
+                f"{sorted(missing_resume_fields)}: {request.resume_checkpoint}"
+            )
+
+        saved_config = resume["training_config"]
         if not isinstance(saved_config, Mapping):
             raise ValueError(
-                f"Resume checkpoint is missing training_config: {request.resume_checkpoint}"
+                f"Resume checkpoint training_config must be a mapping: "
+                f"{request.resume_checkpoint}"
             )
         current_config = {
             "seed": int(request.seed),
@@ -645,30 +669,28 @@ def train_graph_policy_value_model(request: TrainingRequest) -> Path:
             "dropout": float(request.config.dropout),
             "save_best": bool(request.save_best),
         }
+        missing_config_fields = set(current_config) - set(saved_config)
+        if missing_config_fields:
+            raise ValueError(
+                "Resume checkpoint training_config is missing required fields: "
+                f"{sorted(missing_config_fields)}."
+            )
         for key, expected in current_config.items():
-            if saved_config.get(key) != expected:
+            observed = saved_config[key]
+            if observed != expected:
                 raise ValueError(
                     f"Resume training configuration mismatch for {key}: "
-                    f"expected {expected!r}, checkpoint has {saved_config.get(key)!r}."
+                    f"expected {expected!r}, checkpoint has {observed!r}."
                 )
-        saved_identity = resume.get("training_source_identity")
+
+        saved_identity = resume["training_source_identity"]
         current_identity = _training_source_identity(request)
         if saved_identity != current_identity:
             raise ValueError(
                 "Resume training source identity mismatch: "
                 f"expected {current_identity!r}, checkpoint has {saved_identity!r}."
             )
-        for key in (
-            "optimizer_state_dict",
-            "scaler_state_dict",
-            "completed_epoch",
-            "rng_state",
-            "train_generator_state",
-        ):
-            if key not in resume:
-                raise ValueError(
-                    f"Resume checkpoint is missing {key!r}: {request.resume_checkpoint}"
-                )
+
         optimizer.load_state_dict(resume["optimizer_state_dict"])
         scaler.load_state_dict(resume["scaler_state_dict"])
         train_generator.set_state(resume["train_generator_state"])
@@ -679,13 +701,13 @@ def train_graph_policy_value_model(request: TrainingRequest) -> Path:
         if device.type == "cuda" and "cuda" in rng_state:
             torch.cuda.set_rng_state_all(rng_state["cuda"])
         start_epoch = int(resume["completed_epoch"]) + 1
-        best_metric = float(resume.get("best_metric", best_metric))
-        best_epoch = int(resume.get("best_epoch", best_epoch))
+        best_metric = float(resume["best_metric"])
+        best_epoch = int(resume["best_epoch"])
         if request.save_best:
-            saved_best_state = resume.get("best_model_state_dict")
+            saved_best_state = resume["best_model_state_dict"]
             if not isinstance(saved_best_state, Mapping):
                 raise ValueError(
-                    "Resume checkpoint is missing 'best_model_state_dict'."
+                    "Resume checkpoint best_model_state_dict must be a mapping."
                 )
             best_model_state_dict = dict(saved_best_state)
 

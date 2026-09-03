@@ -74,6 +74,7 @@ class TopologySwitchingEnv:
         self.applied_actions: list[GridFMAction] = []
         self.termination_reason: TerminationReason | None = None
         self.terminal_outcome_evidence: TerminalOutcomeEvidence | None = None
+        self._valid_actions_by_id: dict[int, GridFMAction] | None = None
 
     def reset(self, scenario_id: int) -> GridFMState:
         """Reset through the canonical AC power-flow backend."""
@@ -89,6 +90,7 @@ class TopologySwitchingEnv:
         self.applied_actions = []
         self.termination_reason = None
         self.terminal_outcome_evidence = None
+        self._valid_actions_by_id = None
 
         initial_result = self.backend.run_power_flow(
             scenario_id=scenario_id,
@@ -123,10 +125,20 @@ class TopologySwitchingEnv:
 
         return self.current_state
 
-    def valid_actions(self) -> list[GridFMAction]:
+    def _valid_actions_for_current_state(self) -> dict[int, GridFMAction]:
         self._require_active_episode()
         assert self.current_state is not None
-        return self.action_space.valid_actions(self.current_state)
+
+        if self._valid_actions_by_id is None:
+            actions = self.action_space.valid_actions(self.current_state)
+            self._valid_actions_by_id = {
+                int(action.action_id): action
+                for action in actions
+            }
+        return self._valid_actions_by_id
+
+    def valid_actions(self) -> list[GridFMAction]:
+        return list(self._valid_actions_for_current_state().values())
 
     def structural_action_mask(self):
         self._require_active_episode()
@@ -142,13 +154,12 @@ class TopologySwitchingEnv:
         self._require_active_episode()
         assert self.current_state is not None
 
-        all_actions = self.action_space.build_all_actions(self.current_state)
-        if action_id < 0 or action_id >= len(all_actions):
+        num_branches = len(self.current_state.branch_ids)
+        if action_id < 0 or action_id > num_branches:
             raise ValueError(f"Invalid action_id: {action_id}")
 
-        action = all_actions[action_id]
-        mask = self.action_space.operational_action_mask(self.current_state)
-        if not bool(mask[action_id]):
+        action = self._valid_actions_for_current_state().get(int(action_id))
+        if action is None:
             raise ValueError(
                 f"Action {action_id} is not valid in current state."
             )
@@ -167,7 +178,12 @@ class TopologySwitchingEnv:
             "in the current state."
         )
 
-    def step(self, action: GridFMAction | int) -> TopologyStepResult:
+    def step(
+        self,
+        action: GridFMAction | int,
+        *,
+        compute_reward: bool = True,
+    ) -> TopologyStepResult:
         self._require_active_episode()
 
         if isinstance(action, int):
@@ -182,9 +198,15 @@ class TopologySwitchingEnv:
             action = canonical_action
 
         if action.kind == "stop":
-            return self._step_do_nothing(action)
+            return self._step_do_nothing(
+                action,
+                compute_reward=compute_reward,
+            )
         if action.kind == "set_branch_status":
-            return self._step_branch_status(action)
+            return self._step_branch_status(
+                action,
+                compute_reward=compute_reward,
+            )
         raise ValueError(f"Unsupported action kind: {action.kind!r}.")
 
     def clone(self) -> "TopologySwitchingEnv":
@@ -208,6 +230,11 @@ class TopologySwitchingEnv:
         cloned.applied_actions = list(self.applied_actions)
         cloned.termination_reason = self.termination_reason
         cloned.terminal_outcome_evidence = self.terminal_outcome_evidence
+        cloned._valid_actions_by_id = (
+            None
+            if self._valid_actions_by_id is None
+            else dict(self._valid_actions_by_id)
+        )
         return cloned
 
     def terminate_no_legal_action(self) -> TerminalOutcomeEvidence:
@@ -222,15 +249,25 @@ class TopologySwitchingEnv:
             assessment=assessment,
         )
 
-    def _step_do_nothing(self, action: GridFMAction) -> TopologyStepResult:
+    def _step_do_nothing(
+        self,
+        action: GridFMAction,
+        *,
+        compute_reward: bool,
+    ) -> TopologyStepResult:
         assert self.current_state is not None
 
         assessment = assess_physical_state(self.current_state.metrics)
-        reward_breakdown = self.reward_fn.compute(
-            before_state=self.current_state,
-            after_state=self.current_state,
-            power_flow_success=assessment.power_flow_converged,
+        reward_breakdown = (
+            self.reward_fn.compute(
+                before_state=self.current_state,
+                after_state=self.current_state,
+                power_flow_success=assessment.power_flow_converged,
+            )
+            if compute_reward
+            else None
         )
+        reward = 0.0 if reward_breakdown is None else float(reward_breakdown.reward)
         outcome = classify_stop_outcome(
             assessment,
             allow_handoff_with_hard_overloads=(
@@ -245,7 +282,7 @@ class TopologySwitchingEnv:
 
         return TopologyStepResult(
             next_state=self.current_state,
-            reward=float(reward_breakdown.reward),
+            reward=reward,
             done=True,
             solved=self.solved,
             power_flow_success=assessment.power_flow_converged,
@@ -256,22 +293,47 @@ class TopologySwitchingEnv:
             info=self._info(),
         )
 
+    def _run_branch_power_flow(
+        self,
+        *,
+        before_state: GridFMState,
+        action: GridFMAction,
+    ) -> GridFMPowerFlowResult:
+        backend_method = getattr(type(self.backend), "run_power_flow_from_state", None)
+        if backend_method is GridFMPowerFlowBackend.run_power_flow_from_state:
+            return self.backend.run_power_flow_from_state(
+                state=before_state,
+                action=action,
+                validated_action=True,
+            )
+        return self.backend.run_power_flow_from_state(
+            state=before_state,
+            action=action,
+        )
+
     def _step_branch_status(
         self,
         action: GridFMAction,
+        *,
+        compute_reward: bool,
     ) -> TopologyStepResult:
         assert self.current_state is not None
 
         before_state = self.current_state
-        power_flow_result = self.backend.run_power_flow_from_state(
-            state=before_state,
+        power_flow_result = self._run_branch_power_flow(
+            before_state=before_state,
             action=action,
         )
-        reward_breakdown = self.reward_fn.compute(
-            before_state=before_state,
-            after_state=power_flow_result.next_state,
-            power_flow_success=power_flow_result.success,
+        reward_breakdown = (
+            self.reward_fn.compute(
+                before_state=before_state,
+                after_state=power_flow_result.next_state,
+                power_flow_success=power_flow_result.success,
+            )
+            if compute_reward
+            else None
         )
+        reward = 0.0 if reward_breakdown is None else float(reward_breakdown.reward)
 
         self.step_count += 1
         self.applied_actions.append(action)
@@ -286,7 +348,7 @@ class TopologySwitchingEnv:
             )
             return TopologyStepResult(
                 next_state=None,
-                reward=float(reward_breakdown.reward),
+                reward=reward,
                 done=True,
                 solved=False,
                 power_flow_success=False,
@@ -298,6 +360,7 @@ class TopologySwitchingEnv:
             )
 
         self.current_state = power_flow_result.next_state
+        self._valid_actions_by_id = None
         assessment = assess_physical_state(self.current_state.metrics)
 
         if assessment.physically_secure:
@@ -321,7 +384,7 @@ class TopologySwitchingEnv:
 
         return TopologyStepResult(
             next_state=self.current_state,
-            reward=float(reward_breakdown.reward),
+            reward=reward,
             done=bool(self.done),
             solved=bool(self.solved),
             power_flow_success=True,
@@ -345,20 +408,9 @@ class TopologySwitchingEnv:
                 raise RuntimeError(
                     "Terminal physical assessment requires a current state."
                 )
-            physics_config = getattr(
-                self.backend,
-                "physics_config",
-                None,
-            )
-            if physics_config is None:
-                physics_config = getattr(
-                    self.reward_fn,
-                    "physics_config",
-                    None,
-                )
             topology_value = state_utility(
                 self.current_state,
-                physics_config=physics_config,
+                physics_config=self.backend.physics_config,
             )
 
         evidence = TerminalOutcomeEvidence(

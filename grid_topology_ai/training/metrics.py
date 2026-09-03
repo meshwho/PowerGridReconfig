@@ -24,25 +24,17 @@ def build_value_target_diagnostics(
     """
     Analyze strict outcome_value_target.
 
-    The project no longer supports legacy value fallback.
     Every training row must contain outcome_value_target in [-1, 1].
     """
 
     def q(x, p):
         return float(np.quantile(x, p)) if len(x) > 0 else 0.0
 
-    if "outcome_value_target" not in dataset.examples.columns:
-        return {
-            "available": False,
-            "reason": "outcome_value_target column is missing.",
-        }
-
     target = dataset.examples["outcome_value_target"].astype(float).to_numpy()
     abs_target = np.abs(target)
     outside_mask = abs_target > 1.0
 
     return {
-        "available": True,
         "mode": "outcome_value_target",
         "count": int(len(target)),
         "target_min": float(target.min()) if len(target) else 0.0,
@@ -70,20 +62,15 @@ def print_value_target_diagnostics(
     """
     Print value target diagnostics in a compact readable form.
 
-    Current training uses outcome_value_target as the strict value target.
-    This target is already bounded to [-1, 1], so no legacy value_scale is needed.
+    Current training uses outcome_value_target as the strict value target,
+    already bounded to [-1, 1].
     """
 
     print("")
     print("=" * 100)
     print("VALUE TARGET DIAGNOSTICS")
     print("=" * 100)
-
-    if not diagnostics.get("available", False):
-        print(f"Unavailable: {diagnostics.get('reason')}")
-        return
-
-    print(f"mode:               {diagnostics.get('mode', 'unknown')}")
+    print(f"mode:               {diagnostics['mode']}")
     print(f"count:              {diagnostics['count']}")
     print("")
     print(f"target min:         {diagnostics['target_min']:.6f}")

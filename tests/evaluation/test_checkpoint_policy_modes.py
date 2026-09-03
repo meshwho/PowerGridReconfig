@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 
 from grid_topology_ai.actions import GridFMAction
+from grid_topology_ai.config import DEFAULT_PHYSICS_CONFIG
 from grid_topology_ai.state import BRANCH_FEATURE_COLUMNS
 import grid_topology_ai.evaluation as evaluation
 from grid_topology_ai.search.mcts import MCTSConfig, MCTSNode, MCTSPlanner
@@ -138,14 +139,14 @@ def test_constrained_episode_executes_action_from_constrained_policy(
         reward_fn=object(),
         planner=planner,
         max_steps=2,
-        gamma=0.95,
+        gamma=1.0,
         random_seed=73,
-        use_continuation_gate=True,
         min_hard_improvement=0.0,
         min_soft_improvement=0.0,
-        min_gate_visits=0,
-        min_gate_visit_fraction=0.0,
+        min_constraint_visits=0,
+        min_constraint_visit_fraction=0.0,
         policy_mode="constrained",
+        physics_config=DEFAULT_PHYSICS_CONFIG,
     )
 
     assert planner.random_seeds == [
@@ -179,14 +180,14 @@ def test_empty_constrained_support_terminates_without_action_fallback(
         reward_fn=object(),
         planner=planner,
         max_steps=2,
-        gamma=0.95,
+        gamma=1.0,
         random_seed=91,
-        use_continuation_gate=True,
         min_hard_improvement=0.0,
         min_soft_improvement=0.0,
-        min_gate_visits=0,
-        min_gate_visit_fraction=0.0,
+        min_constraint_visits=0,
+        min_constraint_visit_fraction=0.0,
         policy_mode="constrained",
+        physics_config=DEFAULT_PHYSICS_CONFIG,
     )
 
     assert planner.random_seeds == [

@@ -49,15 +49,16 @@ def _add_evaluate(parser: argparse.ArgumentParser) -> None:
     _search_arguments(parser)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument(
-        "--use-continuation-gate",
-        action="store_true",
-        help="Evaluate the single constrained policy mode.",
+        "--policy-mode",
+        choices=["ungated", "constrained"],
+        default="ungated",
+        help="Select the evaluation root-policy mode.",
     )
     parser.add_argument("--allow-handoff-with-hard-overloads", action="store_true")
     parser.add_argument("--min-hard-improvement", type=float, default=50.0)
     parser.add_argument("--min-soft-improvement", type=float, default=15.0)
-    parser.add_argument("--min-gate-visits", type=int, default=5)
-    parser.add_argument("--min-gate-visit-fraction", type=float, default=0.01)
+    parser.add_argument("--min-constraint-visits", type=int, default=5)
+    parser.add_argument("--min-constraint-visit-fraction", type=float, default=0.01)
     parser.add_argument("--workers", type=int, default=1)
     parser.add_argument("--batch-size", type=int, default=5)
     parser.add_argument("--limit", type=int)
@@ -78,7 +79,7 @@ def _add_evaluate(parser: argparse.ArgumentParser) -> None:
 
 
 def _evaluate(args: argparse.Namespace) -> int:
-    from grid_topology_ai.config import EvaluationConfig
+    from grid_topology_ai.config import EvaluationConfig, PhysicsConfig
     from grid_topology_ai.evaluation import EvaluationRequest, evaluate_checkpoint
 
     config = EvaluationConfig(
@@ -93,18 +94,18 @@ def _evaluate(args: argparse.Namespace) -> int:
         gamma=args.gamma,
         c_puct=args.c_puct,
         prior_exponent=args.prior_exponent,
-        policy_mode="constrained" if args.use_continuation_gate else "ungated",
+        policy_mode=args.policy_mode,
         allow_handoff_with_hard_overloads=args.allow_handoff_with_hard_overloads,
         num_workers=args.workers,
         batch_size=args.batch_size,
         device=args.device,
-        pf_alg=args.pf_alg,
     )
     request = EvaluationRequest(
         raw_dir=Path(args.raw_dir),
         transitions_csv=Path(args.transitions),
         checkpoint=Path(args.checkpoint),
         config=config,
+        physics_config=PhysicsConfig(pf_alg=args.pf_alg),
         output_csv=Path(args.output_csv) if args.output_csv else None,
         output_json=Path(args.output_json) if args.output_json else None,
         limit=args.limit,
@@ -114,8 +115,8 @@ def _evaluate(args: argparse.Namespace) -> int:
         stop_policy=args.stop_policy,
         min_hard_improvement=args.min_hard_improvement,
         min_soft_improvement=args.min_soft_improvement,
-        min_gate_visits=args.min_gate_visits,
-        min_gate_visit_fraction=args.min_gate_visit_fraction,
+        min_constraint_visits=args.min_constraint_visits,
+        min_constraint_visit_fraction=args.min_constraint_visit_fraction,
         clear_caches_every=args.clear_caches_every,
         use_dc_screening=args.use_dc_screening,
         dc_top_k=args.dc_top_k,
@@ -148,13 +149,6 @@ def _add_self_play(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--root-dirichlet-alpha", type=float, default=0.30)
     parser.add_argument("--root-exploration-fraction", type=float, default=0.25)
     parser.add_argument(
-        "--use-continuation-gate", action=argparse.BooleanOptionalAction, default=False
-    )
-    parser.add_argument("--min-hard-improvement", type=float, default=50.0)
-    parser.add_argument("--min-soft-improvement", type=float, default=15.0)
-    parser.add_argument("--min-gate-visits", type=int, default=5)
-    parser.add_argument("--min-gate-visit-fraction", type=float, default=0.01)
-    parser.add_argument(
         "--require-connected-after-switch",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -170,7 +164,7 @@ def _add_self_play(parser: argparse.ArgumentParser) -> None:
 
 def _self_play(args: argparse.Namespace) -> int:
     import numpy as np
-    from grid_topology_ai.config import GenerationConfig
+    from grid_topology_ai.config import GenerationConfig, PhysicsConfig
     from grid_topology_ai.self_play.generation import (
         GenerationRequest,
         generate_self_play_examples,
@@ -203,9 +197,7 @@ def _self_play(args: argparse.Namespace) -> int:
         temperature_steps=args.temperature_steps,
         temperature_iterations=args.temperature_iterations,
         use_root_noise=args.use_root_noise,
-        use_continuation_gate=args.use_continuation_gate,
         device=args.device,
-        pf_alg=args.pf_alg,
         stop_policy=args.stop_policy,
         require_connected_after_switch=args.require_connected_after_switch,
         min_loading_for_switch_percent=args.min_loading_for_switch_percent,
@@ -221,15 +213,11 @@ def _self_play(args: argparse.Namespace) -> int:
         action_seed=action_seed,
         clear_cache_between_scenarios=args.clear_cache_between_scenarios,
         iteration=args.iteration,
+        physics_config=PhysicsConfig(pf_alg=args.pf_alg),
         scenario_ids=tuple(args.scenario_ids) if args.scenario_ids else None,
-        device=args.device,
         enable_cache=not args.disable_cache,
         root_dirichlet_alpha=args.root_dirichlet_alpha,
         root_exploration_fraction=args.root_exploration_fraction,
-        min_hard_improvement=args.min_hard_improvement,
-        min_soft_improvement=args.min_soft_improvement,
-        min_gate_visits=args.min_gate_visits,
-        min_gate_visit_fraction=args.min_gate_visit_fraction,
         workers=args.workers,
         resume=args.resume,
     )
@@ -429,6 +417,21 @@ def _load_teacher_profiles(path: Path) -> dict[str, dict[str, int]]:
     return validated
 
 
+def _write_example_state_paths(examples_path: Path):
+    import pandas as pd
+
+    frame = pd.read_csv(examples_path).copy()
+    frame["state_path"] = frame["state_id"].map(
+        lambda state_id: str(
+            examples_path.parent / "states" / f"{str(state_id).strip()}.npz"
+        )
+    )
+    temp_path = examples_path.with_name(examples_path.name + ".tmp")
+    frame.to_csv(temp_path, index=False)
+    temp_path.replace(examples_path)
+    return frame
+
+
 def _merge_teacher_split_examples(output_dir: Path, split_name: str) -> Path:
     import pandas as pd
     from grid_topology_ai.self_play.example_validation import validate_examples_dataframe
@@ -436,9 +439,8 @@ def _merge_teacher_split_examples(output_dir: Path, split_name: str) -> Path:
     parts: list[pd.DataFrame] = []
     for difficulty in _TEACHER_DIFFICULTIES:
         source_path = output_dir / split_name / difficulty / "examples.csv"
-        frame = pd.read_csv(source_path)
+        frame = _write_example_state_paths(source_path)
         validate_examples_dataframe(frame, source_path=source_path)
-        frame = frame.copy()
 
         if "difficulty_class" in frame.columns:
             values = set(
@@ -452,7 +454,6 @@ def _merge_teacher_split_examples(output_dir: Path, split_name: str) -> Path:
             frame["difficulty_class"] = difficulty
 
         frame["teacher_split"] = split_name
-        frame["source_examples_csv"] = str(source_path)
         parts.append(frame)
 
     merged = pd.concat(parts, ignore_index=True, sort=False)
@@ -539,7 +540,11 @@ def _teacher(args: argparse.Namespace) -> int:
     output_dir = Path(args.output)
 
     if not transitions.is_dir():
-        return int(teacher_main(_teacher_argv(args, transitions, output_dir)) or 0)
+        result = int(teacher_main(_teacher_argv(args, transitions, output_dir)) or 0)
+        if result:
+            return result
+        _write_example_state_paths(output_dir / "examples.csv")
+        return 0
 
     if not args.profiles:
         raise ValueError("--profiles is required when --transitions is a directory.")

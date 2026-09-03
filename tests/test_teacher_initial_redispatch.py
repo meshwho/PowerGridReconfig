@@ -52,6 +52,8 @@ class FakeStateStore:
 
 
 class FakeActionSpace:
+    config = SimpleNamespace(to_contract_dict=lambda: {"test": True})
+
     @staticmethod
     def operational_action_mask(state):
         del state
@@ -61,6 +63,7 @@ class FakeActionSpace:
 class FakeEnv:
     initial_state = SimpleNamespace(
         safety=100.0,
+        branch_ids=np.array([1], dtype=np.int64),
         metrics=_metrics(
             max_loading=140.0,
             overloaded=3,
@@ -69,6 +72,7 @@ class FakeEnv:
     )
     after_state = SimpleNamespace(
         safety=50.0,
+        branch_ids=np.array([1], dtype=np.int64),
         metrics=_metrics(
             max_loading=110.0,
             overloaded=1,
@@ -134,6 +138,7 @@ class FakePlanner:
             total_hard_overload=0.0,
             squared_hard_overload=0.0,
             total_overload=10.0,
+            short_sequence=lambda: "1 -> 0",
         )
         return SimpleNamespace(
             best_node=best,
@@ -156,6 +161,7 @@ class FakeRootPlanner(FakePlanner):
             total_hard_overload=0.0,
             squared_hard_overload=0.0,
             total_overload=float(metrics["total_thermal_overload_mva"]),
+            short_sequence=lambda: "",
         )
         return SimpleNamespace(
             best_node=best,
@@ -189,6 +195,8 @@ def _task_config() -> dict[str, object]:
         "gamma": 1.0,
         "allow_hard_count_increase": False,
         "use_lodf_screening": False,
+        "lodf_screen_top_k": 10,
+        "lodf_min_candidate_count": 1,
         "soft_policy_temperature": 0.0,
         "max_teacher_steps": 4,
         "use_soft_root_policy": False,
@@ -208,6 +216,7 @@ def _install_runtime(monkeypatch, state_store: FakeStateStore) -> None:
     monkeypatch.setattr(runtime, "_WORKER_CONTEXT", context)
     monkeypatch.setattr(runtime, "TopologySwitchingEnv", FakeEnv)
     monkeypatch.setattr(runtime, "ImpactBeamSearchPlanner", FakePlanner)
+    monkeypatch.setattr(runtime, "_worker_run_id", lambda: "test-run")
     monkeypatch.setattr(
         runtime,
         "safety_score",
@@ -215,8 +224,17 @@ def _install_runtime(monkeypatch, state_store: FakeStateStore) -> None:
     )
     monkeypatch.setattr(
         runtime,
+        "state_utility",
+        lambda state, physics_config=None: (
+            1.0
+            if runtime.assess_physical_state(state.metrics).physically_secure
+            else 0.0
+        ),
+    )
+    monkeypatch.setattr(
+        runtime,
         "_redispatch_aware_selection",
-        lambda result, task_config: (result, {}),
+        lambda result, task_config, initial_redispatch_result=None: (result, {}),
     )
     monkeypatch.setattr(runtime, "_selection_provenance", lambda result, diagnostics: {})
     monkeypatch.setattr(
@@ -237,7 +255,13 @@ def _failed_redispatch() -> MinimalRedispatchResult:
 def _validated_redispatch() -> MinimalRedispatchResult:
     return MinimalRedispatchResult(
         opf_success=True,
-        assessment=SimpleNamespace(physically_secure=True),
+        assessment=runtime.assess_physical_state(
+            _metrics(
+                max_loading=90.0,
+                overloaded=0,
+                hard_overloaded=0,
+            )
+        ),
         message="validated",
         redispatch_l1_mw=12.5,
         redispatch_up_mw=6.4,
@@ -263,8 +287,8 @@ def test_initial_redispatch_failure_stays_missing_in_rows_and_state_metadata(
     result = runtime._generate_scenario(17)
     runtime._SELECTION_PROVENANCE_BY_SCENARIO.pop(17, None)
 
-    assert result["ok"] is True
-    assert calls == [FakeEnv.initial_state]
+    assert result["ok"] is True, result.get("traceback")
+    assert calls == [FakeEnv.initial_state, FakeEnv.after_state]
     assert len(result["rows"]) == 2
     assert len(state_store.metadata) == 2
 
@@ -299,7 +323,7 @@ def test_zero_switch_failed_redispatch_is_saved_as_max_steps_terminal_target(
     result = runtime._generate_scenario(23)
     runtime._SELECTION_PROVENANCE_BY_SCENARIO.pop(23, None)
 
-    assert result["ok"] is True
+    assert result["ok"] is True, result.get("traceback")
     assert len(result["rows"]) == 1
     row = result["rows"][0]
     assert row["selected_action_id"] == 0
@@ -322,6 +346,7 @@ def test_zero_switch_secure_root_is_saved_as_solved_terminal_target(
     _install_runtime(monkeypatch, state_store)
     secure_root = SimpleNamespace(
         safety=0.0,
+        branch_ids=np.array([1], dtype=np.int64),
         metrics=_metrics(
             max_loading=90.0,
             overloaded=0,
@@ -339,7 +364,7 @@ def test_zero_switch_secure_root_is_saved_as_solved_terminal_target(
     result = runtime._generate_scenario(24)
     runtime._SELECTION_PROVENANCE_BY_SCENARIO.pop(24, None)
 
-    assert result["ok"] is True
+    assert result["ok"] is True, result.get("traceback")
     assert len(result["rows"]) == 1
     row = result["rows"][0]
     assert row["selected_action_id"] == 0
@@ -373,7 +398,7 @@ def test_zero_switch_validated_redispatch_keeps_terminal_handoff(
     result = runtime._generate_scenario(25)
     runtime._SELECTION_PROVENANCE_BY_SCENARIO.pop(25, None)
 
-    assert result["ok"] is True
+    assert result["ok"] is True, result.get("traceback")
     assert len(result["rows"]) == 1
     row = result["rows"][0]
     assert row["selected_action_id"] == 0
@@ -403,7 +428,7 @@ def test_terminal_redispatch_selection_is_not_rejected_when_selected_j_is_worse(
     result = runtime._generate_scenario(29)
     runtime._SELECTION_PROVENANCE_BY_SCENARIO.pop(29, None)
 
-    assert result["ok"] is True
+    assert result["ok"] is True, result.get("traceback")
     assert result["summary"]["teacher_final_safety"] == 120.0
     assert result["summary"]["total_safety_improvement"] == -20.0
     assert [row["selected_action_id"] for row in result["rows"]] == [1, 0]

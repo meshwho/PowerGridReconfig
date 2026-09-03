@@ -12,6 +12,11 @@ _BASE = {
     "total_angle_difference_violation_degrees": 0.0,
     "total_voltage_violation": 0.0,
     "num_high_voltage_buses": 0,
+    "J0": 10.0,
+    "Jfinal": 5.0,
+    "delta_J": 5.0,
+    "relative_J_improvement": 0.5,
+    "final_topology_utility": 0.0,
 }
 
 
