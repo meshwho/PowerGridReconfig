@@ -42,6 +42,7 @@ class SelfPlayExample:
     """One on-policy AlphaZero-style self-play example."""
 
     state_id: str
+    state_path: str
     run_id: str
     iteration: int
     episode_id: str
@@ -392,7 +393,7 @@ class ExampleWriter:
             ):
                 metadata[name] = outcome_fields[name]
 
-        self.state_store.save_state(
+        state_path = self.state_store.save_state(
             state=state,
             state_id=state_id,
             action_mask=action_mask,
@@ -401,6 +402,7 @@ class ExampleWriter:
 
         example = SelfPlayExample(
             state_id=state_id,
+            state_path=str(state_path),
             run_id=self.run_id,
             iteration=iteration,
             episode_id=episode_id,

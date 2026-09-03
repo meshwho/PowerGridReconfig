@@ -1,5 +1,4 @@
 import json
-import shutil
 from pathlib import Path
 
 import numpy as np
@@ -65,12 +64,10 @@ def _write_fake_state(path, action_mask, *, missing_metadata_field: str | None =
 
 def _write_examples_csv(path, state_path, mcts_policy, outcome_value_target=-1.0):
     state_id = "state_0"
-    states_dir = Path(path).parent / "states"
-    states_dir.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(state_path, states_dir / f"{state_id}.npz")
     pd.DataFrame(
         [
             {
+                "state_path": str(state_path),
                 "mcts_policy_json": json.dumps(mcts_policy),
                 "outcome_value_target": outcome_value_target,
                 "physics_config": json.dumps(
@@ -200,10 +197,7 @@ def test_dataset_rejects_incomplete_state_metadata(tmp_path):
 
 
 def test_npz_loader_closes_file_before_returning_arrays(tmp_path, monkeypatch):
-    states_dir = tmp_path / "states"
-    states_dir.mkdir()
-    state_id = "state_0"
-    state_path = states_dir / f"{state_id}.npz"
+    state_path = tmp_path / "state.npz"
     state_path.write_bytes(b"placeholder")
     arrays = {
         "bus_features": np.zeros((2, 3), dtype=np.float32),
@@ -233,8 +227,7 @@ def test_npz_loader_closes_file_before_returning_arrays(tmp_path, monkeypatch):
         lambda *args, **kwargs: fake_npz,
     )
     dataset = object.__new__(GraphSelfPlayDataset)
-    dataset.examples_csv = tmp_path / "examples.csv"
-    dataset.examples = pd.DataFrame([{"state_id": state_id}])
+    dataset.examples = pd.DataFrame([{"state_path": str(state_path)}])
     loaded = dataset._load_npz_by_index(0)
 
     assert fake_npz.closed is True

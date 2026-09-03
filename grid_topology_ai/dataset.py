@@ -11,7 +11,6 @@ from grid_topology_ai.config import PhysicsConfig
 from grid_topology_ai.self_play.example_validation import (
     load_and_validate_examples_csv,
     policy_vector_from_json,
-    resolve_example_state_path,
     validate_example_contract_versions,
     validate_example_topology_action_contracts,
 )
@@ -217,7 +216,7 @@ class GraphSelfPlayDataset(Dataset):
 
     def __getitem__(self, idx: int) -> dict[str, Any]:
         row = self.examples.iloc[idx]
-        state_path = self._state_path(row)
+        state_path = self._state_path(row["state_path"])
         data = self._load_npz_by_index(idx)
 
         bus_features = data["bus_features"].astype(np.float32)
@@ -290,24 +289,15 @@ class GraphSelfPlayDataset(Dataset):
             "state_id": str(row["state_id"]),
         }
 
-    def _state_path(self, row: Any) -> Path:
-        return resolve_example_state_path(
-            self.examples_csv,
-            row["state_id"],
-            row.get("state_path"),
-        )
+    def _state_path(self, state_path: object) -> Path:
+        return Path(str(state_path).strip())
 
     def _load_npz_by_index(
         self,
         idx: int,
     ) -> dict[str, np.ndarray]:
         row = self.examples.iloc[idx]
-        state_path = self._state_path(row)
-
-        if not state_path.exists():
-            raise FileNotFoundError(
-                f"State file not found: {state_path}"
-            )
+        state_path = self._state_path(row["state_path"])
 
         with np.load(state_path, allow_pickle=False) as data:
             missing = [

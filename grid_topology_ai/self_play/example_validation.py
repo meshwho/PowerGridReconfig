@@ -40,6 +40,7 @@ _BASE_OUTCOME_COLUMNS: tuple[str, ...] = (
     "outcome_gamma",
 )
 _BASE_EXAMPLE_COLUMNS: tuple[str, ...] = (
+    "state_path",
     "mcts_policy_json",
     "scenario_id",
     "step",
@@ -89,41 +90,6 @@ class _GraphDimensions(NamedTuple):
     num_bus_features: int
     num_branch_features: int
     num_actions: int
-
-
-def resolve_example_state_path(
-    examples_csv: str | Path,
-    state_id: object,
-    state_path: object | None = None,
-) -> Path:
-    state_id_text = str(state_id).strip()
-    if (
-        not state_id_text
-        or state_id_text in {".", ".."}
-        or "/" in state_id_text
-        or "\\" in state_id_text
-    ):
-        raise ValueError("state_id must be a non-empty filename-safe identifier.")
-
-    base_dir = Path(examples_csv).parent
-    if state_path is None:
-        return base_dir / "states" / f"{state_id_text}.npz"
-
-    state_path_text = str(state_path).strip()
-    if not state_path_text:
-        raise ValueError("state_path must be a non-empty relative path.")
-
-    relative_path = Path(state_path_text)
-    if relative_path.is_absolute() or ".." in relative_path.parts:
-        raise ValueError("state_path must be a safe relative path.")
-    if relative_path.name != f"{state_id_text}.npz":
-        raise ValueError("state_path must point to the row state_id NPZ file.")
-
-    return base_dir / relative_path
-
-
-def _state_path_for_example(examples_csv: str | Path, state_id: object) -> Path:
-    return resolve_example_state_path(examples_csv, state_id)
 
 
 def _json_value(value: object, *, name: str, source: str) -> object:
@@ -371,19 +337,7 @@ def validate_examples_dataframe(
             index=index,
             source=source,
         )
-        state_path = resolve_example_state_path(
-            source,
-            row["state_id"],
-            row.get("state_path"),
-        )
-        if not state_path.exists():
-            raise FileNotFoundError(
-                f"State file not found: {state_path}. File: {source}"
-            )
-        if not state_path.is_file():
-            raise ValueError(
-                f"State path is not a file: {state_path}. File: {source}"
-            )
+        state_path = Path(str(row["state_path"]).strip())
 
         row_layout = _action_layout_from_value(
             row["action_layout"],
