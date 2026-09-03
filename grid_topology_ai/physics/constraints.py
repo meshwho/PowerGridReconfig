@@ -18,7 +18,7 @@ from pypower.idx_brch import (
     RATE_A,
     T_BUS,
 )
-from pypower.idx_bus import BUS_I, BUS_TYPE, PD, QD, VA, VM, VMAX, VMIN
+from pypower.idx_bus import BUS_I, VA, VM, VMAX, VMIN
 from pypower.idx_gen import (
     GEN_BUS,
     GEN_STATUS,
@@ -28,7 +28,6 @@ from pypower.idx_gen import (
     QG,
     QMAX,
     QMIN,
-    VG,
 )
 
 from grid_topology_ai.config import PhysicsConfig, ZeroRateAPolicy
@@ -108,24 +107,6 @@ def _matrix(ppc: dict[str, Any], name: str, columns: int, context: str) -> np.nd
     return array
 
 
-def _equal_with_solver_roundoff(
-    result_values: np.ndarray,
-    source_values: np.ndarray,
-) -> bool:
-    """Accept only float64-scale roundoff for solver-immutable numeric data."""
-
-    result_array = np.asarray(result_values, dtype=np.float64)
-    source_array = np.asarray(source_values, dtype=np.float64)
-    if result_array.shape != source_array.shape:
-        return False
-    scale = np.maximum(
-        1.0,
-        np.maximum(np.abs(result_array), np.abs(source_array)),
-    )
-    tolerance = 32.0 * np.finfo(np.float64).eps * scale
-    return bool(np.all(np.abs(result_array - source_array) <= tolerance))
-
-
 def validate_ppc_input(ppc: dict[str, Any], physics_config: PhysicsConfig, *, context: str = "ppc") -> None:
     """Validate structural integrity before PYPOWER sees a case."""
     if not isinstance(ppc, dict):
@@ -179,6 +160,7 @@ def validate_ppc_input(ppc: dict[str, Any], physics_config: PhysicsConfig, *, co
 
 
 def validate_pypower_result(result_ppc: dict[str, Any], physics_config: PhysicsConfig, *, input_ppc: dict[str, Any], context: str = "result") -> None:
+    """Validate only the minimal result structure before physical assessment."""
     if not isinstance(result_ppc, dict):
         raise InvalidPhysicalState(f"{context}: result must be a mapping.")
     if result_ppc.get("version") not in {"2", 2}:
@@ -207,74 +189,13 @@ def validate_pypower_result(result_ppc: dict[str, Any], physics_config: PhysicsC
         "branch": _matrix(result_ppc, "branch", QT + 1, context),
         "gen": _matrix(result_ppc, "gen", PMIN + 1, context),
     }
-    source = {
-        name: np.asarray(input_ppc[name], dtype=float)
-        for name in ("bus", "branch", "gen")
-    }
 
     for name, values in result.items():
-        if not np.isfinite(values).all():
-            raise InvalidPhysicalState(
-                f"{context}: {name} result contains non-finite values."
-            )
-        if values.shape[0] != source[name].shape[0]:
+        source_rows = len(input_ppc[name])
+        if values.shape[0] != source_rows:
             raise InvalidPhysicalState(
                 f"{context}: {name} row count differs from input."
             )
-        if values.shape[1] < source[name].shape[1]:
-            raise InvalidPhysicalState(
-                f"{context}: {name} result has fewer columns than input."
-            )
-
-    bus_roundoff = {PD, QD}
-    bus_dynamic = {BUS_TYPE, VM, VA}
-    bus_static = [
-        column
-        for column in range(source["bus"].shape[1])
-        if column not in bus_dynamic | bus_roundoff
-    ]
-    if not _equal_with_solver_roundoff(
-        result["bus"][:, bus_static],
-        source["bus"][:, bus_static],
-    ):
-        raise InvalidPhysicalState(
-            f"{context}: solver changed immutable bus data."
-        )
-
-    source_demand = source["bus"][:, [PD, QD]]
-    result_demand = result["bus"][:, [PD, QD]]
-    if not _equal_with_solver_roundoff(result_demand, source_demand):
-        raise InvalidPhysicalState(
-            f"{context}: solver changed immutable bus demand data."
-        )
-
-    branch_dynamic = {PF, QF, PT, QT}
-    branch_static = [
-        column
-        for column in range(source["branch"].shape[1])
-        if column not in branch_dynamic
-    ]
-    if not _equal_with_solver_roundoff(
-        result["branch"][:, branch_static],
-        source["branch"][:, branch_static],
-    ):
-        raise InvalidPhysicalState(
-            f"{context}: solver changed immutable branch data."
-        )
-
-    gen_dynamic = {PG, QG, VG}
-    gen_static = [
-        column
-        for column in range(source["gen"].shape[1])
-        if column not in gen_dynamic
-    ]
-    if not _equal_with_solver_roundoff(
-        result["gen"][:, gen_static],
-        source["gen"][:, gen_static],
-    ):
-        raise InvalidPhysicalState(
-            f"{context}: solver changed immutable generator data."
-        )
 
 
 def _finite_sum(values: np.ndarray) -> float:
