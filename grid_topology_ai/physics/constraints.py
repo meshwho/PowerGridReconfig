@@ -108,6 +108,24 @@ def _matrix(ppc: dict[str, Any], name: str, columns: int, context: str) -> np.nd
     return array
 
 
+def _equal_with_solver_roundoff(
+    result_values: np.ndarray,
+    source_values: np.ndarray,
+) -> bool:
+    """Accept only float64-scale roundoff for solver-immutable numeric data."""
+
+    result_array = np.asarray(result_values, dtype=np.float64)
+    source_array = np.asarray(source_values, dtype=np.float64)
+    if result_array.shape != source_array.shape:
+        return False
+    scale = np.maximum(
+        1.0,
+        np.maximum(np.abs(result_array), np.abs(source_array)),
+    )
+    tolerance = 32.0 * np.finfo(np.float64).eps * scale
+    return bool(np.all(np.abs(result_array - source_array) <= tolerance))
+
+
 def validate_ppc_input(ppc: dict[str, Any], physics_config: PhysicsConfig, *, context: str = "ppc") -> None:
     """Validate structural integrity before PYPOWER sees a case."""
     if not isinstance(ppc, dict):
@@ -215,7 +233,7 @@ def validate_pypower_result(result_ppc: dict[str, Any], physics_config: PhysicsC
         for column in range(source["bus"].shape[1])
         if column not in bus_dynamic | bus_roundoff
     ]
-    if not np.array_equal(
+    if not _equal_with_solver_roundoff(
         result["bus"][:, bus_static],
         source["bus"][:, bus_static],
     ):
@@ -225,12 +243,7 @@ def validate_pypower_result(result_ppc: dict[str, Any], physics_config: PhysicsC
 
     source_demand = source["bus"][:, [PD, QD]]
     result_demand = result["bus"][:, [PD, QD]]
-    demand_scale = np.maximum(
-        1.0,
-        np.maximum(np.abs(source_demand), np.abs(result_demand)),
-    )
-    demand_tolerance = 32.0 * np.finfo(np.float64).eps * demand_scale
-    if np.any(np.abs(result_demand - source_demand) > demand_tolerance):
+    if not _equal_with_solver_roundoff(result_demand, source_demand):
         raise InvalidPhysicalState(
             f"{context}: solver changed immutable bus demand data."
         )
@@ -241,7 +254,7 @@ def validate_pypower_result(result_ppc: dict[str, Any], physics_config: PhysicsC
         for column in range(source["branch"].shape[1])
         if column not in branch_dynamic
     ]
-    if not np.array_equal(
+    if not _equal_with_solver_roundoff(
         result["branch"][:, branch_static],
         source["branch"][:, branch_static],
     ):
@@ -255,7 +268,7 @@ def validate_pypower_result(result_ppc: dict[str, Any], physics_config: PhysicsC
         for column in range(source["gen"].shape[1])
         if column not in gen_dynamic
     ]
-    if not np.array_equal(
+    if not _equal_with_solver_roundoff(
         result["gen"][:, gen_static],
         source["gen"][:, gen_static],
     ):
