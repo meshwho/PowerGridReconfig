@@ -9,7 +9,7 @@ import pytest
 
 from grid_topology_ai.actions import GridFMActionSpace
 import grid_topology_ai.cli as light_cli
-from grid_topology_ai.config import GenerationConfig
+from grid_topology_ai.config import DEFAULT_PHYSICS_CONFIG, GenerationConfig
 from grid_topology_ai.state import BRANCH_FEATURE_COLUMNS
 from grid_topology_ai.environment import TopologySwitchingEnv
 from grid_topology_ai.power_flow.backend import GridFMPowerFlowBackend
@@ -84,6 +84,8 @@ def _state(
 
 
 class _ApplyingBackend:
+    physics_config = DEFAULT_PHYSICS_CONFIG
+
     def __init__(self) -> None:
         self.actions: list[object] = []
 
