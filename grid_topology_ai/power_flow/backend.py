@@ -330,6 +330,12 @@ class GridFMPowerFlowBackend:
                 )
 
     @staticmethod
+    def _is_trusted_repeated_state(state: GridFMState) -> bool:
+        """Return whether the state was produced by this backend representation."""
+
+        return isinstance(state, _GeneratorOperatingPointState)
+
+    @staticmethod
     def _resolve_branch_status_action(
         *,
         action: GridFMAction | None,
@@ -663,12 +669,84 @@ class GridFMPowerFlowBackend:
         self._active_problem_frames = frames
         return template, frames
 
+    def _build_trusted_power_flow_problem(
+        self,
+        *,
+        template: ScenarioPowerFlowTemplate,
+        state: _GeneratorOperatingPointState,
+        action: GridFMAction | None,
+        switched_off_branch_id: int | None,
+    ) -> CanonicalPowerFlowProblem:
+        """Rebuild a backend-produced state without revalidating its invariants."""
+
+        bus = template.bus.copy()
+        branch = template.branch.copy()
+        gen = template.gen.copy()
+        bus_features = np.asarray(state.bus_features)
+        branch_features = np.asarray(state.branch_features)
+
+        bus[:, BUS_TYPE] = BUS_TYPE_PQ
+        pv = np.asarray(bus_features[:, _BUS_COL["PV"]], dtype=np.float64) > 0.5
+        ref = np.asarray(bus_features[:, _BUS_COL["REF"]], dtype=np.float64) > 0.5
+        bus[pv, BUS_TYPE] = BUS_TYPE_PV
+        bus[ref, BUS_TYPE] = BUS_TYPE_REF
+        bus[:, PD] = bus_features[:, _BUS_COL["Pd"]]
+        bus[:, QD] = bus_features[:, _BUS_COL["Qd"]]
+        bus[:, GS] = bus_features[:, _BUS_COL["GS"]] * template.base_mva
+        bus[:, BS] = bus_features[:, _BUS_COL["BS"]] * template.base_mva
+        bus[:, VM] = bus_features[:, _BUS_COL["Vm"]]
+        bus[:, VA] = bus_features[:, _BUS_COL["Va"]]
+        bus[:, BASE_KV] = bus_features[:, _BUS_COL["vn_kv"]]
+        bus[:, VMAX] = bus_features[:, _BUS_COL["max_vm_pu"]]
+        bus[:, VMIN] = bus_features[:, _BUS_COL["min_vm_pu"]]
+
+        branch[:, BR_R] = branch_features[:, _BRANCH_COL["r"]]
+        branch[:, BR_X] = branch_features[:, _BRANCH_COL["x"]]
+        branch[:, BR_B] = branch_features[:, _BRANCH_COL["b"]]
+        branch[:, TAP] = branch_features[:, _BRANCH_COL["tap"]]
+        branch[:, SHIFT] = branch_features[:, _BRANCH_COL["shift"]]
+        rate_a = branch_features[:, _BRANCH_COL["rate_a"]]
+        branch[:, RATE_A] = rate_a
+        branch[:, RATE_B] = rate_a
+        branch[:, RATE_C] = rate_a
+        branch[:, BR_STATUS] = branch_features[:, _BRANCH_COL["br_status"]]
+
+        if action is not None:
+            assert action.branch_pos is not None
+            assert action.target_status is not None
+            branch[int(action.branch_pos), BR_STATUS] = float(action.target_status)
+        elif switched_off_branch_id is not None:
+            positions = np.flatnonzero(
+                template.branch_ids == int(switched_off_branch_id)
+            )
+            if positions.size != 1:
+                raise ValueError(
+                    f"Expected exactly one branch id {switched_off_branch_id}, "
+                    f"found {positions.size}."
+                )
+            branch[int(positions[0]), BR_STATUS] = 0.0
+
+        assert state.generator_p_mw is not None
+        assert state.generator_q_mvar is not None
+        assert state.generator_status is not None
+        gen[:, PG] = state.generator_p_mw
+        gen[:, QG] = state.generator_q_mvar
+        gen[:, GEN_STATUS] = state.generator_status
+
+        return CanonicalPowerFlowProblem(
+            base_mva=float(template.base_mva),
+            bus=bus,
+            branch=branch,
+            gen=gen,
+        )
+
     def _build_ppc_from_state(
         self,
         state: GridFMState,
         switched_off_branch_id: int | None = None,
         *,
         action: GridFMAction | None = None,
+        validated_action: bool = False,
     ) -> tuple[dict[str, Any], dict[str, pd.DataFrame]]:
         """Build the repeated AC problem without pandas reconstruction."""
 
@@ -677,13 +755,23 @@ class GridFMPowerFlowBackend:
             switched_off_branch_id=switched_off_branch_id,
         )
         template, frames = self._scenario_problem_resources(int(state.scenario_id))
-        problem = build_power_flow_problem_from_state(
-            template=template,
-            state=state,
-            branch_id=branch_id,
-            target_status=target_status,
-            generator_operating_point=GeneratorOperatingPoint.from_state(state),
-        )
+
+        trusted_state = self._is_trusted_repeated_state(state)
+        if trusted_state and (action is None or validated_action):
+            problem = self._build_trusted_power_flow_problem(
+                template=template,
+                state=state,
+                action=action,
+                switched_off_branch_id=switched_off_branch_id,
+            )
+        else:
+            problem = build_power_flow_problem_from_state(
+                template=template,
+                state=state,
+                branch_id=branch_id,
+                target_status=target_status,
+                generator_operating_point=GeneratorOperatingPoint.from_state(state),
+            )
         return problem.to_ppc(), frames
 
     @staticmethod
@@ -719,6 +807,7 @@ class GridFMPowerFlowBackend:
         switched_off_branch_id: int | None = None,
         *,
         action: GridFMAction | None = None,
+        validated_action: bool = False,
     ) -> GridFMPowerFlowResult:
         """Run one transition, reusing only an exactly identical AC problem."""
 
@@ -728,12 +817,14 @@ class GridFMPowerFlowBackend:
         )
         effective_switched_off = branch_id if target_status == 0 else None
         context = f"scenario={state.scenario_id} from_state"
+        trusted_state = self._is_trusted_repeated_state(state)
 
         try:
             ppc, frames = self._build_ppc_from_state(
                 state=state,
                 action=action,
                 switched_off_branch_id=switched_off_branch_id,
+                validated_action=validated_action,
             )
             problem = self._problem_from_ppc(ppc)
 
@@ -797,7 +888,11 @@ class GridFMPowerFlowBackend:
                     )
 
             try:
-                result_ppc, metrics = self._solve_ppc(ppc, context=context)
+                result_ppc, metrics = self._solve_ppc(
+                    ppc,
+                    context=context,
+                    validate_input=not trusted_state,
+                )
             except PowerFlowNotConverged as exc:
                 if self.enable_cache and cache_key is not None:
                     self._exact_power_flow_cache.store_not_converged(
@@ -860,10 +955,12 @@ class GridFMPowerFlowBackend:
         ppc: dict[str, Any],
         *,
         context: str,
+        validate_input: bool = True,
     ) -> tuple[dict[str, Any], dict[str, object]]:
         """Solve through this module so monkeypatched runpf stays observable."""
 
-        validate_ppc_input(ppc, self.physics_config, context=context)
+        if validate_input:
+            validate_ppc_input(ppc, self.physics_config, context=context)
         before = get_power_flow_workload_counters()
 
         try:
