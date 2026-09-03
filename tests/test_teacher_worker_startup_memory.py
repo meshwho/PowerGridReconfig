@@ -48,6 +48,7 @@ def test_worker_init_semaphore_wraps_heavy_context_initialization(monkeypatch) -
             states_dir_str="states",
             task_config={
                 "physics": "unchanged",
+                "disable_cache": False,
                 teacher._RUNTIME_WORKER_INIT_SEMAPHORE: semaphore,
             },
             scenario_ids=[1, 2],
