@@ -178,7 +178,12 @@ class TopologySwitchingEnv:
             "in the current state."
         )
 
-    def step(self, action: GridFMAction | int) -> TopologyStepResult:
+    def step(
+        self,
+        action: GridFMAction | int,
+        *,
+        compute_reward: bool = True,
+    ) -> TopologyStepResult:
         self._require_active_episode()
 
         if isinstance(action, int):
@@ -193,9 +198,15 @@ class TopologySwitchingEnv:
             action = canonical_action
 
         if action.kind == "stop":
-            return self._step_do_nothing(action)
+            return self._step_do_nothing(
+                action,
+                compute_reward=compute_reward,
+            )
         if action.kind == "set_branch_status":
-            return self._step_branch_status(action)
+            return self._step_branch_status(
+                action,
+                compute_reward=compute_reward,
+            )
         raise ValueError(f"Unsupported action kind: {action.kind!r}.")
 
     def clone(self) -> "TopologySwitchingEnv":
@@ -238,15 +249,25 @@ class TopologySwitchingEnv:
             assessment=assessment,
         )
 
-    def _step_do_nothing(self, action: GridFMAction) -> TopologyStepResult:
+    def _step_do_nothing(
+        self,
+        action: GridFMAction,
+        *,
+        compute_reward: bool,
+    ) -> TopologyStepResult:
         assert self.current_state is not None
 
         assessment = assess_physical_state(self.current_state.metrics)
-        reward_breakdown = self.reward_fn.compute(
-            before_state=self.current_state,
-            after_state=self.current_state,
-            power_flow_success=assessment.power_flow_converged,
+        reward_breakdown = (
+            self.reward_fn.compute(
+                before_state=self.current_state,
+                after_state=self.current_state,
+                power_flow_success=assessment.power_flow_converged,
+            )
+            if compute_reward
+            else None
         )
+        reward = 0.0 if reward_breakdown is None else float(reward_breakdown.reward)
         outcome = classify_stop_outcome(
             assessment,
             allow_handoff_with_hard_overloads=(
@@ -261,7 +282,7 @@ class TopologySwitchingEnv:
 
         return TopologyStepResult(
             next_state=self.current_state,
-            reward=float(reward_breakdown.reward),
+            reward=reward,
             done=True,
             solved=self.solved,
             power_flow_success=assessment.power_flow_converged,
@@ -275,6 +296,8 @@ class TopologySwitchingEnv:
     def _step_branch_status(
         self,
         action: GridFMAction,
+        *,
+        compute_reward: bool,
     ) -> TopologyStepResult:
         assert self.current_state is not None
 
@@ -282,12 +305,18 @@ class TopologySwitchingEnv:
         power_flow_result = self.backend.run_power_flow_from_state(
             state=before_state,
             action=action,
+            validated_action=True,
         )
-        reward_breakdown = self.reward_fn.compute(
-            before_state=before_state,
-            after_state=power_flow_result.next_state,
-            power_flow_success=power_flow_result.success,
+        reward_breakdown = (
+            self.reward_fn.compute(
+                before_state=before_state,
+                after_state=power_flow_result.next_state,
+                power_flow_success=power_flow_result.success,
+            )
+            if compute_reward
+            else None
         )
+        reward = 0.0 if reward_breakdown is None else float(reward_breakdown.reward)
 
         self.step_count += 1
         self.applied_actions.append(action)
@@ -302,7 +331,7 @@ class TopologySwitchingEnv:
             )
             return TopologyStepResult(
                 next_state=None,
-                reward=float(reward_breakdown.reward),
+                reward=reward,
                 done=True,
                 solved=False,
                 power_flow_success=False,
@@ -338,7 +367,7 @@ class TopologySwitchingEnv:
 
         return TopologyStepResult(
             next_state=self.current_state,
-            reward=float(reward_breakdown.reward),
+            reward=reward,
             done=bool(self.done),
             solved=bool(self.solved),
             power_flow_success=True,
