@@ -91,7 +91,11 @@ class _GraphDimensions(NamedTuple):
     num_actions: int
 
 
-def _state_path_for_example(examples_csv: str | Path, state_id: object) -> Path:
+def resolve_example_state_path(
+    examples_csv: str | Path,
+    state_id: object,
+    state_path: object | None = None,
+) -> Path:
     state_id_text = str(state_id).strip()
     if (
         not state_id_text
@@ -100,7 +104,26 @@ def _state_path_for_example(examples_csv: str | Path, state_id: object) -> Path:
         or "\\" in state_id_text
     ):
         raise ValueError("state_id must be a non-empty filename-safe identifier.")
-    return Path(examples_csv).parent / "states" / f"{state_id_text}.npz"
+
+    base_dir = Path(examples_csv).parent
+    if state_path is None:
+        return base_dir / "states" / f"{state_id_text}.npz"
+
+    state_path_text = str(state_path).strip()
+    if not state_path_text:
+        raise ValueError("state_path must be a non-empty relative path.")
+
+    relative_path = Path(state_path_text)
+    if relative_path.is_absolute() or ".." in relative_path.parts:
+        raise ValueError("state_path must be a safe relative path.")
+    if relative_path.name != f"{state_id_text}.npz":
+        raise ValueError("state_path must point to the row state_id NPZ file.")
+
+    return base_dir / relative_path
+
+
+def _state_path_for_example(examples_csv: str | Path, state_id: object) -> Path:
+    return resolve_example_state_path(examples_csv, state_id)
 
 
 def _json_value(value: object, *, name: str, source: str) -> object:
@@ -348,7 +371,11 @@ def validate_examples_dataframe(
             index=index,
             source=source,
         )
-        state_path = _state_path_for_example(source, row["state_id"])
+        state_path = resolve_example_state_path(
+            source,
+            row["state_id"],
+            row.get("state_path"),
+        )
         if not state_path.exists():
             raise FileNotFoundError(
                 f"State file not found: {state_path}. File: {source}"

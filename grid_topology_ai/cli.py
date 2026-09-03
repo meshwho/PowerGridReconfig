@@ -439,6 +439,14 @@ def _merge_teacher_split_examples(output_dir: Path, split_name: str) -> Path:
         else:
             frame["difficulty_class"] = difficulty
 
+        frame["state_path"] = frame["state_id"].map(
+            lambda state_id: (
+                Path(split_name)
+                / difficulty
+                / "states"
+                / f"{str(state_id).strip()}.npz"
+            ).as_posix()
+        )
         frame["teacher_split"] = split_name
         parts.append(frame)
 
