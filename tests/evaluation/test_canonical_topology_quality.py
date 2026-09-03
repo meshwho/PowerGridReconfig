@@ -6,6 +6,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from grid_topology_ai.config import DEFAULT_PHYSICS_CONFIG
 from grid_topology_ai.state import BRANCH_FEATURE_COLUMNS, GridFMState
 from grid_topology_ai.environment import TopologySwitchingEnv
 from grid_topology_ai.evaluation import (
@@ -73,7 +74,10 @@ def _episode_row(
     utility: float | None = None,
 ) -> dict[str, object]:
     if utility is None:
-        utility = state_utility(final)
+        utility = state_utility(
+            final,
+            physics_config=DEFAULT_PHYSICS_CONFIG,
+        )
     env = SimpleNamespace(
         initial_state=initial,
         current_state=final,
@@ -89,7 +93,7 @@ def _episode_row(
         policy_mode="ungated",
         env=env,
         trace=EvaluationEpisodeTrace(actions=[1]),
-        physics_config=None,
+        physics_config=DEFAULT_PHYSICS_CONFIG,
     )
 
 
@@ -103,8 +107,14 @@ def test_evaluation_row_reports_canonical_topology_improvement() -> None:
         reason=TerminationReason.MAX_STEPS_REACHED,
     )
 
-    J0 = state_security_penalty(initial)
-    Jfinal = state_security_penalty(final)
+    J0 = state_security_penalty(
+        initial,
+        physics_config=DEFAULT_PHYSICS_CONFIG,
+    )
+    Jfinal = state_security_penalty(
+        final,
+        physics_config=DEFAULT_PHYSICS_CONFIG,
+    )
     assert row["J0"] == pytest.approx(J0)
     assert row["Jfinal"] == pytest.approx(Jfinal)
     assert row["delta_J"] == pytest.approx(J0 - Jfinal)
@@ -112,7 +122,10 @@ def test_evaluation_row_reports_canonical_topology_improvement() -> None:
         (J0 - Jfinal) / J0
     )
     assert row["final_topology_utility"] == pytest.approx(
-        state_utility(final)
+        state_utility(
+            final,
+            physics_config=DEFAULT_PHYSICS_CONFIG,
+        )
     )
 
 
@@ -143,7 +156,12 @@ def test_power_flow_failure_does_not_report_last_valid_state_as_Jfinal() -> None
         utility=-1.0,
     )
 
-    assert row["J0"] == pytest.approx(state_security_penalty(initial))
+    assert row["J0"] == pytest.approx(
+        state_security_penalty(
+            initial,
+            physics_config=DEFAULT_PHYSICS_CONFIG,
+        )
+    )
     assert np.isnan(float(row["Jfinal"]))
     assert np.isnan(float(row["delta_J"]))
     assert np.isnan(float(row["relative_J_improvement"]))
@@ -192,6 +210,8 @@ def test_evaluation_metrics_aggregate_topology_quality() -> None:
 
 
 class _ResetBackend:
+    physics_config = DEFAULT_PHYSICS_CONFIG
+
     def __init__(self, state: GridFMState) -> None:
         self.state = state
 
