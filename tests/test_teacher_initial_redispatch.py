@@ -195,6 +195,8 @@ def _task_config() -> dict[str, object]:
         "gamma": 1.0,
         "allow_hard_count_increase": False,
         "use_lodf_screening": False,
+        "lodf_screen_top_k": 10,
+        "lodf_min_candidate_count": 1,
         "soft_policy_temperature": 0.0,
         "max_teacher_steps": 4,
         "use_soft_root_policy": False,
