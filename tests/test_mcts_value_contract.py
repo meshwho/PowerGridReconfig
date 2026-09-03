@@ -40,10 +40,9 @@ def _node(
     )
 
 
-def test_mcts_config_requires_undiscounted_terminal_utility() -> None:
+def test_mcts_config_normalizes_terminal_utility_gamma() -> None:
     assert MCTSConfig().gamma == TERMINAL_UTILITY_GAMMA
-    with pytest.raises(ValueError, match="gamma must be exactly 1.0"):
-        MCTSConfig(gamma=0.95)
+    assert MCTSConfig(gamma=0.95).gamma == TERMINAL_UTILITY_GAMMA
 
 
 def test_mcts_backup_ignores_shaped_environment_rewards() -> None:
