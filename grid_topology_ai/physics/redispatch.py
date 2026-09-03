@@ -164,7 +164,8 @@ def run_minimal_ac_redispatch(
 
     scenario_id = int(state.scenario_id)
     context = f"minimal redispatch scenario={scenario_id}"
-    trusted_state = bool(backend._is_trusted_repeated_state(state))
+    trusted_checker = getattr(backend, "_is_trusted_repeated_state", None)
+    trusted_state = bool(trusted_checker(state)) if callable(trusted_checker) else False
 
     try:
         ppc, _ = backend._build_ppc_from_state(state)
@@ -202,11 +203,17 @@ def run_minimal_ac_redispatch(
         baseline_result = ppc
     else:
         try:
-            baseline_result, _ = backend._solve_ppc(
-                ppc,
-                context=f"{context} baseline",
-                validate_input=not trusted_state,
-            )
+            if trusted_state:
+                baseline_result, _ = backend._solve_ppc(
+                    ppc,
+                    context=f"{context} baseline",
+                    validate_input=False,
+                )
+            else:
+                baseline_result, _ = backend._solve_ppc(
+                    ppc,
+                    context=f"{context} baseline",
+                )
         except (InvalidPhysicalState, PowerFlowNotConverged) as exc:
             return remember(
                 MinimalRedispatchResult(
