@@ -148,6 +148,10 @@ def test_checkpoint_rejects_changed_source_identity(tmp_path):
 def test_run_id_depends_only_on_semantic_teacher_settings(tmp_path):
     states_dir = tmp_path / "run" / "states"
     states_dir.mkdir(parents=True)
+    ensure_teacher_checkpoint_config(
+        states_dir.parent / "teacher_checkpoint_config.json",
+        _checkpoint_config(_task_config()),
+    )
 
     first = teacher_run_id(states_dir, _task_config(disable_cache=False))
     second = teacher_run_id(states_dir, _task_config(disable_cache=True))
