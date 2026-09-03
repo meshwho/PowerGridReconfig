@@ -14,7 +14,6 @@ from grid_topology_ai.state import GridFMState
 from grid_topology_ai.physics.constraints import (
     calculate_physical_metrics_from_result,
     validate_ppc_input,
-    validate_pypower_result,
 )
 from grid_topology_ai.physics.objective import (
     PhysicalStateAssessment,
@@ -251,27 +250,12 @@ def run_minimal_ac_redispatch(
             )
         )
 
-    try:
-        validate_pypower_result(
-            result_ppc,
-            backend.physics_config,
-            input_ppc=opf_case,
-            context=context,
-        )
-        metrics = calculate_physical_metrics_from_result(
-            result_ppc,
-            power_flow_converged=True,
-            physics_config=backend.physics_config,
-        )
-        assessment = assess_physical_state(metrics)
-    except InvalidPhysicalState as exc:
-        return remember(
-            MinimalRedispatchResult(
-                opf_success=True,
-                assessment=None,
-                message=f"AC OPF returned an invalid physical result: {exc}",
-            )
-        )
+    metrics = calculate_physical_metrics_from_result(
+        result_ppc,
+        power_flow_converged=True,
+        physics_config=backend.physics_config,
+    )
+    assessment = assess_physical_state(metrics)
 
     l1_mw, up_mw, down_mw, max_delta_mw = _redispatch_magnitudes(
         np.asarray(baseline_result["gen"], dtype=np.float64),

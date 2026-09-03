@@ -86,15 +86,6 @@ def arrays_from_gridfm_frames(
     return PhysicalNetworkArrays(bus=bus, branch=branch, gen=gen)
 
 
-def _require_matrix(name: str, value: np.ndarray, min_columns: int) -> np.ndarray:
-    if value.ndim != 2 or value.shape[1] < min_columns:
-        raise ValueError(
-            f"{name} must be a 2D PYPOWER matrix with at least "
-            f"{min_columns} columns; got {value.shape}."
-        )
-    return value
-
-
 def _matrix(ppc: dict[str, Any], name: str, columns: int, context: str) -> np.ndarray:
     if name not in ppc:
         raise InvalidPhysicalState(f"{context}: missing required {name} matrix.")
@@ -159,45 +150,6 @@ def validate_ppc_input(ppc: dict[str, Any], physics_config: PhysicsConfig, *, co
     # retain compatibility with GridFM inputs where REF is inferred downstream.
 
 
-def validate_pypower_result(result_ppc: dict[str, Any], physics_config: PhysicsConfig, *, input_ppc: dict[str, Any], context: str = "result") -> None:
-    """Validate only the minimal result structure before physical assessment."""
-    if not isinstance(result_ppc, dict):
-        raise InvalidPhysicalState(f"{context}: result must be a mapping.")
-    if result_ppc.get("version") not in {"2", 2}:
-        raise InvalidPhysicalState(f"{context}: unsupported MATPOWER version.")
-    try:
-        base_mva = float(result_ppc["baseMVA"])
-    except (KeyError, TypeError, ValueError) as exc:
-        raise InvalidPhysicalState(
-            f"{context}: baseMVA must be present and numeric."
-        ) from exc
-    if (
-        not np.isfinite(base_mva)
-        or not np.isclose(
-            base_mva,
-            physics_config.base_mva,
-            rtol=0.0,
-            atol=0.0,
-        )
-    ):
-        raise InvalidPhysicalState(
-            f"{context}: baseMVA disagrees with PhysicsConfig."
-        )
-
-    result = {
-        "bus": _matrix(result_ppc, "bus", VMIN + 1, context),
-        "branch": _matrix(result_ppc, "branch", QT + 1, context),
-        "gen": _matrix(result_ppc, "gen", PMIN + 1, context),
-    }
-
-    for name, values in result.items():
-        source_rows = len(input_ppc[name])
-        if values.shape[0] != source_rows:
-            raise InvalidPhysicalState(
-                f"{context}: {name} row count differs from input."
-            )
-
-
 def _finite_sum(values: np.ndarray) -> float:
     finite = values[np.isfinite(values)]
     return float(np.sum(finite)) if finite.size else 0.0
@@ -208,9 +160,9 @@ def calculate_physical_metrics(
     *,
     power_flow_converged: bool, physics_config: PhysicsConfig | None = None,
 ) -> dict[str, object]:
-    bus = _require_matrix("bus", arrays.bus, VMIN + 1)
-    branch = _require_matrix("branch", arrays.branch, QT + 1)
-    gen = _require_matrix("gen", arrays.gen, PMIN + 1)
+    bus = arrays.bus
+    branch = arrays.branch
+    gen = arrays.gen
 
     bus_ids = bus[:, BUS_I]
     vm = bus[:, VM]

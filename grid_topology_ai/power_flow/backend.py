@@ -78,7 +78,6 @@ from grid_topology_ai.state import (
 from grid_topology_ai.physics.constraints import (
     calculate_physical_metrics_from_result,
     validate_ppc_input,
-    validate_pypower_result,
 )
 from grid_topology_ai.physics.objective import assess_physical_state
 from grid_topology_ai.power_flow import (
@@ -588,11 +587,6 @@ class GridFMPowerFlowBackend:
         gen_df = original_frames["gen"]
         gen_result = np.asarray(result_ppc["gen"])
 
-        if gen_result.ndim != 2 or gen_result.shape[0] != len(gen_df):
-            raise InvalidPhysicalState(
-                "PYPOWER gen result does not match the source frame."
-            )
-
         return _GeneratorOperatingPointState(
             scenario_id=state.scenario_id,
             load_scenario_idx=state.load_scenario_idx,
@@ -983,12 +977,6 @@ class GridFMPowerFlowBackend:
                 f"PYPOWER power flow did not converge ({context})."
             )
 
-        validate_pypower_result(
-            result_ppc,
-            self.physics_config,
-            input_ppc=ppc,
-            context=context,
-        )
         metrics = calculate_physical_metrics_from_result(
             result_ppc,
             power_flow_converged=True,

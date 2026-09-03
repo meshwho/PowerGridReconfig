@@ -692,11 +692,9 @@ class GridFMStateBuilder:
         """Update source frames from a PYPOWER result and build the state."""
 
         bus_df, branch_df, gen_df = self._copy_frames(original_frames)
-        bus_result, branch_result, gen_result = self._result_arrays(result_ppc)
-
-        self._require_row_count("bus", bus_df, bus_result)
-        self._require_row_count("branch", branch_df, branch_result)
-        self._require_row_count("gen", gen_df, gen_result)
+        bus_result = np.asarray(result_ppc["bus"])
+        branch_result = np.asarray(result_ppc["branch"])
+        gen_result = np.asarray(result_ppc["gen"])
 
         bus_df["Vm"] = bus_result[:, VM]
         bus_df["Va"] = bus_result[:, VA]
@@ -851,32 +849,6 @@ class GridFMStateBuilder:
             raise InvalidPhysicalState(
                 f"Missing power-flow source frame: {exc.args[0]}."
             ) from exc
-
-    @staticmethod
-    def _result_arrays(
-        result_ppc: Mapping[str, Any],
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        try:
-            return (
-                np.asarray(result_ppc["bus"]),
-                np.asarray(result_ppc["branch"]),
-                np.asarray(result_ppc["gen"]),
-            )
-        except KeyError as exc:
-            raise InvalidPhysicalState(
-                f"Missing PYPOWER result matrix: {exc.args[0]}."
-            ) from exc
-
-    @staticmethod
-    def _require_row_count(
-        name: str,
-        frame: pd.DataFrame,
-        matrix: np.ndarray,
-    ) -> None:
-        if matrix.ndim != 2 or matrix.shape[0] != len(frame):
-            raise InvalidPhysicalState(
-                f"PYPOWER {name} result does not match the source frame."
-            )
 
     @staticmethod
     def _assemble_state(

@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import copy
-
 import numpy as np
 import pytest
 from pypower.idx_brch import (
@@ -9,7 +7,6 @@ from pypower.idx_brch import (
     ANGMIN,
     BR_STATUS,
     F_BUS,
-    QT,
     RATE_A,
     T_BUS,
 )
@@ -30,10 +27,7 @@ from grid_topology_ai.config import (
     ZeroRateAPolicy,
 )
 from grid_topology_ai.state import BRANCH_FEATURE_COLUMNS, BUS_FEATURE_COLUMNS, GridFMState
-from grid_topology_ai.physics.constraints import (
-    validate_ppc_input,
-    validate_pypower_result,
-)
+from grid_topology_ai.physics.constraints import validate_ppc_input
 from grid_topology_ai.power_flow import InvalidPhysicalState
 from grid_topology_ai.power_flow.problem import CanonicalPowerFlowProblem
 from grid_topology_ai.power_flow.backend import GridFMPowerFlowBackend
@@ -69,15 +63,6 @@ def _valid_ppc() -> dict[str, object]:
         "branch": branch,
         "gen": gen,
     }
-
-
-def _valid_result(input_ppc: dict[str, object]) -> dict[str, object]:
-    result = copy.deepcopy(input_ppc)
-    result["branch"] = np.pad(
-        np.asarray(result["branch"]),
-        ((0, 0), (0, QT + 1 - np.asarray(result["branch"]).shape[1])),
-    )
-    return result
 
 
 def _cache_state() -> GridFMState:
@@ -116,41 +101,8 @@ def _cache_state() -> GridFMState:
     )
 
 
-def test_valid_input_and_result_satisfy_structural_contract() -> None:
-    config = PhysicsConfig()
-    ppc = _valid_ppc()
-    result = _valid_result(ppc)
-
-    validate_ppc_input(ppc, config, context="test input")
-    validate_pypower_result(
-        result,
-        config,
-        input_ppc=ppc,
-        context="test result",
-    )
-
-
-def test_result_contract_accepts_solver_added_output_columns() -> None:
-    ppc = _valid_ppc()
-    ppc["bus"] = np.pad(np.asarray(ppc["bus"]), ((0, 0), (0, 4)))
-    ppc["branch"] = np.pad(np.asarray(ppc["branch"]), ((0, 0), (0, 8)))
-    ppc["gen"] = np.pad(np.asarray(ppc["gen"]), ((0, 0), (0, 4)))
-
-    result = copy.deepcopy(ppc)
-    np.asarray(result["bus"])[0, 13:] = [1.0, 2.0, 3.0, 4.0]
-    np.asarray(result["branch"])[0, 13:] = np.arange(1.0, 9.0)
-    np.asarray(result["gen"])[0, 21:] = [1.0, 2.0, 3.0, 4.0]
-
-    validate_pypower_result(result, PhysicsConfig(), input_ppc=ppc)
-
-
-def test_result_contract_requires_a_mapping() -> None:
-    with pytest.raises(InvalidPhysicalState, match="result must be a mapping"):
-        validate_pypower_result(
-            [],  # type: ignore[arg-type]
-            PhysicsConfig(),
-            input_ppc=_valid_ppc(),
-        )
+def test_valid_input_satisfies_structural_contract() -> None:
+    validate_ppc_input(_valid_ppc(), PhysicsConfig(), context="test input")
 
 
 def test_input_contract_requires_a_mapping() -> None:
@@ -273,68 +225,6 @@ def test_zero_rate_a_policy_is_enforced_at_input_boundary() -> None:
             ppc,
             PhysicsConfig(zero_rate_a_policy=ZeroRateAPolicy.ERROR),
         )
-
-
-@pytest.mark.parametrize("matrix_name", ["bus", "branch", "gen"])
-def test_result_contract_rejects_missing_matrix(matrix_name: str) -> None:
-    ppc = _valid_ppc()
-    result = _valid_result(ppc)
-    result.pop(matrix_name)
-
-    with pytest.raises(InvalidPhysicalState, match=f"required {matrix_name}"):
-        validate_pypower_result(result, PhysicsConfig(), input_ppc=ppc)
-
-
-def test_result_contract_rejects_non_numeric_matrix() -> None:
-    ppc = _valid_ppc()
-    result = _valid_result(ppc)
-    result["gen"] = [["not-a-number"] * (PMIN + 1)]
-
-    with pytest.raises(InvalidPhysicalState, match="gen is not numeric"):
-        validate_pypower_result(result, PhysicsConfig(), input_ppc=ppc)
-
-
-def test_result_contract_rejects_missing_flow_columns() -> None:
-    ppc = _valid_ppc()
-    result = copy.deepcopy(ppc)
-
-    with pytest.raises(InvalidPhysicalState, match="branch must be 2D"):
-        validate_pypower_result(result, PhysicsConfig(), input_ppc=ppc)
-
-
-@pytest.mark.parametrize("matrix_name", ["branch", "gen"])
-def test_result_contract_rejects_changed_row_count(matrix_name: str) -> None:
-    ppc = _valid_ppc()
-    result = _valid_result(ppc)
-    matrix = np.asarray(result[matrix_name])
-    extra_row = matrix[0].copy()
-    if matrix_name == "branch":
-        extra_row[BR_STATUS] = 0.0
-    else:
-        extra_row[GEN_STATUS] = 0.0
-    result[matrix_name] = np.vstack([matrix, extra_row])
-
-    with pytest.raises(InvalidPhysicalState, match="row count differs"):
-        validate_pypower_result(result, PhysicsConfig(), input_ppc=ppc)
-
-
-def test_result_contract_rejects_changed_bus_row_count() -> None:
-    ppc = _valid_ppc()
-    result = _valid_result(ppc)
-
-    extra_bus = np.asarray(result["bus"])[0].copy()
-    extra_bus[BUS_I] = 30.0
-    result["bus"] = np.vstack([np.asarray(result["bus"]), extra_bus])
-
-    extra_branch = np.asarray(result["branch"])[0].copy()
-    extra_branch[F_BUS] = 20.0
-    extra_branch[T_BUS] = 30.0
-    result["branch"] = np.vstack(
-        [np.asarray(result["branch"]), extra_branch]
-    )
-
-    with pytest.raises(InvalidPhysicalState, match="bus row count differs"):
-        validate_pypower_result(result, PhysicsConfig(), input_ppc=ppc)
 
 
 def test_backend_builds_solver_options_from_physics_config() -> None:

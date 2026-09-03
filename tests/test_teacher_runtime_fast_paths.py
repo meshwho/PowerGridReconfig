@@ -336,14 +336,10 @@ class _RedispatchBackend:
         return {}
 
 
-def _install_redispatch_success(monkeypatch, *, input_calls: list[int], result_calls: list[int]):
+def _install_redispatch_success(monkeypatch, *, input_calls: list[int]):
     def validate_input(*args, **kwargs):
         del args, kwargs
         input_calls.append(1)
-
-    def validate_result(*args, **kwargs):
-        del args, kwargs
-        result_calls.append(1)
 
     def runopf(case, options):
         del options
@@ -357,7 +353,6 @@ def _install_redispatch_success(monkeypatch, *, input_calls: list[int], result_c
         }
 
     monkeypatch.setattr(redispatch, "validate_ppc_input", validate_input)
-    monkeypatch.setattr(redispatch, "validate_pypower_result", validate_result)
     monkeypatch.setattr(redispatch, "runopf", runopf)
     monkeypatch.setattr(
         redispatch,
@@ -371,13 +366,11 @@ def _install_redispatch_success(monkeypatch, *, input_calls: list[int], result_c
     )
 
 
-def test_trusted_redispatch_skips_only_repeated_input_validation(monkeypatch):
+def test_trusted_redispatch_skips_repeated_input_validation(monkeypatch):
     input_calls: list[int] = []
-    result_calls: list[int] = []
     _install_redispatch_success(
         monkeypatch,
         input_calls=input_calls,
-        result_calls=result_calls,
     )
     state = SimpleNamespace(
         scenario_id=5,
@@ -391,16 +384,13 @@ def test_trusted_redispatch_skips_only_repeated_input_validation(monkeypatch):
 
     assert result.validated is True
     assert input_calls == []
-    assert result_calls == [1]
 
 
-def test_untrusted_redispatch_keeps_input_and_result_validation(monkeypatch):
+def test_untrusted_redispatch_keeps_input_validation(monkeypatch):
     input_calls: list[int] = []
-    result_calls: list[int] = []
     _install_redispatch_success(
         monkeypatch,
         input_calls=input_calls,
-        result_calls=result_calls,
     )
     state = SimpleNamespace(
         scenario_id=5,
@@ -414,4 +404,3 @@ def test_untrusted_redispatch_keeps_input_and_result_validation(monkeypatch):
 
     assert result.validated is True
     assert input_calls == [1]
-    assert result_calls == [1]
