@@ -18,7 +18,10 @@ from grid_topology_ai.physics.redispatch import (
     MinimalRedispatchResult,
     run_minimal_ac_redispatch,
 )
-from grid_topology_ai.physics.utility import state_security_penalty
+from grid_topology_ai.physics.utility import (
+    grid_utility_breakdown,
+    state_security_penalty,
+)
 from grid_topology_ai.self_play.artifacts import file_content_identity
 from grid_topology_ai.state import BRANCH_FEATURE_COLUMNS, GridFMState
 from grid_topology_ai.termination import TerminationReason
@@ -558,11 +561,18 @@ class ImpactBeamSearchPlanner:
         solved: bool,
         termination_reason: TerminationReason | None,
         last_step_result: TopologyStepResult | None,
+        utility_breakdown=None,
     ) -> ImpactBeamSearchNode:
         state = env.current_state
 
         if state is None:
             raise RuntimeError("Cannot create node without current state.")
+
+        if utility_breakdown is None:
+            utility_breakdown = grid_utility_breakdown(
+                state,
+                physics_config=self.physics_config,
+            )
 
         return ImpactBeamSearchNode(
             env=env,
@@ -572,21 +582,12 @@ class ImpactBeamSearchPlanner:
             impact_scores=impact_scores,
             cumulative_score=float(cumulative_score),
             discounted_score=float(discounted_score),
-            safety_score=safety_score(
-                state,
-                physics_config=self.physics_config,
-            ),
+            safety_score=float(utility_breakdown.penalty),
             max_loading_percent=float(state.metrics["max_loading_percent"]),
             num_overloaded=int(state.metrics["num_overloaded_branches"]),
             num_hard_overloaded=int(state.metrics["num_hard_overloaded_branches"]),
-            total_overload=total_overload(
-                state,
-                physics_config=self.physics_config,
-            ),
-            total_hard_overload=total_hard_overload(
-                state,
-                physics_config=self.physics_config,
-            ),
+            total_overload=float(utility_breakdown.total_overload),
+            total_hard_overload=float(utility_breakdown.total_hard_overload),
             squared_hard_overload=squared_hard_overload(
                 state,
                 physics_config=self.physics_config,
@@ -695,13 +696,13 @@ class ImpactBeamSearchPlanner:
         if before_state is None:
             return None
 
-        before_safety = safety_score(
-            before_state,
-            physics_config=self.physics_config,
-        )
+        before_safety = float(node.safety_score)
 
         try:
-            step_result = child_env.step(action.action_id)
+            step_result = child_env.step(
+                action,
+                compute_reward=False,
+            )
         except Exception:
             return None
 
@@ -747,10 +748,11 @@ class ImpactBeamSearchPlanner:
             )
 
         after_state = step_result.next_state
-        after_safety = safety_score(
+        after_breakdown = grid_utility_breakdown(
             after_state,
             physics_config=self.physics_config,
         )
+        after_safety = float(after_breakdown.penalty)
 
         impact_score = float(before_safety - after_safety)
 
@@ -784,6 +786,7 @@ class ImpactBeamSearchPlanner:
             solved=bool(step_result.solved),
             termination_reason=step_result.info.get("termination_reason"),
             last_step_result=step_result,
+            utility_breakdown=after_breakdown,
         )
 
     def _apply_safety_guards(
