@@ -762,36 +762,34 @@ class GridFMActionSpace:
     def action_layout_fingerprint(self, state: GridFMState) -> str:
         return action_layout_fingerprint(self.build_action_slots(state))
 
-    def build_all_actions(self, state: GridFMState) -> list[GridFMAction]:
-        actions: list[GridFMAction] = []
-
-        for slot in self.build_action_slots(state):
-            if slot.kind == "stop":
-                actions.append(
-                    GridFMAction(
-                        action_id=slot.action_id,
-                        action_type="do_nothing",
-                    )
-                )
-                continue
-
-            if slot.kind != "branch_status":
-                raise RuntimeError(f"Unsupported action slot kind: {slot.kind!r}.")
-
-            assert slot.target_id is not None
-            assert slot.target_pos is not None
-            active = self._is_branch_active(state, slot.target_pos)
-            actions.append(
-                GridFMAction(
-                    action_id=slot.action_id,
-                    action_type=("switch_off_branch" if active else "switch_on_branch"),
-                    branch_id=slot.target_id,
-                    branch_pos=slot.target_pos,
-                    target_status=0 if active else 1,
-                )
+    def _action_from_id(
+        self,
+        state: GridFMState,
+        action_id: int,
+    ) -> GridFMAction:
+        action_id = int(action_id)
+        if action_id == 0:
+            return GridFMAction(
+                action_id=0,
+                action_type="do_nothing",
             )
 
-        return actions
+        branch_pos = action_id - 1
+        branch_id = int(state.branch_ids[branch_pos])
+        active = self._is_branch_active(state, branch_pos)
+        return GridFMAction(
+            action_id=action_id,
+            action_type=("switch_off_branch" if active else "switch_on_branch"),
+            branch_id=branch_id,
+            branch_pos=branch_pos,
+            target_status=0 if active else 1,
+        )
+
+    def build_all_actions(self, state: GridFMState) -> list[GridFMAction]:
+        return [
+            self._action_from_id(state, action_id)
+            for action_id in range(len(state.branch_ids) + 1)
+        ]
 
     def structural_action_mask(self, state: GridFMState) -> np.ndarray:
         """Return topology-only action validity."""
@@ -808,36 +806,29 @@ class GridFMActionSpace:
             if cached is not None:
                 return cached
 
-        actions = self.build_all_actions(state)
-        mask = np.zeros(len(actions), dtype=bool)
+        num_branches = len(state.branch_ids)
+        mask = np.zeros(num_branches + 1, dtype=bool)
         mask[0] = True
 
         connectivity_ok = (
             self._switch_connectivity_mask(state)
             if self.require_connected_after_switch
-            else np.ones(len(state.branch_ids), dtype=bool)
+            else np.ones(num_branches, dtype=bool)
         )
         closeable = set(self.closeable_branch_ids)
 
-        for action in actions[1:]:
-            assert action.branch_id is not None
-            assert action.branch_pos is not None
-            assert action.target_status is not None
-
-            if action.target_status == 0:
-                if not self._is_branch_active(state, action.branch_pos):
-                    continue
+        for branch_pos in range(num_branches):
+            action_id = branch_pos + 1
+            if self._is_branch_active(state, branch_pos):
                 if self.require_connected_after_switch and not bool(
-                    connectivity_ok[action.branch_pos]
+                    connectivity_ok[branch_pos]
                 ):
                     continue
-                mask[action.action_id] = True
+                mask[action_id] = True
                 continue
 
-            if self._is_branch_active(state, action.branch_pos):
-                continue
-            if action.branch_id in closeable:
-                mask[action.action_id] = True
+            if int(state.branch_ids[branch_pos]) in closeable:
+                mask[action_id] = True
 
         if self.enable_cache:
             assert cache_key is not None
@@ -852,26 +843,31 @@ class GridFMActionSpace:
         if self.min_loading_for_switch_percent <= 0.0:
             return mask
 
-        for action in self.build_all_actions(state)[1:]:
-            if not bool(mask[action.action_id]):
-                continue
-            assert action.branch_pos is not None
-            if action.target_status == 0 and not self._passes_loading_filter(
-                state, action.branch_pos
-            ):
-                mask[action.action_id] = False
-
+        active = np.asarray(state.branch_status) > 0.0
+        loading = np.asarray(
+            state.branch_features[:, self._loading_column_idx],
+            dtype=np.float64,
+        )
+        rejected_openings = active & ~(
+            loading >= self.min_loading_for_switch_percent
+        )
+        branch_mask = mask[1:]
+        branch_mask[rejected_openings] = False
         return mask
 
     def valid_actions(self, state: GridFMState) -> list[GridFMAction]:
-        actions = self.build_all_actions(state)
         mask = self.operational_action_mask(state)
-        return [action for action in actions if bool(mask[action.action_id])]
+        return [
+            self._action_from_id(state, int(action_id))
+            for action_id in np.flatnonzero(mask)
+        ]
 
     def invalid_actions(self, state: GridFMState) -> list[GridFMAction]:
-        actions = self.build_all_actions(state)
         mask = self.operational_action_mask(state)
-        return [action for action in actions if not bool(mask[action.action_id])]
+        return [
+            self._action_from_id(state, int(action_id))
+            for action_id in np.flatnonzero(~mask)
+        ]
 
     def loading_priority(
         self,
