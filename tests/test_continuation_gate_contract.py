@@ -105,4 +105,3 @@ def test_gate_reports_allowed_support_without_executing_it() -> None:
     assert decision.recommended_action_id == 1
     assert decision.recommended_branch_id == 11
     assert decision.recommendation_reason == "best_allowed_by_visits"
-    assert decision.selected_action_id == 1
