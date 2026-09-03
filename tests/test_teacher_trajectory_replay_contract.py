@@ -48,6 +48,33 @@ def test_teacher_replay_rejects_power_flow_divergence() -> None:
     assert "power-flow failure during replay" in source
 
 
+def test_teacher_scenario_exceptions_are_not_converted_to_skips(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class BrokenEnv:
+        def __init__(self, *args, **kwargs) -> None:
+            del args, kwargs
+            raise RuntimeError("broken teacher scenario")
+
+    monkeypatch.setattr(
+        teacher,
+        "_WORKER_CONTEXT",
+        {
+            "adapter": object(),
+            "backend": object(),
+            "action_space": object(),
+            "reward_fn": object(),
+            "physics_config": object(),
+            "state_store": object(),
+            "task_config": {"max_steps": 5},
+        },
+    )
+    monkeypatch.setattr(teacher, "TopologySwitchingEnv", BrokenEnv)
+
+    with pytest.raises(RuntimeError, match="broken teacher scenario"):
+        teacher._generate_scenario(1)
+
+
 def test_teacher_replay_rejects_invalid_selected_action() -> None:
     mask = np.array([True, False, True], dtype=bool)
 

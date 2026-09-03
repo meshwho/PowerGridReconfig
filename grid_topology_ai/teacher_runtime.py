@@ -8,7 +8,6 @@ import multiprocessing as mp
 import os
 import sys
 import time
-import traceback
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import replace
 from pathlib import Path
@@ -685,7 +684,7 @@ def _generate_scenario(scenario_id: int) -> dict[str, Any]:
                     step_diagnostic_reason
                 )
 
-            state_store.save_state(
+            state_path = state_store.save_state(
                 state=state,
                 state_id=state_id,
                 action_mask=item["action_mask"],
@@ -693,6 +692,7 @@ def _generate_scenario(scenario_id: int) -> dict[str, Any]:
             )
             rows.append(
                 {
+                    "state_path": str(state_path),
                     "state_id": state_id,
                     "scenario_id": int(scenario_id),
                     "step": int(step_idx),
@@ -762,12 +762,7 @@ def _generate_scenario(scenario_id: int) -> dict[str, Any]:
         }
     except Exception:
         clear_worker_caches_if_needed()
-        return {
-            "ok": False,
-            "scenario_id": scenario_id,
-            "reason": "exception",
-            "traceback": traceback.format_exc(),
-        }
+        raise
 
 
 # ======================================================================================

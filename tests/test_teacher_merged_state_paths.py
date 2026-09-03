@@ -10,7 +10,7 @@ from grid_topology_ai.dataset import GraphSelfPlayDataset
 from grid_topology_ai.self_play import example_validation
 
 
-def test_merge_teacher_split_writes_direct_state_paths(
+def test_merge_teacher_split_preserves_direct_state_paths(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -26,25 +26,21 @@ def test_merge_teacher_split_writes_direct_state_paths(
         run_dir = output_dir / "train" / difficulty
         run_dir.mkdir(parents=True)
         state_id = f"state_{difficulty}"
+        state_path = run_dir / "states" / f"{state_id}.npz"
         pd.DataFrame(
             {
                 "scenario_id": [index],
                 "step": [0],
                 "state_id": [state_id],
+                "state_path": [str(state_path)],
             }
         ).to_csv(run_dir / "examples.csv", index=False)
-        expected_paths.append(str(run_dir / "states" / f"{state_id}.npz"))
+        expected_paths.append(str(state_path))
 
     merged_path = cli._merge_teacher_split_examples(output_dir, "train")
     merged = pd.read_csv(merged_path)
 
     assert merged["state_path"].tolist() == expected_paths
-    for difficulty, expected_path in zip(
-        ("simple", "medium", "hard"),
-        expected_paths,
-    ):
-        source = pd.read_csv(output_dir / "train" / difficulty / "examples.csv")
-        assert source["state_path"].tolist() == [expected_path]
 
 
 def test_graph_dataset_uses_state_path_directly(tmp_path: Path) -> None:

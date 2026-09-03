@@ -417,21 +417,6 @@ def _load_teacher_profiles(path: Path) -> dict[str, dict[str, int]]:
     return validated
 
 
-def _write_example_state_paths(examples_path: Path):
-    import pandas as pd
-
-    frame = pd.read_csv(examples_path).copy()
-    frame["state_path"] = frame["state_id"].map(
-        lambda state_id: str(
-            examples_path.parent / "states" / f"{str(state_id).strip()}.npz"
-        )
-    )
-    temp_path = examples_path.with_name(examples_path.name + ".tmp")
-    frame.to_csv(temp_path, index=False)
-    temp_path.replace(examples_path)
-    return frame
-
-
 def _merge_teacher_split_examples(output_dir: Path, split_name: str) -> Path:
     import pandas as pd
     from grid_topology_ai.self_play.example_validation import validate_examples_dataframe
@@ -439,7 +424,7 @@ def _merge_teacher_split_examples(output_dir: Path, split_name: str) -> Path:
     parts: list[pd.DataFrame] = []
     for difficulty in _TEACHER_DIFFICULTIES:
         source_path = output_dir / split_name / difficulty / "examples.csv"
-        frame = _write_example_state_paths(source_path)
+        frame = pd.read_csv(source_path)
         validate_examples_dataframe(frame, source_path=source_path)
 
         if "difficulty_class" in frame.columns:
@@ -540,11 +525,7 @@ def _teacher(args: argparse.Namespace) -> int:
     output_dir = Path(args.output)
 
     if not transitions.is_dir():
-        result = int(teacher_main(_teacher_argv(args, transitions, output_dir)) or 0)
-        if result:
-            return result
-        _write_example_state_paths(output_dir / "examples.csv")
-        return 0
+        return int(teacher_main(_teacher_argv(args, transitions, output_dir)) or 0)
 
     if not args.profiles:
         raise ValueError("--profiles is required when --transitions is a directory.")

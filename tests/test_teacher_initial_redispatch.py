@@ -290,6 +290,10 @@ def test_initial_redispatch_failure_stays_missing_in_rows_and_state_metadata(
     assert result["ok"] is True, result.get("traceback")
     assert calls == [FakeEnv.initial_state, FakeEnv.after_state]
     assert len(result["rows"]) == 2
+    assert [row["state_path"] for row in result["rows"]] == [
+        str(Path("/tmp/impact_teacher_scenario_000017_step_000.npz")),
+        str(Path("/tmp/impact_teacher_scenario_000017_step_001.npz")),
+    ]
     assert len(state_store.metadata) == 2
 
     for artifact in [*result["rows"], *state_store.metadata]:
