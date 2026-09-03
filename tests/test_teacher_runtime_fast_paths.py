@@ -8,6 +8,7 @@ import pytest
 from pypower.idx_gen import GEN_STATUS, PG, QG
 
 from grid_topology_ai.actions import GridFMAction, GridFMActionSpace
+from grid_topology_ai.config import DEFAULT_PHYSICS_CONFIG
 from grid_topology_ai.physics import redispatch
 from grid_topology_ai.power_flow.backend import (
     GridFMPowerFlowBackend,
@@ -116,8 +117,14 @@ def test_beam_expansion_skips_diagnostic_reward_without_changing_impact_score():
     planner = ImpactBeamSearchPlanner(
         ImpactBeamSearchConfig(gamma=1.0, switch_penalty=5.0)
     )
-    before_safety = safety_score(before)
-    after_safety = safety_score(after)
+    before_safety = safety_score(
+        before,
+        physics_config=DEFAULT_PHYSICS_CONFIG,
+    )
+    after_safety = safety_score(
+        after,
+        physics_config=DEFAULT_PHYSICS_CONFIG,
+    )
     node = ImpactBeamSearchNode(
         env=env,
         safety_score=before_safety,
