@@ -86,15 +86,6 @@ def arrays_from_gridfm_frames(
     return PhysicalNetworkArrays(bus=bus, branch=branch, gen=gen)
 
 
-def _require_matrix(name: str, value: np.ndarray, min_columns: int) -> np.ndarray:
-    if value.ndim != 2 or value.shape[1] < min_columns:
-        raise ValueError(
-            f"{name} must be a 2D PYPOWER matrix with at least "
-            f"{min_columns} columns; got {value.shape}."
-        )
-    return value
-
-
 def _matrix(ppc: dict[str, Any], name: str, columns: int, context: str) -> np.ndarray:
     if name not in ppc:
         raise InvalidPhysicalState(f"{context}: missing required {name} matrix.")
@@ -169,9 +160,9 @@ def calculate_physical_metrics(
     *,
     power_flow_converged: bool, physics_config: PhysicsConfig | None = None,
 ) -> dict[str, object]:
-    bus = _require_matrix("bus", arrays.bus, VMIN + 1)
-    branch = _require_matrix("branch", arrays.branch, QT + 1)
-    gen = _require_matrix("gen", arrays.gen, PMIN + 1)
+    bus = arrays.bus
+    branch = arrays.branch
+    gen = arrays.gen
 
     bus_ids = bus[:, BUS_I]
     vm = bus[:, VM]

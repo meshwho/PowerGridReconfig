@@ -587,11 +587,6 @@ class GridFMPowerFlowBackend:
         gen_df = original_frames["gen"]
         gen_result = np.asarray(result_ppc["gen"])
 
-        if gen_result.ndim != 2 or gen_result.shape[0] != len(gen_df):
-            raise InvalidPhysicalState(
-                "PYPOWER gen result does not match the source frame."
-            )
-
         return _GeneratorOperatingPointState(
             scenario_id=state.scenario_id,
             load_scenario_idx=state.load_scenario_idx,
