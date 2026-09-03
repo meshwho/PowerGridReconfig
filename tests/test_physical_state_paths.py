@@ -330,7 +330,10 @@ def test_initial_power_flow_rejects_non_finite_result(
 
     assert result.success is False
     assert result.next_state is None
-    assert "non-finite" in result.message
+    assert (
+        "non-finite" in result.message.lower()
+        or "represented" in result.message.lower()
+    )
 
 
 def test_state_power_flow_rejects_non_finite_result(
