@@ -16,6 +16,7 @@ from grid_topology_ai.physics.objective import (
     assess_physical_state,
     stop_allowed_for_policy,
 )
+from grid_topology_ai.physics.redispatch import run_minimal_ac_redispatch
 from grid_topology_ai.physics.utility import (
     CONTINUATION_GRID_UTILITY_WEIGHTS,
     CONTINUATION_SWITCH_PENALTY,
@@ -34,6 +35,10 @@ from grid_topology_ai.value_targets import (
 
 if TYPE_CHECKING:
     from grid_topology_ai.evaluator import NeuralPolicyValueEvaluator
+
+
+_TERMINAL_REDISPATCH_RELATIVE_EPSILON = 0.01
+_TERMINAL_REDISPATCH_ABSOLUTE_EPSILON_MW = 1.0
 
 
 @dataclass(frozen=True)
@@ -363,6 +368,11 @@ class MCTSPlanner:
             )
             best_branch_id = root.children[best_action_id].branch_id_from_parent
 
+        redispatch_choice = self._redispatch_aware_root_action(root)
+        if redispatch_choice is not None:
+            best_action_id, best_branch_id = redispatch_choice
+            policy = {best_action_id: 1.0}
+
         (
             principal_action_ids,
             principal_branch_ids,
@@ -400,6 +410,70 @@ class MCTSPlanner:
             return 0.0
 
         return float(count) / float(legal_count)
+
+    def _redispatch_aware_root_action(
+        self,
+        root: MCTSNode,
+    ) -> tuple[int, int | None] | None:
+        if (
+            not isinstance(root.env, TopologySwitchingEnv)
+            or not root.env.allow_handoff_with_hard_overloads
+        ):
+            return None
+
+        candidates: list[tuple[int, int | None, int, float, float]] = []
+
+        for action_id, node in [(0, root), *root.children.items()]:
+            if action_id != 0 and node.visit_count <= 0:
+                continue
+
+            state = node.env.current_state
+            if state is None:
+                continue
+
+            assessment = assess_physical_state(state.metrics)
+            if assessment.physically_secure:
+                redispatch_l1_mw = 0.0
+            else:
+                result = run_minimal_ac_redispatch(node.env.backend, state)
+                if not result.validated or result.redispatch_l1_mw is None:
+                    continue
+                redispatch_l1_mw = float(result.redispatch_l1_mw)
+
+            candidates.append(
+                (
+                    int(action_id),
+                    None if action_id == 0 else node.branch_id_from_parent,
+                    0 if action_id == 0 else 1,
+                    redispatch_l1_mw,
+                    float(
+                        state_security_penalty(
+                            state,
+                            physics_config=self.physics_config,
+                        )
+                    ),
+                )
+            )
+
+        if not candidates:
+            return None
+
+        best_redispatch = min(candidate[3] for candidate in candidates)
+        threshold = (
+            best_redispatch * (1.0 + _TERMINAL_REDISPATCH_RELATIVE_EPSILON)
+            + _TERMINAL_REDISPATCH_ABSOLUTE_EPSILON_MW
+        )
+        pool = [candidate for candidate in candidates if candidate[3] <= threshold]
+        selected = min(
+            pool,
+            key=lambda candidate: (
+                candidate[2],
+                candidate[3],
+                candidate[4],
+                candidate[0],
+            ),
+        )
+        return selected[0], selected[1]
 
     def _loading_priority(
         self,
@@ -1101,6 +1175,15 @@ class MCTSPlanner:
             return None
         if not step_result.power_flow_success:
             return None
+
+        parent_state = parent.env.current_state
+        child_state = child_env.current_state
+        if isinstance(parent_state, GridFMState) and isinstance(child_state, GridFMState):
+            if int(child_state.metrics["num_hard_overloaded_branches"]) > int(
+                parent_state.metrics["num_hard_overloaded_branches"]
+            ):
+                return None
+
         return MCTSNode(
             env=child_env,
             depth=parent.depth + 1,
@@ -1315,7 +1398,7 @@ def select_policy_action(
     *,
     context: str = "policy",
 ) -> PolicySelection:
-    """Build the behavior policy and sample one action from its support."""
+    """Build the behavior policy and sample one action from exactly that policy."""
     behavior_policy = policy_at_temperature(
         policy,
         temperature,
