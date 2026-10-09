@@ -61,3 +61,5 @@ docs/Power Grid Reconfiguration.pptx
 docs/~$Power Grid Reconfiguration.pptx
 
 monitor_gridfm_progress.py
+/tools/
+/notebooks/data/
